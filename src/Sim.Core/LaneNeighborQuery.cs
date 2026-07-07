@@ -91,4 +91,87 @@ internal sealed class LaneNeighborQuery
 
         return null;
     }
+
+    // Rung A2 (speed-gain lane change): the same "nearest ahead" lookup as GetLeader, but
+    // against an ADJACENT lane's pos-sorted list rather than ego's own -- ported from the
+    // neighLead half of MSLCM_LC2013::_wantsChange's getLeader/getFollower pair for the
+    // considered target lane (MSLane.cpp's getLeader, same-lane branch, applied to
+    // `neighborLaneId` instead of ego.LaneId). Ego is never present in an adjacent lane's list
+    // under this engine's discrete (lanechange.duration=0) lane model, but the ReferenceEquals
+    // skip is kept for symmetry with GetLeader and future robustness. Null when the neighbor
+    // lane has no vehicles, or none strictly ahead of ego's position.
+    public VehicleRuntime? GetNeighborLeader(VehicleRuntime ego, string neighborLaneId)
+    {
+        if (!_byLane.TryGetValue(neighborLaneId, out var list))
+        {
+            return null;
+        }
+
+        var egoPos = ego.Kinematics.Pos;
+
+        var lo = 0;
+        var hi = list.Count;
+        while (lo < hi)
+        {
+            var mid = lo + ((hi - lo) / 2);
+            if (list[mid].Kinematics.Pos <= egoPos)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        for (var index = lo; index < list.Count; index++)
+        {
+            if (!ReferenceEquals(list[index], ego))
+            {
+                return list[index];
+            }
+        }
+
+        return null;
+    }
+
+    // Rung A2: the nearest vehicle strictly BEHIND ego's position (Pos < egoPos) on the given
+    // adjacent lane -- ported from the neighFollow half of the same MSLCM_LC2013 lookup pair,
+    // needed by the target-lane safety veto (A2-iii). Null when the neighbor lane has no
+    // vehicles, or none strictly behind ego's position.
+    public VehicleRuntime? GetNeighborFollower(VehicleRuntime ego, string neighborLaneId)
+    {
+        if (!_byLane.TryGetValue(neighborLaneId, out var list))
+        {
+            return null;
+        }
+
+        var egoPos = ego.Kinematics.Pos;
+
+        // First index with Pos >= egoPos (lower bound); the nearest follower is just before it.
+        var lo = 0;
+        var hi = list.Count;
+        while (lo < hi)
+        {
+            var mid = lo + ((hi - lo) / 2);
+            if (list[mid].Kinematics.Pos < egoPos)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+
+        for (var index = lo - 1; index >= 0; index--)
+        {
+            if (!ReferenceEquals(list[index], ego))
+            {
+                return list[index];
+            }
+        }
+
+        return null;
+    }
 }

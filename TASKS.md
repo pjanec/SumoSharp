@@ -289,15 +289,22 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
   checks the truck free-flow trajectory. `dotnet test` = 30 green. Adding another vClass now = one
   scenario + golden; the tests extend for free. `getVehicleStopOffset` was not needed (not a
   resolved-vType field). Remaining classes for A3/etc. (each its own scenario+golden when reached).
-- **A2. Overtaking (speed-gain lane change). IN PROGRESS — scenario + characterization banked; one
-  open subtlety blocks the engine port.** `scenarios/12-overtake/` + golden committed (`A2 [net]`):
-  a fast follower overtakes a slow leader (`maxSpeed=5`) on a 2-lane edge — left change at t11→t12,
-  keep-right return at t19→t20. TraCI-dumped the accumulators and confirmed `thisLaneVSafe=12.253`,
-  `relativeGain≈0.118/step`, threshold `0.2`. **Open:** the raw car-following gap under-counts the
-  accumulation (needs ~2 steps, raw gap gives only 1) — SUMO uses a `getBestLanes` look-ahead leader
-  gap that must be pinned (or read via a `DEBUG_WANTS_CHANGE` SUMO build). **See `RUNGA2.md` for the
-  full per-step breakdown, the exact open item, and the A2-i/ii/iii decomposition.** Original
-  characterization below.
+- **A2. Overtaking (speed-gain lane change). DONE.** `scenarios/12-overtake/` + golden: a fast
+  follower overtakes a slow leader (`maxSpeed=5`) on a 2-lane edge — LEFT change at t11→t12,
+  keep-right RETURN at t19→t20; `RungA2ParityTests` green within 1e-3. The "open subtlety" was NOT a
+  look-ahead gap — it was step ORDERING: SUMO runs `planMovements → executeMovements → changeLanes`
+  (`MSNet.cpp:784/790/796`), so the lane-change decision uses the POST-move leader gap. Feeding the
+  post-move gap into `relativeGain = (neighLaneVSafe − thisLaneVSafe)/max(neighLaneVSafe,10)` (with
+  `thisLaneVSafe = min(vMax, maximumSafeFollowSpeed(gap,…,onInsertion:true))`) reproduces the golden
+  exactly (accumulate `+= relGain`, fire at `>0.2`, reset on change). Implemented as a NEW post-move
+  phase `Engine.DecideSpeedGainChanges`; keep-right was MOVED into the same phase (both LC decisions
+  run post-move, matching SUMO's single `changeLanes` pass) — 8a/8b stay byte-identical. Extended
+  `LaneNeighborQuery` with adjacent-lane leader+follower; added a faithful `IsTargetLaneSafe`
+  secure-gap veto (non-binding on the empty target lane here — the full blocker veto wants a scenario
+  WITH target-lane traffic). `dotnet test` = 44 green. **Future note (non-blocking):** enforce a
+  single LC decision per vehicle per step before a scenario stresses both keep-right and speed-gain
+  on one vehicle in one step. **See `RUNGA2.md` for the full breakdown.** Original characterization
+  below.
 - **A2 (original). Overtaking (speed-gain lane change).** The other main branch of LC2013's `_wantsChange`
   (the one rung 8b did NOT port — rung 8b was keep-right only). A vehicle held up by a slower leader
   accumulates `mySpeedGainProbability` from the potential speed advantage and changes left when it

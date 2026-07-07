@@ -90,3 +90,48 @@ LC leader-gap/look-ahead convention** — either:
 ## Determinism
 Same policy as the other rungs: decide from a frozen start-of-step neighbor snapshot; the LC accumulator
 is per-vehicle state advanced only in `ExecuteMoves`. No `System.Random` (sigma=0).
+
+## Status update: engine port DONE (`dotnet test` = 44 green)
+
+The open subtlety above (raw CF gap under-counting the accumulation) was resolved exactly as
+option (a) suggested: `_wantsChange`'s `thisLaneVSafe`/`neighLaneVSafe` need the **POST-move**
+leader gap, because real SUMO's `_wantsChange` runs once per vehicle from `MSLaneChanger`'s
+post-`executeMovements` `changeLanes()` pass (`MSNet.cpp:784/790/796`), never from
+`planMovements`. No look-ahead/`getBestLanes` machinery was needed -- a plain post-move gap
+(`Engine.DecideSpeedGainChanges`, a brand-new phase run after `ExecuteMoves` in `Engine.Run`)
+reproduces the golden's `t11 sgp=0.1179` / `t12` left-change-with-speed-dip-to-12.253 exactly,
+matching `scratch-verify-a2.py`.
+
+**Second finding (not anticipated by this file's "keep-right RETURN reuses rung 8b unchanged"
+assumption, flagged above as "VERIFY... untested"):** it does NOT reuse it unchanged. The passed
+slow leader is still briefly *ahead* of the follower on the (now-right) lane `e0_0` for a couple
+of steps after the left change (`follow` doesn't actually pass `lead` in x-position until between
+t14 and t15), which binds `MSLCM_LC2013.cpp:1743-1748`'s neighLead adjustment to keep-right's
+`fullSpeedGap`/`fullSpeedDrivingSeconds` -- an adjustment that was correctly un-exercised (and
+so, correctly unported) by every scenario up to and including rung 8b's own empty-right-lane
+scenario. Porting that adjustment while still evaluating it in the pre-move Plan phase (as rung
+8b originally did) fires the keep-right return ONE STEP LATE (t21 instead of t20) because Plan
+sees the PRE-move neighbor gap; keeping it entirely unported fires TWO STEPS EARLY (t18) because
+the adjustment silently never applies. Both were caught by diffing against `golden.fcd.xml`
+(`lane` attribute only mismatched; `pos`/`speed` matched to float epsilon in both broken
+versions, confirming the physics were right and only the keep-right FIRE TIMING was off).
+
+The fix: **rung 8b's keep-right decision moved from the pre-move Plan/MoveIntent path into the
+same post-move phase as speed-gain** (`Engine.ApplyKeepRightDecision`, called from
+`DecideSpeedGainChanges` before the speed-gain-left check, against the SAME frozen post-move
+`LaneNeighborQuery`). This is not a scope creep -- it is what real SUMO always did (`_wantsChange`
+is one function covering both the keep-right and speed-gain sub-blocks, called once from the
+post-move `changeLanes()` phase); rung 8b's original placement in Plan gave the right answer only
+by coincidence, because every scenario through 07-keep-right-change had an empty right lane
+(no `neighLead`-gap dependence, and every other term in the keep-right formula is position- and
+pre/post-move-read independent). Verified this move does not perturb rung 8a/8b: `dotnet test`
+stayed at 44/44 green (43 prior + `RungA2ParityTests`), with `Rung8aParityTests` and
+`Rung8bParityTests` individually re-run and still passing byte-for-byte.
+
+Files touched: `src/Sim.Core/LaneNeighborQuery.cs` (`GetNeighborLeader`/`GetNeighborFollower`),
+`src/Sim.Core/VehicleRuntime.cs` (`SpeedGainProbability`), `src/Sim.Core/MoveIntent.cs`
+(`TargetLaneId`/`KeepRightProbability` removed -- both lane-change decisions now write
+`VehicleRuntime` directly from the post-move phase, not through `MoveIntent`), `src/Sim.Core/
+Engine.cs` (`DecideSpeedGainChanges`, `ApplyKeepRightDecision`, `AnticipateFollowSpeed`,
+`IsTargetLaneSafe`, `SecureGap`), `tests/Sim.ParityTests/RungA2ParityTests.cs` (new, 200-step run
+against `scenarios/12-overtake/golden.fcd.xml`).

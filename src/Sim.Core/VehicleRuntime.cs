@@ -47,4 +47,14 @@ internal sealed class VehicleRuntime
     // default); only ever mutated by Engine.ExecuteMoves from the plan phase's MoveIntent
     // (CLAUDE.md rule 3 -- Plan writes only MoveIntent, never this field directly).
     public double KeepRightProbability;
+
+    // Rung A2: SUMO's MSLCM_LC2013::mySpeedGainProbability -- a stateful per-vehicle accumulator
+    // for the speed-gain (overtaking) lane-change incentive. Starts at 0 (SUMO's ctor default);
+    // unlike KeepRightProbability (plan-phase, pre-move), this is decided/written by the new
+    // post-move phase (Engine.DecideSpeedGainChanges) that runs AFTER ExecuteMoves -- SUMO's
+    // changeLanes phase reads post-move gaps (MSNet.cpp:784/790/796), so this field is written
+    // directly there rather than threaded through MoveIntent (CLAUDE.md rule 3 is still honored:
+    // it is written once, after all vehicles' moves are settled, from a single frozen post-move
+    // snapshot built at the top of that phase -- not a mid-query shared-state write).
+    public double SpeedGainProbability;
 }

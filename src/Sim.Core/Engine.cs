@@ -72,6 +72,14 @@ public sealed class Engine : IEngine
             var neighbors = LaneNeighborQuery.Build(_vehicles);
             PlanMovements(neighbors, time);
             ExecuteMoves(dt);
+
+            // Rung A2 (speed-gain/overtaking lane change): SUMO's own per-step order is
+            // planMovements -> executeMovements -> changeLanes (MSNet.cpp:784/790/796) -- the
+            // lane-change decision (MSLCM_LC2013::_wantsChange's speed-gain block) runs AFTER
+            // this step's longitudinal move, so it sees POST-move gaps (unlike keep-right, which
+            // has no leader-gap dependence and stays entirely in the pre-move Plan phase per
+            // rung 8b). This is a NEW phase, not a change to PlanMovements/ExecuteMoves above.
+            DecideSpeedGainChanges(dt);
         }
 
         return trajectory;
@@ -305,84 +313,12 @@ public sealed class Engine : IEngine
 
         var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
 
-        // Rung 8b (DESIGN.md Seam 4): keep-right (Rechtsfahrgebot) lane-change decision, ported
-        // from MSLCM_LC2013::_wantsChange's keep-right block (see
-        // sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp ~1721-1794). Evaluated in Plan AFTER this
-        // step's CF speed (newSpeed) is known -- the decision reads only start-of-step/this-step-
-        // planned values off `v`/`lane`/`laneVehicleMaxSpeed` and the immutable network, and
-        // writes nothing but the returned MoveIntent (CLAUDE.md rule 3).
-        var (targetLaneId, keepRightProbability) = ComputeKeepRightDecision(v, lane, laneVehicleMaxSpeed, newSpeed, dt);
-
         return new MoveIntent
         {
             NewSpeed = newSpeed,
             LatOffset = 0.0,
             StopUpdate = stopUpdate,
-            TargetLaneId = targetLaneId,
-            KeepRightProbability = keepRightProbability,
         };
-    }
-
-    // MSLCM_LC2013's keep-right sub-block ONLY (see CLAUDE.md briefing's scope note): on this
-    // empty single-edge road every neighbor term (leader/follower on the right lane) is null, so
-    // strategic/cooperative/speed-gain LC blocks all pass through as non-binding and only the
-    // keep-right accumulator drives the decision. NOT built (scoped out): strategic/cooperative/
-    // speed-gain blocks, general best-lanes (neighDist here is simply the right lane's own
-    // length, not a computed continuation distance), continuous lateral (SL2015),
-    // lanechange.duration>0, safety/blocker vetoes against neighbors (none exist here), and
-    // multi-edge route lane continuity.
-    private (string? TargetLaneId, double KeepRightProbability) ComputeKeepRightDecision(
-        VehicleRuntime v,
-        Lane lane,
-        double laneVehicleMaxSpeed,
-        double newSpeed,
-        double dt)
-    {
-        // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
-        // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
-        // completely unaffected: the accumulator simply never advances off 0.
-        var edge = _network!.EdgesById[lane.EdgeId];
-        var rightLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index - 1);
-        if (rightLane is null)
-        {
-            return (null, 0.0);
-        }
-
-        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
-        const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
-        const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
-        const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
-        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
-
-        var vMax = laneVehicleMaxSpeed;
-        var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
-
-        // Legacy behavior (myKeepRightAcceptanceTime == -1, SUMO's default): acceptanceTime scales
-        // with THIS STEP'S planned speed (newSpeed), not start-of-step speed -- verified against
-        // SUMO via TraCI at full precision per the briefing.
-        var acceptanceTime = 7.0 * roadSpeedFactor * Math.Max(1.0, newSpeed);
-
-        // Scope note: general best-lanes continuation distance is deferred -- on this single-
-        // edge dead-end route, the right lane's own length IS its full best-lanes continuation.
-        var neighDist = rightLane.Length;
-
-        var fullSpeedGap = Math.Max(0.0, neighDist - KraussModel.BrakeGap(vMax, v.VType.Decel, v.VType.Tau, dt));
-        var fullSpeedDrivingSeconds = Math.Min(acceptanceTime, fullSpeedGap / vMax);
-
-        // No leader/follower on the empty right lane here, so the neighLead/checkOverTakeRight
-        // adjustment blocks (MSLCM_LC2013.cpp:1743-1758) are non-binding and correctly omitted.
-        var deltaProb = changeProbThresholdRight * (fullSpeedDrivingSeconds / acceptanceTime) / keepRightTime;
-        var keepRightProbability = v.KeepRightProbability - (actionStepLengthSecs * deltaProb);
-
-        if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
-        {
-            // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
-            // to 0 on change (changed()/resetState()). No safety/blocker veto to apply -- no
-            // neighbor exists on this empty road.
-            return (rightLane.Id, 0.0);
-        }
-
-        return (null, keepRightProbability);
     }
 
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
@@ -867,22 +803,337 @@ public sealed class Engine : IEngine
                 v.LaneId = v.LaneSequence[v.LaneSeqIndex];
             }
 
-            // Rung 8b: keep-right accumulator write-back (Engine.ComputeKeepRightDecision plans
-            // it, only ExecuteMoves ever writes VehicleRuntime.KeepRightProbability -- CLAUDE.md
-            // rule 3). Always written (0 when there is no right neighbor, matching the source's
-            // own accumulator staying untouched/irrelevant on the rightmost lane).
-            v.KeepRightProbability = v.Intent.KeepRightProbability;
+            // Rung 8b/A2: keep-right and speed-gain lane changes are no longer decided here --
+            // both now run in the post-move DecideSpeedGainChanges phase (see Run()'s comment and
+            // that method's header comment for why keep-right moved out of Plan/MoveIntent).
+        }
+    }
 
-            // Structural changes (lane swaps) flush through a command buffer here at step end --
-            // this is the first real use of that buffer (DESIGN.md Seam 4 / "The plan/execute
-            // contract"): lanechange.duration=0 makes this an INSTANT discrete lane-index snap,
-            // not continuous lateral movement, so Pos/Speed are carried over unchanged and
-            // LatOffset stays 0.
-            if (v.Intent.TargetLaneId is { } targetLaneId)
+    // Rung A2 (+ rung 8b, moved here -- see the CORRECTED-ORDERING note below): the two LC2013
+    // lane-change sub-decisions, both ported from
+    // sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp's SINGLE `_wantsChange` function -- keep-right
+    // (~1721-1794, ~1743-1748's neighLead adjustment) and speed-gain-LEFT (~1548-1549
+    // thisLaneVSafe/neighLaneVSafe, ~1682 relativeGain, ~1818-1864 accumulate/decay/threshold).
+    // Runs as its OWN post-move phase (see Run()'s comment) over a FRESH neighbor query built
+    // from the now-settled post-move kinematics -- this is the one place a "plan" reads state
+    // that changed THIS step, which is correct here precisely because it mirrors SUMO's
+    // changeLanes phase running after executeMovements (CLAUDE.md rule 2 is about a follower
+    // never seeing ITS LEADER'S update mid-CAR-FOLLOWING-step; this is a separate, later phase by
+    // design).
+    //
+    // CORRECTED-ORDERING note (why keep-right moved here from Plan/MoveIntent): rung 8b originally
+    // ran keep-right in the pre-move Plan phase, documented as safe because every scenario up to
+    // that point had an empty right lane (no neighLead-gap dependence). Rung A2's briefing
+    // inherited that assumption for the keep-right RETURN in scenario 12 -- but the passed slow
+    // leader is briefly still AHEAD of the follower on the (now-right) lane for a couple of steps
+    // after the left change, which DOES bind the :1743-1748 neighLead adjustment, and that
+    // adjustment needs the POST-move gap (real SUMO's `_wantsChange` -- for BOTH keep-right and
+    // speed-gain -- runs once per vehicle from MSLaneChanger's post-executeMovements
+    // `changeLanes()` pass, never from planMovements). Running keep-right in Plan gave the RIGHT
+    // answer only by coincidence (position-independent math) for every earlier scenario;
+    // scenario 12 exposes the coincidence and CLAUDE.md rule 1 (match what the vendored source
+    // actually does, over a flagged-as-unverified briefing guess -- see RUNGA2.md's own "VERIFY...
+    // untested" caveat) requires moving it here. Verified NOT to change rung 8a/8b's byte-identical
+    // trajectory (see this rung's PR notes): with no right-lane neighbor, neither the accumulator
+    // math nor `newSpeed`/`v.Kinematics.Pos` differ between pre- and post-move reads.
+    //
+    // Target-lane safety veto (A2-iii) is a minimal-but-faithful brake-gap check
+    // (MSCFModel::getSecureGap), not the full checkBlocking/blocker-gap machinery -- see
+    // IsTargetLaneSafe's own comment.
+    private void DecideSpeedGainChanges(double dt)
+    {
+        const double relGainNormalizationMinSpeed = 10.0; // MSLCM_LC2013.cpp RELGAIN_NORMALIZATION_MIN_SPEED
+        const double changeProbThresholdLeft = 0.2; // ctor: (0.2/mySpeedGainParam), default mySpeedGainParam=1
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        // Built ONCE per step, from the now-settled post-move positions every vehicle's
+        // keep-right/speed-gain decision below reads -- SUMO's changeLanes phase sees all
+        // vehicles already moved this step (MSNet.cpp:784/790/796), so this is the correct (and
+        // only) frozen snapshot for this phase, distinct from PlanMovements' pre-move `neighbors`
+        // snapshot.
+        var postMoveNeighbors = LaneNeighborQuery.Build(_vehicles);
+
+        foreach (var v in _vehicles)
+        {
+            if (!v.Inserted || v.Arrived)
+            {
+                continue;
+            }
+
+            // Keep-right (rung 8b) evaluated FIRST, against this iteration's starting lane; may
+            // update v.LaneId/v.KeepRightProbability directly (own comment: same reasoning as the
+            // speed-gain veto below for why a direct write here still honors CLAUDE.md rule 3).
+            ApplyKeepRightDecision(v, postMoveNeighbors, dt);
+
+            var lane = _network!.LanesById[v.LaneId];
+            var edge = _network.EdgesById[lane.EdgeId];
+
+            // Left neighbor = same edge, index+1 (no neighbor on the leftmost lane) -- this
+            // guard is the INERT case CLAUDE.md's briefing calls for: single-lane rungs, and any
+            // vehicle already on the leftmost lane (e.g. this same follower once it has already
+            // changed left), leave SpeedGainProbability untouched and never fire a change.
+            var leftLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index + 1);
+            if (leftLane is null)
+            {
+                continue;
+            }
+
+            var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
+            var neighVMax = KraussModel.LaneVehicleMaxSpeed(leftLane.Speed, v.VType);
+
+            // MSLCM_LC2013.cpp:1109-1136's best-lanes continuation distance, simplified per the
+            // A2 briefing's scope note to this single-edge dead-end scenario: laneLength minus
+            // the vehicle's (post-move) position on it. Large enough here (~2000/~1865) that it
+            // never binds the no-leader stop-speed fallback or the `>20` gate below -- a full
+            // multi-edge best-lanes port is out of scope until a scenario actually needs it.
+            var currentDist = lane.Length - v.Kinematics.Pos;
+            var neighDist = leftLane.Length - v.Kinematics.Pos;
+
+            var leader = postMoveNeighbors.GetLeader(v);
+            var thisLaneVSafe = Math.Min(vMax, AnticipateFollowSpeed(v, leader, currentDist, dt));
+
+            var neighLead = postMoveNeighbors.GetNeighborLeader(v, leftLane.Id);
+            var neighLaneVSafe = Math.Min(neighVMax, AnticipateFollowSpeed(v, neighLead, neighDist, dt));
+
+            // :1682
+            var relativeGain = (neighLaneVSafe - thisLaneVSafe) / Math.Max(neighLaneVSafe, relGainNormalizationMinSpeed);
+
+            var speedGainProbability = v.SpeedGainProbability;
+            if (thisLaneVSafe > neighLaneVSafe)
+            {
+                // :1820-1824: this lane is (strictly) better -> decay toward 0.
+                if (speedGainProbability > 0)
+                {
+                    speedGainProbability *= Math.Pow(0.5, actionStepLengthSecs);
+                }
+            }
+            else if (thisLaneVSafe == neighLaneVSafe)
+            {
+                // :1825-1828
+                if (speedGainProbability > 0)
+                {
+                    speedGainProbability *= Math.Pow(0.8, actionStepLengthSecs);
+                }
+            }
+            else
+            {
+                // :1829-1831: left lane is better -> accumulate.
+                speedGainProbability += actionStepLengthSecs * relativeGain;
+            }
+
+            // MSLCM_LC2013.cpp:1020 -- numerical-stability truncation applied to the accumulator
+            // (SUMO calls this once per step, in prepareStep, ahead of _wantsChange; ported here
+            // immediately after the accumulate/decay step it protects, matching the verified
+            // scratch-verify-a2.py reference trajectory bit-for-bit at this scenario's magnitudes
+            // -- the two orderings differ by at most 1e-5, far below this scenario's 1e-3
+            // parity tolerance and never near a threshold-crossing boundary here).
+            speedGainProbability = Math.Ceiling(speedGainProbability * 100000.0) * 0.00001;
+
+            string? targetLaneId = null;
+            if (speedGainProbability > changeProbThresholdLeft
+                && relativeGain > KraussModel.NumericalEps
+                && neighDist / Math.Max(0.1, v.Kinematics.Speed) > 20.0)
+            {
+                // :1857-1864 fires. Target-lane safety veto (A2-iii) before committing --
+                // MSLCM_LC2013::checkBlocking's role, minimal-faithful here (see
+                // IsTargetLaneSafe). A vetoed change does NOT reset the accumulator (SUMO only
+                // resets on an actually-committed change, :1063/1080) -- it keeps accumulating
+                // and is retried next step.
+                var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Id);
+                if (IsTargetLaneSafe(v, neighLead, neighFollow, dt))
+                {
+                    targetLaneId = leftLane.Id;
+                    speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
+                }
+            }
+
+            v.SpeedGainProbability = speedGainProbability;
+
+            // Structural change: instant lane-index snap (lanechange.duration=0), exactly like
+            // rung 8b's keep-right swap in ExecuteMoves -- applied here, after this phase's own
+            // frozen snapshot (postMoveNeighbors) was already built and is no longer read by any
+            // other vehicle this step, so mutating v.LaneId now cannot affect another vehicle's
+            // decision this same step (CLAUDE.md rule 2/3).
+            if (targetLaneId is not null)
             {
                 v.LaneId = targetLaneId;
             }
         }
+    }
+
+    // MSLCM_LC2013's keep-right sub-block ONLY (see CLAUDE.md briefing's scope note): strategic/
+    // cooperative LC blocks all pass through as non-binding and only the keep-right accumulator
+    // drives the decision. NOT built (scoped out): strategic/cooperative blocks, general
+    // best-lanes (neighDist here is simply the right lane's own length, not a computed
+    // continuation distance), continuous lateral (SL2015), lanechange.duration>0, safety/blocker
+    // vetoes against neighbors, and multi-edge route lane continuity. `checkOverTakeRight`
+    // (:1750-1758) stays unported: it requires lcOvertakeRight=true (non-default, off here) AND
+    // ego's OWN-lane leader to be slow, which is never the case in any scenario reachable by this
+    // engine today.
+    //
+    // Called from DecideSpeedGainChanges's post-move phase (see that method's CORRECTED-ORDERING
+    // comment for why this is no longer a pre-move Plan/MoveIntent decision) -- reads/writes
+    // `v.LaneId`/`v.KeepRightProbability` directly. This is still a single, isolated per-vehicle
+    // read/write against the phase's ONE frozen `neighbors` snapshot (CLAUDE.md rule 3): no other
+    // vehicle's decision this step reads `v`'s post-keep-right LaneId, since every vehicle's
+    // neighbor lookups this phase go through the SAME already-built `neighbors` snapshot, not
+    // live `v.LaneId` reads of other vehicles.
+    private void ApplyKeepRightDecision(VehicleRuntime v, LaneNeighborQuery neighbors, double dt)
+    {
+        var lane = _network!.LanesById[v.LaneId];
+
+        // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
+        // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
+        // completely unaffected: the accumulator simply never advances off 0.
+        var edge = _network.EdgesById[lane.EdgeId];
+        var rightLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index - 1);
+        if (rightLane is null)
+        {
+            return;
+        }
+
+        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
+        const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
+        const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
+        const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
+        var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
+
+        // Legacy behavior (myKeepRightAcceptanceTime == -1, SUMO's default): acceptanceTime scales
+        // with THIS STEP'S (now-settled, post-move) speed -- verified against SUMO via TraCI at
+        // full precision per the rung-8b briefing; identical value whether read pre- or post-move
+        // since ExecuteMoves already set v.Kinematics.Speed = this step's finalized CF speed.
+        var acceptanceTime = 7.0 * roadSpeedFactor * Math.Max(1.0, v.Kinematics.Speed);
+
+        // Scope note: general best-lanes continuation distance is deferred -- on this single-
+        // edge dead-end route, the right lane's own length IS its full best-lanes continuation.
+        var neighDist = rightLane.Length;
+
+        var fullSpeedGap = Math.Max(0.0, neighDist - KraussModel.BrakeGap(vMax, v.VType.Decel, v.VType.Tau, dt));
+        var fullSpeedDrivingSeconds = Math.Min(acceptanceTime, fullSpeedGap / vMax);
+
+        // MSLCM_LC2013.cpp:1743-1748: a slower right-lane leader shrinks the "full speed driving
+        // seconds" ego could enjoy before catching it, reducing the keep-right incentive -- reads
+        // the SAME frozen post-move `neighbors` snapshot this whole phase reads (see this method's
+        // header comment for why post-move, not pre-move). Non-binding (as in every prior single-
+        // lane/empty-right-lane rung) whenever the right lane has no leader ahead of ego, or that
+        // leader is not slower than vMax.
+        var neighLead = neighbors.GetNeighborLeader(v, rightLane.Id);
+        if (neighLead is not null && neighLead.Kinematics.Speed < vMax)
+        {
+            var neighLeadBackPos = neighLead.Kinematics.Pos - neighLead.VType.Length;
+            var neighLeadGap = neighLeadBackPos - v.VType.MinGap - v.Kinematics.Pos;
+            var secureGap = SecureGap(vMax, v.VType, neighLead.Kinematics.Speed, neighLead.VType.Decel, dt);
+
+            fullSpeedGap = Math.Max(0.0, Math.Min(fullSpeedGap, neighLeadGap - secureGap));
+            fullSpeedDrivingSeconds = Math.Min(fullSpeedDrivingSeconds, fullSpeedGap / (vMax - neighLead.Kinematics.Speed));
+        }
+
+        // checkOverTakeRight (:1750-1758) stays unported -- see this method's header comment.
+        var deltaProb = changeProbThresholdRight * (fullSpeedDrivingSeconds / acceptanceTime) / keepRightTime;
+        var keepRightProbability = v.KeepRightProbability - (actionStepLengthSecs * deltaProb);
+
+        if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
+        {
+            // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
+            // to 0 on change (changed()/resetState()). No safety/blocker veto ported here -- every
+            // scenario reaching this fire has an empty target (right) lane; a real blocker veto
+            // wants its own scenario with target-lane traffic on the RIGHT side (mirrors A2-iii's
+            // scope note for the LEFT side).
+            v.LaneId = rightLane.Id;
+            v.KeepRightProbability = 0.0;
+            return;
+        }
+
+        v.KeepRightProbability = keepRightProbability;
+    }
+
+    // MSLCM_LC2013::anticipateFollowSpeed (MSLCM_LC2013.cpp:1893-1941), non-accelerating-leader
+    // branch only (acceleratingLeader is always false in this scenario: neither the slow leader
+    // nor an empty left lane's absent leader ever has positive acceleration), and with
+    // mySpeedGainLookahead=0 (ctor default, unmodeled here) so the :1926-1939 lookahead-braking
+    // correction block never triggers (its outer guard is `mySpeedGainLookahead > 0`).
+    private static double AnticipateFollowSpeed(VehicleRuntime ego, VehicleRuntime? leader, double dist, double dt)
+    {
+        if (leader is null)
+        {
+            // :1914-1920 (onInsertion=true is always used at this rung's two call sites, so the
+            // acceleratingLeader/onInsertion=false arm at :1902-1908 is not reachable from here):
+            // maximumSafeStopSpeed(dist, myDecel, mySpeed, onInsertion=true) -- default
+            // headway=-1 (falls back to myHeadwayTime == vType.Tau, MSCFModel.cpp:834) and
+            // default relaxEmergency=true (MSCFModel.h:612), so this is the emergency-decel-
+            // relaxing overload, not the plain one followSpeed's maximumSafeFollowSpeed uses.
+            return KraussModel.MaximumSafeStopSpeed(
+                dist,
+                ego.VType.Decel,
+                ego.VType.EmergencyDecel,
+                ego.Kinematics.Speed,
+                ego.VType.Tau,
+                dt,
+                relaxEmergency: true);
+        }
+
+        // MSLane::getLeader's gap formula, applied to this (possibly adjacent-lane) leader --
+        // same formula LeaderFollowSpeedConstraint uses for ego's own-lane leader.
+        var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
+        var gap = leaderBackPos - ego.VType.MinGap - ego.Kinematics.Pos;
+
+        // :1922: maximumSafeFollowSpeed(gap, mySpeed, leaderSpeed, leaderMaxDecel,
+        // onInsertion=true) -- onInsertion=true skips the emergency-decel correction block
+        // (KraussModel.MaximumSafeFollowSpeed's own `!onInsertion` guard), unlike followSpeed's
+        // plan-phase car-following call (onInsertion=false).
+        return KraussModel.MaximumSafeFollowSpeed(
+            gap,
+            ego.Kinematics.Speed,
+            leader.Kinematics.Speed,
+            leader.VType.Decel,
+            ego.VType,
+            dt,
+            onInsertion: true);
+    }
+
+    // A2-iii: minimal-faithful target-lane safety veto, standing in for
+    // MSLCM_LC2013::checkBlocking's full blocker-gap machinery (its own myLeftSpace/urgency/
+    // yielding logic -- MSLCM_LC2013.cpp's checkBlocking/checkChangeBeforeCommitting family).
+    // Ported at the granularity this rung's scenario (empty target lane -> non-binding) actually
+    // needs: when either a neighbor leader or follower exists on the target lane, require the
+    // same brake-gap-based secure gap MSCFModel::getSecureGap computes (MSCFModel.cpp:166-172,
+    // its gComputeLC-relax branch omitted -- not reachable from a plain geometric check). A
+    // scenario WITH real target-lane traffic is the right place to port checkBlocking itself.
+    private static bool IsTargetLaneSafe(VehicleRuntime ego, VehicleRuntime? neighLead, VehicleRuntime? neighFollow, double dt)
+    {
+        if (neighLead is not null)
+        {
+            var gap = (neighLead.Kinematics.Pos - neighLead.VType.Length) - ego.VType.MinGap - ego.Kinematics.Pos;
+            var secureGap = SecureGap(ego.Kinematics.Speed, ego.VType, neighLead.Kinematics.Speed, neighLead.VType.Decel, dt);
+            if (gap < secureGap)
+            {
+                return false;
+            }
+        }
+
+        if (neighFollow is not null)
+        {
+            var gap = (ego.Kinematics.Pos - ego.VType.Length) - neighFollow.VType.MinGap - neighFollow.Kinematics.Pos;
+            var secureGap = SecureGap(neighFollow.Kinematics.Speed, neighFollow.VType, ego.Kinematics.Speed, ego.VType.Decel, dt);
+            if (gap < secureGap)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // MSCFModel::getSecureGap (MSCFModel.cpp:166-172): the brake-gap-difference secure-gap
+    // formula (gComputeLC-relax branch at :173-179 omitted -- see IsTargetLaneSafe's comment).
+    private static double SecureGap(double followerSpeed, ResolvedVType followerVType, double leaderSpeed, double leaderMaxDecel, double dt)
+    {
+        var maxDecel = Math.Max(followerVType.Decel, leaderMaxDecel);
+        var leaderBrakeGap = KraussModel.BrakeGap(leaderSpeed, maxDecel, 0.0, dt);
+        return Math.Max(0.0, KraussModel.BrakeGap(followerSpeed, followerVType.Decel, followerVType.Tau, dt) - leaderBrakeGap);
     }
 
     // The engine emits FULL double-precision trajectory values. The goldens are regenerated
