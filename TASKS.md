@@ -344,12 +344,16 @@ in the fixed offline SUMO run the goldens come from. Consequences:
   these features **gated/optional** so they never perturb the parity scenarios (same inert-when-
   absent guard pattern as rungs 8b/10).
 
-- **B1. External-obstacle ingestion + "stop before blocker".** An external object at (lane, pos,
-  length) becomes a constraint in the existing multi-constraint reducer — treat it as a virtual
-  leader (speed 0) or a stop line: reuse `KraussModel.FollowSpeed`/`StopSpeed` (already built). The
-  vehicle decelerates and holds behind it; resumes when it clears. Lowest-risk B task — it is almost
-  entirely reuse. Validation: property tests (no overlap; correct steady gap = the Krauss gap behind
-  a stopped leader, which IS parity-checkable against a SUMO stopped-vehicle scenario).
+- **B1. External-obstacle ingestion + "stop before blocker". DONE.** `IEngine` gained
+  `AddObstacle`/`RemoveObstacle`/`ClearObstacles` (an `ExternalObstacle` = lane, frontPos, length,
+  optional [startTime,endTime) window); an active obstacle feeds the multi-constraint reducer as a
+  virtual STOPPED leader (speed 0) via `KraussModel.FollowSpeed`, `+inf` (inert) when none — so every
+  parity scenario stays byte-identical. Validation is behavioral (Group-B bar), NOT golden-FCD:
+  `RungB1ExternalObstacleTests` asserts no-overlap (follower front ≤ obstacle back every step), the
+  Krauss steady gap, and resume-on-removal (stop → accelerate → 13.89). The steady gap is
+  cross-checked against the committed SUMO analog `scenarios/13-stopped-leader` (real stopped leader →
+  follower front 242.499). Fixture: `scenarios/14-external-obstacle` (single follower, NO golden).
+  `dotnet test` = 48 green. Gated ACCEPT.
 - **B2. Network routing layer** (prerequisite for B3/B4; genuinely new infrastructure). Today routes
   are fixed edge lists parsed from `.rou.xml`; there is no pathfinding. Add an edge-graph shortest-
   path router (Dijkstra/A* over the network's edge connectivity, edge cost = length/speed, honoring

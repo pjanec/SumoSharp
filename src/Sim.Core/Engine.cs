@@ -13,6 +13,23 @@ public sealed class Engine : IEngine
     private ScenarioConfig? _config;
     private readonly List<VehicleRuntime> _vehicles = new();
 
+    // B1: external-obstacle store (DESIGN.md "Two futures" -- live-reactivity input surface, not
+    // a SUMO concept). Keyed by id so AddObstacle can add-or-replace. Deliberately NOT cleared by
+    // LoadScenario (tests inject obstacles after loading, before Run) and empty by default, which
+    // is exactly the inert-when-absent guard: with no entries, ObstacleConstraint below is a
+    // trivial +infinity no-op and every parity scenario's constraints list is unaffected.
+    private readonly Dictionary<string, ExternalObstacle> _obstacles = new();
+
+    public void AddObstacle(string id, string laneId, double frontPos, double length,
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity)
+    {
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime);
+    }
+
+    public void RemoveObstacle(string id) => _obstacles.Remove(id);
+
+    public void ClearObstacles() => _obstacles.Clear();
+
     public void LoadScenario(string netXmlPath, string rouXmlPath, string sumocfgPath)
     {
         _network = NetworkParser.Parse(netXmlPath);
@@ -301,6 +318,15 @@ public sealed class Engine : IEngine
             // that link's foes are all cleared/absent -- see JunctionYieldConstraint's own
             // comment for the full derivation and its determinism note.
             JunctionYieldConstraint(v, _vehicles, dt, actionStepLengthSecs),
+
+            // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
+            // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
+            // KraussModel.FollowSpeed leader car-following formula as LeaderFollowSpeedConstraint
+            // above -- the multi-constraint reducer does not care where a constraint's speed came
+            // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
+            // on this lane -- this is the inert-when-absent guard: an empty store makes this a
+            // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
+            ObstacleConstraint(v, time),
         };
 
         var vPos = constraints.Min();
@@ -734,6 +760,68 @@ public sealed class Engine : IEngine
             predMaxDecel: leader.VType.Decel,
             vType: ego.VType,
             dt: dt);
+    }
+
+    // B1: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on its
+    // current lane as a virtual stopped leader (predSpeed=0), reusing the exact same
+    // KraussModel.FollowSpeed leader-following formula LeaderFollowSpeedConstraint uses for a
+    // real vehicle leader -- so a follower approaching an obstacle brakes and settles at the same
+    // Krauss steady gap it would hold behind a stopped real vehicle (verified against scenario
+    // 13-stopped-leader's golden: follower front settles at 242.499 = obstacle back 245 - minGap
+    // 2.5 - NUMERICAL_EPS 0.001). predMaxDecel is passed as the ego's OWN decel (`v.VType.Decel`):
+    // with predSpeed=0, KraussModel.BrakeGap(0, ...) is 0 regardless of the decel argument, so
+    // this value is never actually used by the formula for a static obstacle -- it is supplied
+    // only because FollowSpeed's signature requires *some* vType-shaped decel, and the ego's own
+    // is a harmless, always-defined choice.
+    //
+    // Timing: obstacle activity ([StartTime, EndTime)) is evaluated at the SAME `time` this whole
+    // Plan phase reads every other piece of start-of-step state (v's own kinematics, the frozen
+    // `neighbors` snapshot) -- an obstacle is just another neighbor read from the frozen
+    // start-of-step world, never one whose activity window is re-checked mid-step.
+    //
+    // +infinity (non-binding, the inert-when-absent guard) when `_obstacles` is empty, none is
+    // active at `time`, none is on v's current lane, or none is still ahead of v (back position
+    // >= v's own position) -- an empty store trivially falls through this loop with the seed
+    // value untouched.
+    private double ObstacleConstraint(VehicleRuntime v, double time)
+    {
+        ExternalObstacle? nearest = null;
+        var nearestBack = double.PositiveInfinity;
+
+        foreach (var obstacle in _obstacles.Values)
+        {
+            if (obstacle.StartTime > time || time >= obstacle.EndTime || obstacle.LaneId != v.LaneId)
+            {
+                continue;
+            }
+
+            var back = obstacle.FrontPos - obstacle.Length;
+            if (back < v.Kinematics.Pos)
+            {
+                continue;
+            }
+
+            if (back < nearestBack)
+            {
+                nearestBack = back;
+                nearest = obstacle;
+            }
+        }
+
+        if (nearest is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
+
+        return KraussModel.FollowSpeed(
+            egoSpeed: v.Kinematics.Speed,
+            gap: gap,
+            predSpeed: 0.0,
+            predMaxDecel: v.VType.Decel,
+            vType: v.VType,
+            dt: _config!.StepLength);
     }
 
     // Execute phase: apply each vehicle's own MoveIntent and integrate position. Euler per
