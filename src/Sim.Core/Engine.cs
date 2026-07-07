@@ -2,11 +2,10 @@ using Sim.Ingest;
 
 namespace Sim.Core;
 
-// Task 2: ingest + engine skeleton wired to the rung-1 scenario. This is PLUMBING -- it
-// reproduces SUMO's plan/execute contract and lane-relative position model (DESIGN.md "The
-// plan/execute contract", "Seam 2") but intentionally does NOT implement the Krauss/MSCFModel
-// speed law yet (see ComputeConstrainedSpeed below). It is therefore expected to be OUT of
-// tolerance against golden.fcd.xml until Task 3 lands the real car-following math.
+// Task 3: real Krauss/MSCFModel car-following speed law (ported from
+// sumo/src/microsim/cfmodels/MSCFModel*.cpp -- see KraussModel.cs) wired into the plan/execute
+// contract and lane-relative position model built in Task 2 (DESIGN.md "The plan/execute
+// contract", "Seam 2").
 public sealed class Engine : IEngine
 {
     private NetworkModel? _network;
@@ -23,7 +22,12 @@ public sealed class Engine : IEngine
         _vehicles.Clear();
         foreach (var def in _demand.Vehicles)
         {
-            _vehicles.Add(new VehicleRuntime { Def = def });
+            var rawVType = _demand.VTypesById[def.TypeId];
+            // vType defaults resolver (CLAUDE.md rule 6: match vType/init first): only vClass
+            // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
+            // everything else is a resolved SUMO vClass default (VTypeDefaults.ResolvePassenger).
+            var vType = VTypeDefaults.ResolvePassenger(rawVType);
+            _vehicles.Add(new VehicleRuntime { Def = def, VType = vType });
         }
     }
 
@@ -76,6 +80,14 @@ public sealed class Engine : IEngine
                 Speed = v.Def.DepartSpeed,
                 LatOffset = 0.0,
             };
+
+            // Arrival position (route end). Rung 1's route is a single edge/lane, so summing
+            // that lane's length across the route's edges gives the position at which the
+            // vehicle has reached the end of its route and should be removed.
+            v.ArrivalPos = route.Edges
+                .Select(edgeId => _network!.EdgesById[edgeId].Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Length)
+                .Sum();
+
             v.Inserted = true;
         }
     }
@@ -86,7 +98,7 @@ public sealed class Engine : IEngine
     {
         foreach (var v in _vehicles)
         {
-            if (!v.Inserted)
+            if (!v.Inserted || v.Arrived)
             {
                 continue;
             }
@@ -99,25 +111,40 @@ public sealed class Engine : IEngine
         }
     }
 
-    // Multi-constraint speed reducer (DESIGN.md seam 1): the next speed is the MINIMUM over a
-    // collection of constraints (leader car-following, junction/foe, stop line, and later
-    // shadow-lane leaders). Only one constraint source exists today, but the collection/reduce
-    // shape is built now on purpose: junctions already require "min over N constraints" for
-    // correct phase-1 behavior, so laying it down here means shadow lanes/junctions slot in
-    // later without restructuring this method.
+    // Multi-constraint speed reducer (DESIGN.md seam 1): vPos is the MINIMUM over a collection
+    // of constraints (leader car-following Krauss vsafe, junction/foe, stop line, and later
+    // shadow-lane leaders), computed as a real collection/reduce even though rung 1 only has
+    // one binding entry -- junctions/leaders slot in later without restructuring this method.
+    // vPos then feeds MSCFModel.cpp's finalizeSpeed (KraussModel.FinalizeSpeed) for the
+    // free-flow acceleration/deceleration bounding, exactly mirroring MSVehicle's plan-phase
+    // call chain (per-constraint CF calls -> finalizeSpeed).
     //
-    // TASK 3: real Krauss/MSCFModel speed constraint goes here. This is intentionally a STUB
-    // that yields the vehicle's current speed unchanged (a no-op "hold speed" constraint) --
-    // with departSpeed=0 the vehicle never moves. Do NOT implement the Krauss safe-speed /
-    // free-flow acceleration law in this task.
-    private static double ComputeConstrainedSpeed(VehicleRuntime v)
+    // Plan/execute contract (DESIGN.md): this reads only start-of-step state off `v` and the
+    // immutable network/vType data -- no shared-state writes happen here.
+    private double ComputeConstrainedSpeed(VehicleRuntime v)
     {
+        var lane = _network!.LanesById[v.LaneId];
+        var dt = _config!.StepLength;
+        // default.action-step-length=1 in rung 1's config, equal to dt; kept as its own value
+        // (not silently assumed == dt) since MSCFModel.cpp divides by it separately from TS.
+        var actionStepLengthSecs = _config.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
+
         var constraints = new List<double>
         {
-            v.Kinematics.Speed, // STUB constraint: "hold current speed" -- replace in Task 3
+            // Leader car-following (MSCFModel_KraussOrig1.cpp vsafe): rung 1 has no leader, so
+            // gap=+infinity => +infinity (non-binding). Dead-but-present for rung 4+.
+            KraussModel.VSafe(gap: double.PositiveInfinity, predSpeed: 0.0, predMaxDecel: 0.0, v.VType, dt),
+
+            // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
+            // by this vehicle's speedFactor, capped by its vType maxSpeed.
+            laneVehicleMaxSpeed,
         };
 
-        return constraints.Min();
+        var vPos = constraints.Min();
+
+        return KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs);
     }
 
     // Execute phase: apply each vehicle's own MoveIntent and integrate position. Euler per
@@ -127,7 +154,7 @@ public sealed class Engine : IEngine
     {
         foreach (var v in _vehicles)
         {
-            if (!v.Inserted)
+            if (!v.Inserted || v.Arrived)
             {
                 continue;
             }
@@ -135,6 +162,17 @@ public sealed class Engine : IEngine
             v.Kinematics.Speed = v.Intent.NewSpeed;
             v.Kinematics.Pos += v.Intent.NewSpeed * dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
+
+            // Vehicle arrival/removal: once the vehicle reaches the end of its route it is
+            // marked Arrived and stops being planned/executed/emitted from the NEXT step
+            // onward (the step in which it crosses the line is still emitted beforehand, since
+            // EmitTrajectory runs at the top of the loop before Plan/Execute -- this reproduces
+            // golden.fcd.xml's presence set exactly: present through the last in-bounds step,
+            // absent afterward, with no extra "arrival" row).
+            if (v.Kinematics.Pos >= v.ArrivalPos)
+            {
+                v.Arrived = true;
+            }
 
             // Structural changes (lane swaps) would flush through a command buffer here at
             // step end. None exist yet -- rung 1 is a single straight lane.
@@ -145,7 +183,7 @@ public sealed class Engine : IEngine
     {
         foreach (var v in _vehicles)
         {
-            if (!v.Inserted)
+            if (!v.Inserted || v.Arrived)
             {
                 continue;
             }

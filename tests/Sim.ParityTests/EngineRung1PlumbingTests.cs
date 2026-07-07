@@ -4,9 +4,10 @@ using Xunit;
 namespace Sim.ParityTests;
 
 // Task 2 plumbing test: proves ingest + engine skeleton are wired end-to-end for rung 1.
-// This is NOT a parity assertion -- the Krauss/MSCFModel speed law is an intentional stub
-// (see Engine.ComputeConstrainedSpeed), so with departSpeed=0 the vehicle is expected to hold
-// position for the whole run. Full lane/pos/speed parity against golden.fcd.xml is Task 3.
+// Task 3 landed the real Krauss/MSCFModel speed law (Engine.ComputeConstrainedSpeed /
+// KraussModel), so this is folded forward to check basic wiring only (depart placement,
+// multi-step emission) -- the full lane/pos/speed trajectory parity against golden.fcd.xml,
+// including the vehicle's arrival/removal around t=75, is covered by Rung1ParityTests.
 public class EngineRung1PlumbingTests
 {
     private static readonly string ScenarioDir = Path.Combine(RepoRoot(), "scenarios", "01-single-free-flow");
@@ -31,7 +32,13 @@ public class EngineRung1PlumbingTests
 
         var points = trajectory.PointsFor("veh0");
         Assert.True(points.Count > 1, "expected veh0 to be present at multiple timesteps");
-        Assert.True(trajectory.TryGet("veh0", 79.0, out _));
+
+        // The vehicle accelerates from rest and reaches the 1000m route end well before t=79
+        // (golden.fcd.xml: present t=0..74, absent t=75..79), so it is present at t=50 but no
+        // longer present at t=79 -- that "arrived and stopped emitting" behavior is exactly
+        // what Rung1ParityTests checks against the golden trajectory.
+        Assert.True(trajectory.TryGet("veh0", 50.0, out _));
+        Assert.False(trajectory.TryGet("veh0", 79.0, out _));
     }
 
     // Fixture files (net.net.xml/rou.rou.xml/golden.*) are committed scenario inputs, not test
