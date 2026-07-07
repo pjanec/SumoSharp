@@ -1,0 +1,16 @@
+# SUMO version pinned for this project — SINGLE SOURCE OF TRUTH.
+#
+# This same version is used in two places that MUST stay in sync:
+#   1. The vendored SUMO source at /sumo/  (git checkout of the matching tag)
+#   2. The pip install used to regenerate golden test data
+#
+# Source and goldens MUST come from this exact version, or parity comparisons
+# are meaningless. Do not change this without regenerating all goldens.
+#
+# Convention note:
+#   - pip package version uses dots:        1.20.0     (this file)
+#   - the git tag for /sumo/ uses undies:   v1_20_0
+# Scripts derive the git-tag form mechanically as:  v${SUMO_VERSION//./_}
+# so you only ever edit the number below.
+
+SUMO_VERSION=1.20.0
