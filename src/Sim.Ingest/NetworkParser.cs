@@ -114,6 +114,22 @@ public static class NetworkParser
         var connectionsByFromEdgeLaneReadOnly = connectionsByFromEdgeLane
             .ToDictionary(kvp => kvp.Key, kvp => (IReadOnlyList<Connection>)kvp.Value);
 
+        var junctions = new List<Junction>();
+        var junctionsById = new Dictionary<string, Junction>();
+        var linkByInternalLane = new Dictionary<string, (Junction Junction, JunctionLink Link)>();
+
+        foreach (var junctionEl in root.Elements("junction"))
+        {
+            var junction = ParseJunction(junctionEl, connections, lanesById);
+            junctions.Add(junction);
+            junctionsById[junction.Id] = junction;
+
+            foreach (var link in junction.Links)
+            {
+                linkByInternalLane[link.InternalLaneId] = (junction, link);
+            }
+        }
+
         return new NetworkModel(
             edges,
             edgesById,
@@ -121,7 +137,107 @@ public static class NetworkParser
             connections,
             connectionsByFromLaneTo,
             tlLogicsById,
-            connectionsByFromEdgeLaneReadOnly);
+            connectionsByFromEdgeLaneReadOnly,
+            junctions,
+            junctionsById,
+            linkByInternalLane);
+    }
+
+    // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert
+    // output); only junctions with a nonempty intLanes AND at least one child <request> get a
+    // populated Links/Requests/Conflicts (dead_end/internal junctions have neither and parse to
+    // empty lists, which is harmless -- see Junction's doc comment).
+    private static Junction ParseJunction(
+        XElement junctionEl,
+        IReadOnlyList<Connection> connections,
+        IReadOnlyDictionary<string, Lane> lanesById)
+    {
+        var id = RequireAttribute(junctionEl, "id");
+        var type = RequireAttribute(junctionEl, "type");
+        var intLanesAttr = junctionEl.Attribute("intLanes")?.Value ?? string.Empty;
+        var intLanes = intLanesAttr.Length == 0
+            ? new List<string>()
+            : intLanesAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        var requestEls = junctionEl.Elements("request").ToList();
+        if (intLanes.Count == 0 || requestEls.Count == 0)
+        {
+            return new Junction(id, type, intLanes, Array.Empty<JunctionLink>(), Array.Empty<JunctionRequest>(),
+                Array.Empty<JunctionConflict>());
+        }
+
+        // Links: for each link index i, the top-level <connection> whose `via` equals
+        // intLanes[i] (the incoming-lane -> outgoing-lane move this link represents). A missing
+        // match (shouldn't happen for a real request row) is skipped gracefully -- the request
+        // row is kept regardless, so right-of-way bits are never silently dropped.
+        var links = new List<JunctionLink>();
+        var linksByIndex = new Dictionary<int, JunctionLink>();
+        for (var i = 0; i < intLanes.Count; i++)
+        {
+            var internalLaneId = intLanes[i];
+            var connection = connections.FirstOrDefault(c => c.Via == internalLaneId);
+            if (connection is null)
+            {
+                continue;
+            }
+
+            var link = new JunctionLink(i, internalLaneId, connection);
+            links.Add(link);
+            linksByIndex[i] = link;
+        }
+
+        var requests = new List<JunctionRequest>();
+        var requestsByIndex = new Dictionary<int, JunctionRequest>();
+        foreach (var requestEl in requestEls)
+        {
+            var index = int.Parse(RequireAttribute(requestEl, "index"), CultureInfo.InvariantCulture);
+            var response = RequireAttribute(requestEl, "response");
+            var foes = RequireAttribute(requestEl, "foes");
+            var cont = (requestEl.Attribute("cont")?.Value ?? "0") == "1";
+
+            var request = new JunctionRequest(index, response, foes, cont);
+            requests.Add(request);
+            requestsByIndex[index] = request;
+        }
+
+        // Conflicts: for every ordered pair (i, j), i != j, where link i's request marks link j
+        // as a physical foe and both links resolved to an internal lane, compute the crossing
+        // of the two internal-lane shapes (see PolylineGeometry's doc comment for what counts
+        // as a "crossing" -- merges that only share an endpoint are skipped).
+        var conflicts = new List<JunctionConflict>();
+        foreach (var request in requests)
+        {
+            if (!linksByIndex.TryGetValue(request.Index, out var egoLink))
+            {
+                continue;
+            }
+
+            for (var j = 0; j < intLanes.Count; j++)
+            {
+                if (j == request.Index || !request.FoeWith(j))
+                {
+                    continue;
+                }
+
+                if (!linksByIndex.TryGetValue(j, out var foeLink))
+                {
+                    continue;
+                }
+
+                var egoShape = lanesById[egoLink.InternalLaneId].Shape;
+                var foeShape = lanesById[foeLink.InternalLaneId].Shape;
+
+                if (PolylineGeometry.TryIntersect(egoShape, foeShape, out var intersection))
+                {
+                    conflicts.Add(new JunctionConflict(
+                        egoLink.Index, foeLink.Index,
+                        intersection.ArcA, intersection.ArcB,
+                        intersection.Point));
+                }
+            }
+        }
+
+        return new Junction(id, type, intLanes, links, requests, conflicts);
     }
 
     private static IReadOnlyList<(double X, double Y)> ParseShape(string shape)
