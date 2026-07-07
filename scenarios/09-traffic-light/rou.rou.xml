@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Traffic light (rung 10). One passenger vehicle (sigma=0) drives WJ JE through a
+         traffic-light junction J. The signal is red for 0..29 s then green; the vehicle arrives
+         during red, brakes to a halt at the stop line (laneLength minus DIST_TO_STOPLINE_EXPECT_
+         PRIORITY = 1.0 m, i.e. pos 298.999 on WJ), holds through red, then accelerates through at
+         green (t=30) and traverses the junction. Reuses the rung-5 stopSpeed machinery: a red
+         light is just a stop-line constraint at the junction entry. -->
+    <vType id="passenger0" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="WJ JE"/>
+    <vehicle id="veh0" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
