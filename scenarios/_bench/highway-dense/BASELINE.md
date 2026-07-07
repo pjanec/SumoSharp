@@ -36,6 +36,31 @@ Captured on the reference VM (.NET 8, Release, workstation GC), 500 steps:
 Absolute numbers are machine-dependent; what matters is the **delta each Group-D rung produces**
 against this baseline (re-run the harness and update this table, keeping the old row for history).
 
+## D2 (int-handle lane identity)
+Captured on the same reference VM, same command, 500 steps, immediately after the D2 refactor
+(dense int `Lane.Handle`/`VehicleRuntime.LaneHandle`/`LaneSequenceHandles`; `LaneNeighborQuery`'s
+per-lane buckets keyed by handle instead of `LaneId` string):
+
+| metric | value |
+|---|---|
+| peak concurrent vehicles | 378 |
+| veh-steps emitted | 115,141 |
+| wall time | 0.393 s |
+| throughput | **1272 steps/s** (0.786 ms/step) |
+| alloc total | **80.8 MiB** |
+| alloc / step | 165.5 KiB |
+| alloc / veh-step | **735.8 B** |
+| GC gen0/1/2 | 5 / 3 / 0 |
+| deterministic (2 runs identical) | **True** (hash unchanged: `909605E965BFFE59` before and after) |
+
+D2 mainly enables D3/D4 (a dense int handle is a prerequisite for unmanaged FDP components and
+for D4's handle-indexed reusable buckets) — the alloc drop here is modest (~0.7 B/veh-step) as
+expected, because `LaneNeighborQuery` still allocates a fresh `Dictionary`-shaped array +
+per-lane `List<VehicleRuntime>` every Build call (D4's job is making that reusable); what D2
+removes is the *string hashing/interning* cost of every per-vehicle, per-step `LanesById[laneId]`
+and neighbor-bucket lookup, replacing it with a direct array index. Throughput is within
+run-to-run noise of the baseline on this VM.
+
 ## What the numbers say (targets for D2–D8)
 - **~736 B allocated per vehicle-step** is the headline: this is the AoS `class` entities +
   `LaneNeighborQuery`'s per-step `Dictionary`/`List` (built twice/step) + the reducer's

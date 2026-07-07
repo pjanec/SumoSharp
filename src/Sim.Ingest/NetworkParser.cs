@@ -30,6 +30,13 @@ public static class NetworkParser
         var edgesById = new Dictionary<string, Edge>();
         var lanesById = new Dictionary<string, Lane>();
 
+        // D2: the global dense lane-handle assignment -- every lane (including internal `:`
+        // lanes) gets the next sequential handle in PARSE order, so LanesByHandle[h] == the
+        // lane whose Handle is h. nextLaneHandle is shared across every <edge>'s <lane> loop
+        // below (it is NOT reset per edge).
+        var nextLaneHandle = 0;
+        var lanesByHandle = new List<Lane>();
+
         foreach (var edgeEl in root.Elements("edge"))
         {
             // Rung 9a: internal (junction-interior) edges are now parsed too -- a multi-edge
@@ -55,10 +62,12 @@ public static class NetworkParser
                     Speed: double.Parse(RequireAttribute(laneEl, "speed"), CultureInfo.InvariantCulture),
                     Length: double.Parse(RequireAttribute(laneEl, "length"), CultureInfo.InvariantCulture),
                     Shape: ParseShape(RequireAttribute(laneEl, "shape")),
-                    Width: width);
+                    Width: width,
+                    Handle: nextLaneHandle++);
 
                 lanes.Add(lane);
                 lanesById[lane.Id] = lane;
+                lanesByHandle.Add(lane);
             }
 
             var edge = new Edge(edgeId, from, to, lanes);
@@ -141,6 +150,14 @@ public static class NetworkParser
             }
         }
 
+        // D2: LaneHandleById mirrors lanesById's keys 1:1 (every lane got exactly one handle
+        // above), just projecting Id -> Handle instead of Id -> Lane.
+        var laneHandleById = new Dictionary<string, int>(lanesById.Count, StringComparer.Ordinal);
+        foreach (var lane in lanesByHandle)
+        {
+            laneHandleById[lane.Id] = lane.Handle;
+        }
+
         return new NetworkModel(
             edges,
             edgesById,
@@ -151,7 +168,9 @@ public static class NetworkParser
             connectionsByFromEdgeLaneReadOnly,
             junctions,
             junctionsById,
-            linkByInternalLane);
+            linkByInternalLane,
+            lanesByHandle,
+            laneHandleById);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert

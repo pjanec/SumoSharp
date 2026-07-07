@@ -10,17 +10,28 @@ namespace Sim.Core;
 // Plan/execute contract (DESIGN.md): built ONCE per step from START-OF-STEP kinematics, before
 // PlanMovements runs, and never mutated afterward -- every vehicle's plan phase reads this same
 // frozen snapshot, so a follower never sees its leader's updated-this-step position.
+//
+// D2 (FastDataPlane readiness): the per-lane buckets are keyed by the dense int LaneHandle
+// (Sim.Ingest.Lane.Handle / VehicleRuntime.LaneHandle) rather than the LaneId string -- this is
+// the hottest string-keyed structure in the step loop (built TWICE per step: PlanMovements'
+// pre-move snapshot and DecideSpeedGainChanges' post-move snapshot), so replacing the
+// `Dictionary<string,List<>>` hash+compare with a plain array index removes a per-vehicle string
+// hash from the hottest per-step path. Buckets are still allocated fresh every Build call (NOT
+// yet reused across steps -- that reuse is D4's job; D2 only switches the key type).
 internal sealed class LaneNeighborQuery
 {
-    private readonly Dictionary<string, List<VehicleRuntime>> _byLane = new();
+    private readonly List<VehicleRuntime>?[] _byLaneHandle;
 
-    private LaneNeighborQuery()
+    private LaneNeighborQuery(int laneCount)
     {
+        _byLaneHandle = new List<VehicleRuntime>?[laneCount];
     }
 
-    public static LaneNeighborQuery Build(IEnumerable<VehicleRuntime> vehicles)
+    // `laneCount` is `network.LanesByHandle.Count` -- the size of the dense handle space, so
+    // every lane's bucket is a plain array slot rather than a hashed dictionary entry.
+    public static LaneNeighborQuery Build(IEnumerable<VehicleRuntime> vehicles, int laneCount)
     {
-        var query = new LaneNeighborQuery();
+        var query = new LaneNeighborQuery(laneCount);
 
         foreach (var v in vehicles)
         {
@@ -29,18 +40,19 @@ internal sealed class LaneNeighborQuery
                 continue;
             }
 
-            if (!query._byLane.TryGetValue(v.LaneId, out var list))
+            var list = query._byLaneHandle[v.LaneHandle];
+            if (list is null)
             {
                 list = new List<VehicleRuntime>();
-                query._byLane[v.LaneId] = list;
+                query._byLaneHandle[v.LaneHandle] = list;
             }
 
             list.Add(v);
         }
 
-        foreach (var list in query._byLane.Values)
+        foreach (var list in query._byLaneHandle)
         {
-            list.Sort((a, b) => a.Kinematics.Pos.CompareTo(b.Kinematics.Pos));
+            list?.Sort((a, b) => a.Kinematics.Pos.CompareTo(b.Kinematics.Pos));
         }
 
         return query;
@@ -53,9 +65,23 @@ internal sealed class LaneNeighborQuery
     // vehicle. Cross-lane/consecutive-lane lookup (MSLane.cpp's getLeaderOnConsecutive, for when
     // no leader exists on the current lane) is out of scope until a multi-edge-route scenario
     // needs it -- rung 4 is single-lane.
-    public VehicleRuntime? GetLeader(VehicleRuntime ego)
+    public VehicleRuntime? GetLeader(VehicleRuntime ego) => GetLeaderOnLane(ego, ego.LaneHandle);
+
+    // Rung A2 (speed-gain lane change): the same "nearest ahead" lookup as GetLeader, but
+    // against an ADJACENT lane's pos-sorted list rather than ego's own -- ported from the
+    // neighLead half of MSLCM_LC2013::_wantsChange's getLeader/getFollower pair for the
+    // considered target lane (MSLane.cpp's getLeader, same-lane branch, applied to
+    // `neighborLaneHandle` instead of ego.LaneHandle). Ego is never present in an adjacent
+    // lane's list under this engine's discrete (lanechange.duration=0) lane model, but the
+    // ReferenceEquals skip is kept for symmetry with GetLeader and future robustness. Null when
+    // the neighbor lane has no vehicles, or none strictly ahead of ego's position.
+    public VehicleRuntime? GetNeighborLeader(VehicleRuntime ego, int neighborLaneHandle) =>
+        GetLeaderOnLane(ego, neighborLaneHandle);
+
+    private VehicleRuntime? GetLeaderOnLane(VehicleRuntime ego, int laneHandle)
     {
-        if (!_byLane.TryGetValue(ego.LaneId, out var list))
+        var list = _byLaneHandle[laneHandle];
+        if (list is null)
         {
             return null;
         }
@@ -92,56 +118,14 @@ internal sealed class LaneNeighborQuery
         return null;
     }
 
-    // Rung A2 (speed-gain lane change): the same "nearest ahead" lookup as GetLeader, but
-    // against an ADJACENT lane's pos-sorted list rather than ego's own -- ported from the
-    // neighLead half of MSLCM_LC2013::_wantsChange's getLeader/getFollower pair for the
-    // considered target lane (MSLane.cpp's getLeader, same-lane branch, applied to
-    // `neighborLaneId` instead of ego.LaneId). Ego is never present in an adjacent lane's list
-    // under this engine's discrete (lanechange.duration=0) lane model, but the ReferenceEquals
-    // skip is kept for symmetry with GetLeader and future robustness. Null when the neighbor
-    // lane has no vehicles, or none strictly ahead of ego's position.
-    public VehicleRuntime? GetNeighborLeader(VehicleRuntime ego, string neighborLaneId)
-    {
-        if (!_byLane.TryGetValue(neighborLaneId, out var list))
-        {
-            return null;
-        }
-
-        var egoPos = ego.Kinematics.Pos;
-
-        var lo = 0;
-        var hi = list.Count;
-        while (lo < hi)
-        {
-            var mid = lo + ((hi - lo) / 2);
-            if (list[mid].Kinematics.Pos <= egoPos)
-            {
-                lo = mid + 1;
-            }
-            else
-            {
-                hi = mid;
-            }
-        }
-
-        for (var index = lo; index < list.Count; index++)
-        {
-            if (!ReferenceEquals(list[index], ego))
-            {
-                return list[index];
-            }
-        }
-
-        return null;
-    }
-
     // Rung A2: the nearest vehicle strictly BEHIND ego's position (Pos < egoPos) on the given
     // adjacent lane -- ported from the neighFollow half of the same MSLCM_LC2013 lookup pair,
     // needed by the target-lane safety veto (A2-iii). Null when the neighbor lane has no
     // vehicles, or none strictly behind ego's position.
-    public VehicleRuntime? GetNeighborFollower(VehicleRuntime ego, string neighborLaneId)
+    public VehicleRuntime? GetNeighborFollower(VehicleRuntime ego, int neighborLaneHandle)
     {
-        if (!_byLane.TryGetValue(neighborLaneId, out var list))
+        var list = _byLaneHandle[neighborLaneHandle];
+        if (list is null)
         {
             return null;
         }

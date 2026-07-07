@@ -24,6 +24,13 @@ internal sealed class VehicleRuntime
     public bool Arrived;
     public string LaneId = string.Empty;
 
+    // D2: the dense handle of LaneId (`_network.LaneHandleById[LaneId]`) -- kept in lockstep
+    // with LaneId by every Engine write site (insertion, lane traversal, LC swaps, reroute).
+    // LaneId remains authoritative for correctness/emit; LaneHandle exists purely so hot-path
+    // lookups (LaneNeighborQuery buckets, `_network.LanesByHandle[...]`) can index an array
+    // instead of hashing a string every vehicle, every step.
+    public int LaneHandle;
+
     // Rung 9a: the full ordered lane-id sequence this vehicle's route resolves to (via
     // NetworkModel.ResolveLaneSequence), e.g. ["WJ_0", ":J_2_0", "JE_0"] -- includes internal
     // (junction) lanes between consecutive route edges. Set once at insertion; LaneSeqIndex is
@@ -32,6 +39,10 @@ internal sealed class VehicleRuntime
     // sequence, so this collapses to rung 1-8's single-lane "reached the end -> arrived"
     // behavior exactly (CLAUDE.md-mandated regression: unchanged for single-edge routes).
     public IReadOnlyList<string> LaneSequence { get; set; } = Array.Empty<string>();
+
+    // D2: the handle-parallel form of LaneSequence (NetworkModel.ResolveLaneSequenceHandles),
+    // same length, same order -- LaneSeqIndex indexes both arrays identically.
+    public int[] LaneSequenceHandles = Array.Empty<int>();
     public int LaneSeqIndex;
     public Kinematics Kinematics;
     public MoveIntent Intent;

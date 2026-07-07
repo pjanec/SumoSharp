@@ -12,6 +12,14 @@ namespace Sim.Ingest;
 // MSLane's own default (this net's <lane> elements omit `width` entirely). Only consumed by
 // the junction-conflict geometry (MSLink::setRequestInformation) below; every prior rung's
 // lane-following/stop-line/TL math never reads it.
+// D2 (FastDataPlane readiness): `Handle` is a GLOBAL dense 0..N-1 index across every lane in
+// the network -- including internal (`:`-prefixed) lanes -- assigned in parse order by
+// NetworkParser. It exists so the hot per-step path (LaneNeighborQuery buckets, the
+// reducer's `_network.LanesByHandle[...]` lookups) can index an array instead of hashing a
+// string every vehicle, every step. FDP components are unmanaged structs and cannot hold a
+// `string` field at all, so this handle is also what a future VehicleRuntime-as-component
+// split (D3) will actually store. `Id` (the string) stays authoritative at I/O boundaries
+// (FCD emit, obstacle API, router) -- see NetworkModel.LaneHandleById/LanesByHandle.
 public sealed record Lane(
     string Id,
     string EdgeId,
@@ -19,7 +27,8 @@ public sealed record Lane(
     double Speed,
     double Length,
     IReadOnlyList<(double X, double Y)> Shape,
-    double Width);
+    double Width,
+    int Handle);
 
 public sealed record Edge(
     string Id,
@@ -134,7 +143,13 @@ public sealed record NetworkModel(
     IReadOnlyDictionary<(string FromEdge, int FromLane), IReadOnlyList<Connection>> ConnectionsByFromEdgeLane,
     IReadOnlyList<Junction> Junctions,
     IReadOnlyDictionary<string, Junction> JunctionsById,
-    IReadOnlyDictionary<string, (Junction Junction, JunctionLink Link)> LinkByInternalLane)
+    IReadOnlyDictionary<string, (Junction Junction, JunctionLink Link)> LinkByInternalLane,
+    // D2: dense lane-handle identity, parallel to LanesById -- LanesByHandle[lane.Handle] ==
+    // lane, for every lane (index == Handle). LaneHandleById is the one-time string->handle
+    // resolution point for I/O-boundary callers (e.g. AddObstacle(laneId,...) resolving its
+    // handle once at call time, not per step).
+    IReadOnlyList<Lane> LanesByHandle,
+    IReadOnlyDictionary<string, int> LaneHandleById)
 {
     // Rung 10: find the (at most one, in this rung's scope) TL-controlled connection leaving a
     // given lane -- i.e. the connection a vehicle currently on this lane would use to exit it,
@@ -205,5 +220,23 @@ public sealed record NetworkModel(
         }
 
         return sequence;
+    }
+
+    // D2: the handle-parallel form of ResolveLaneSequence -- same traversal, same lane
+    // sequence, but returned as dense int handles (LanesByHandle[handle] == the lane at that
+    // sequence position) instead of string ids, for the hot-path callers that will walk
+    // LaneSequenceHandles every step instead of re-hashing LaneId strings. Kept as a wholly
+    // separate method (rather than changing ResolveLaneSequence's signature) so every existing
+    // string-boundary caller (router, tests) is untouched -- this is purely additive.
+    public int[] ResolveLaneSequenceHandles(IReadOnlyList<string> routeEdges, int departLaneIndex)
+    {
+        var sequence = ResolveLaneSequence(routeEdges, departLaneIndex);
+        var handles = new int[sequence.Count];
+        for (var i = 0; i < sequence.Count; i++)
+        {
+            handles[i] = LaneHandleById[sequence[i]];
+        }
+
+        return handles;
     }
 }

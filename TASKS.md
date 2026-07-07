@@ -497,12 +497,16 @@ highest-leverage items; B5 is the one that directly serves "lane traffic respect
 
 ## Group D — FastDataPlane ECS readiness (characterized, not yet briefed)
 
-**Goal.** Make the engine integrate cleanly into the project owner's own ECS library derived from
-**FastDataPlane** (`github.com/pjanec/FastDataPlane`, namespaces `Fdp.Core`/`Fdp.ModuleHost`), so a
-later **info/replication system** can consume the simulation over FDP's network layer. This is a
-representation refactor, NOT a behavior change: the **61 committed parity/behavioral tests are the
-oracle** — every D-rung must leave them byte-identical (`dotnet test` green), exactly like the
-inert-when-absent discipline used throughout.
+**Goal — READINESS, NOT INTEGRATION (owner's clarification).** Make the engine FDP-*shaped* so it
+could later drop into the owner's own ECS library derived from **FastDataPlane**
+(`github.com/pjanec/FastDataPlane`, namespaces `Fdp.Core`/`Fdp.ModuleHost`) — WITHOUT adding any
+`FastDataPlane` dependency or wiring its network layer now. Everything here is in-house: the
+representation refactor (int handles, unmanaged-style component structs, zero-alloc hot path,
+command-buffer lifecycle, phased systems, parallelizable) plus thin SEAMS (D7/D9) that make an
+`Fdp.Core` backend / info-replication a later drop-in. This is a representation refactor, NOT a
+behavior change: the **committed parity/behavioral tests are the oracle** — every D-rung must leave
+them byte-identical (`dotnet test` green), exactly like the inert-when-absent discipline used
+throughout, and each re-runs the D1 benchmark to record its alloc/throughput delta.
 
 **FDP conventions to target** (from its `Docs/architectural-rules.md` + `USER-GUIDE-OVERVIEW.md`):
 - `Entity` = struct handle (`Index`:32 + `Generation`:16). Never store raw ints; gate stored handles
@@ -541,11 +545,15 @@ and determinism (no RNG/wallclock). **The gap is representation, not architectur
   (0.779 ms/step), 80.9 MiB total, ~736 B/veh-step, deterministic=True.** See
   `scenarios/_bench/highway-dense/BASELINE.md`. The ~736 B/veh-step is the D2–D4 target; the
   deterministic=True at load is the invariant D8 parallelization relies on. `dotnet test` = 62 green.
-- **D2. Int-handle identity (strings → dense indices). The biggest single enabler.** FDP components are
-  unmanaged — string ids cannot be component fields. Intern lane/edge/junction/vType ids to dense
-  `int` handles at ingest; `NetworkModel` exposes arrays indexed by handle (it already stores arrays);
-  `LaneSequence` becomes `int[]` (lane handles). Keep a handle↔string map for I/O only (FCD emit,
-  scenario load). Prereq for D3/D4. Pure refactor; parity tests unchanged.
+- **D2. Int-handle identity (strings → dense indices). DONE.** `Lane` gained a global dense `int
+  Handle`; `NetworkModel` exposes `LanesByHandle`/`LaneHandleById` + `ResolveLaneSequenceHandles`;
+  `VehicleRuntime` gained `LaneHandle`/`LaneSequenceHandles` (parallel to the string `LaneId`/
+  `LaneSequence`, kept for the FCD/obstacle/router boundary); `LaneNeighborQuery` buckets are keyed by
+  `int` handle (array-indexed, not string-hashed); per-vehicle hot-path lane lookups use
+  `LanesByHandle[handle]`. Pure refactor — trajectory hash UNCHANGED (`909605E965BFFE59` before/after),
+  `dotnet test` = 62 green. Alloc drop modest (~0.7 B/veh-step; D2 removes string hashing, not the
+  allocations — that's D4) but it's the prerequisite for D3 (unmanaged component `int[]` LaneSequence)
+  and D4 (handle-indexed reusable buckets). Benchmark row appended to BASELINE.md.
 - **D3. Decompose `VehicleRuntime` into FDP-style component structs + move managed state out.** Split
   the class into unmanaged value-type components: `KinematicsC` (=today's `Kinematics`), `IntentC`
   (=`MoveIntent`), `RouteProgressC {laneSeqStart, laneSeqLen, laneSeqIndex}`, `LcStateC {keepRightP,
@@ -573,26 +581,31 @@ and determinism (no RNG/wallclock). **The gap is representation, not architectur
   Export=FCD emit), each iterating a `Query().With<…>()`. Preserve the plan/execute contract (plan =
   RO reads + own RW; structural = command buffer) — it maps 1:1 onto FDP async `Simulation` modules.
   Parity unchanged; this is the shape D7 plugs FDP into.
-- **D7. The FDP seam / adapter (the actual integration point).** Introduce a thin `IWorld`/`IQuery`/
-  `ICommandBuffer` abstraction the engine's systems target, with TWO backends: (a) the in-house SoA
-  store built in D3–D6, and (b) an **`Fdp.Core`-backed** implementation (components as FDP structs in
-  its chunks, systems as `IModule` in `SystemPhase.Simulation`, blueprints as `TkbDatabase`
-  descriptors, time via `GlobalTime`). Read `Engine/Fdp.ModuleHost` + `Engine/Examples` for the exact
-  `IModule`/system-registration signatures when building this (the overview doc doesn't pin them). Add
-  `Fdp.Core` as a dependency here. Parity tests run against BOTH backends → proof of equivalence.
+- **D7. The FDP-shaped seam / adapter (READINESS — NO `Fdp.Core` dependency).** Introduce a thin,
+  in-house `IWorld`/`IQuery`/`ICommandBuffer` abstraction (mirroring FDP's `World.CreateEntity`/
+  `AddComponent`/`GetComponentRW<T>`/`Query().With<T>()`/`GetCommandBuffer()` surface) that the
+  engine's systems target, with ONE backend: the in-house SoA store built in D3–D6. This is the
+  drop-in point — an `Fdp.Core`-backed implementation could be added LATER by the owner without
+  touching the systems, but this project does NOT add the `FastDataPlane` reference or write that
+  backend. Deliverable: the abstraction + the engine running through it, byte-identical, so the seam
+  is proven. (When the owner later wires `Fdp.Core`, read `Engine/Fdp.ModuleHost` + `Engine/Examples`
+  for the exact `IModule`/registration signatures.)
 - **D8. Parallelize the Simulation phase.** With D2–D6 done, run the plan/decide systems concurrently
-  (in-house: `Parallel.For`; FDP: async `IModule` in `Simulation`). The frozen-snapshot + order-
-  independent-decision discipline already guarantees byte-identical output — this rung *proves* it
-  (same trajectory single- vs multi-threaded) and reports the throughput delta on D1's benchmark.
-- **D9. Info/replication readiness (the end goal: "integrate an info system using FastDataPlane").**
-  Expose vehicle/network state as **networked components** via `IDescriptorTranslator`
-  (ECS component ↔ network descriptor) + `NetworkEntityMap`/`INetworkIdAllocator`, and honor
-  `HasAuthority<T>` so an external info system can observe/replicate the running simulation over FDP's
-  network layer. Behavioral/property validation (a subscriber sees a faithful mirror). Depends on D7.
+  in-house (`Parallel.For` over the plan/decide loops). The frozen-snapshot + order-independent-
+  decision discipline already guarantees byte-identical output — this rung *proves* it (same
+  trajectory single- vs multi-threaded, same determinism hash) and reports the throughput delta on
+  D1's benchmark. (An `IModule`-in-`Simulation` scheduling is the FDP analog the owner adds later.)
+- **D9. Info/replication export SEAM (READINESS — NO FDP network wiring).** Expose a clean,
+  per-frame component-snapshot / observer API shaped for later `IDescriptorTranslator`-style
+  consumption (ECS component → external descriptor), so an info/replication layer *could* attach
+  without touching the sim. In-house only: define the export surface + a property test that a
+  subscriber sees a faithful mirror of the sim state; do NOT wire `NetworkEntityMap`/
+  `INetworkIdAllocator` or any `FastDataPlane` network transport. Depends on D3/D7.
 
-**Suggested Group-D order:** **D1** (measure) → **D2** (int handles) → **D3** (component structs +
+**Suggested Group-D order:** **D1** ✅ (measure) → **D2** ✅ (int handles) → **D3** (component structs +
 move managed state out) → **D4** (zero-alloc hot path) → **D5** (entity lifecycle via command buffer)
-→ **D6** (phased systems over queries) → **D7** (FDP adapter + `Fdp.Core` backend) → **D8**
-(parallelize) → **D9** (network/info-system). D2 and D3 are the load-bearing enablers; D7 is where
-FastDataPlane actually plugs in. Every rung keeps the 61 tests byte-identical — the refactor changes
-representation and speed, never behavior.
+→ **D6** (phased systems over queries) → **D7** (in-house FDP-shaped adapter seam) → **D8**
+(parallelize) → **D9** (export seam). All in-house — READINESS, not integration: no `FastDataPlane`
+dependency is added (D7/D9 are the drop-in seams the owner wires to `Fdp.Core` later). D2/D3 are the
+load-bearing enablers; D4 is the biggest measurable alloc win; D8 proves the parallel payoff. Every
+rung keeps the tests byte-identical — the refactor changes representation and speed, never behavior.

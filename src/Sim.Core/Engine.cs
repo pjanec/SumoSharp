@@ -109,7 +109,7 @@ public sealed class Engine : IEngine
             // see a leader's updated position within the same step. The neighbor query is
             // built ONCE per step, here, from the same frozen start-of-step snapshot every
             // vehicle's plan phase reads (Seam 1: neighbor discovery behind an interface).
-            var neighbors = LaneNeighborQuery.Build(_vehicles);
+            var neighbors = LaneNeighborQuery.Build(_vehicles, _network!.LanesByHandle.Count);
             PlanMovements(neighbors, time);
             ExecuteMoves(dt);
 
@@ -243,6 +243,10 @@ public sealed class Engine : IEngine
         var lane = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex);
 
         v.LaneId = lane.Id;
+        // D2: keep LaneHandle in lockstep with LaneId at every write site -- the lane just
+        // resolved above already carries its own dense Handle, so this is a direct field read,
+        // no dictionary lookup needed.
+        v.LaneHandle = lane.Handle;
         v.Kinematics = new Kinematics
         {
             // patchSpeed=false (departSpeed explicitly given): the vehicle is inserted at its
@@ -259,6 +263,8 @@ public sealed class Engine : IEngine
         // route this is exactly `[lane.Id]`, matching rungs 1-8 exactly (v.LaneId above already
         // equals LaneSequence[0]).
         v.LaneSequence = _network!.ResolveLaneSequence(route.Edges, v.Def.DepartLaneIndex);
+        // D2: the handle-parallel sequence, kept in lockstep -- same traversal, same order.
+        v.LaneSequenceHandles = _network.ResolveLaneSequenceHandles(route.Edges, v.Def.DepartLaneIndex);
         v.LaneSeqIndex = 0;
 
         v.Inserted = true;
@@ -301,7 +307,8 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            var currentEdge = _network!.LanesById[v.LaneId].EdgeId;
+            // D2: hot per-vehicle lookup -- handle-indexed array instead of a string hash.
+            var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
 
             // Distinct FUTURE normal edges (route order, deduplicated), i.e. every normal edge
             // this vehicle's route still has left to traverse AFTER its current position,
@@ -391,8 +398,12 @@ public sealed class Engine : IEngine
             // applied directly here rather than staged through MoveIntent -- this runs in its own
             // once-per-step phase outside Plan/Execute, exactly like DecideSpeedGainChanges' own
             // direct LaneId/accumulator writes, not mid-query shared state.
-            var laneIndex = _network.LanesById[v.LaneId].Index;
+            var laneIndex = _network.LanesByHandle[v.LaneHandle].Index;
             v.LaneSequence = _network.ResolveLaneSequence(newEdges, laneIndex);
+            // D2: the handle-parallel sequence, kept in lockstep -- v.LaneId/v.LaneHandle are
+            // unchanged by a reroute (newEdges[0] == currentEdge, v stays physically where it
+            // is), only the REMAINING route (and hence LaneSequence/LaneSequenceHandles) changes.
+            v.LaneSequenceHandles = _network.ResolveLaneSequenceHandles(newEdges, laneIndex);
             v.LaneSeqIndex = 0;
             v.AvoidedEdges.Add(blockedEdge);
             v.BlockedByObstacleSeconds = 0.0;
@@ -432,7 +443,8 @@ public sealed class Engine : IEngine
     // StopTransition is handed back for ExecuteMoves to apply.
     private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors, double time)
     {
-        var lane = _network!.LanesById[v.LaneId];
+        // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
+        var lane = _network!.LanesByHandle[v.LaneHandle];
         var dt = _config!.StepLength;
         // default.action-step-length=1 in rung 1's config, equal to dt; kept as its own value
         // (not silently assumed == dt) since MSCFModel.cpp divides by it separately from TS.
@@ -675,14 +687,17 @@ public sealed class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        var egoLane = _network.LanesById[egoInternalLaneId];
+        // D2: v.LaneSequenceHandles[i] == LaneHandleById[v.LaneSequence[i]] by construction (set
+        // together at every LaneSequence write site) -- index it directly instead of re-hashing
+        // the string already looked up above.
+        var egoLane = _network.LanesByHandle[v.LaneSequenceHandles[egoLinkSeqIndex]];
         // The lane immediately before ego's internal lane in its route. Null only if the
         // internal lane is the very first element of LaneSequence -- which cannot happen for a
         // vehicle inserted on a normal lane (egoLinkSeqIndex >= 1 then), so it is used only in
         // the !egoOnInternal branches below, where it is always non-null. Guarded so a future
         // laneless/mid-junction insertion can't index -1 here.
         var approachLane = egoLinkSeqIndex >= 1
-            ? _network.LanesById[v.LaneSequence[egoLinkSeqIndex - 1]]
+            ? _network.LanesByHandle[v.LaneSequenceHandles[egoLinkSeqIndex - 1]]
             : null;
         var egoOnInternal = v.LaneId == egoInternalLaneId;
 
@@ -745,8 +760,8 @@ public sealed class Engine : IEngine
     // `egoLane` is ego's own upcoming/current internal lane (the link this constraint was
     // raised for); `approachLane` is the lane immediately before it in ego's LaneSequence.
     // `foe` is already confirmed to be ON its own internal lane (foe.LaneId equals the
-    // conflict's foe internal lane, i.e. `_network.LanesById[foe.LaneId]` below IS that lane)
-    // by JunctionYieldConstraint before calling in.
+    // conflict's foe internal lane, i.e. `_network.LanesByHandle[foe.LaneHandle]` below IS that
+    // lane) by JunctionYieldConstraint before calling in.
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
         Lane egoLane,
@@ -757,7 +772,8 @@ public sealed class Engine : IEngine
         double dt,
         double actionStepLengthSecs)
     {
-        var foeLane = _network!.LanesById[foe.LaneId];
+        // D2: hot per-vehicle lookup -- handle-indexed array instead of a string hash.
+        var foeLane = _network!.LanesByHandle[foe.LaneHandle];
 
         // MSVehicle.cpp:3428/3473's `seen`: distance from ego's front to the end of the exit
         // link it is currently driving toward -- ego's OWN internal lane (egoLane) is that
@@ -1047,7 +1063,9 @@ public sealed class Engine : IEngine
             // the old ArrivalPos check: the first "no next lane" hit marks Arrived immediately.
             while (!v.Arrived)
             {
-                var currentLane = _network!.LanesById[v.LaneId];
+                // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a
+                // string hash.
+                var currentLane = _network!.LanesByHandle[v.LaneHandle];
                 if (v.Kinematics.Pos < currentLane.Length)
                 {
                     break;
@@ -1062,6 +1080,9 @@ public sealed class Engine : IEngine
                 v.Kinematics.Pos -= currentLane.Length;
                 v.LaneSeqIndex++;
                 v.LaneId = v.LaneSequence[v.LaneSeqIndex];
+                // D2: keep LaneHandle in lockstep -- LaneSequenceHandles is parallel to
+                // LaneSequence, so this is a direct array read, no string hash.
+                v.LaneHandle = v.LaneSequenceHandles[v.LaneSeqIndex];
             }
 
             // Rung 8b/A2: keep-right and speed-gain lane changes are no longer decided here --
@@ -1112,7 +1133,7 @@ public sealed class Engine : IEngine
         // vehicles already moved this step (MSNet.cpp:784/790/796), so this is the correct (and
         // only) frozen snapshot for this phase, distinct from PlanMovements' pre-move `neighbors`
         // snapshot.
-        var postMoveNeighbors = LaneNeighborQuery.Build(_vehicles);
+        var postMoveNeighbors = LaneNeighborQuery.Build(_vehicles, _network!.LanesByHandle.Count);
 
         foreach (var v in _vehicles)
         {
@@ -1126,7 +1147,9 @@ public sealed class Engine : IEngine
             // speed-gain veto below for why a direct write here still honors CLAUDE.md rule 3).
             ApplyKeepRightDecision(v, postMoveNeighbors, dt);
 
-            var lane = _network!.LanesById[v.LaneId];
+            // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string
+            // hash. (ApplyKeepRightDecision above may have just changed v.LaneHandle; re-read.)
+            var lane = _network!.LanesByHandle[v.LaneHandle];
             var edge = _network.EdgesById[lane.EdgeId];
 
             // Left neighbor = same edge, index+1 (no neighbor on the leftmost lane) -- this
@@ -1153,7 +1176,7 @@ public sealed class Engine : IEngine
             var leader = postMoveNeighbors.GetLeader(v);
             var thisLaneVSafe = Math.Min(vMax, AnticipateFollowSpeed(v, leader, currentDist, dt));
 
-            var neighLead = postMoveNeighbors.GetNeighborLeader(v, leftLane.Id);
+            var neighLead = postMoveNeighbors.GetNeighborLeader(v, leftLane.Handle);
             var neighLaneVSafe = Math.Min(neighVMax, AnticipateFollowSpeed(v, neighLead, neighDist, dt));
 
             // :1682
@@ -1191,6 +1214,7 @@ public sealed class Engine : IEngine
             speedGainProbability = Math.Ceiling(speedGainProbability * 100000.0) * 0.00001;
 
             string? targetLaneId = null;
+            var targetLaneHandle = 0;
             if (speedGainProbability > changeProbThresholdLeft
                 && relativeGain > KraussModel.NumericalEps
                 && neighDist / Math.Max(0.1, v.Kinematics.Speed) > 20.0)
@@ -1200,10 +1224,11 @@ public sealed class Engine : IEngine
                 // IsTargetLaneSafe). A vetoed change does NOT reset the accumulator (SUMO only
                 // resets on an actually-committed change, :1063/1080) -- it keeps accumulating
                 // and is retried next step.
-                var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Id);
+                var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Handle);
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt))
                 {
                     targetLaneId = leftLane.Id;
+                    targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
                 }
             }
@@ -1218,6 +1243,8 @@ public sealed class Engine : IEngine
             if (targetLaneId is not null)
             {
                 v.LaneId = targetLaneId;
+                // D2: keep LaneHandle in lockstep -- leftLane's own Handle field, no lookup.
+                v.LaneHandle = targetLaneHandle;
             }
         }
     }
@@ -1241,7 +1268,8 @@ public sealed class Engine : IEngine
     // live `v.LaneId` reads of other vehicles.
     private void ApplyKeepRightDecision(VehicleRuntime v, LaneNeighborQuery neighbors, double dt)
     {
-        var lane = _network!.LanesById[v.LaneId];
+        // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
+        var lane = _network!.LanesByHandle[v.LaneHandle];
 
         // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
         // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
@@ -1281,7 +1309,7 @@ public sealed class Engine : IEngine
         // header comment for why post-move, not pre-move). Non-binding (as in every prior single-
         // lane/empty-right-lane rung) whenever the right lane has no leader ahead of ego, or that
         // leader is not slower than vMax.
-        var neighLead = neighbors.GetNeighborLeader(v, rightLane.Id);
+        var neighLead = neighbors.GetNeighborLeader(v, rightLane.Handle);
         if (neighLead is not null && neighLead.Kinematics.Speed < vMax)
         {
             var neighLeadBackPos = neighLead.Kinematics.Pos - neighLead.VType.Length;
@@ -1304,6 +1332,8 @@ public sealed class Engine : IEngine
             // wants its own scenario with target-lane traffic on the RIGHT side (mirrors A2-iii's
             // scope note for the LEFT side).
             v.LaneId = rightLane.Id;
+            // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
+            v.LaneHandle = rightLane.Handle;
             v.KeepRightProbability = 0.0;
             return;
         }
