@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Junction straight-through (rung 9a). One passenger vehicle (sigma=0) on the MAJOR road
+         drives from W to E straight through a priority junction with no cross traffic. Its route
+         (edges WJ JE) expands via the connection to the lane sequence WJ_0, :J_2_0 (internal,
+         straight, state M), JE_0. On the priority road with no foes present it never yields, so
+         this isolates multi-edge routing plus internal-lane traversal (pos carry-over across lane
+         boundaries, per-lane speed limit). The priority right-of-way decision is rung 9b. -->
+    <vType id="passenger0" vClass="passenger" sigma="0"/>
+    <route id="rMaj" edges="WJ JE"/>
+    <vehicle id="maj0" type="passenger0" route="rMaj" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
