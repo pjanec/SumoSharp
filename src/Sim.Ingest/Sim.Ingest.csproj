@@ -1,8 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <ItemGroup>
-    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
-  </ItemGroup>
+  <!--
+    No ProjectReference to Sim.Core: Sim.Ingest's parsers/models are self-contained (they do
+    not use TrajectoryPoint/TrajectorySet/IEngine). Sim.Core's Engine depends on Sim.Ingest
+    (network/demand/config parsing), so the reference points that way only; a reverse
+    reference here would create a build cycle.
+  -->
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
