@@ -1,0 +1,11 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-07T06:34:45Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# vtype defaults: golden.vtype.json via scripts/dump-scenario-vtypes.py (libsumo/TraCI)
+# input file hashes (sha256):
+input=net.net.xml sha256=eeed7da7d588c1be53557d7c963aa71fea8c6d97493f9412ce8742af5b399847
+input=rou.rou.xml sha256=98e8ee67c6d804b25284c7b41e6161413792c059e260be721bb4c622f14a91ec
+input=config.sumocfg sha256=7c714cc30dec53802b9689afb7b4295bdae7c00831e5464986b988f0343dbf70
