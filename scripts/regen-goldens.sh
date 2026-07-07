@@ -51,6 +51,14 @@ hash_file() {
 }
 
 STATE_TIME="${STATE_TIME:-1}"   # step at which to dump resolved parameters
+
+# FCD output precision (decimal places). SUMO's default is 2, which is COARSER than the
+# per-scenario parity tolerance (e.g. 1e-3) and would make the golden a lossy, 2-decimal
+# truncation of SUMO's full-precision internal trajectory -- capping real parity sensitivity
+# at ~5e-3 no matter what tolerance.json says. We raise it well above the tolerance so the
+# committed golden carries enough digits for the tolerance to be a genuine bar. The engine
+# emits full double precision and must NOT round to match a coarse golden.
+FCD_PRECISION="${FCD_PRECISION:-6}"
 GENERATED_ANY=0
 
 # A scenario is any directory containing config.sumocfg.
@@ -69,6 +77,7 @@ while IFS= read -r -d '' CFG; do
     -c "$CFG"
     --fcd-output "$FCD_OUT"
     --fcd-output.acceleration
+    --precision "$FCD_PRECISION"
     --save-state.times "$STATE_TIME"
     --save-state.files "$STATE_OUT"
     --no-step-log true
