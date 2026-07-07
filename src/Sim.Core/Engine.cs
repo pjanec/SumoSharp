@@ -77,11 +77,40 @@ public sealed class Engine : IEngine
         return trajectory;
     }
 
+    // Rung 6: gap-gated departure insertion, ported from
+    // sumo/src/microsim/MSLane.cpp's isInsertionSuccess (leader-gap tail, ~line 1085-1099),
+    // safeInsertionSpeed (~line 1328), and checkFailure (~line 780). Vehicles queue at their
+    // departLane/departPos until a leader-gap check passes; unconditional insertion (rungs
+    // 1-5) was a placeholder this rung replaces.
+    //
+    // Derivation used here (all four vehicles in this scenario have departPos="0",
+    // departSpeed="0" explicitly given, i.e. patchSpeed=false per MSInsertionControl):
+    //   gap = leaderBackPos + seen - egoMinGap, called with seen = -pos (MSLane.cpp:1097)
+    //       = (leaderPos - leaderLength) - insertPos - egoMinGap
+    //   checkFailure(speed=0, nspeed=min(departSpeed, insertionFollowSpeed(...))=0):
+    //       nspeed < speed is 0 < 0 = false -> never fails on speed with departSpeed=0.
+    //   => insertion fails iff gap < 0 (INVALID_SPEED, COLLISION is in the default
+    //      insertionChecks set); succeeds (at departPos/departSpeed unmodified, since
+    //      patchSpeed=false leaves `speed` -- not `nspeed` -- as the value actually used) iff
+    //      there is no leader, or gap >= 0.
+    //
+    // Scoped out (not needed by this single-lane, no-stop, no-junction scenario; a literal
+    // port would also cover these but they do not exist here): MSInsertionControl's
+    // RANDOM/FREE depart procedures and full retry bookkeeping, multi-lane/lane-choice,
+    // junction-foe and stop-line insertion checks, follower-gap/pedestrian/shadow-lane
+    // checks, rail bidi handling, and the departPos<0 "measured from lane end" convention
+    // (we use departPos directly since it is always >=0 here).
     private void InsertDepartingVehicles(double time)
     {
+        // Group not-yet-inserted, not-arrived candidates whose depart time has come by their
+        // target insertion lane (each candidate resolves independently; grouping is only to
+        // process each lane's depart queue in isolation). Ordered by target lane id for
+        // deterministic per-step processing order (this scenario has exactly one lane).
+        var candidatesByLane = new SortedDictionary<string, List<VehicleRuntime>>(StringComparer.Ordinal);
+
         foreach (var v in _vehicles)
         {
-            if (v.Inserted || v.Def.Depart > time)
+            if (v.Inserted || v.Arrived || v.Def.Depart > time)
             {
                 continue;
             }
@@ -90,23 +119,102 @@ public sealed class Engine : IEngine
             var edge = _network!.EdgesById[route.Edges[0]];
             var lane = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex);
 
-            v.LaneId = lane.Id;
-            v.Kinematics = new Kinematics
+            if (!candidatesByLane.TryGetValue(lane.Id, out var list))
             {
-                Pos = v.Def.DepartPos,
-                Speed = v.Def.DepartSpeed,
-                LatOffset = 0.0,
-            };
+                list = new List<VehicleRuntime>();
+                candidatesByLane[lane.Id] = list;
+            }
 
-            // Arrival position (route end). Rung 1's route is a single edge/lane, so summing
-            // that lane's length across the route's edges gives the position at which the
-            // vehicle has reached the end of its route and should be removed.
-            v.ArrivalPos = route.Edges
-                .Select(edgeId => _network!.EdgesById[edgeId].Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Length)
-                .Sum();
-
-            v.Inserted = true;
+            list.Add(v);
         }
+
+        foreach (var (laneId, candidates) in candidatesByLane)
+        {
+            // FIFO order: SUMO's depart queue is processed in departure order (ties broken by
+            // the route file's vehicle order); List<T>.OrderBy is a stable sort, so ties
+            // preserve _demand.Vehicles/_vehicles enumeration order (rou.xml file order).
+            foreach (var v in candidates.OrderBy(c => c.Def.Depart))
+            {
+                if (!TryInsertOnLane(v, laneId))
+                {
+                    // MSLane::isInsertionSuccess fails for this candidate this step -> stop
+                    // attempting further (later-departing) candidates on this lane this step;
+                    // they queue behind it (FIFO). A vehicle inserted earlier in THIS loop
+                    // (for an earlier candidate on the same lane) becomes the leader the next
+                    // candidate is checked against, since TryInsertOnLane re-scans _vehicles
+                    // fresh on each call.
+                    break;
+                }
+            }
+        }
+    }
+
+    // MSLane::isInsertionSuccess's leader-gap check only (see InsertDepartingVehicles' header
+    // comment for the full derivation/scope). Returns true and performs the insertion iff
+    // there is no leader on the lane or gap >= 0; otherwise leaves `v` untouched and returns
+    // false (queued for a later step).
+    private bool TryInsertOnLane(VehicleRuntime v, string laneId)
+    {
+        var insertPos = v.Def.DepartPos;
+
+        // MSLane::getLastVehicleInformation / getLeader (same-lane branch): nearest already-
+        // inserted, not-arrived vehicle with Pos >= insertPos on this lane -- includes any
+        // vehicle inserted earlier THIS SAME step, since this re-scans _vehicles (the engine's
+        // authoritative list) on every call rather than a stale snapshot.
+        VehicleRuntime? leader = null;
+        foreach (var other in _vehicles)
+        {
+            if (!other.Inserted || other.Arrived || other.LaneId != laneId)
+            {
+                continue;
+            }
+
+            if (other.Kinematics.Pos >= insertPos && (leader is null || other.Kinematics.Pos < leader.Kinematics.Pos))
+            {
+                leader = other;
+            }
+        }
+
+        if (leader is not null)
+        {
+            // MSLane.cpp:1097 safeInsertionSpeed(veh, seen=-pos, leaders, speed): gap =
+            // leaderBackPos + seen - egoMinGap = leaderBackPos - insertPos - egoMinGap.
+            var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
+            var gap = leaderBackPos - insertPos - v.VType.MinGap;
+
+            if (gap < 0)
+            {
+                // checkFailure's INVALID_SPEED/COLLISION path (MSLane.cpp:1098): no safe gap
+                // yet -- do not insert this step.
+                return false;
+            }
+        }
+
+        var route = _demand!.RoutesById[v.Def.RouteId];
+        var edge = _network!.EdgesById[route.Edges[0]];
+        var lane = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex);
+
+        v.LaneId = lane.Id;
+        v.Kinematics = new Kinematics
+        {
+            // patchSpeed=false (departSpeed explicitly given): the vehicle is inserted at its
+            // requested departPos/departSpeed unchanged -- `nspeed` (the safe-insertion-speed
+            // computation) is only used for the checkFailure gate above, never applied as the
+            // actual insertion speed in this branch.
+            Pos = v.Def.DepartPos,
+            Speed = v.Def.DepartSpeed,
+            LatOffset = 0.0,
+        };
+
+        // Arrival position (route end). Rung 1's route is a single edge/lane, so summing
+        // that lane's length across the route's edges gives the position at which the
+        // vehicle has reached the end of its route and should be removed.
+        v.ArrivalPos = route.Edges
+            .Select(edgeId => _network!.EdgesById[edgeId].Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Length)
+            .Sum();
+
+        v.Inserted = true;
+        return true;
     }
 
     // Plan phase (seam 1, parallel-safe): reads start-of-step world state (including the frozen
