@@ -187,8 +187,10 @@ its own `/sumo/` references and scenario when we reach it:
    - 9a (scenario `08-junction-straight`): multi-edge routing + internal-lane traversal
      (route expands to a lane sequence via each `<connection>`'s `via`; pos carries over across
      lane boundaries). A major-road vehicle drives straight through, no yielding. Green.
-   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung; deeply characterized
-     below so a future effort has a full head start). Scenario probed: major `WJ JE` (priority),
+   - **9b — priority yielding — DEFERRED** (the sole remaining hard rung). **See `RUNG9B.md` for
+     the full cold-start plan** (mechanism, geometry, the reference scenario to rebuild, the 3-step
+     decomposition, de-risking notes, done-condition). Summary characterization below.
+     Scenario probed: major `WJ JE` (priority),
      minor `SJ JN` (yields); the minor brakes 13.89→9.433→4.933→2.033 as the major approaches,
      threads through just behind it, then accelerates.
 
