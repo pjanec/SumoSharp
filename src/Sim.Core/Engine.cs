@@ -32,6 +32,14 @@ public sealed class Engine : IEngine
     // LoadScenario has not run yet, or UpdateReroutes never actually reroutes anything).
     private NetworkRouter? _router;
 
+    // D4 (FDP zero-alloc `OnUpdate` rule): ONE reusable LaneNeighborQuery, (re)built only when
+    // LoadScenario changes the network (its bucket count is sized off `LanesByHandle.Count`).
+    // Refilled -- not reconstructed -- twice per step: once for the pre-move snapshot (Run(),
+    // before PlanMovements) and once for the post-move snapshot (DecideSpeedGainChanges(), after
+    // ExecuteMoves). See LaneNeighborQuery's own header comment for why a single reused instance
+    // is safe even though it is refilled twice per step.
+    private LaneNeighborQuery? _neighborQuery;
+
     public void AddObstacle(string id, string laneId, double frontPos, double length,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity)
     {
@@ -52,6 +60,10 @@ public sealed class Engine : IEngine
         // here so UpdateReroutes lazily rebuilds against the NEW network the next time it is
         // actually needed (never eagerly, since most scenarios never reroute at all).
         _router = null;
+
+        // D4: (re)build the reusable neighbor-query buckets for the newly loaded network's dense
+        // handle space -- cold path (once per LoadScenario call), never per step.
+        _neighborQuery = new LaneNeighborQuery(_network.LanesByHandle.Count);
 
         _vehicles.Clear();
         foreach (var def in _demand.Vehicles)
@@ -107,9 +119,12 @@ public sealed class Engine : IEngine
             // Plan/execute contract (DESIGN.md): plan reads start-of-step state and writes
             // only MoveIntent; execute applies all intents afterward. A follower must never
             // see a leader's updated position within the same step. The neighbor query is
-            // built ONCE per step, here, from the same frozen start-of-step snapshot every
-            // vehicle's plan phase reads (Seam 1: neighbor discovery behind an interface).
-            var neighbors = LaneNeighborQuery.Build(_vehicles, _network!.LanesByHandle.Count);
+            // refilled ONCE per step, here, from the same frozen start-of-step snapshot every
+            // vehicle's plan phase reads (Seam 1: neighbor discovery behind an interface). D4:
+            // `_neighborQuery` is the ONE reusable instance built in LoadScenario -- Refill
+            // clears/re-adds/re-sorts its pre-allocated per-lane buckets, no per-step allocation.
+            var neighbors = _neighborQuery!;
+            neighbors.Refill(_vehicles);
             PlanMovements(neighbors, time);
             ExecuteMoves(dt);
 
@@ -452,53 +467,55 @@ public sealed class Engine : IEngine
 
         var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
 
-        var constraints = new List<double>
-        {
-            // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
-            // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
-            // uses -- NOT MSCFModel_KraussOrig1::vsafe (removed; see rung-4 briefing, that
-            // formula is dead code once a real leader exists). No leader => +infinity
-            // (non-binding), matching a gap=+infinity KraussOrig1 vsafe call's short-circuit
-            // but via the real code path: simply contribute nothing when there is no leader.
-            LeaderFollowSpeedConstraint(v, neighbors, dt),
+        // D4 (FDP zero-alloc `OnUpdate` rule): the multi-constraint reducer is still a MINIMUM
+        // over the same six constraints, in the same call order (DESIGN.md seam 1) -- just
+        // folded into a running `Math.Min` instead of a `new List<double>{ ... }.Min()`, since
+        // min is associative/order-independent (no behavior change) but the old per-vehicle,
+        // per-step list allocation was the single biggest hot-path allocator this rung removes.
+        var vPos = double.PositiveInfinity;
 
-            // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
-            // by this vehicle's speedFactor, capped by its vType maxSpeed.
-            laneVehicleMaxSpeed,
+        // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
+        // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
+        // uses -- NOT MSCFModel_KraussOrig1::vsafe (removed; see rung-4 briefing, that
+        // formula is dead code once a real leader exists). No leader => +infinity
+        // (non-binding), matching a gap=+infinity KraussOrig1 vsafe call's short-circuit
+        // but via the real code path: simply contribute nothing when there is no leader.
+        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt));
 
-            // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
-            // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
-            // (the source's own approach-block condition `!stop.reached || (waypoint &&
-            // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
-            // there is no stop at all.
-            StopLineConstraint(v, dt, actionStepLengthSecs),
+        // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
+        // by this vehicle's speedFactor, capped by its vType maxSpeed.
+        vPos = Math.Min(vPos, laneVehicleMaxSpeed);
 
-            // Red light (rung 10): MSVehicle.cpp's planMoveInternal per-link loop (~2641-2666,
-            // 2734), yellowOrRed arm only. +infinity (non-binding) when this lane's outgoing
-            // connection is not TL-controlled, or its light is green, at the time this Plan/
-            // Execute cycle's result will be observed (see RedLightConstraint's own comment on
-            // why that is `time + dt`, not `time`).
-            RedLightConstraint(v, lane, time, dt, actionStepLengthSecs),
+        // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
+        // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
+        // (the source's own approach-block condition `!stop.reached || (waypoint &&
+        // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
+        // there is no stop at all.
+        vPos = Math.Min(vPos, StopLineConstraint(v, dt, actionStepLengthSecs));
 
-            // Priority-junction yielding (rung 9b-ii/iii): MSLink's right-of-way gate (stop-line
-            // brake while a higher-priority foe still approaches) plus MSVehicle::
-            // adaptToJunctionLeader (car-following against a foe already on the junction).
-            // +infinity (non-binding) whenever ego has no upcoming/current junction link, or
-            // that link's foes are all cleared/absent -- see JunctionYieldConstraint's own
-            // comment for the full derivation and its determinism note.
-            JunctionYieldConstraint(v, _vehicles, dt, actionStepLengthSecs),
+        // Red light (rung 10): MSVehicle.cpp's planMoveInternal per-link loop (~2641-2666,
+        // 2734), yellowOrRed arm only. +infinity (non-binding) when this lane's outgoing
+        // connection is not TL-controlled, or its light is green, at the time this Plan/
+        // Execute cycle's result will be observed (see RedLightConstraint's own comment on
+        // why that is `time + dt`, not `time`).
+        vPos = Math.Min(vPos, RedLightConstraint(v, lane, time, dt, actionStepLengthSecs));
 
-            // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
-            // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
-            // KraussModel.FollowSpeed leader car-following formula as LeaderFollowSpeedConstraint
-            // above -- the multi-constraint reducer does not care where a constraint's speed came
-            // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
-            // on this lane -- this is the inert-when-absent guard: an empty store makes this a
-            // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
-            ObstacleConstraint(v, time),
-        };
+        // Priority-junction yielding (rung 9b-ii/iii): MSLink's right-of-way gate (stop-line
+        // brake while a higher-priority foe still approaches) plus MSVehicle::
+        // adaptToJunctionLeader (car-following against a foe already on the junction).
+        // +infinity (non-binding) whenever ego has no upcoming/current junction link, or
+        // that link's foes are all cleared/absent -- see JunctionYieldConstraint's own
+        // comment for the full derivation and its determinism note.
+        vPos = Math.Min(vPos, JunctionYieldConstraint(v, _vehicles, dt, actionStepLengthSecs));
 
-        var vPos = constraints.Min();
+        // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
+        // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
+        // KraussModel.FollowSpeed leader car-following formula as LeaderFollowSpeedConstraint
+        // above -- the multi-constraint reducer does not care where a constraint's speed came
+        // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
+        // on this lane -- this is the inert-when-absent guard: an empty store makes this a
+        // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
+        vPos = Math.Min(vPos, ObstacleConstraint(v, time));
 
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
@@ -644,7 +661,7 @@ public sealed class Engine : IEngine
     //     leader superimposed at the junction's crossing point.
     // These are mutually exclusive per foe link (never MIN'd together for the same foe): a
     // foe is classified as exactly one of on-junction / approaching / cleared from its FROZEN
-    // start-of-step lane/position (the same `allVehicles` snapshot LaneNeighborQuery.Build
+    // start-of-step lane/position (the same `allVehicles` snapshot LaneNeighborQuery.Refill
     // reads -- CLAUDE.md rule 2, never a foe's already-updated position this step).
     //
     // Determinism (CLAUDE.md rule 5 / this rung's briefing): the yield decision is derived
@@ -681,7 +698,21 @@ public sealed class Engine : IEngine
         }
 
         var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
-        var request = junction.Requests.FirstOrDefault(r => r.Index == egoLink.Index);
+
+        // D4: manual loop instead of `.FirstOrDefault(r => r.Index == egoLink.Index)` -- the
+        // lambda captured `egoLink` from the enclosing scope, so it allocated a closure every
+        // call; junction.Requests is small (one row per link), so a plain scan is the "simplest"
+        // zero-alloc form (no precomputed index needed).
+        JunctionRequest? request = null;
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == egoLink.Index)
+            {
+                request = r;
+                break;
+            }
+        }
+
         if (request is null)
         {
             return double.PositiveInfinity;
@@ -709,7 +740,20 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            var conflict = junction.Conflicts.FirstOrDefault(c => c.EgoLink == egoLink.Index && c.FoeLink == j);
+            // D4: manual loop instead of `.FirstOrDefault(c => c.EgoLink == ... && c.FoeLink ==
+            // j)` -- that lambda captured both `egoLink` and `j`, allocating a closure every
+            // call inside this per-vehicle, per-foe-link loop; junction.Conflicts is small, so a
+            // plain scan is the "simplest" zero-alloc form.
+            JunctionConflict? conflict = null;
+            foreach (var c in junction.Conflicts)
+            {
+                if (c.EgoLink == egoLink.Index && c.FoeLink == j)
+                {
+                    conflict = c;
+                    break;
+                }
+            }
+
             if (conflict is null)
             {
                 // No geometric crossing recorded for this foe link -- nothing to yield to.
@@ -1128,12 +1172,16 @@ public sealed class Engine : IEngine
         const double changeProbThresholdLeft = 0.2; // ctor: (0.2/mySpeedGainParam), default mySpeedGainParam=1
         var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
-        // Built ONCE per step, from the now-settled post-move positions every vehicle's
+        // Refilled ONCE per step, from the now-settled post-move positions every vehicle's
         // keep-right/speed-gain decision below reads -- SUMO's changeLanes phase sees all
         // vehicles already moved this step (MSNet.cpp:784/790/796), so this is the correct (and
         // only) frozen snapshot for this phase, distinct from PlanMovements' pre-move `neighbors`
-        // snapshot.
-        var postMoveNeighbors = LaneNeighborQuery.Build(_vehicles, _network!.LanesByHandle.Count);
+        // snapshot. D4: reuses the SAME `_neighborQuery` instance Run() refilled for the pre-move
+        // snapshot -- safe because PlanMovements (the pre-move snapshot's only reader) has
+        // already fully completed by the time this Refill overwrites it (see LaneNeighborQuery's
+        // header comment).
+        var postMoveNeighbors = _neighborQuery!;
+        postMoveNeighbors.Refill(_vehicles);
 
         foreach (var v in _vehicles)
         {
@@ -1150,17 +1198,19 @@ public sealed class Engine : IEngine
             // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string
             // hash. (ApplyKeepRightDecision above may have just changed v.LaneHandle; re-read.)
             var lane = _network!.LanesByHandle[v.LaneHandle];
-            var edge = _network.EdgesById[lane.EdgeId];
 
             // Left neighbor = same edge, index+1 (no neighbor on the leftmost lane) -- this
             // guard is the INERT case CLAUDE.md's briefing calls for: single-lane rungs, and any
             // vehicle already on the leftmost lane (e.g. this same follower once it has already
-            // changed left), leave SpeedGainProbability untouched and never fire a change.
-            var leftLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index + 1);
-            if (leftLane is null)
+            // changed left), leave SpeedGainProbability untouched and never fire a change. D4:
+            // `lane.LeftNeighbor` is precomputed at ingest (NetworkParser) -- O(1) array read
+            // instead of a per-step `edge.Lanes.FirstOrDefault(...)` LINQ scan/closure.
+            if (lane.LeftNeighbor < 0)
             {
                 continue;
             }
+
+            var leftLane = _network.LanesByHandle[lane.LeftNeighbor];
 
             var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.VType);
             var neighVMax = KraussModel.LaneVehicleMaxSpeed(leftLane.Speed, v.VType);
@@ -1273,13 +1323,15 @@ public sealed class Engine : IEngine
 
         // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
         // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
-        // completely unaffected: the accumulator simply never advances off 0.
-        var edge = _network.EdgesById[lane.EdgeId];
-        var rightLane = edge.Lanes.FirstOrDefault(l => l.Index == lane.Index - 1);
-        if (rightLane is null)
+        // completely unaffected: the accumulator simply never advances off 0. D4:
+        // `lane.RightNeighbor` is precomputed at ingest (NetworkParser) -- O(1) array read
+        // instead of a per-step `edge.Lanes.FirstOrDefault(...)` LINQ scan/closure.
+        if (lane.RightNeighbor < 0)
         {
             return;
         }
+
+        var rightLane = _network.LanesByHandle[lane.RightNeighbor];
 
         // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
         const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME

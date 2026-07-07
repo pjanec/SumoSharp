@@ -20,6 +20,11 @@ namespace Sim.Ingest;
 // `string` field at all, so this handle is also what a future VehicleRuntime-as-component
 // split (D3) will actually store. `Id` (the string) stays authoritative at I/O boundaries
 // (FCD emit, obstacle API, router) -- see NetworkModel.LaneHandleById/LanesByHandle.
+// D4 (FDP zero-alloc `OnUpdate` rule): `LeftNeighbor`/`RightNeighbor` are the dense Handle of
+// the same-edge lane at Index+1/Index-1 (-1 when absent), precomputed once at ingest
+// (NetworkParser) so the per-step keep-right/speed-gain lane-change decision (Engine.cs) is an
+// O(1) array read instead of a per-vehicle, per-step `edge.Lanes.FirstOrDefault(l => l.Index ==
+// ...)` LINQ scan (which also allocated a closure over `lane`).
 public sealed record Lane(
     string Id,
     string EdgeId,
@@ -28,7 +33,9 @@ public sealed record Lane(
     double Length,
     IReadOnlyList<(double X, double Y)> Shape,
     double Width,
-    int Handle);
+    int Handle,
+    int LeftNeighbor = -1,
+    int RightNeighbor = -1);
 
 public sealed record Edge(
     string Id,

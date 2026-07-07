@@ -563,13 +563,16 @@ and determinism (no RNG/wallclock). **The gap is representation, not architectur
   side "buffer component"; `AvoidedEdges` (`HashSet<string>`) → a small fixed-cap set or a bitset over
   edge handles. Provide a component-container abstraction now (see D7) so this can back onto either an
   in-house SoA store or FDP `World` later. Parity tests are the safety net.
-- **D4. Allocation-free hot path (satisfy FDP's zero-alloc `OnUpdate` rule).** Remove per-step / per-
-  entity heap allocations and LINQ from the plan/execute/decide passes: the reducer's
-  `new List<double>` → a running `Math.Min` over an inline set of constraints; `LaneNeighborQuery`'s
-  per-step `Dictionary<string,List<>>` (built TWICE/step) → reused pre-allocated per-lane buckets or a
-  spatial hash behind the seam-1 interface; drop `.First`/`.FirstOrDefault`/`.OrderBy`/`.Min`/`.Sum`
-  from per-entity code (`Engine.cs` junction/LC/reroute paths). Verify with D1's allocations/step
-  metric (target: 0 in steady state). Parity unchanged.
+- **D4. Allocation-free hot path. DONE.** Reducer `new List<double>{…}.Min()` → running `Math.Min`
+  over the same six constraints (same order); `LaneNeighborQuery` from a per-step `Build` factory →
+  ONE reused instance with `Refill()` (pre-allocated per-lane buckets `Clear()`ed + refilled in place,
+  zero steady-state alloc, both pre- and post-move snapshots); junction `Requests`/`Conflicts`
+  `FirstOrDefault` → plain `foreach`; left/right neighbor-lane LINQ scans → O(1) `Lane.LeftNeighbor`/
+  `RightNeighbor` handles precomputed at ingest. Pure refactor — hash UNCHANGED (`909605E965BFFE59`),
+  `dotnet test` = 62 green. **alloc/veh-step 735.8 → 207.1 B (−71.9%)**, GC gen0 5 → 2. The remaining
+  ~207 B is the `TrajectorySet`/FCD emit (a `TrajectoryPoint` + `SortedDictionary` insert per veh-step)
+  — an output-contract allocator, out of D4 scope; it moves to a reusable buffer when the emit becomes
+  an Export-phase system (D6). Benchmark row in BASELINE.md.
 - **D5. Entity lifecycle via the command buffer.** Route insertion (`CreateEntity` + `AddComponent`s)
   and arrival (`DestroyEntity`) through a deferred command buffer applied at a barrier point, matching
   FDP's `GetCommandBuffer()`. Generalize the existing seam-4 buffer (lane swaps/reroute) to entity

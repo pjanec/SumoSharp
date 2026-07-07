@@ -70,6 +70,38 @@ public static class NetworkParser
                 lanesByHandle.Add(lane);
             }
 
+            // D4: precompute each lane's same-edge left/right neighbor HANDLE (Index+1/Index-1)
+            // once here, at ingest -- cold path (parse time, O(n^2) over one edge's small lane
+            // count), so the per-step keep-right/speed-gain decision (Engine.cs) never has to
+            // scan `edge.Lanes` itself. `lanesById`/`lanesByHandle` are updated in place (via
+            // `with`) since `Lane` is immutable and neighbor handles are only knowable once every
+            // lane on this edge has already been assigned its own Handle above.
+            for (var i = 0; i < lanes.Count; i++)
+            {
+                var lane = lanes[i];
+                var leftHandle = -1;
+                var rightHandle = -1;
+                foreach (var sibling in lanes)
+                {
+                    if (sibling.Index == lane.Index + 1)
+                    {
+                        leftHandle = sibling.Handle;
+                    }
+                    else if (sibling.Index == lane.Index - 1)
+                    {
+                        rightHandle = sibling.Handle;
+                    }
+                }
+
+                if (leftHandle != -1 || rightHandle != -1)
+                {
+                    var updated = lane with { LeftNeighbor = leftHandle, RightNeighbor = rightHandle };
+                    lanes[i] = updated;
+                    lanesById[updated.Id] = updated;
+                    lanesByHandle[updated.Handle] = updated;
+                }
+            }
+
             var edge = new Edge(edgeId, from, to, lanes);
             edges.Add(edge);
             edgesById[edgeId] = edge;

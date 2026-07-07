@@ -61,6 +61,42 @@ removes is the *string hashing/interning* cost of every per-vehicle, per-step `L
 and neighbor-bucket lookup, replacing it with a direct array index. Throughput is within
 run-to-run noise of the baseline on this VM.
 
+## D4 (zero-alloc hot path)
+Captured on the same reference VM, same command, 500 steps, immediately after the D4 refactor:
+the reducer's `new List<double>{...}.Min()` became a running `Math.Min` over the same six
+constraint calls in the same order (`Engine.ComputeMoveIntent`); `LaneNeighborQuery` became a
+REUSABLE instance (`Engine._neighborQuery`, built once in `LoadScenario`, sized off
+`network.LanesByHandle.Count`) with pre-allocated per-lane `List<VehicleRuntime>` buckets that
+`Refill` (`List.Clear()` + re-add + re-sort, no new lists/arrays) replaces the old per-step
+`Build` factory for BOTH the pre-move snapshot (`Run()`) and the post-move snapshot
+(`DecideSpeedGainChanges()`); the junction-yield reducer's `junction.Requests.FirstOrDefault(...)`
+/ `junction.Conflicts.FirstOrDefault(...)` (each closing over loop locals, i.e. allocating a
+closure every call) became plain `foreach` scans; and the keep-right/speed-gain left/right
+neighbor-lane lookups (`edge.Lanes.FirstOrDefault(l => l.Index == lane.Index ± 1)`) became O(1)
+reads of a new precomputed `Lane.LeftNeighbor`/`Lane.RightNeighbor` handle, filled once at ingest
+in `NetworkParser`:
+
+| metric | value |
+|---|---|
+| peak concurrent vehicles | 378 |
+| veh-steps emitted | 115,141 |
+| wall time | 0.230 s |
+| throughput | **2175 steps/s** (0.460 ms/step) (run-to-run range 1111–2175 steps/s on this shared VM; alloc/veh-step is the reliable, non-noisy signal below) |
+| alloc total | **22.7 MiB** |
+| alloc / step | 46.6 KiB |
+| alloc / veh-step | **207.1 B** (down from 735.8 B at D2 — a 71.9% reduction, 528.7 B/veh-step removed) |
+| GC gen0/1/2 | 2 / 2 / 1 |
+| deterministic (2 runs identical) | **True** (hash unchanged: `909605E965BFFE59`, same as D1/D2) |
+
+**What's left (the remaining allocator, out of D4's scope per the briefing):** `EmitTrajectory`'s
+`TrajectorySet.Add` — the `TrajectoryPoint` record + its `SortedDictionary<double,
+TrajectoryPoint>`-per-vehicle storage — is untouched; this is the FCD/output-contract boundary,
+a separate concern from the `OnUpdate` hot path D4 targets (per the briefing: "leave the FCD
+emit / `TrajectorySet` alone"). The remaining ~207 B/veh-step is consistent with one
+`TrajectoryPoint` allocation (a `sealed record`, heap-allocated) plus its dictionary-entry
+bookkeeping per vehicle per step; a future rung could move FCD emission to a reusable buffer/
+struct-of-arrays if the export path itself needs to be zero-alloc.
+
 ## What the numbers say (targets for D2–D8)
 - **~736 B allocated per vehicle-step** is the headline: this is the AoS `class` entities +
   `LaneNeighborQuery`'s per-step `Dictionary`/`List` (built twice/step) + the reducer's

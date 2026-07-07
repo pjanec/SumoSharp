@@ -7,31 +7,58 @@ namespace Sim.Core;
 // vehicle list and returns a single leader (ported from sumo/src/microsim/MSLane.cpp's
 // getLeader, same-lane branch, lines ~2796-2843).
 //
-// Plan/execute contract (DESIGN.md): built ONCE per step from START-OF-STEP kinematics, before
-// PlanMovements runs, and never mutated afterward -- every vehicle's plan phase reads this same
-// frozen snapshot, so a follower never sees its leader's updated-this-step position.
+// Plan/execute contract (DESIGN.md): (re)filled ONCE per snapshot from START-OF-STEP kinematics,
+// before the phase that reads it runs, and never mutated afterward while that phase is reading
+// it -- every vehicle's plan phase reads the same frozen snapshot, so a follower never sees its
+// leader's updated-this-step position.
 //
 // D2 (FastDataPlane readiness): the per-lane buckets are keyed by the dense int LaneHandle
 // (Sim.Ingest.Lane.Handle / VehicleRuntime.LaneHandle) rather than the LaneId string -- this is
-// the hottest string-keyed structure in the step loop (built TWICE per step: PlanMovements'
-// pre-move snapshot and DecideSpeedGainChanges' post-move snapshot), so replacing the
-// `Dictionary<string,List<>>` hash+compare with a plain array index removes a per-vehicle string
-// hash from the hottest per-step path. Buckets are still allocated fresh every Build call (NOT
-// yet reused across steps -- that reuse is D4's job; D2 only switches the key type).
+// the hottest string-keyed structure in the step loop, so replacing the `Dictionary<string,
+// List<>>` hash+compare with a plain array index removes a per-vehicle string hash from the
+// hottest per-step path.
+//
+// D4 (FDP zero-alloc `OnUpdate` rule): this is now a REUSABLE instance, constructed exactly ONCE
+// per scenario load (Engine.LoadScenario), not rebuilt every step. Every per-lane bucket is a
+// `List<VehicleRuntime>` allocated once, up front, for every lane handle 0..laneCount-1; each
+// step's `Refill` call `List.Clear()`s every bucket (keeps its backing array/capacity) and
+// re-adds/re-sorts, so in steady state (once every bucket's capacity has grown to its steady
+// peak occupancy) Refill allocates nothing. The engine calls Refill TWICE per step against the
+// SAME instance -- once for the pre-move snapshot (Run(), before PlanMovements) and once for the
+// post-move snapshot (DecideSpeedGainChanges(), after ExecuteMoves) -- which is safe because the
+// pre-move snapshot's only reader (PlanMovements) fully completes before ExecuteMoves/
+// DecideSpeedGainChanges even start, so the two snapshots are never alive (read) at the same
+// time; reusing one instance is correct, not just convenient.
 internal sealed class LaneNeighborQuery
 {
-    private readonly List<VehicleRuntime>?[] _byLaneHandle;
-
-    private LaneNeighborQuery(int laneCount)
-    {
-        _byLaneHandle = new List<VehicleRuntime>?[laneCount];
-    }
+    private readonly List<VehicleRuntime>[] _byLaneHandle;
 
     // `laneCount` is `network.LanesByHandle.Count` -- the size of the dense handle space, so
-    // every lane's bucket is a plain array slot rather than a hashed dictionary entry.
-    public static LaneNeighborQuery Build(IEnumerable<VehicleRuntime> vehicles, int laneCount)
+    // every lane's bucket is a plain array slot rather than a hashed dictionary entry. This is
+    // the ONLY place per-lane `List<VehicleRuntime>` instances are allocated -- cold path (once
+    // per scenario load), never per step.
+    public LaneNeighborQuery(int laneCount)
     {
-        var query = new LaneNeighborQuery(laneCount);
+        _byLaneHandle = new List<VehicleRuntime>[laneCount];
+        for (var i = 0; i < laneCount; i++)
+        {
+            _byLaneHandle[i] = new List<VehicleRuntime>();
+        }
+    }
+
+    // D4: replaces the old per-step `Build` factory. `vehicles` is typed as the engine's own
+    // concrete `List<VehicleRuntime>` (not `IEnumerable<VehicleRuntime>`) so `foreach` below
+    // binds to `List<T>`'s non-boxing struct enumerator rather than boxing an `IEnumerable<T>`
+    // enumerator on every call. `List<T>.Clear()` keeps each bucket's backing array, so once
+    // every bucket's capacity has grown to its steady peak occupancy, this method allocates
+    // nothing (the sort delegate below is a static, non-capturing lambda -- cached by the
+    // compiler, not re-allocated per call).
+    public void Refill(List<VehicleRuntime> vehicles)
+    {
+        foreach (var list in _byLaneHandle)
+        {
+            list.Clear();
+        }
 
         foreach (var v in vehicles)
         {
@@ -40,22 +67,13 @@ internal sealed class LaneNeighborQuery
                 continue;
             }
 
-            var list = query._byLaneHandle[v.LaneHandle];
-            if (list is null)
-            {
-                list = new List<VehicleRuntime>();
-                query._byLaneHandle[v.LaneHandle] = list;
-            }
-
-            list.Add(v);
+            _byLaneHandle[v.LaneHandle].Add(v);
         }
 
-        foreach (var list in query._byLaneHandle)
+        foreach (var list in _byLaneHandle)
         {
-            list?.Sort((a, b) => a.Kinematics.Pos.CompareTo(b.Kinematics.Pos));
+            list.Sort((a, b) => a.Kinematics.Pos.CompareTo(b.Kinematics.Pos));
         }
-
-        return query;
     }
 
     // MSLane::getLeader (same-lane branch): the nearest inserted, not-arrived vehicle strictly
@@ -81,7 +99,7 @@ internal sealed class LaneNeighborQuery
     private VehicleRuntime? GetLeaderOnLane(VehicleRuntime ego, int laneHandle)
     {
         var list = _byLaneHandle[laneHandle];
-        if (list is null)
+        if (list.Count == 0)
         {
             return null;
         }
@@ -125,7 +143,7 @@ internal sealed class LaneNeighborQuery
     public VehicleRuntime? GetNeighborFollower(VehicleRuntime ego, int neighborLaneHandle)
     {
         var list = _byLaneHandle[neighborLaneHandle];
-        if (list is null)
+        if (list.Count == 0)
         {
             return null;
         }
