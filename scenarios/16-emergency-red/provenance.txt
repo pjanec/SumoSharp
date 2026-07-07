@@ -1,0 +1,16 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-07T12:29:10Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump); vClass=emergency (A1 table).
+# A3 emergency privilege: jmDriveAfterRedTime="1000" (a vType ATTRIBUTE, not a <param> child --
+#   getJMParam reads the jmParameter attribute map) makes MSVehicle::ignoreRed return true while
+#   the red's redDuration < 1000, so the emergency vehicle drives WJ->JE straight through the red
+#   traffic light at free-flow (13.89), unlike rung-10's passenger which halts at pos 298.999.
+#   Same net + TL program as scenarios/09-traffic-light; only the vType (emergency + ignore-red).
+# input file hashes (sha256):
+input=net.net.xml sha256=c73267dc1aee118192dc4a882c47697c69eb62f620c35dd23c65ea4937cb7115
+input=rou.rou.xml sha256=1f97249458ef6d4cde658a57a719741c0e4291af786009ac35bfbf308a31b7d6
+input=config.sumocfg sha256=e4ac3e852217f8e2f0fb98bb5552f0c582bd3655614163bb5ab9987659936b04
