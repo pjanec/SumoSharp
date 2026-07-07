@@ -97,6 +97,45 @@ emit / `TrajectorySet` alone"). The remaining ~207 B/veh-step is consistent with
 bookkeeping per vehicle per step; a future rung could move FCD emission to a reusable buffer/
 struct-of-arrays if the export path itself needs to be zero-alloc.
 
+## D3 (managed state → side storage)
+Captured on the same reference VM, same command, 500 steps, immediately after the D3 refactor:
+`VehicleRuntime`'s managed/variable-length fields moved OFF the per-entity record into
+Engine-owned side storage keyed by a new stable `EntityIndex` (this vehicle's index in
+`Engine._vehicles`, set once at creation) -- `LaneSequence`/`LaneSequenceHandles` (an
+`IReadOnlyList<string>` + `int[]`) became a `[LaneSeqStart, LaneSeqLen)` slice into a single
+shared `List<int> _laneSeqPool` of lane handles (a route resolution APPENDS its handle sequence
+and repoints the slice; a reroute appends a NEW slice, abandoning the old one in place);
+`Stops` (`Queue<StopRuntime>`) became `Dictionary<int, Queue<StopRuntime>> _stopsByEntity`,
+populated only for vehicles that actually have stops; `AvoidedEdges` (`HashSet<string>`) became
+`Dictionary<int, HashSet<string>> _avoidedByEntity`, lazily created only on a vehicle's first
+reroute. `VehicleRuntime` now holds no `Queue`/`HashSet`/`IReadOnlyList`/`int[]` field at all --
+every remaining field is an unmanaged scalar/struct or one of the two immutable blueprint refs
+(`Def`/`VType`), the FDP-readiness posture (chunk-storable modulo `Def`/`VType` still being
+managed refs, deferred to D7):
+
+| metric | value |
+|---|---|
+| peak concurrent vehicles | 378 |
+| veh-steps emitted | 115,141 |
+| wall time | 0.236–0.287 s (run-to-run range on this shared VM) |
+| throughput | **1740–2116 steps/s** (0.473–0.575 ms/step) |
+| alloc total | **22.6 MiB** |
+| alloc / step | 46.3 KiB |
+| alloc / veh-step | **205.8–205.9 B** (essentially unchanged from D4's 207.1 B) |
+| GC gen0/1/2 | 3 / 3 / 1 |
+| deterministic (2 runs identical) | **True** (hash unchanged: `909605E965BFFE59`, same as D1/D2/D4) |
+
+As expected per the briefing, alloc/veh-step barely moves: this bench scenario has NO stops and
+NO reroute (`RerouteThresholdSeconds` left at its default +infinity), so `_stopsByEntity`/
+`_avoidedByEntity` are never populated/touched, and the lane-sequence pool is filled once per
+vehicle at insertion (a cold-path, one-time `AddRange` per vehicle, not a steady-state per-step
+allocator) -- D3's win here is **representational, not allocational**: it removes the three
+managed/variable-length fields that blocked `VehicleRuntime` from being chunk-storable as
+unmanaged FDP-style component data, which is the prerequisite D5 (entity lifecycle via command
+buffer)/D7 (the FDP-shaped seam) build on, not a hot-path allocation reduction (that was D4's
+job). Trajectory hash and `dotnet test` (62/62 green) are both unchanged, confirming the
+refactor is behavior-preserving.
+
 ## What the numbers say (targets for D2–D8)
 - **~736 B allocated per vehicle-step** is the headline: this is the AoS `class` entities +
   `LaneNeighborQuery`'s per-step `Dictionary`/`List` (built twice/step) + the reducer's

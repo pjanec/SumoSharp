@@ -554,15 +554,19 @@ and determinism (no RNG/wallclock). **The gap is representation, not architectur
   `dotnet test` = 62 green. Alloc drop modest (~0.7 B/veh-step; D2 removes string hashing, not the
   allocations — that's D4) but it's the prerequisite for D3 (unmanaged component `int[]` LaneSequence)
   and D4 (handle-indexed reusable buckets). Benchmark row appended to BASELINE.md.
-- **D3. Decompose `VehicleRuntime` into FDP-style component structs + move managed state out.** Split
-  the class into unmanaged value-type components: `KinematicsC` (=today's `Kinematics`), `IntentC`
-  (=`MoveIntent`), `RouteProgressC {laneSeqStart, laneSeqLen, laneSeqIndex}`, `LcStateC {keepRightP,
-  speedGainP}`, `RerouteStateC {blockedSeconds}`, `StopStateC`, `VTypeRef {vTypeHandle}`. The
-  **managed/variable-length** fields are the real work: `LaneSequence` → a shared `int[]` pool with a
-  per-entity `[start,len]` slice (blob-style); `Stops` (`Queue`) → a fixed-capacity inline buffer or a
-  side "buffer component"; `AvoidedEdges` (`HashSet<string>`) → a small fixed-cap set or a bitset over
-  edge handles. Provide a component-container abstraction now (see D7) so this can back onto either an
-  in-house SoA store or FDP `World` later. Parity tests are the safety net.
+- **D3. Move managed/variable-length state off the entity. DONE.** The real FDP-readiness gap was the
+  three managed collections on the `VehicleRuntime` class; they now live in ENGINE side storage keyed
+  by a stable `EntityIndex`: `LaneSequence`(string) + `LaneSequenceHandles`(int[]) → a shared
+  `_laneSeqPool` (`List<int>`) with a per-entity `[LaneSeqStart, LaneSeqLen)` slice (blob-style; a
+  reroute appends a new slice); `Stops` (`Queue`) → `_stopsByEntity` (populated only for vehicles with
+  stops); `AvoidedEdges` (`HashSet`) → `_avoidedByEntity` (lazily, only for rerouted vehicles). The
+  entity now holds ONLY unmanaged scalars/structs (`Kinematics`, `MoveIntent`, `int`/`double`/`bool`)
+  + the two IMMUTABLE blueprint refs (`Def`, `VType`) — verified: no `Queue`/`HashSet`/`IReadOnlyList`/
+  `int[]` field remains. Pure refactor — hash UNCHANGED (`909605E965BFFE59`), `dotnet test` = 62 green
+  (incl. the stop + reroute suites that exercise the side tables). Alloc unchanged on the bench
+  (no stops/reroute there) — the win is representational (chunk-storable entity). **Deferred to D7's
+  store boundary** (kept low-risk here): grouping the flat scalars into sub-structs (`RouteProgressC`/
+  `LcStateC`/…) and turning `Def`/`VType` into TKB handles.
 - **D4. Allocation-free hot path. DONE.** Reducer `new List<double>{…}.Min()` → running `Math.Min`
   over the same six constraints (same order); `LaneNeighborQuery` from a per-step `Build` factory →
   ONE reused instance with `Refill()` (pre-allocated per-lane buckets `Clear()`ed + refilled in place,

@@ -3,11 +3,17 @@ using Sim.Ingest;
 namespace Sim.Core;
 
 // Per-vehicle mutable runtime state, plus the immutable spawn template (Def) it was created
-// from. Kept as one record-per-vehicle for now rather than a struct-of-arrays split: with a
-// single rung-1 vehicle there is nothing yet to gain from the SoA reshape, and DESIGN.md's
-// struct-of-arrays push is about the *data layout* paying for itself once many vehicles/
-// systems exist -- deferring it here blocks nothing (Kinematics/MoveIntent are already
-// separable structs, so an eventual SoA split is a mechanical extraction, not a redesign).
+// from. D3 (FastDataPlane ECS readiness): every field left on this class is now unmanaged
+// (scalars/structs -- `Kinematics`/`MoveIntent` are already unmanaged structs) or one of the
+// two IMMUTABLE blueprint refs (`Def`, `VType`); the managed, variable-length state that used
+// to live here (`LaneSequence`/`LaneSequenceHandles`, `Stops`, `AvoidedEdges`) has moved to
+// engine-owned side storage keyed by `EntityIndex` -- a shared int pool with a per-entity
+// [start,len) slice for the lane sequence, and `Dictionary<int, ...>` side tables for the rare/
+// cold stop queue and avoided-edge set. This is the FDP-readiness posture: the class is now
+// chunk-storable (no `Queue`/`HashSet`/`IReadOnlyList`/`int[]` fields) modulo `Def`/`VType`
+// still being managed refs and the flat scalar layout not yet grouped into sub-structs --
+// turning `Def`/`VType` into TKB handles and grouping the scalars is deferred to D7's store
+// boundary (out of this rung's scope; see TASKS.md D3/D7).
 internal sealed class VehicleRuntime
 {
     public required VehicleDef Def { get; init; }
@@ -15,6 +21,13 @@ internal sealed class VehicleRuntime
     // Resolved (fully-defaulted) vType parameters (Sim.Ingest.VTypeDefaults) -- the car-
     // following model reads these, never the raw .rou.xml VType with its optional fields.
     public required ResolvedVType VType { get; init; }
+
+    // D3: this vehicle's stable index in Engine._vehicles, set once at creation (LoadScenario).
+    // Vehicles are never removed from that list -- only flagged Arrived -- so the list index is
+    // a stable entity id, the pre-`Entity`-handle stand-in D5 upgrades to a generational handle.
+    // Used to key the engine's side storage (lane-sequence pool slice owner id is implicit via
+    // LaneSeqStart/LaneSeqLen below; Stops/AvoidedEdges side tables are keyed by this directly).
+    public int EntityIndex;
 
     public bool Inserted;
 
@@ -31,27 +44,26 @@ internal sealed class VehicleRuntime
     // instead of hashing a string every vehicle, every step.
     public int LaneHandle;
 
-    // Rung 9a: the full ordered lane-id sequence this vehicle's route resolves to (via
-    // NetworkModel.ResolveLaneSequence), e.g. ["WJ_0", ":J_2_0", "JE_0"] -- includes internal
-    // (junction) lanes between consecutive route edges. Set once at insertion; LaneSeqIndex is
-    // the index of the CURRENT lane (LaneId) within this list, advanced by ExecuteMoves as the
-    // vehicle's Pos crosses each lane's end. A single-edge route resolves to a one-element
-    // sequence, so this collapses to rung 1-8's single-lane "reached the end -> arrived"
-    // behavior exactly (CLAUDE.md-mandated regression: unchanged for single-edge routes).
-    public IReadOnlyList<string> LaneSequence { get; set; } = Array.Empty<string>();
-
-    // D2: the handle-parallel form of LaneSequence (NetworkModel.ResolveLaneSequenceHandles),
-    // same length, same order -- LaneSeqIndex indexes both arrays identically.
-    public int[] LaneSequenceHandles = Array.Empty<int>();
+    // D3: this vehicle's lane-sequence is now a SLICE `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`
+    // into Engine's shared `_laneSeqPool` (a single `List<int>` of lane HANDLES, blob-style) --
+    // replacing the old per-vehicle `IReadOnlyList<string> LaneSequence`/`int[]
+    // LaneSequenceHandles` managed collections. Set once at insertion (TryInsertOnLane) by
+    // appending the resolved handle sequence to the pool; a reroute (UpdateReroutes) appends a
+    // NEW slice and simply repoints Start/Len (the old slice is abandoned in the pool -- it only
+    // grows; D7 can compact if that ever matters). LaneSeqIndex is the index of the CURRENT lane
+    // (LaneHandle) within this slice, advanced by ExecuteMoves as the vehicle's Pos crosses each
+    // lane's end. A single-edge route resolves to a one-element slice, so this collapses to rung
+    // 1-8's single-lane "reached the end -> arrived" behavior exactly.
+    public int LaneSeqStart;
+    public int LaneSeqLen;
     public int LaneSeqIndex;
     public Kinematics Kinematics;
     public MoveIntent Intent;
 
-    // Rung 5: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), in route order.
-    // Front-of-queue only is ever consulted (MSVehicle::myStops is a deque with the same
-    // front-only access pattern) -- populated once at LoadScenario time from the immutable Def,
-    // then only ever mutated (front popped/updated) by Engine.ExecuteMoves.
-    public Queue<StopRuntime> Stops { get; } = new();
+    // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops) moved to Engine's
+    // `_stopsByEntity` side table (keyed by EntityIndex), populated once at LoadScenario only
+    // for vehicles that actually have stops -- the managed `Queue<StopRuntime>` no longer lives
+    // on every vehicle record. Front-of-queue-only access pattern is unchanged.
 
     // Rung 8b: SUMO's MSLCM_LC2013::myKeepRightProbability -- a stateful per-vehicle accumulator
     // for the keep-right (Rechtsfahrgebot) lane-change incentive. Starts at 0 (SUMO's ctor
@@ -72,11 +84,14 @@ internal sealed class VehicleRuntime
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no
-    // future edge is blocked. AvoidedEdges is the set of edges this vehicle has already routed
-    // around once (so a blockage it has already detoured past never re-triggers a reroute of the
-    // same edge). Both start at their zero values (0 / empty), which is exactly the inert-when-
-    // absent case: with RerouteThresholdSeconds left at its default (+infinity), Engine.
-    // UpdateReroutes returns immediately every step and neither field is ever touched.
+    // future edge is blocked. Both start at their zero values (0 / empty), which is exactly the
+    // inert-when-absent case: with RerouteThresholdSeconds left at its default (+infinity),
+    // Engine.UpdateReroutes returns immediately every step and neither this field nor the
+    // AvoidedEdges side table below is ever touched.
     public double BlockedByObstacleSeconds;
-    public HashSet<string> AvoidedEdges { get; } = new(StringComparer.Ordinal);
+
+    // D3: this vehicle's already-routed-around-once edge set moved to Engine's
+    // `_avoidedByEntity` side table (keyed by EntityIndex), lazily created only when a vehicle
+    // first reroutes -- the managed `HashSet<string>` no longer lives on every vehicle record.
+    // Off the hot path (reroute is opt-in via RerouteThresholdSeconds).
 }

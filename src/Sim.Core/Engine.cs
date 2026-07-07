@@ -13,6 +13,28 @@ public sealed class Engine : IEngine
     private ScenarioConfig? _config;
     private readonly List<VehicleRuntime> _vehicles = new();
 
+    // D3 (FastDataPlane ECS readiness -- move managed/variable-length state off the per-entity
+    // record): the shared lane-handle pool every vehicle's LaneSequence now slices into
+    // (`[LaneSeqStart, LaneSeqStart+LaneSeqLen)`), replacing the old per-vehicle
+    // `IReadOnlyList<string> LaneSequence`/`int[] LaneSequenceHandles` managed collections. A
+    // route resolution (insertion or reroute) APPENDS its handle sequence here and repoints the
+    // vehicle's slice -- the pool only grows (a reroute abandons its old slice in place; D7 can
+    // compact if that ever matters).
+    private readonly List<int> _laneSeqPool = new();
+
+    // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), keyed by
+    // VehicleRuntime.EntityIndex -- replaces the old per-vehicle `Queue<StopRuntime> Stops`
+    // managed field. Populated once at LoadScenario, ONLY for vehicles that actually have stops
+    // (def.Stops.Count > 0); absent from this dictionary is exactly the "no stops" fast path
+    // (Count==0) every stop-consuming call site already handles.
+    private readonly Dictionary<int, Queue<StopRuntime>> _stopsByEntity = new();
+
+    // D3: this vehicle's already-routed-around-once edge set, keyed by EntityIndex -- replaces
+    // the old per-vehicle `HashSet<string> AvoidedEdges` managed field. Lazily created only when
+    // a vehicle first reroutes (UpdateReroutes); off the hot path (reroute is opt-in via
+    // RerouteThresholdSeconds, +infinity by default).
+    private readonly Dictionary<int, HashSet<string>> _avoidedByEntity = new();
+
     // B1: external-obstacle store (DESIGN.md "Two futures" -- live-reactivity input surface, not
     // a SUMO concept). Keyed by id so AddObstacle can add-or-replace. Deliberately NOT cleared by
     // LoadScenario (tests inject obstacles after loading, before Run) and empty by default, which
@@ -66,6 +88,13 @@ public sealed class Engine : IEngine
         _neighborQuery = new LaneNeighborQuery(_network.LanesByHandle.Count);
 
         _vehicles.Clear();
+        // D3: side storage is keyed by EntityIndex (== _vehicles list index) -- clear it in
+        // lockstep with _vehicles so a re-LoadScenario on the same Engine instance never leaves
+        // stale entries keyed against the previous scenario's vehicles. The pool only ever grows
+        // within one scenario's lifetime; a fresh scenario starts it clean too.
+        _laneSeqPool.Clear();
+        _stopsByEntity.Clear();
+        _avoidedByEntity.Clear();
         foreach (var def in _demand.Vehicles)
         {
             var rawVType = _demand.VTypesById[def.TypeId];
@@ -73,25 +102,42 @@ public sealed class Engine : IEngine
             // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
             // everything else is a resolved SUMO vClass default (VTypeDefaults.Resolve).
             var vType = VTypeDefaults.Resolve(rawVType);
-            var runtime = new VehicleRuntime { Def = def, VType = vType };
+            // D3: EntityIndex is this vehicle's stable index in _vehicles, set once here -- see
+            // VehicleRuntime.EntityIndex's own comment.
+            var entityIndex = _vehicles.Count;
+            var runtime = new VehicleRuntime { Def = def, VType = vType, EntityIndex = entityIndex };
 
-            // Rung 5: seed this vehicle's own stop queue (StopRuntime) from its immutable Def.
-            // Reached/RemainingDuration start at their defaults (false/0) -- ProcessNextStop only
-            // initializes RemainingDuration once the stop is actually reached.
-            foreach (var stopDef in def.Stops)
+            // Rung 5 (D3: side table): seed this vehicle's own stop queue (StopRuntime) from its
+            // immutable Def, ONLY when it actually has stops. Reached/RemainingDuration start at
+            // their defaults (false/0) -- ProcessNextStop only initializes RemainingDuration once
+            // the stop is actually reached.
+            if (def.Stops.Count > 0)
             {
-                runtime.Stops.Enqueue(new StopRuntime
+                var stops = new Queue<StopRuntime>();
+                foreach (var stopDef in def.Stops)
                 {
-                    LaneId = stopDef.LaneId,
-                    StartPos = stopDef.StartPos,
-                    EndPos = stopDef.EndPos,
-                    Duration = stopDef.Duration,
-                });
+                    stops.Enqueue(new StopRuntime
+                    {
+                        LaneId = stopDef.LaneId,
+                        StartPos = stopDef.StartPos,
+                        EndPos = stopDef.EndPos,
+                        Duration = stopDef.Duration,
+                    });
+                }
+
+                _stopsByEntity[entityIndex] = stops;
             }
 
             _vehicles.Add(runtime);
         }
     }
+
+    // D3: front-of-queue lookup against the side table, returning the same "no stops" empty
+    // fast path every call site already handled against v.Stops.Count == 0 -- absent from
+    // _stopsByEntity is exactly that case (LoadScenario only populates entries that have >=1
+    // stop).
+    private Queue<StopRuntime>? GetStops(VehicleRuntime v) =>
+        _stopsByEntity.TryGetValue(v.EntityIndex, out var stops) ? stops : null;
 
     public TrajectorySet Run(int steps)
     {
@@ -276,10 +322,13 @@ public sealed class Engine : IEngine
         // Rung 9a: resolve the FULL lane sequence for this vehicle's route (spanning internal/
         // junction lanes between edges), not just the departure edge/lane. For a single-edge
         // route this is exactly `[lane.Id]`, matching rungs 1-8 exactly (v.LaneId above already
-        // equals LaneSequence[0]).
-        v.LaneSequence = _network!.ResolveLaneSequence(route.Edges, v.Def.DepartLaneIndex);
-        // D2: the handle-parallel sequence, kept in lockstep -- same traversal, same order.
-        v.LaneSequenceHandles = _network.ResolveLaneSequenceHandles(route.Edges, v.Def.DepartLaneIndex);
+        // equals the sequence's first element).
+        // D3: append the handle-parallel sequence to the shared pool and slice into it, instead
+        // of allocating a per-vehicle array -- same traversal, same order as before.
+        var handleSeq = _network!.ResolveLaneSequenceHandles(route.Edges, v.Def.DepartLaneIndex);
+        v.LaneSeqStart = _laneSeqPool.Count;
+        v.LaneSeqLen = handleSeq.Length;
+        _laneSeqPool.AddRange(handleSeq);
         v.LaneSeqIndex = 0;
 
         v.Inserted = true;
@@ -328,17 +377,19 @@ public sealed class Engine : IEngine
             // Distinct FUTURE normal edges (route order, deduplicated), i.e. every normal edge
             // this vehicle's route still has left to traverse AFTER its current position,
             // excluding currentEdge itself and any internal/junction lane's edge id.
+            // D3: walk the pool slice `[LaneSeqStart+LaneSeqIndex+1, LaneSeqStart+LaneSeqLen)`
+            // mapping handle -> LanesByHandle[h] instead of indexing the old string LaneSequence.
             var futureEdges = new List<string>();
             var futureEdgesSeen = new HashSet<string>(StringComparer.Ordinal);
-            for (var i = v.LaneSeqIndex + 1; i < v.LaneSequence.Count; i++)
+            for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
             {
-                var seqLaneId = v.LaneSequence[i];
-                if (seqLaneId.StartsWith(':'))
+                var seqLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+                if (seqLane.Id.StartsWith(':'))
                 {
                     continue;
                 }
 
-                var seqEdgeId = _network.LanesById[seqLaneId].EdgeId;
+                var seqEdgeId = seqLane.EdgeId;
                 if (seqEdgeId == currentEdge)
                 {
                     continue;
@@ -385,8 +436,13 @@ public sealed class Engine : IEngine
             // Threshold reached -- recompute a route from HERE to the destination, avoiding this
             // blockage plus every edge already routed around earlier (so a blockage this vehicle
             // has already detoured past can never re-trigger a second reroute of the same edge).
-            var destEdge = _network.LanesById[v.LaneSequence[^1]].EdgeId;
-            var avoid = new HashSet<string>(v.AvoidedEdges, StringComparer.Ordinal) { blockedEdge };
+            // D3: last element of the pool slice instead of v.LaneSequence[^1].
+            var destEdge = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + v.LaneSeqLen - 1]].EdgeId;
+            // D3: AvoidedEdges side table (absent == empty set so far -- this vehicle has never
+            // rerouted before).
+            var avoid = _avoidedByEntity.TryGetValue(v.EntityIndex, out var avoidedSoFar)
+                ? new HashSet<string>(avoidedSoFar, StringComparer.Ordinal) { blockedEdge }
+                : new HashSet<string>(StringComparer.Ordinal) { blockedEdge };
             var newEdges = _router.Route(currentEdge, destEdge, avoid);
 
             if (newEdges is null)
@@ -413,14 +469,24 @@ public sealed class Engine : IEngine
             // applied directly here rather than staged through MoveIntent -- this runs in its own
             // once-per-step phase outside Plan/Execute, exactly like DecideSpeedGainChanges' own
             // direct LaneId/accumulator writes, not mid-query shared state.
+            // D3: v.LaneId/v.LaneHandle are unchanged by a reroute (newEdges[0] == currentEdge, v
+            // stays physically where it is), only the REMAINING route changes -- append the newly
+            // resolved handle sequence to the shared pool as a NEW slice (the old slice is simply
+            // abandoned in the pool; it only grows).
             var laneIndex = _network.LanesByHandle[v.LaneHandle].Index;
-            v.LaneSequence = _network.ResolveLaneSequence(newEdges, laneIndex);
-            // D2: the handle-parallel sequence, kept in lockstep -- v.LaneId/v.LaneHandle are
-            // unchanged by a reroute (newEdges[0] == currentEdge, v stays physically where it
-            // is), only the REMAINING route (and hence LaneSequence/LaneSequenceHandles) changes.
-            v.LaneSequenceHandles = _network.ResolveLaneSequenceHandles(newEdges, laneIndex);
+            var newHandleSeq = _network.ResolveLaneSequenceHandles(newEdges, laneIndex);
+            v.LaneSeqStart = _laneSeqPool.Count;
+            v.LaneSeqLen = newHandleSeq.Length;
+            _laneSeqPool.AddRange(newHandleSeq);
             v.LaneSeqIndex = 0;
-            v.AvoidedEdges.Add(blockedEdge);
+
+            if (!_avoidedByEntity.TryGetValue(v.EntityIndex, out var avoidedEdges))
+            {
+                avoidedEdges = new HashSet<string>(StringComparer.Ordinal);
+                _avoidedByEntity[v.EntityIndex] = avoidedEdges;
+            }
+
+            avoidedEdges.Add(blockedEdge);
             v.BlockedByObstacleSeconds = 0.0;
         }
     }
@@ -539,14 +605,17 @@ public sealed class Engine : IEngine
     // stopSpeed = MAX2(cfModel.stopSpeed(this, getSpeed(), newStopDist), vMinComfortable) where
     // vMinComfortable = cfModel.minNextSpeed(getSpeed()) (line 2191). Non-binding (+infinity)
     // once the stop is reached (matches the source's own approach-block guard) or absent.
-    private static double StopLineConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs)
+    private double StopLineConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs)
     {
-        if (v.Stops.Count == 0)
+        // D3: side table lookup instead of v.Stops.Count == 0 -- absent from _stopsByEntity is
+        // exactly the "no stops" fast path.
+        var stops = GetStops(v);
+        if (stops is null || stops.Count == 0)
         {
             return double.PositiveInfinity;
         }
 
-        var stop = v.Stops.Peek();
+        var stop = stops.Peek();
         if (stop.Reached || stop.LaneId != v.LaneId)
         {
             return double.PositiveInfinity;
@@ -677,17 +746,19 @@ public sealed class Engine : IEngine
     private double JunctionYieldConstraint(VehicleRuntime v, IReadOnlyList<VehicleRuntime> allVehicles, double dt, double actionStepLengthSecs)
     {
         // Step 1: ego's own upcoming/current junction link -- the first internal lane in
-        // v.LaneSequence at or after LaneSeqIndex. A lane already passed is simply never found
+        // the pool slice at or after LaneSeqIndex. A lane already passed is simply never found
         // by this forward-only scan (LaneSeqIndex has already advanced beyond it), which is
         // exactly the "already passed -> +infinity" case the briefing calls for.
+        // D3: walk the pool slice, mapping handle -> Id for the LinkByInternalLane string lookup.
         var egoLinkSeqIndex = -1;
         string? egoInternalLaneId = null;
-        for (var i = v.LaneSeqIndex; i < v.LaneSequence.Count; i++)
+        for (var i = v.LaneSeqIndex; i < v.LaneSeqLen; i++)
         {
-            if (_network!.LinkByInternalLane.ContainsKey(v.LaneSequence[i]))
+            var seqLaneId = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]].Id;
+            if (_network!.LinkByInternalLane.ContainsKey(seqLaneId))
             {
                 egoLinkSeqIndex = i;
-                egoInternalLaneId = v.LaneSequence[i];
+                egoInternalLaneId = seqLaneId;
                 break;
             }
         }
@@ -718,17 +789,16 @@ public sealed class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        // D2: v.LaneSequenceHandles[i] == LaneHandleById[v.LaneSequence[i]] by construction (set
-        // together at every LaneSequence write site) -- index it directly instead of re-hashing
-        // the string already looked up above.
-        var egoLane = _network.LanesByHandle[v.LaneSequenceHandles[egoLinkSeqIndex]];
+        // D3: the pool slice at position egoLinkSeqIndex -- index it directly instead of
+        // re-hashing the string already looked up above.
+        var egoLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex]];
         // The lane immediately before ego's internal lane in its route. Null only if the
-        // internal lane is the very first element of LaneSequence -- which cannot happen for a
+        // internal lane is the very first element of the sequence -- which cannot happen for a
         // vehicle inserted on a normal lane (egoLinkSeqIndex >= 1 then), so it is used only in
         // the !egoOnInternal branches below, where it is always non-null. Guarded so a future
         // laneless/mid-junction insertion can't index -1 here.
         var approachLane = egoLinkSeqIndex >= 1
-            ? _network.LanesByHandle[v.LaneSequenceHandles[egoLinkSeqIndex - 1]]
+            ? _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]]
             : null;
         var egoOnInternal = v.LaneId == egoInternalLaneId;
 
@@ -761,13 +831,17 @@ public sealed class Engine : IEngine
             }
 
             var foeInternalLaneId = junction.IntLanes[j];
-            var foe = FindFoeVehicle(v, allVehicles, foeInternalLaneId);
+            // D3: resolve the foe internal lane's handle once, so both the foe-vehicle scan and
+            // the sequence-index lookup below search the pool by handle, not by re-hashing the
+            // string per candidate.
+            var foeInternalLaneHandle = _network.LaneHandleById[foeInternalLaneId];
+            var foe = FindFoeVehicle(v, allVehicles, foeInternalLaneHandle);
             if (foe is null)
             {
                 continue;
             }
 
-            var foeInternalSeqIndex = IndexOfLane(foe.LaneSequence, foeInternalLaneId);
+            var foeInternalSeqIndex = IndexOfLaneHandle(foe, foeInternalLaneHandle);
 
             double thisConstraint;
             if (foe.LaneId == foeInternalLaneId)
@@ -872,7 +946,9 @@ public sealed class Engine : IEngine
     // to this rung's single-foe-vehicle-per-link scenario (no queueing/multiple-foes
     // tie-break is modeled; see the briefing's scope note). Excludes ego itself, and any
     // vehicle not yet inserted or already arrived (frozen `allVehicles` snapshot).
-    private static VehicleRuntime? FindFoeVehicle(VehicleRuntime ego, IReadOnlyList<VehicleRuntime> allVehicles, string foeInternalLaneId)
+    // D3: takes the foe internal lane's HANDLE (resolved once by the caller) instead of its
+    // string id, and scans the candidate's pool slice instead of an IReadOnlyList<string>.
+    private VehicleRuntime? FindFoeVehicle(VehicleRuntime ego, IReadOnlyList<VehicleRuntime> allVehicles, int foeInternalLaneHandle)
     {
         foreach (var other in allVehicles)
         {
@@ -881,7 +957,7 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            if (other.LaneSequence.Contains(foeInternalLaneId))
+            if (IndexOfLaneHandle(other, foeInternalLaneHandle) >= 0)
             {
                 return other;
             }
@@ -890,13 +966,14 @@ public sealed class Engine : IEngine
         return null;
     }
 
-    // IReadOnlyList<string> has no IndexOf overload -- a tiny manual scan avoids materializing
-    // a copy just to find the internal lane's position in a vehicle's LaneSequence.
-    private static int IndexOfLane(IReadOnlyList<string> laneSequence, string laneId)
+    // D3: a tiny manual scan over a vehicle's pool slice `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`
+    // to find the position of a given lane HANDLE -- replaces the old string-keyed
+    // IReadOnlyList<string>.Contains/manual-index scan over LaneSequence.
+    private int IndexOfLaneHandle(VehicleRuntime v, int laneHandle)
     {
-        for (var i = 0; i < laneSequence.Count; i++)
+        for (var i = 0; i < v.LaneSeqLen; i++)
         {
-            if (laneSequence[i] == laneId)
+            if (_laneSeqPool[v.LaneSeqStart + i] == laneHandle)
             {
                 return i;
             }
@@ -911,18 +988,21 @@ public sealed class Engine : IEngine
     // front stop's START-OF-STEP snapshot; returns (the value processNextStop would have
     // returned, the StopTransition for ExecuteMoves to apply -- null if nothing changes, exactly
     // like the source's implicit "no side effect on stop.reached" paths).
-    private static (double ReturnedVelocity, StopTransition? Transition) ProcessNextStop(
+    private (double ReturnedVelocity, StopTransition? Transition) ProcessNextStop(
         VehicleRuntime v,
         double currentVelocity,
         double actionStepLengthSecs)
     {
-        if (v.Stops.Count == 0)
+        // D3: side table lookup instead of v.Stops.Count == 0 -- absent from _stopsByEntity is
+        // exactly the "no stops" fast path.
+        var stops = GetStops(v);
+        if (stops is null || stops.Count == 0)
         {
             // MSVehicle.cpp:1614-1617: myStops.empty() -> return currentVelocity.
             return (currentVelocity, null);
         }
 
-        var stop = v.Stops.Peek();
+        var stop = stops.Peek();
         if (stop.LaneId != v.LaneId)
         {
             // MSVehicle.cpp:1762's `stop.edge == myCurrEdge` guard -- not on the stop's edge/lane
@@ -1074,16 +1154,20 @@ public sealed class Engine : IEngine
             v.Kinematics.LatOffset = v.Intent.LatOffset;
 
             // Rung 5: apply the plan phase's proposed stop-queue update (Engine.ProcessNextStop).
-            // This is the only place v.Stops is ever mutated (CLAUDE.md rule 3).
+            // This is the only place a vehicle's stop queue is ever mutated (CLAUDE.md rule 3).
+            // D3: side table lookup instead of v.Stops -- StopUpdate is only ever non-null when
+            // ProcessNextStop found a non-empty queue for this vehicle this same step, so `stops`
+            // is guaranteed non-null here.
             if (v.Intent.StopUpdate is { } stopUpdate)
             {
+                var stops = GetStops(v)!;
                 if (stopUpdate.Resume)
                 {
-                    v.Stops.Dequeue();
+                    stops.Dequeue();
                 }
                 else
                 {
-                    var stop = v.Stops.Peek();
+                    var stop = stops.Peek();
                     stop.Reached = stopUpdate.Reached;
                     stop.RemainingDuration = stopUpdate.RemainingDuration;
                 }
@@ -1115,7 +1199,7 @@ public sealed class Engine : IEngine
                     break;
                 }
 
-                if (v.LaneSeqIndex + 1 >= v.LaneSequence.Count)
+                if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
                 {
                     v.Arrived = true;
                     break;
@@ -1123,10 +1207,10 @@ public sealed class Engine : IEngine
 
                 v.Kinematics.Pos -= currentLane.Length;
                 v.LaneSeqIndex++;
-                v.LaneId = v.LaneSequence[v.LaneSeqIndex];
-                // D2: keep LaneHandle in lockstep -- LaneSequenceHandles is parallel to
-                // LaneSequence, so this is a direct array read, no string hash.
-                v.LaneHandle = v.LaneSequenceHandles[v.LaneSeqIndex];
+                // D3: keep LaneHandle/LaneId in lockstep -- direct pool-slice read, no string
+                // hash.
+                v.LaneHandle = _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex];
+                v.LaneId = _network.LanesByHandle[v.LaneHandle].Id;
             }
 
             // Rung 8b/A2: keep-right and speed-gain lane changes are no longer decided here --
