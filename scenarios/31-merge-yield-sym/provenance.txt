@@ -1,0 +1,18 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T09:54:24Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# net built with: netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --connection-files connections.con.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# C4-iv ANCHOR #2 (SYMMETRIC merge; rung NOT yet ported -- see TASKS.md). Y-merge: A->J major
+#   + B->J minor merge into JC. The two internal lanes :J_0_0/:J_1_0 are MIRROR IMAGES (equal
+#   length 19.16, symmetric shapes) so their lengthBehindCrossing is equal -- this isolates the
+#   merge-leader gap from the conflict-geometry offset that anchor #1 (29-merge-yield, asymmetric)
+#   carries. Slow major mA crosses the merge as minor vB arrives; vB must yield then follow mA
+#   onto JC (both phases: phase-1 mA on :J_1_0 at t~8, phase-2 mA on JC after). sigma=0, seed 42.
+# input file hashes (sha256):
+input=net.net.xml sha256=e34c7c43db9ea0d0f676b99be5b398101cc2770995b2a55a6243024a2bf14898
+input=rou.rou.xml sha256=4b1b43e24ad0e7db94ef5bb8b1f76907d48230aca8b026f7f82e1a42403b94d3
+input=config.sumocfg sha256=91cd5c9623d7001df654310f48925ead16db777fe8bc8926af6d64cae502fabe

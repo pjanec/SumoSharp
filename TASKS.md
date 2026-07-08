@@ -884,17 +884,33 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     crossingWidth forced to 0, gap = `distToMerge - egoMinGap - (foeInternalLaneLen - foeBackPos)`.
     Verified: the golden's first brake is `7.4063 -> 2.9063 == speed - maxDecel` (the negative merge
     gap drives max comfortable deceleration).
-    **Attempted port this session, REVERTED (parity bar) -- it is genuinely TWO mechanisms, only
-    the first is small:** (1) merge-leader while the foe is ON its internal lane (the gap above +
-    `FollowSpeedFor`); (2) **cross-lane leader following** once the foe moves onto the shared target
-    lane D while ego is still on its own internal lane `:J_0_0` -- ego must keep following mA across
-    the lane boundary (golden 2.265/4.865/5.82 on `:J_0_0`, converging to mA's 6.0 on D). The engine
-    has NO downstream/next-lane leader lookup (that is SUMO's `checkRewindLinkLanes` /
-    exit-link-leader machinery), so a naive phase-1-only port free-accelerates and OVERTAKES mA
-    between the foe leaving `:J_1_0` and ego reaching D. Byte-exact parity needs BOTH phases and
-    almost certainly a `DEBUG_PLAN_MOVE`/`getLeaderInfo`-gDebug trace for the exact per-step gaps
-    (the C3 situation). Own focused rung; anchor + this analysis committed so it starts de-risked.
-    Unblocks C4-iii (roundabouts).
+    **BOTH phases IMPLEMENTED this session, then REVERTED (parity bar -- converges but not
+    1e-3-exact).** It is genuinely TWO mechanisms: (1) merge-leader while the foe is ON its internal
+    lane -- `MSVehicle::adaptToJunctionLeader` with `distToCrossing==-1` (MSVehicle.cpp:3223-3239):
+    `gap>=0` -> `followSpeed` against the foe; `gap<0` -> `stopSpeed(speed, seen - egoInternalLen -
+    POSITION_EPS)` (stop before the junction entry, NOT raw followSpeed -- that was the first bug,
+    it over-braked to 0); (2) **cross-lane leader following** once the foe moves onto the shared
+    target lane while ego is upstream -- ego car-follows the rearmost vehicle currently on the target
+    lane, gap = `distToMerge + (leaderPos - leaderLen) - egoMinGap`. With both, the whole trajectory
+    TRACKS the golden and converges (asymmetric anchor 29: within ~0.005; symmetric anchor 31: within
+    ~0.01 in the convergence tail). Two residuals block 1e-3, each needing the runtime trace to pin
+    exactly:
+      - **Conflict-geometry offset (anchor 29):** the gap is off by `egoLBC - foeLBC` (~0.0047) --
+        the `lengthBehindCrossing` differs between the CURVED `:J_0_0` and STRAIGHT `:J_1_0`
+        (angle-based `conflictSize`, MSLink.cpp:354-382, + `interpolateGeometryPosToLanePos` on the
+        curve). ANCHOR 31 (`scenarios/31-merge-yield-sym`, a SYMMETRIC Y-merge with mirror-image
+        internal lanes) was built precisely to make `egoLBC==foeLBC` cancel -- isolating this out.
+      - **leaderBack / partial-occupancy (anchor 31):** at the step the foe FIRST enters the merge
+        lane (front just past the start, back still on the previous edge), the engine's gap is ~5 m
+        (~one vehicle length) SMALLER than SUMO's -- `getLeaderInfo`'s `leaderBack =
+        getBackPositionOnLane` semantics for a vehicle spanning the lane boundary differ from the
+        naive `pos - length`. This over-brakes ego for ~2 steps before reconverging.
+    Net: mechanism + gap formulae are correct and committed as analysis; the two residuals are
+    exactly the entangled runtime details a `DEBUG_PLAN_MOVE`/`getLeaderInfo`-gDebug trace resolves
+    (the C3 situation -- build the instrumented v1_20_0 per `scripts/sumo-debug-instructions.md`,
+    gate `DEBUG_COND` to the ramp vehicle, read the printed `getLeaderInfo` gap/leaderBack/
+    distToCrossing per step). Two anchors (29 asymmetric, 31 symmetric) + goldens + this analysis
+    committed. Own focused rung; unblocks C4-iii (roundabouts).
 - **C5. Junction-blocking avoidance (`keepClear` / don't-block-the-box).** `MSLink::keepClear` + jam
   detection so a vehicle does not enter a junction it cannot clear. Prevents artificial gridlock /
   spillback across intersections. Parity axis; also a property test (junction never deadlocks).
