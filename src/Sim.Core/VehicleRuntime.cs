@@ -196,6 +196,19 @@ internal sealed class VehicleRuntime
     // junction that is not `type="allway_stop"` (and thus for every pre-C4-ii scenario).
     public double WaitingTime;
 
+    // C8-ii: the simulation time of this vehicle's last ACTION step (MSVehicle::myLastActionTime).
+    // With actionStepLength > dt a vehicle re-plans its speed only every actionStepLength seconds
+    // (its "reaction time"); between action steps it continues with the acceleration decided at the
+    // last one. isActionStep (MSVehicle.h:638) is `(t - myLastActionTime) % actionStepLength == 0`;
+    // this field is updated to the current time on each action step and read at the top of the next
+    // plan to decide whether to re-plan or hold. Initialized to NegativeInfinity so the FIRST plan
+    // (on insertion) is always an action step, matching MSVehicle's `myActionStep(true)` initial
+    // state. Written only in the PLAN phase (Engine.ComputeMoveIntent), this vehicle's own field
+    // only -- parallel-safe exactly like RngState/LevelOfService. Entirely inert when
+    // actionStepLength == dt (every pre-C8-ii scenario): the gate that reads it is skipped, so no
+    // field access happens at all and behavior is byte-identical.
+    public double LastActionTime;
+
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no

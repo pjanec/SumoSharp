@@ -838,9 +838,46 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   t=19 (was a naive free-cruise t=17) — the SAME golden-verified mechanism, and still cleanly
   differential vs. the external-agent FULL-halt fact (b).
 - **C4. Remaining right-of-way: right-before-left, roundabouts, stop signs.** 9b did PRIORITY
-  junctions only. Right-before-left (uncontrolled symmetric), roundabout yielding (+
-  `myRoundaboutBonus`/cooperative), all-way-stop (`LINKSTATE_ALLWAY_STOP`). Reuses 9b's `<request>`
-  response/foe matrix + `opened()`. Parity axis. One scenario per RoW type.
+  junctions only. Reuses 9b's `<request>` response/foe matrix + `opened()`. Parity axis, one
+  scenario per RoW type. Goldens regenerated IN-SESSION (SUMO 1.20.0 is provisioned in the cloud
+  env -- `sumo`/`netconvert` on PATH, version-matched to `SUMO_VERSION`, verified byte-for-byte
+  against an existing committed golden before use).
+  - **C4-i. DONE (no engine change). Right-before-left.** `scenarios/26-right-before-left`
+    (`RungC4iRightBeforeLeftParityTests`, exact @1e-3). An uncontrolled symmetric cross (node type
+    `right_before_left`); netconvert resolves it into a request matrix that is priority-like per
+    vehicle (link 0 SJ->JN MAJOR `response="00"`, link 1 WJ->JE EQUAL state `=` `response="01"`),
+    so vWest yields to vSouth (on its right). Because `JunctionYieldConstraint` is driven ENTIRELY
+    by the `<request>` matrix, the 9b + C3 machinery reproduces the golden exactly with no new code
+    (vSouth cruises; vWest cautious-approaches then junction-leader-follows across the crossing
+    13.89->9.6097->5.1097). Anchors that the matrix-driven yield generalizes `m/M` -> `=/M`.
+  - **C4-ii. DONE. All-way-stop.** `scenarios/27-allway-stop` (`RungC4iiAllwayStopParityTests`,
+    exact @1e-3). Node type `allway_stop`, mutual `<request>` (each yields to the other, state
+    `w`). Genuinely new mechanism vs priority/RBL: every approach must fully STOP first, then
+    proceed in arrival order (longest waiter first) -- the pre-C4-ii engine DEADLOCKED here (mutual
+    yield -> both halted forever). Port: `VehicleRuntime.WaitingTime` accrual in ExecuteMoves
+    (MSVehicle::updateWaitingTime, `+= dt` while speed<=0.1 && accel<=0.5*maxAccel), and
+    `Engine.AllwayStopConstraint` dispatched from `JunctionYieldConstraint` ONLY when
+    `junction.Type=="allway_stop"` -- must-stop-first (`WaitingTime==0` => not open, MSLink.cpp:841)
+    then proceed unless a responded foe is crossing now or has waited strictly longer
+    (MSLink.cpp:940-945). Equal-wait arrivalTime tie-break approximated by link-index order
+    (documented; not exercised -- scenario 27's waits differ by 3s). Byte-identical for every
+    priority/RBL scenario (gated on junction.Type). Parity-reviewer ACCEPT (stash-test confirmed
+    the deadlock without the change).
+  - **C4-iii. DEFERRED -> needs the sameTarget-MERGE yield (see below).** A minimal roundabout was
+    built (recipe + SUMO golden saved in the session scratchpad): a priority ring (circulating
+    edges priority 10, approaches priority 1) -- netconvert makes each entry a standard minor link,
+    so the entry cautious-approach/yield is just the existing machinery. BUT the roundabout entry
+    is a `sameTarget` MERGE (the entering and circulating links share the ring's next lane), and the
+    engine's `JunctionConflict` records only geometric CROSSINGS, not merges -- so with a
+    circulating foe actually present, the entering vehicle does not follow-yield to it (it needs the
+    merge-leader path). This is the gap-acceptance half of C3 that scenario 19 never exercised (mA
+    was far). Blocked on that rung; the roundabout anchor lands once it exists.
+  - **C4-iv. TODO. sameTarget-merge yield (a.k.a. the C3 merge half).** When ego's link and a foe's
+    link share a target lane (`sameTarget`), the minor/entering vehicle must car-follow the
+    major/circulating vehicle onto the shared lane (MSLink `checkLinkLeaderCurrentAndParallel` /
+    `getLeaderInfo` treating the merging foe as a link-leader). Needed by C4-iii (roundabouts) and
+    by on-ramp merges under load. Detect sameTarget conflicts (Connection `(To,ToLane)` match) +
+    superimpose the foe as a leader at the merge point. Own scoped rung.
 - **C5. Junction-blocking avoidance (`keepClear` / don't-block-the-box).** `MSLink::keepClear` + jam
   detection so a vehicle does not enter a junction it cannot clear. Prevents artificial gridlock /
   spillback across intersections. Parity axis; also a property test (junction never deadlocks).
@@ -935,11 +972,20 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     matches it to 1e-3. Full suite 100 green (99 Euler unchanged + this). **Deferred to C8-ii+**: the
     ballistic SAFE-SPEED branches (`maximumSafeStopSpeedBallistic`/`followSpeed`/`finalizeSpeed`
     ballistic) — they never bind free-flow; need a ballistic-with-leader scenario.
-  - **C8-ii. TODO. `actionStepLength > 1` (reaction time).** The vehicle re-plans its speed only
-    every `actionStepLength` seconds (holding the decision between action steps), not every step.
-    `actionStepLengthSecs` is already threaded into the car-following formulas as a parameter, but
-    the re-plan interval itself is not yet implemented (every step re-plans). Byte-identical when
-    `actionStepLength=1` (every existing scenario). Own SUMO golden with `action-step-length>1`.
+  - **C8-ii. DONE. `actionStepLength > 1` (reaction time).** `scenarios/28-actionstep`
+    (`RungC8iiActionStepParityTests`, exact @1e-3, action-step-length=2). A vehicle re-plans its
+    speed only every `actionStepLength` seconds; between action steps it CONTINUES with the
+    acceleration decided at the last one (ported from MSVehicle.cpp:4443-4462 -- a non-action step
+    skips `processLinkApproaches` and sets `vSafe = speed + accel*dt` with NO `finalizeSpeed`;
+    isActionStep at MSVehicle.h:638). Port: `VehicleRuntime.LastActionTime` + an action-step gate at
+    the top of `Engine.ComputeMoveIntent`, guarded by `actionStepLengthSecs > dt` so every prior
+    scenario (all action-step-length=1) is byte-identical (the block is skipped entirely). The
+    discriminating golden step: at the action step t=4 (speed 10.4) SUMO plans accel 1.745 to reach
+    the 13.89 cap over the 2s interval and HOLDS it through the non-action step t=5 (12.145) into
+    t=6 (13.89) -- every-step re-planning would instead give ~13.02 at t=6 (confirmed: stash-test
+    fails at first-divergence t=6). NOTE (scoped): the isActionStep schedule is anchored for a
+    depart-0 vehicle; per-vType action-step offsets and depart!=0 phase alignment are untested
+    (no scenario needs them yet).
   - **C8-iii. TODO (optional). Ballistic car-following.** The ballistic safe-speed branches, with a
     ballistic-with-leader scenario, completing ballistic parity beyond free-flow.
 - **C9. Cooperative lane changes.** LC2013's COOPERATIVE block (`LCA_COOPERATIVE` — make room for a

@@ -1,0 +1,18 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T08:29:22Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# net: copied from scenarios/21-ballistic-freeflow (single 1000m lane e0, speed 13.89).
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# C8-ii anchor: default.action-step-length=2 (reaction time). Single vehicle veh0 accelerates
+#   0->13.89. Discriminating steps: at the action step t=4 (speed 10.4) SUMO plans an accel of
+#   1.745 to reach the 13.89 cap over the 2s action interval, then HOLDS it through the
+#   non-action step t=5 (12.145) into t=6 (13.89) -- re-planning every step would instead give
+#   ~13.02 at t=6. Euler, sigma=0, teleport off, seed 42. (SUMO warns action-step-length > tau;
+#   harmless for a single free-flow vehicle.)
+# input file hashes (sha256):
+input=net.net.xml sha256=eeed7da7d588c1be53557d7c963aa71fea8c6d97493f9412ce8742af5b399847
+input=rou.rou.xml sha256=dd2464e004360570a122123a392a493b51de50da75ee37b44f8d4440e4b11af9
+input=config.sumocfg sha256=c5255067df55a8ee28f29be68a739edb96d22a8ad8ca42deee5ddab8c156e57b

@@ -322,6 +322,9 @@ public sealed class Engine : IEngine
                 // `levelOfService(1.)` -- set for every vehicle (harmless/inert for non-IDMM
                 // vTypes, see VehicleRuntime.LevelOfService's own comment).
                 LevelOfService = 1.0,
+                // C8-ii: sentinel so a vehicle's FIRST plan is always an action step (it re-plans
+                // on insertion), regardless of its depart time -- see VehicleRuntime.LastActionTime.
+                LastActionTime = double.NegativeInfinity,
             };
 
             // Rung 5 (D3: side table): seed this vehicle's own stop queue (StopRuntime) from its
@@ -817,6 +820,39 @@ public sealed class Engine : IEngine
         // default.action-step-length=1 in rung 1's config, equal to dt; kept as its own value
         // (not silently assumed == dt) since MSCFModel.cpp divides by it separately from TS.
         var actionStepLengthSecs = _config.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        // C8-ii: action-step (reaction-time) gate. A vehicle re-plans its car-following speed only
+        // every actionStepLength seconds; between action steps it CONTINUES with the acceleration
+        // decided at the last action step -- ported from MSVehicle.cpp:4443-4462 (a non-action step
+        // skips processLinkApproaches and sets `vSafe = getSpeed() + ACCEL2SPEED(myAcceleration)`,
+        // and MSVehicle.cpp:4489 skips finalizeSpeed off the action step). isActionStep
+        // (MSVehicle.h:638): `(t - myLastActionTime) % actionStepLength == 0`. With
+        // actionStepLength == dt (every pre-C8-ii scenario) the `> dt` guard is false and this is
+        // entirely inert -- every step re-plans exactly as before (byte-identical).
+        if (actionStepLengthSecs > dt)
+        {
+            // First plan (sentinel) OR a full action interval has elapsed since the last one.
+            var isActionStep = double.IsNegativeInfinity(v.LastActionTime)
+                || time - v.LastActionTime + KraussModel.NumericalEps >= actionStepLengthSecs;
+            if (!isActionStep)
+            {
+                // Hold the last action step's acceleration -- no constraint re-evaluation, no
+                // finalizeSpeed (MSVehicle.cpp:4454). v.Acceleration is this vehicle's realized
+                // acceleration from the last completed step (written in ExecuteMoves), the exact
+                // analog of myAcceleration read here. MAX2(., 0) mirrors the Euler non-negativity
+                // updateState relies on (a held decel cannot drive speed below 0).
+                return new MoveIntent
+                {
+                    NewSpeed = Math.Max(0.0, v.Kinematics.Speed + v.Acceleration * dt),
+                    LatOffset = 0.0,
+                    StopUpdate = null,
+                };
+            }
+
+            // Action step: re-plan below, and record it (this vehicle's own field only -- the same
+            // per-ego plan-phase write pattern as RngState/LevelOfService, parallel-safe).
+            v.LastActionTime = time;
+        }
 
         var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
 
