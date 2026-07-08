@@ -1123,16 +1123,19 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   `removalBegin=0`). Inert (+infinity) for every jam-free scenario (125 green). SIMPLIFICATIONS
   (documented in the method header): `lengthsInFront=0` (a queue on ego's own approach is ordinary
   car-following), the single-empty-internal-lane back-propagation, and the 1.0 priority stop offset.
-  **FOLLOW-ON (own small rung): the keepClear/cross-traffic willPass coupling.** A crossing vehicle
-  must NOT yield to a keepClear-stopped foe (SUMO clears the stopped vehicle's request via
-  `setRequest=false`, so `blockedByFoe`'s `!avi.willPass` short-circuit lets the crosser proceed).
-  The engine's crossing approaching-foe arm (JunctionYieldConstraint) uses a blanket seq-index yield
-  with no willPass gate, so a crossing vehicle over-yields to a keepClear-stopped foe (observed when
-  the anchor kept its `nCross` vehicle). The anchor drops `nCross` to isolate the keepClear mechanism;
-  wiring willPass into the crossing yield (skip a foe whose own KeepClear/red/stop keeps it out of
-  the box) is the follow-on that lets cross traffic proceed. Also still open: general cross-junction
-  leader following (a stopped vehicle on the exit edge is not yet seen as a plain car-following
-  leader -- keepClear covers the box-blocking case but not a moving downstream queue).
+  **FOLLOW-ON DONE (willPass): the keepClear/cross-traffic coupling.** A crossing vehicle no longer
+  yields to a keepClear-stopped foe. Anchor `scenarios/38-keepclear-crosstraffic`
+  (`RungC5WillPassParityTests`, exact @1e-3) = scenario 34's box WITH `nCross` (N->S minor) restored:
+  mThrough keepClear-stops, and nCross CROSSES freely (SUMO clears mThrough's request via
+  `setRequest=false`, so `blockedByFoe`'s `!avi.willPass` short-circuit, MSLink.cpp:935, lets nCross
+  proceed). Port = `Engine.FoeKeepClearBlocked` gating JunctionYieldConstraint's approaching-foe arm:
+  when the approaching foe is keepClear-blocked (its own checkRewindLinkLanes removal would fire), ego
+  does not yield. INERT outside the keepClear box (KeepClearConstraint is +infinity there) -- suite
+  133 -> 135 green. NOTE: the willPass predicate covers only the keepClear reason; other
+  not-passing reasons (red-light-held, stopped-for-any-cause) are not modeled (no committed scenario
+  exercises them). **STILL OPEN (own rung): general cross-junction leader following** -- a stopped/
+  slow vehicle on the exit edge is not yet seen as a plain car-following leader; keepClear covers the
+  box-blocking (stopped-downstream) case but not a MOVING downstream queue across a junction.
 - **C6. Actuated / adaptive traffic lights + yellow decision.** Rung 10 did STATIC `tlLogic` only.
   - **C6-i. DONE. Yellow decision ("stop if you can brake, else go").** `scenarios/30-yellow-decision`
     (`RungC6YellowDecisionParityTests`, exact @1e-3). Ported the `canBrakeBeforeStopLine` gate from

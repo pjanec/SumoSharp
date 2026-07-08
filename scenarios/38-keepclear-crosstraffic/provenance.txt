@@ -1,0 +1,19 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T15:40:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C5 follow-on (willPass) EXACT ANCHOR. Same 4-way priority cross as scenario 34 (keepClear), but
+#   WITH the crossing vehicle nCross (N->S minor) restored. mBlock stopped on exit JE; mThrough
+#   (W->E major) keepClear-STOPS at WJ@91.8; nCross must CROSS freely (t=12 :J_0, cruising) because
+#   mThrough is keepClear-held and will NOT enter the junction -- SUMO clears mThrough's request
+#   (setRequest=false), so blockedByFoe's !willPass short-circuit lets nCross proceed. The pre-fix
+#   engine had nCross over-yield (stop at NJ@95.9) to the stopped mThrough. Euler, sigma=0, teleport
+#   off, seed 42; mThrough+mBlock stay put (JE blocked forever), nCross clears by t=18.
+# net: copied from scenarios/34-keepclear (netconvert, --no-turnarounds).
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=2bac3617ce4ba3820a0132c8db4e1f142894f20cb59055961033a65bb4d44869
+input=rou.rou.xml sha256=c27d0f08f4dfd0a53600f24167a803320e4e878d5d2a31865d547aa0eba8be68
+input=config.sumocfg sha256=fe000bd4608c185b9b7bd864a16a1e1dd64f89da6c344204c787e53059fa6cec

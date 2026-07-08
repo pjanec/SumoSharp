@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <!-- 4-way priority cross. W->E is major (priority 10), N->S is minor (priority 1). -->
+    <node id="W" x="-100.0" y="0.0"   type="dead_end"/>
+    <node id="J" x="0.0"    y="0.0"   type="priority"/>
+    <node id="E" x="100.0"  y="0.0"   type="dead_end"/>
+    <node id="N" x="0.0"    y="100.0" type="dead_end"/>
+    <node id="S" x="0.0"    y="-100.0" type="dead_end"/>
+</nodes>

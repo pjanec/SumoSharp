@@ -1567,7 +1567,17 @@ public sealed class Engine : IEngine
                 // yield only guards ENTRY onto ego's own internal lane -- once ego has already
                 // been granted entry (egoOnInternal), it is no longer gated by this foe's
                 // approach state.
-                thisConstraint = egoOnInternal
+                // C5 follow-on (willPass): SUMO's blockedByFoe short-circuits on `!avi.willPass`
+                // (MSLink.cpp:935) -- a foe that will NOT enter the junction does not block ego. The
+                // engine's approaching-foe yield is otherwise blanket; here we skip it when the foe
+                // is keepClear-BLOCKED (its own checkRewindLinkLanes removal cleared its request,
+                // MSVehicle.cpp:5245 `dpi.mySetRequest = false`), i.e. its downstream exit is jammed
+                // so it stop-line-holds at the junction entry rather than crossing. Reuses
+                // KeepClearConstraint as the predicate: finite -> the foe is keepClear-held -> ego
+                // (the crossing vehicle) proceeds. Inert for every scenario without a downstream jam
+                // (KeepClearConstraint is +infinity there), so only scenario 38 is affected.
+                var foeWillNotPass = !egoOnInternal && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
+                thisConstraint = egoOnInternal || foeWillNotPass
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
@@ -1678,6 +1688,17 @@ public sealed class Engine : IEngine
         var approachLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]];
         var stopDist = approachLane.Length - v.Kinematics.Pos - distToStopLine;
         return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // C5 follow-on (willPass): is `foe` keepClear-BLOCKED at its upcoming junction entry -- i.e. its
+    // own downstream exit is jammed, so checkRewindLinkLanes would clear its request and it will NOT
+    // enter the junction? Reuses KeepClearConstraint (finite result == blocked). +infinity (not
+    // blocked) for every foe without a downstream jam, so this is inert outside the keepClear box.
+    private bool FoeKeepClearBlocked(VehicleRuntime foe, ActiveVehicleQuery allVehicles, double dt, double actionStepLengthSecs)
+    {
+        var foeLane = _network!.LanesByHandle[foe.LaneHandle];
+        var foeLaneMaxV = KraussModel.LaneVehicleMaxSpeed(foeLane.Speed, foe.SpeedFactor, foe.VType);
+        return KeepClearConstraint(foe, allVehicles, dt, actionStepLengthSecs, foeLaneMaxV) < double.PositiveInfinity;
     }
 
     // C5 helper: MSLane::getBruttoVehLenSum -- the sum of lengthWithGap (length + minGap) over the
