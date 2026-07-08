@@ -684,11 +684,30 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   `["lane","pos","speed"]` @1e-3.
 
   **Suggested decomposition (engine work, offline against the anchor golden):**
-  - **C2-i (additive, byte-identical). `getBestLanes` lane-continuity data.** For a vehicle's route,
-    compute per (route-edge, lane) the signed `bestLaneOffset` (lanes toward the nearest lane that
-    continues the route through the next `<connection>`) + the continuation length. Additive data +
-    offline unit test on the scenario-18 net; NO behavior change (inert until C2-ii). Note SUMO's
-    `getBestLanes` is TraCI-exposed → can be cross-checked as a `[net]` step if desired.
+  - **C2-i (additive, byte-identical). `getBestLanes` lane-continuity data. DONE.** Added
+    `LaneContinuation(LaneIndex, AllowsContinuation, BestLaneOffset, Length)` +
+    `NetworkModel.ComputeBestLanes(routeEdges, currentEdgeId)` in `src/Sim.Ingest/NetworkModel.cs`
+    — a scoped port of `struct LaneQ` / `MSVehicle::updateBestLanes`
+    (`sumo/src/microsim/MSVehicle.h:865-886`, `sumo/src/microsim/MSVehicle.cpp:5744-6063`), queried
+    off the existing `ConnectionsByFromEdgeLane` table (no XML re-parse). **Scope: single
+    look-ahead only** — current edge → the immediately next route edge; a lane "continues" iff it
+    has any `<connection>` to that next edge; `Length` is always just the current edge's own
+    length (never a route-wide sum). **Deferred**: SUMO's backward recursion
+    (`MSVehicle.cpp:6003-6063`) that accumulates a continuing lane's `Length` across every
+    remaining route edge — not needed until a multi-junction scenario requires it. **Sign
+    convention**: `BestLaneOffset` positive = toward the LEFT, matching `Lane.LeftNeighbor` ==
+    Index+1 (confirmed against SUMO's own `bestLaneOffset = bestThisIndex - index`,
+    `MSVehicle.cpp:5973`, positive toward a higher lane index — same sense as this repo's
+    left-is-higher-index convention). Unit test `tests/Sim.ParityTests/RungC2iBestLanesTests.cs`:
+    on scenario 18's `E1` (route `E1 E2`), `E1_0` (drop lane) → `AllowsContinuation=false`,
+    `BestLaneOffset=+1` (toward `E1_1`, confirmed to be `E1_0.LeftNeighbor`); `E1_1` →
+    `AllowsContinuation=true`, `BestLaneOffset=0`; last route edge `E2` → every lane continues,
+    offset 0. Inert-control proof on `11-priority-junction`'s single-lane-per-edge minor (`SJ JN`)
+    and major (`WJ JE`) routes: every lane on every route edge has `BestLaneOffset=0` and
+    `AllowsContinuation=true`, i.e. C2-ii built on this data is inert/byte-identical on every
+    existing single-lane-per-edge parity scenario. Purely additive — touched only
+    `src/Sim.Ingest/NetworkModel.cs` + the new test file; no simulation/engine/LC code path
+    changed. Full suite: 93 passed, 0 failed (was 87; +6 new tests).
   - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance.** Make
     `ResolveLaneSequence` tolerant (resolve the route path via the CONTINUING lane rather than
     throwing when the depart lane doesn't connect; track the vehicle's actual lane separately),

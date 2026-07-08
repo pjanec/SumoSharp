@@ -140,6 +140,27 @@ public sealed record Junction(
     IReadOnlyList<JunctionRequest> Requests,
     IReadOnlyList<JunctionConflict> Conflicts);
 
+// C2-i: one lane's route-continuity data for STRATEGIC lane-change planning -- a scoped port of
+// `struct LaneQ` (sumo/src/microsim/MSVehicle.h:865-886), the per-lane record
+// `MSVehicle::updateBestLanes` builds (sumo/src/microsim/MSVehicle.cpp:5744-6063) and that
+// TraCI's `getBestLanes` exposes verbatim. This rung is ADDITIVE ONLY: it produces this data via
+// `NetworkModel.ComputeBestLanes` below but nothing yet reads it to make a lane-change decision
+// (that consumer is C2-ii). See `ComputeBestLanes`'s doc comment for the exact single-look-ahead
+// scope and what is deferred.
+//
+// Sign convention for `BestLaneOffset`: SIGNED lane count, positive = toward the LEFT -- matches
+// this repo's `Lane.LeftNeighbor` convention (NetworkParser.cs: a lane's `LeftNeighbor` is the
+// same-edge lane at Index+1). Confirmed against SUMO itself: `(*j).bestLaneOffset = bestThisIndex
+// - index` (MSVehicle.cpp:5973) is positive exactly when the target lane has a HIGHER index than
+// the source lane, and SUMO's own lane index 0 is the rightmost lane increasing leftward (the same
+// left/right sense NetworkParser already assigns), so "higher index = left = positive offset"
+// holds in both.
+public sealed record LaneContinuation(
+    int LaneIndex,
+    bool AllowsContinuation,
+    int BestLaneOffset,
+    double Length);
+
 public sealed record NetworkModel(
     IReadOnlyList<Edge> Edges,
     IReadOnlyDictionary<string, Edge> EdgesById,
@@ -245,5 +266,102 @@ public sealed record NetworkModel(
         }
 
         return handles;
+    }
+
+    // C2-i: single-look-ahead scoped port of MSVehicle::updateBestLanes / LaneQ (see
+    // LaneContinuation's doc comment for the struct citation). Ported pieces:
+    //   - the per-edge LaneQ build (MSVehicle.cpp:5896-5918): `allowsContinuation` = whether the
+    //     lane has ANY <connection> to the next route edge (SUMO's `allowedLanes()`, here queried
+    //     via the existing `ConnectionsByFromEdgeLane` table -- no XML re-parse); `length` = the
+    //     lane's own edge length (SUMO's initial `q.length = ce->getLength()`, MSVehicle.cpp:5911).
+    //   - the last-route-edge special case (MSVehicle.cpp:5951-5989): with no next edge to miss,
+    //     every lane trivially continues and every lane's initial length is identical (no
+    //     stop/vClass penalty in this rung's scope), so the "lengths differ" branch that computes
+    //     a nonzero offset never fires -- every lane gets `BestLaneOffset = 0`.
+    //   - the offset tie-break for a non-continuing lane (MSVehicle.cpp:5970-5976): among the
+    //     lanes that DO continue, `bestThisIndex` is the lowest continuing index and
+    //     `bestThisMaxIndex` the highest; a non-continuing lane's offset is whichever of
+    //     `bestThisIndex - index` / `bestThisMaxIndex - index` is smaller in absolute value,
+    //     preferring the higher-index (leftward) target on an exact tie -- SUMO's `else` branch.
+    //
+    // SCOPE (matches this rung's anchor, scenarios/18-strategic-turnlane -- a single junction):
+    // only the transition from `currentEdgeId` to the IMMEDIATELY NEXT route edge is considered.
+    // DEFERRED (not built here -- no scenario needs it yet): SUMO's backward pass
+    // (MSVehicle.cpp:6003-6063) that, for a CONTINUING lane, recursively ADDS the best downstream
+    // lane's own `length` onto this lane's `length`, accumulating a route-wide continuation
+    // distance across every remaining edge (and picks the best of several downstream lanes when
+    // more than one continues). Here `Length` is always just `currentEdgeId`'s own edge length --
+    // this is exact for a single-junction lookahead (scenario 18 needs no more) but is NOT the
+    // full multi-edge recursion; a multi-junction scenario would need that deferred piece built
+    // out before `Length` could be trusted route-wide.
+    //
+    // Throws if the route is genuinely unreachable from `currentEdgeId` (no lane on it has a
+    // <connection> to the next route edge at all) -- not exercised by any committed scenario
+    // (scenario 18's E1 always has E1_1 continuing to E2).
+    public IReadOnlyList<LaneContinuation> ComputeBestLanes(IReadOnlyList<string> routeEdges, string currentEdgeId)
+    {
+        var edgeIndex = -1;
+        for (var i = 0; i < routeEdges.Count; i++)
+        {
+            if (routeEdges[i] == currentEdgeId)
+            {
+                edgeIndex = i;
+                break;
+            }
+        }
+
+        if (edgeIndex < 0)
+        {
+            throw new InvalidDataException(
+                $"Edge '{currentEdgeId}' is not part of the given route ({string.Join(" ", routeEdges)}).");
+        }
+
+        var edge = EdgesById[currentEdgeId];
+        var orderedLanes = edge.Lanes.OrderBy(l => l.Index).ToList();
+
+        if (edgeIndex == routeEdges.Count - 1)
+        {
+            // Last route edge: every lane trivially continues (MSVehicle.cpp:5951-5989 -- no
+            // lengths differ, so no lane ever gets a nonzero offset here).
+            return orderedLanes
+                .Select(l => new LaneContinuation(l.Index, AllowsContinuation: true, BestLaneOffset: 0, l.Length))
+                .ToList();
+        }
+
+        var nextEdgeId = routeEdges[edgeIndex + 1];
+        var allowsByIndex = new Dictionary<int, bool>();
+        foreach (var lane in orderedLanes)
+        {
+            var allows = ConnectionsByFromEdgeLane.TryGetValue((currentEdgeId, lane.Index), out var candidates)
+                && candidates.Any(c => c.To == nextEdgeId);
+            allowsByIndex[lane.Index] = allows;
+        }
+
+        var continuingIndices = allowsByIndex.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
+        if (continuingIndices.Count == 0)
+        {
+            throw new InvalidDataException(
+                $"No lane on edge '{currentEdgeId}' has a <connection> to the next route edge '{nextEdgeId}' -- route is unreachable.");
+        }
+
+        var bestThisIndex = continuingIndices.Min();
+        var bestThisMaxIndex = continuingIndices.Max();
+
+        var result = new List<LaneContinuation>();
+        foreach (var lane in orderedLanes)
+        {
+            var allows = allowsByIndex[lane.Index];
+            var offset = 0;
+            if (!allows)
+            {
+                var toLowest = bestThisIndex - lane.Index;
+                var toHighest = bestThisMaxIndex - lane.Index;
+                offset = Math.Abs(toLowest) < Math.Abs(toHighest) ? toLowest : toHighest;
+            }
+
+            result.Add(new LaneContinuation(lane.Index, allows, offset, lane.Length));
+        }
+
+        return result;
     }
 }
