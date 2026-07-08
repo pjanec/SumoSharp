@@ -883,6 +883,15 @@ public sealed class Engine : IEngine
         // (MSCFModel_IDM.cpp:77-100) -- see FreeFlowDesiredSpeedConstraint's own header comment.
         vPos = Math.Min(vPos, FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt));
 
+        // C4-iii (successive-lane speed limit): FreeFlowDesiredSpeedConstraint above caps by the
+        // CURRENT lane only; MSVehicle::planMoveInternal additionally caps the free-flow speed so
+        // the vehicle never enters an UPCOMING lane on its route faster than that lane permits
+        // (MSVehicle.cpp:2896 per-lane `va = MAX2(freeSpeed(getSpeed(), seen, laneMaxV),
+        // vMinComfortable); v = MIN2(va, v)`). Non-binding (+infinity) unless a slower lane lies
+        // within braking distance ahead -- the first scenario to exercise it on-path is the
+        // roundabout (32), whose curved internal ring lanes drop the speed limit.
+        vPos = Math.Min(vPos, SuccessiveLaneSpeedConstraint(v, lane, dt));
+
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
@@ -1109,6 +1118,56 @@ public sealed class Engine : IEngine
         return v.VType.CarFollowModel == "IDM"
             ? IdmModel.FreeSpeed(v.Kinematics.Speed, double.PositiveInfinity, laneVehicleMaxSpeed, laneVehicleMaxSpeed, v.VType, dt)
             : laneVehicleMaxSpeed;
+    }
+
+    // C4-iii: the successive-lane free-flow speed cap -- MSVehicle::planMoveInternal's per-lane
+    // loop (MSVehicle.cpp:2894-2900). For each lane on ego's route BEYOND its current one, within
+    // the plan-move lookahead `dist` (MSVehicle.cpp:2238 = SPEED2DIST(maxV) + brakeGap(maxV)),
+    // require the free-flow speed to be low enough that ego arrives at that lane no faster than the
+    // lane allows: `va = MAX2(cfModel.freeSpeed(getSpeed(), seen, laneMaxV), vMinComfortable)`,
+    // taking the running MIN. Krauss uses the base Euler freeSpeed (KraussModel.FreeSpeed); the IDM
+    // family uses its own override (IdmModel.FreeSpeed), whose desSpeed is ego's CURRENT lane's max
+    // speed (MSCFModel_IDM.cpp:87/92 `veh->getLane()->getVehicleMaxSpeed(veh)`). `seen` is measured
+    // from ego's front (MSVehicle.cpp:2251 `myLane->getLength() - myState.myPos`), accumulating the
+    // length of each traversed lane. Returns +infinity when no upcoming lane within `dist` binds --
+    // i.e. every pre-C4-iii scenario, whose on-route lanes never drop the speed limit ahead of ego
+    // (verified: the suite is unchanged). vMinComfortable/minNextSpeed are model-dispatched exactly
+    // as MSVehicle.cpp:2191 dispatches cfModel.minNextSpeed.
+    private double SuccessiveLaneSpeedConstraint(VehicleRuntime v, Lane currentLane, double dt)
+    {
+        if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var speed = v.Kinematics.Speed;
+        var isIdm = v.VType.CarFollowModel is "IDM" or "ACC" or "CACC" or "IDMM";
+        var currentLaneMaxV = KraussModel.LaneVehicleMaxSpeed(currentLane.Speed, v.SpeedFactor, v.VType);
+        var vMinComfortable = isIdm
+            ? IdmModel.MinNextSpeed(speed, v.VType, dt)
+            : KraussModel.MinNextSpeed(speed, v.VType, dt);
+        double? headwayTimeOverride = v.VType.CarFollowModel == "IDMM"
+            ? IdmmModel.AdaptedHeadwayTime(v.VType.Tau, v.LevelOfService)
+            : null;
+
+        // MSVehicle.cpp:2238: only links within this lookahead are taken into account.
+        var maxV = KraussModel.MaxNextSpeed(speed, v.VType, dt);
+        var dist = KraussModel.Speed2Dist(maxV, dt) + KraussModel.BrakeGap(maxV, v.VType.Decel, headwayTime: 0.0, dt);
+
+        var result = double.PositiveInfinity;
+        var seen = currentLane.Length - v.Kinematics.Pos;
+        for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen && seen <= dist; i++)
+        {
+            var nextLane = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            var laneMaxV = KraussModel.LaneVehicleMaxSpeed(nextLane.Speed, v.SpeedFactor, v.VType);
+            var free = isIdm
+                ? IdmModel.FreeSpeed(speed, seen, laneMaxV, currentLaneMaxV, v.VType, dt, headwayTimeOverride)
+                : KraussModel.FreeSpeed(speed, v.VType.Decel, seen, laneMaxV, dt);
+            result = Math.Min(result, Math.Max(free, vMinComfortable));
+            seen += nextLane.Length;
+        }
+
+        return result;
     }
 
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
@@ -2253,7 +2312,15 @@ public sealed class Engine : IEngine
                 // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a
                 // string hash.
                 var currentLane = _network!.LanesByHandle[v.LaneHandle];
-                if (v.Kinematics.Pos < currentLane.Length)
+                // Strict `>` boundary, matching MSVehicle::processLaneAdvances
+                // (MSVehicle.cpp:4282 `if (myState.myPos > myLane->getLength())`): a vehicle only
+                // leaves its lane once its position STRICTLY exceeds the lane length. Landing
+                // EXACTLY at the lane end (pos == length) keeps it on the current lane at
+                // pos == length -- it crosses next step. This is measure-zero in free flow (every
+                // pre-C4-iii scenario is unaffected), but a vehicle braking for a downstream slower
+                // lane routinely lands exactly on the boundary (the roundabout's ring-lane entry,
+                // where the successive-lane cap sets speed = remaining distance to the lane end).
+                if (v.Kinematics.Pos <= currentLane.Length)
                 {
                     break;
                 }

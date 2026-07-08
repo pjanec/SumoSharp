@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <!-- vWest circulates: enters at RW, passes RS on the ring, exits east at RE. -->
+    <route id="circulate" edges="WInRW RWtoRS RStoRE REEOut"/>
+    <!-- vSouth enters at RS (must yield to circulating vWest) and follows to the east exit. -->
+    <route id="enter" edges="SInRS RStoRE REEOut"/>
+    <vehicle id="vWest"  type="car" route="circulate" depart="0" departPos="0" departSpeed="13.89" departLane="0"/>
+    <vehicle id="vSouth" type="car" route="enter"     depart="4" departPos="0" departSpeed="13.89" departLane="0"/>
+</routes>

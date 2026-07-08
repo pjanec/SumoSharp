@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<connections xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/connections_file.xsd">
+    <!-- Ring continuity -->
+    <connection from="RStoRE" to="REtoRN" fromLane="0" toLane="0"/>
+    <connection from="REtoRN" to="RNtoRW" fromLane="0" toLane="0"/>
+    <connection from="RNtoRW" to="RWtoRS" fromLane="0" toLane="0"/>
+    <connection from="RWtoRS" to="RStoRE" fromLane="0" toLane="0"/>
+    <!-- South enters at RS onto the ring (toward RE) -->
+    <connection from="SInRS" to="RStoRE" fromLane="0" toLane="0"/>
+    <!-- Ring exits north: REtoRN arrives RN, leaves to NOut -->
+    <connection from="REtoRN" to="RNNOut" fromLane="0" toLane="0"/>
+    <!-- West enters at RW onto the ring (toward RS) -->
+    <connection from="WInRW" to="RWtoRS" fromLane="0" toLane="0"/>
+    <!-- Ring exits east: RStoRE arrives RE, leaves to EOut -->
+    <connection from="RStoRE" to="REEOut" fromLane="0" toLane="0"/>
+</connections>

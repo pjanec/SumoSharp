@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edges xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/edges_file.xsd">
+    <!-- Ring edges, counterclockwise (RS->RE->RN->RW->RS). One lane, 8.33 m/s (ring speed). -->
+    <edge id="RStoRE" from="RS" to="RE" numLanes="1" speed="8.33" priority="10"/>
+    <edge id="REtoRN" from="RE" to="RN" numLanes="1" speed="8.33" priority="10"/>
+    <edge id="RNtoRW" from="RN" to="RW" numLanes="1" speed="8.33" priority="10"/>
+    <edge id="RWtoRS" from="RW" to="RS" numLanes="1" speed="8.33" priority="10"/>
+    <!-- Approaches (enter, priority 1 so they yield to the ring) and exits. -->
+    <edge id="SInRS"  from="SIn"  to="RS" numLanes="1" speed="13.89" priority="1"/>
+    <edge id="RNNOut" from="RN"   to="NOut" numLanes="1" speed="13.89" priority="1"/>
+    <edge id="WInRW"  from="WIn"  to="RW" numLanes="1" speed="13.89" priority="1"/>
+    <edge id="REEOut" from="RE"   to="EOut" numLanes="1" speed="13.89" priority="1"/>
+</edges>

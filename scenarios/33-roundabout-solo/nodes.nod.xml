@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <!-- 4 ring nodes (radius 20) + 4 outer arm ends. Ring is priority-controlled so circulating
+         traffic keeps right-of-way over entering traffic. -->
+    <node id="RN" x="0.0"   y="20.0"  type="priority"/>
+    <node id="RE" x="20.0"  y="0.0"   type="priority"/>
+    <node id="RS" x="0.0"   y="-20.0" type="priority"/>
+    <node id="RW" x="-20.0" y="0.0"   type="priority"/>
+    <node id="SIn"  x="0.0"    y="-200.0" type="dead_end"/>
+    <node id="NOut" x="0.0"    y="200.0"  type="dead_end"/>
+    <node id="WIn"  x="-200.0" y="0.0"    type="dead_end"/>
+    <node id="EOut" x="200.0"  y="0.0"    type="dead_end"/>
+</nodes>

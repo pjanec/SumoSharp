@@ -1,0 +1,17 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T11:20:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C4-iii SUCCESSIVE-LANE-SPEED anchor: a SINGLE circulating vehicle vWest (WIn->RW->RS->RE->EOut).
+#   The only mechanism exercised is MSVehicle::planMoveInternal's per-lane free-flow speed cap over
+#   the curved ring internal lanes (:RW_1 9.11, :RS_1 5.58) -- no foe, no junction yield/merge. Also
+#   exercises the strict `>` lane-end boundary (lands exactly on RWtoRS end at 7.947333).
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# net: netconvert from nodes/edges/connections (single-lane priority roundabout, radius 20, ring
+#   priority 10 > approach priority 1), --no-turnarounds.
+# input file hashes (sha256):
+input=net.net.xml sha256=18b851aafbf70a613958d9f62bdb492f04ba174b10895408f3158930c371fc83
+input=rou.rou.xml sha256=9bf562e01a7042a706f9ce23d139a0995016403ffeced000b417673f17caf8ca
+input=config.sumocfg sha256=91cd5c9623d7001df654310f48925ead16db777fe8bc8926af6d64cae502fabe

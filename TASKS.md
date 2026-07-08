@@ -863,15 +863,37 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     (documented; not exercised -- scenario 27's waits differ by 3s). Byte-identical for every
     priority/RBL scenario (gated on junction.Type). Parity-reviewer ACCEPT (stash-test confirmed
     the deadlock without the change).
-  - **C4-iii. DEFERRED -> needs the sameTarget-MERGE yield (see below).** A minimal roundabout was
-    built (recipe + SUMO golden saved in the session scratchpad): a priority ring (circulating
-    edges priority 10, approaches priority 1) -- netconvert makes each entry a standard minor link,
-    so the entry cautious-approach/yield is just the existing machinery. BUT the roundabout entry
-    is a `sameTarget` MERGE (the entering and circulating links share the ring's next lane), and the
-    engine's `JunctionConflict` records only geometric CROSSINGS, not merges -- so with a
-    circulating foe actually present, the entering vehicle does not follow-yield to it (it needs the
-    merge-leader path). This is the gap-acceptance half of C3 that scenario 19 never exercised (mA
-    was far). Blocked on that rung; the roundabout anchor lands once it exists.
+  - **C4-iii. PARTIAL -> successive-lane speed limit DONE (exact); two-vehicle entry-yield blocked
+    on the junction arrival-time subsystem.** A single-lane priority roundabout (circulating edges
+    priority 10, approaches priority 1; each entry a standard minor link + `sameTarget` MERGE onto
+    the ring's next lane). Two independent mechanisms surfaced here:
+    - **DONE (this session): successive-lane free-flow speed limit.** `MSVehicle::planMoveInternal`
+      caps the free-flow speed so a vehicle never enters an UPCOMING route lane faster than that lane
+      permits (MSVehicle.cpp:2894-2900: per following lane `va = MAX2(cfModel.freeSpeed(getSpeed(),
+      seen, laneMaxV), vMinComfortable); v = MIN2(va, v)`). Every prior scenario left this
+      unexercised (speed-dropping junction turn lanes were always OFF the tested vehicle's path); a
+      roundabout's curved ring internal lanes (`:RW_1` 9.11, `:RS_1` 5.58) are the first on-route
+      drop. Port = `KraussModel.FreeSpeed` (base MSCFModel.cpp:105-121 Euler `freeSpeed`, NOT
+      overridden by Krauss; IDM family routes through its own `IdmModel.FreeSpeed` override,
+      MSCFModel_IDM.cpp:78) + `Engine.SuccessiveLaneSpeedConstraint`. Also fixed the lane-end
+      boundary to STRICT `>` (`MSVehicle::processLaneAdvances`, MSVehicle.cpp:4282 `myPos >
+      getLength()`): a vehicle that lands EXACTLY on `pos == laneLength` (routine when the
+      successive-lane cap sets speed = remaining distance) stays on its lane one more step -- was
+      `>=` (advance at ==), a latent deviation invisible until a vehicle landed on the boundary.
+      Anchor `scenarios/33-roundabout-solo` (`RungC4iiiSuccessiveLaneSpeedParityTests`, single
+      circulating vehicle, exact @1e-3); byte-identical for all prior scenarios (122 green).
+    - **BLOCKED: two-vehicle entry-yield to an APPROACHING circulating foe.**
+      `scenarios/32-roundabout` (committed as a NON-TESTED anchor) adds vSouth entering at RS while
+      vWest circulates through. vWest is exact, but vSouth must STOP-line yield to vWest while vWest
+      is still APPROACHING the merge (on the ring's approach lane, not yet on its internal lane).
+      `SameTargetMergeConstraint` only follows a foe already ON the merge/target lane; a blanket
+      "stop for any approaching merge foe" over-yields when the foe is FAR (breaks scenario 19/C3,
+      where the mainline is distant). SUMO gates this on ARRIVAL-TIME WINDOWS
+      (`MSLink::opened`/`blockedByFoe`, MSLink.cpp:747-1013: block iff the foe's
+      `[arrivalTime, leavingTime]` overlaps ego's within `lookAhead`), fed by the approach-
+      reservation each vehicle registers in planMove (`MSVehicle::setApproaching`/`getArrivalTime`).
+      That arrival-time right-of-way is its own rung (needs a `DEBUG` trace of the arrival/leave
+      times); the two-vehicle roundabout anchor lands once it exists.
   - **C4-iv. DONE (symmetric merge, exact @1e-3). sameTarget-merge yield (the C3 merge half).**
     `scenarios/31-merge-yield-sym` (`RungC4ivMergeYieldParityTests`, exact). A SLOW major vehicle mA
     crawls across the merge exactly as the minor vehicle vB arrives, so vB must follow-YIELD to mA
@@ -884,15 +906,21 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     the entry (SUMO's `MAX2(vSafeLeader, vLinkWait)` relaxation, MSVehicle.cpp:3478 -- the cautious
     approach governs there), binding only within visibility / on the internal lane. Byte-identical
     for every existing scenario incl. scenario 19/C3 (also a sameTarget merge but mA is never on the
-    merge lane while rA is within visibility -> the arm returns +infinity). **Remaining
-    refinement (asymmetric geometry):** `scenarios/29-merge-yield` (an ASYMMETRIC on-ramp: curved R
-    vs straight M internal lanes) stays a NON-passing anchor -- its gap carries a
-    `lengthBehindCrossing` term `(flbc - lbc) ~= -0.005` (angle-based `conflictSize`,
-    MSLink.cpp:354-382) this port sets to 0; for the SYMMETRIC merge the two internal lanes are
-    mirror images so that term cancels exactly (hence 31 is exact, 29 is off by 0.005 at
-    firstDiv=t=12). Porting the merge conflict-geometry (from the traces' `lbc=`/`flbc=` values)
-    would make 29 exact too and generalize to arbitrary merges; own small follow-on. The full
-    two-phase mechanism + gating below was the hard part and is DONE.
+    merge lane while rA is within visibility -> the arm returns +infinity). **Asymmetric-geometry
+    refinement DONE in C4-v (see below):** `scenarios/29-merge-yield` (an ASYMMETRIC on-ramp: curved
+    R vs straight M internal lanes) is now an EXACT anchor (`RungC4vMergeGeometryParityTests`) -- its
+    residual was the `lengthBehindCrossing` term `(flbc - lbc)` this port originally set to 0; C4-v
+    ports the merge conflict-geometry so both the symmetric (31) and asymmetric (29) merges pass. The
+    full two-phase mechanism + gating below was the hard part and is DONE.
+  - **C4-v. DONE (exact @1e-3). sameTarget-MERGE conflict geometry (`lengthBehindCrossing`).**
+    Ports `MSLink::computeDistToDivergence` (MSLink.cpp:561, `sameSource=false` arm) to
+    `PolylineGeometry.ComputeDistToDivergence` + the `MergeConflict` static geometry at ingest, so
+    `SameTargetMergeConstraint`'s gap uses `distToCrossing = distToMerge - egoLbc`,
+    `leaderBackDist = (foeLen - foeLbc) - leaderBack`, and the `leaderBackDist2` correction
+    (MSLink.cpp:1632-1638). Verified byte-exact against the v1_20_0 DEBUG trace (lbc/flbc
+    10.827662/10.822642 scen29, 14.747385/14.748960 scen31). Makes scenario 29 exact; scenario 31
+    unchanged (symmetric no-op). Parity-reviewer ACCEPT (stash test: 29 fails pos maxAbs 0.010
+    reverted).
     *(Original blocked-anchor note for `scenarios/29-merge-yield`, retained for context:)* A SLOW
     mainline vehicle mA (maxSpeed 6) crawls across the `:J_1_0` merge lane exactly when ramp vehicle
     rA arrives, so rA must follow-YIELD to mA onto the shared lane D.

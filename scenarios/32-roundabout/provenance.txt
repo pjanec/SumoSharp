@@ -1,0 +1,19 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T11:20:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# NON-TESTED ANCHOR (no parity test yet): two-vehicle roundabout. vWest circulates and vSouth
+#   enters at RS and must YIELD to circulating vWest. vWest's trajectory matches exactly (successive-
+#   lane speed + strict-> boundary), but vSouth's entry-yield to an APPROACHING (not-yet-on-junction)
+#   circulating foe needs the junction arrival-time right-of-way / approach-reservation subsystem
+#   (MSLink::opened / blockedByFoe, MSVehicle::setApproaching) which is not yet ported -- see TASKS.md.
+#   Committed as the anchor for that future rung.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# net: netconvert from nodes/edges/connections (single-lane priority roundabout, radius 20, ring
+#   priority 10 > approach priority 1), --no-turnarounds.
+# input file hashes (sha256):
+input=net.net.xml sha256=18b851aafbf70a613958d9f62bdb492f04ba174b10895408f3158930c371fc83
+input=rou.rou.xml sha256=154774c2062ce6c3d730d13975d7194023f8005edd123fc643c3d40fea23f4e1
+input=config.sumocfg sha256=91cd5c9623d7001df654310f48925ead16db777fe8bc8926af6d64cae502fabe

@@ -60,6 +60,32 @@ public static class KraussModel
         return Speed2Dist((steps * speed) - (speedReduction * steps * (steps + 1) / 2.0), dt) + (speed * headwayTime);
     }
 
+    // MSCFModel.cpp:105-121 freeSpeed (the BASE class method, semi-implicit Euler arm only --
+    // phase 1 is Euler-only per CLAUDE.md/DESIGN.md). This is NOT overridden by MSCFModel_Krauss,
+    // so a Krauss vehicle uses exactly this braking-curve formula for the successive-lane speed
+    // limit lookahead in MSVehicle::planMoveInternal (MSVehicle.cpp:2896:
+    // `cfModel.freeSpeed(this, getSpeed(), seen, laneMaxV)`): the maximum speed from which the
+    // vehicle can still slow to `targetSpeed` after covering `dist`, given max deceleration.
+    // `onInsertion` is always false at that call site, so its `+1` term in fullSpeedGain is
+    // dropped. (IDM overrides freeSpeed -- MSCFModel_IDM.cpp:78 -- so the IDM family routes through
+    // IdmModel.FreeSpeed instead; see Engine.SuccessiveLaneSpeedConstraint.) Unit macros:
+    // SPEED2DIST(x)=x*TS, ACCEL2DIST(x)=x*TS*TS, DIST2SPEED(x)=x/TS, ACCEL2SPEED(x)=x*TS.
+    public static double FreeSpeed(double currentSpeed, double decel, double dist, double targetSpeed, double dt)
+    {
+        var v = Speed2Dist(targetSpeed, dt);
+        if (dist < v)
+        {
+            return targetSpeed;
+        }
+
+        var b = decel * dt * dt;
+        var y = Math.Max(0.0, ((Math.Sqrt((b + 2.0 * v) * (b + 2.0 * v) + 8.0 * b * dist) - b) * 0.5 - v) / b);
+        var yFull = Math.Floor(y);
+        var exactGap = (yFull * yFull + yFull) * 0.5 * b + yFull * v + (y > yFull ? v : 0.0);
+        var fullSpeedGain = yFull * Accel2Speed(decel, dt);
+        return Dist2Speed(Math.Max(0.0, dist - exactGap) / (yFull + 1), dt) + fullSpeedGain + targetSpeed;
+    }
+
     // MSCFModel.cpp:827-851 maximumSafeStopSpeedEuler. relaxEmergency is always false at both
     // call sites reachable from followSpeed (MSCFModel_Krauss.cpp:127 and
     // MSCFModel.cpp:952/960's onInsertion=false, relaxEmergency=false), so the emergency-relax
