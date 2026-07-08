@@ -1220,17 +1220,30 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   does not yield. INERT outside the keepClear box (KeepClearConstraint is +infinity there) -- suite
   133 -> 135 green. NOTE: the willPass predicate covers only the keepClear reason; other
   not-passing reasons (red-light-held, stopped-for-any-cause) are not modeled (no committed scenario
-  exercises them). **STILL OPEN (own rung): general cross-junction leader following.** ANCHOR BUILT
-  (committed, NON-TESTED): `scenarios/39-crossjunction-leader` -- AJ->J->JB single lane, a SLOW leader
-  (maxSpeed 3) on JB just past the junction; the follower (13.89) on AJ must car-follow it ACROSS the
-  junction. SUMO golden: the follower DECELERATES to 10.4 at t=4 while STILL ON AJ (it sees the
-  cross-junction leader). The engine's `LeaderFollowSpeedConstraint` sees only SAME-LANE leaders, so
-  its follower crosses at full speed then brakes erratically. TWO entangled mechanisms are needed:
-  (1) cross-junction leader following (a getLeaderInfo-across-links scan onto the downstream lane, cf.
-  MSVehicle::planMoveInternal's per-lane `ahead` leader loop) AND (2) cross-junction INSERTION safety
-  (SUMO DELAYS the follower's insertion to t=2 considering the downstream leader; the engine inserts
-  at t=0). Both must land together for parity -- own focused rung. keepClear/C5 already covers the
-  box-blocking STOPPED-downstream case (checkRewindLinkLanes); this is the MOVING-leader case.
+  exercises them). **DONE (parity-track, exact @1e-3): general cross-junction leader following.**
+  `scenarios/39-crossjunction-leader` (`RungCrossJunctionLeaderParityTests`, Run 45) passes exact
+  @1e-3. AJ->J->JB single lane, a SLOW leader (maxSpeed 3) on JB just past the junction; the follower
+  (13.89) on AJ car-follows it ACROSS the junction. Two entangled mechanisms, both ported:
+  (1) **cross-junction leader following** (`Engine.CrossJunctionLeaderConstraint` +
+  `TryFindCrossJunctionLeader`): a per-downstream-lane leader scan (MSVehicle::planMoveInternal's
+  `ahead`/getLeaderInfo loop) Min'd into the plan-phase speed alongside the same-lane
+  `LeaderFollowSpeedConstraint` -- walks the route pool forward within the plan-move lookahead
+  `SPEED2DIST(maxV)+brakeGap(maxV)`, gap = distToLaneStart + leaderBackPos - egoMinGap. The follower
+  decelerates to 10.403 at t=4 while STILL ON AJ, then follows onto JB, converging to the leader's 3.0
+  -- matching SUMO. (2) **cross-junction INSERTION safety** (`Engine.TryInsertOnLane`): the insertion
+  follow-check also considers the downstream leader (`maximumSafeFollowSpeed(..., onInsertion:true)`);
+  if the safe speed < departSpeed, insertion fails that step -- SUMO delays the follower to t=2. This
+  required processing insertions in vehicle-DEFINITION order (SUMO's MSInsertionControl order, ties by
+  route-file order) across all lanes rather than lane-sorted, so the downstream leader `lead` (defined
+  first) is placed before `foll` is checked; a per-lane `blockedLanes` set preserves per-lane FIFO.
+  Suite 141 -> 142. INERT: no committed scenario has a close cross-junction leader or a cross-lane
+  insertion dependence, so the constraint is +inf and the insertion order is outcome-neutral there --
+  all committed scenarios + the D1 determinism hash stay green (142). NON-VACUOUS: disabling the
+  running constraint fails at step 4 (follower blows through), disabling the insertion check fails at
+  step 2 (follower inserts at t=0, presence mismatch). SIMPLIFICATION (documented): only the FIRST
+  (nearest) downstream leader is followed (no multi-leader min across several downstream lanes) --
+  sufficient for the single-leader anchor. keepClear/C5 covers the box-blocking STOPPED-downstream
+  case (checkRewindLinkLanes); this is the MOVING-leader case. Parity-reviewer gate pending.
 - **C6. Actuated / adaptive traffic lights + yellow decision.** Rung 10 did STATIC `tlLogic` only.
   - **C6-i. DONE. Yellow decision ("stop if you can brake, else go").** `scenarios/30-yellow-decision`
     (`RungC6YellowDecisionParityTests`, exact @1e-3). Ported the `canBrakeBeforeStopLine` gate from

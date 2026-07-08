@@ -95,6 +95,26 @@ internal sealed class LaneNeighborQuery
     public VehicleRuntime? GetNeighborLeader(VehicleRuntime ego, int neighborLaneHandle) =>
         GetLeaderOnLane(ego, neighborLaneHandle);
 
+    // C-cross-junction: the REARMOST vehicle on a lane (smallest Pos), i.e. the one an approaching
+    // upstream follower would reach first -- the downstream leader for cross-junction car-following
+    // (MSLink::getLeaderInfo / MSLane::getLastVehicleInformation's rear-of-lane leader). The
+    // per-lane list is Pos-ascending, so the rearmost is index 0. Excludes `ego` for symmetry with
+    // GetLeader (ego is never in a downstream lane's bucket while still upstream, but kept for
+    // robustness). Null when the lane is empty.
+    public VehicleRuntime? GetRearmost(VehicleRuntime ego, int laneHandle)
+    {
+        var list = _byLaneHandle[laneHandle];
+        for (var index = 0; index < list.Count; index++)
+        {
+            if (!ReferenceEquals(list[index], ego))
+            {
+                return list[index];
+            }
+        }
+
+        return null;
+    }
+
     private VehicleRuntime? GetLeaderOnLane(VehicleRuntime ego, int laneHandle)
     {
         var list = _byLaneHandle[laneHandle];

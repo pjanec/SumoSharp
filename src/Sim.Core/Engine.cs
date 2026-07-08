@@ -522,12 +522,18 @@ public sealed class Engine : IEngine
     // (we use departPos directly since it is always >=0 here).
     private void InsertDepartingVehicles(double time)
     {
-        // Group not-yet-inserted, not-arrived candidates whose depart time has come by their
-        // target insertion lane (each candidate resolves independently; grouping is only to
-        // process each lane's depart queue in isolation). Ordered by target lane id for
-        // deterministic per-step processing order (this scenario has exactly one lane).
-        var candidatesByLane = new SortedDictionary<string, List<VehicleRuntime>>(StringComparer.Ordinal);
-
+        // SUMO's MSInsertionControl processes the depart queue by depart time, ties broken by the
+        // route file's vehicle order (definition order), ACROSS all lanes -- NOT grouped/sorted by
+        // lane. This cross-lane order matters for cross-junction insertion safety: a downstream
+        // leader defined earlier (scenario 39's `lead` on JB, defined before `foll` on AJ) must be
+        // placed before the upstream follower's insertion is checked, so the follower actually sees
+        // it and delays. `_vehicles` is in definition order and OrderBy is a stable sort, so this is
+        // depart-time order with definition-order ties. Per-lane FIFO is preserved via `blockedLanes`:
+        // once a candidate on a lane fails this step, later candidates on that SAME lane queue behind
+        // it (they are not attempted this step). For every scenario without a cross-lane insertion
+        // dependence, the outcome is independent of this cross-lane order (verified: the D1
+        // determinism hash and all committed scenarios are unchanged).
+        var candidates = new List<VehicleRuntime>();
         foreach (var v in _vehicles)
         {
             if (v.Inserted || v.Arrived || v.Def.Depart > time)
@@ -535,36 +541,26 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            var route = _demand!.RoutesById[v.Def.RouteId];
-            var edge = _network!.EdgesById[route.Edges[0]];
-            var lane = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex);
-
-            if (!candidatesByLane.TryGetValue(lane.Id, out var list))
-            {
-                list = new List<VehicleRuntime>();
-                candidatesByLane[lane.Id] = list;
-            }
-
-            list.Add(v);
+            candidates.Add(v);
         }
 
-        foreach (var (laneId, candidates) in candidatesByLane)
+        var blockedLanes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var v in candidates.OrderBy(c => c.Def.Depart))
         {
-            // FIFO order: SUMO's depart queue is processed in departure order (ties broken by
-            // the route file's vehicle order); List<T>.OrderBy is a stable sort, so ties
-            // preserve _demand.Vehicles/_vehicles enumeration order (rou.xml file order).
-            foreach (var v in candidates.OrderBy(c => c.Def.Depart))
+            var route = _demand!.RoutesById[v.Def.RouteId];
+            var edge = _network!.EdgesById[route.Edges[0]];
+            var laneId = edge.Lanes.First(l => l.Index == v.Def.DepartLaneIndex).Id;
+
+            if (blockedLanes.Contains(laneId))
             {
-                if (!TryInsertOnLane(v, laneId))
-                {
-                    // MSLane::isInsertionSuccess fails for this candidate this step -> stop
-                    // attempting further (later-departing) candidates on this lane this step;
-                    // they queue behind it (FIFO). A vehicle inserted earlier in THIS loop
-                    // (for an earlier candidate on the same lane) becomes the leader the next
-                    // candidate is checked against, since TryInsertOnLane re-scans _vehicles
-                    // fresh on each call.
-                    break;
-                }
+                // An earlier (same-step) candidate on this lane already failed -- FIFO: later
+                // candidates queue behind it and are not attempted this step.
+                continue;
+            }
+
+            if (!TryInsertOnLane(v, laneId))
+            {
+                blockedLanes.Add(laneId);
             }
         }
     }
@@ -643,6 +639,33 @@ public sealed class Engine : IEngine
         // _laneSeqArrival's own comment). Both slices share LaneSeqStart/Len; they differ only where
         // the route requires an intra-edge lane change.
         var (poolSeq, arrivalSeq) = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, v.Def.DepartLaneIndex);
+
+        // Cross-junction INSERTION safety: MSLane::isInsertionSuccess also follow-checks a leader
+        // reachable across the next junction(s), not just same-lane leaders. If the safe insertion
+        // follow speed against a close downstream leader is below the requested departSpeed
+        // (patchSpeed=false), insertion fails THIS step and retries next -- SUMO delays the vehicle
+        // until the leader has moved far enough. This is the SAME cross-junction scan the running
+        // CrossJunctionLeaderConstraint uses, with the rearmost-leader source being an ActiveVehicles
+        // scan (the neighbor query is not yet refilled at insertion time). Uses insertionFollowSpeed
+        // = maximumSafeFollowSpeed(gap, ..., onInsertion:true) (MSCFModel::insertionFollowSpeed).
+        // Inert unless a close cross-junction leader exists (every other scenario inserts unchanged).
+        var downstreamAtInsert = poolSeq.Length > 1 ? poolSeq[1..] : Array.Empty<int>();
+        if (downstreamAtInsert.Length > 0
+            && TryFindCrossJunctionLeader(
+                v.Def.DepartSpeed, v.VType, v, lane.Handle, v.Def.DepartPos, downstreamAtInsert,
+                RearmostOnLaneAmongActive, _config!.StepLength, out var insLeader, out var insGap))
+        {
+            var insSpeed = KraussModel.MaximumSafeFollowSpeed(
+                insGap, v.Def.DepartSpeed, insLeader.Kinematics.Speed, insLeader.VType.Decel,
+                v.VType, _config.StepLength, onInsertion: true);
+            if (insSpeed < v.Def.DepartSpeed)
+            {
+                // Not enough room to enter at departSpeed behind the downstream leader -- retry next
+                // step (do NOT append to the pools; v stays un-Inserted).
+                return false;
+            }
+        }
+
         v.LaneSeqStart = _laneSeqPool.Count;
         v.LaneSeqLen = poolSeq.Length;
         _laneSeqPool.AddRange(poolSeq);
@@ -651,6 +674,24 @@ public sealed class Engine : IEngine
 
         v.Inserted = true;
         return true;
+    }
+
+    // Cross-junction insertion helper: the rearmost (smallest-Pos) active vehicle on a lane handle,
+    // scanned directly from the engine's vehicle list (the neighbor query is not yet refilled when
+    // InsertDepartingVehicles runs at the top of the step). Mirrors LaneNeighborQuery.GetRearmost.
+    private VehicleRuntime? RearmostOnLaneAmongActive(int laneHandle)
+    {
+        VehicleRuntime? rearmost = null;
+        foreach (var other in ActiveVehicles())
+        {
+            if (other.LaneHandle == laneHandle
+                && (rearmost is null || other.Kinematics.Pos < rearmost.Kinematics.Pos))
+            {
+                rearmost = other;
+            }
+        }
+
+        return rearmost;
     }
 
     // B3: reroute-around-prolonged-blockage (DESIGN.md "Two futures" -- live-reactivity, seam-4
@@ -932,6 +973,12 @@ public sealed class Engine : IEngine
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
         vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed));
+
+        // Cross-junction leader following: car-follow a slow leader that has already crossed onto a
+        // downstream lane, while ego is still on its approach (the same-lane constraint above cannot
+        // see it). +infinity unless a close downstream leader exists on ego's route path -- inert for
+        // every scenario without one. See CrossJunctionLeaderConstraint's own header comment.
+        vPos = Math.Min(vPos, CrossJunctionLeaderConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed));
 
         // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
         // by this vehicle's speedFactor, capped by its vType maxSpeed. C11-i: for Krauss this
@@ -2535,6 +2582,97 @@ public sealed class Engine : IEngine
             hasPred: true,
             predIsCacc: leader.VType.CarFollowModel == "CACC",
             levelOfService: ego.LevelOfService);
+    }
+
+    // Cross-junction leader following: MSVehicle::planMoveInternal's per-downstream-lane leader scan
+    // (the `ahead`/getLeaderInfo loop over myLFLinkLanes, MSVehicle.cpp:2508-2544). A vehicle
+    // approaching a junction must car-follow a leader that has ALREADY crossed onto a downstream lane
+    // -- the same-lane LeaderFollowSpeedConstraint (above) sees only ego's CURRENT lane, so without
+    // this a follower blows through the junction at full speed and brakes erratically once it lands
+    // behind the slow leader. Walks the route pool forward from ego's current lane, accumulating
+    // distance, and follows the nearest downstream leader found within the plan-move lookahead
+    // `dist = SPEED2DIST(maxV) + brakeGap(maxV)` (MSVehicle.cpp:2238, the same window
+    // JunctionYieldConstraint / setApproaching use). +inf (non-binding) when no such leader exists,
+    // so every scenario without a close cross-junction leader is untouched. The junction RoW /
+    // red-light constraints separately cap the speed (Min), so this is safe to evaluate
+    // unconditionally: when ego must yield it stops at the line (a smaller speed) and this term is
+    // dominated; when ego proceeds, this is the leader it will actually follow through.
+    private double CrossJunctionLeaderConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed)
+    {
+        var downstream = new List<int>();
+        for (var i = ego.LaneSeqIndex + 1; i < ego.LaneSeqLen; i++)
+        {
+            downstream.Add(_laneSeqPool[ego.LaneSeqStart + i]);
+        }
+
+        if (!TryFindCrossJunctionLeader(
+                ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
+                downstream, h => neighbors.GetRearmost(ego, h), dt, out var leader, out var gap))
+        {
+            return double.PositiveInfinity;
+        }
+
+        return FollowSpeedFor(
+            ego.VType,
+            egoSpeed: ego.Kinematics.Speed,
+            gap: gap,
+            predSpeed: leader.Kinematics.Speed,
+            predMaxDecel: leader.VType.Decel,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
+            dt: dt,
+            time: time,
+            accControlMode: ref ego.AccControlMode,
+            accLastUpdateTime: ref ego.AccLastUpdateTime,
+            caccControlMode: ref ego.CaccControlMode,
+            egoAcceleration: ego.Acceleration,
+            hasPred: true,
+            predIsCacc: leader.VType.CarFollowModel == "CACC",
+            levelOfService: ego.LevelOfService);
+    }
+
+    // Shared cross-junction downstream-leader scan (used by CrossJunctionLeaderConstraint during
+    // planning and by TryInsertOnLane for cross-junction insertion safety). Walks `downstreamLanes`
+    // (the pool lanes AHEAD of ego, in route order), accumulating distance from ego's front, and
+    // returns the nearest leader within the lookahead `dist = SPEED2DIST(maxV) + brakeGap(maxV)`.
+    // `rearmostOnLane` returns the lane's rearmost (nearest-to-junction) vehicle -- from the frozen
+    // neighbor query during planning, or an ActiveVehicles scan at insertion. gap = (distance to the
+    // start of the leader's lane) + leaderBackPos - egoMinGap, matching MSLink::getLeaderInfo's
+    // cross-boundary gap. Only the FIRST (nearest) downstream leader is returned -- sufficient for
+    // this rung's single-leader anchor; a multi-leader min across several downstream lanes is not
+    // needed here (documented).
+    private bool TryFindCrossJunctionLeader(
+        double egoSpeed, ResolvedVType egoVType, VehicleRuntime? egoSelf,
+        int startLaneHandle, double startPos, IReadOnlyList<int> downstreamLanes,
+        Func<int, VehicleRuntime?> rearmostOnLane, double dt,
+        out VehicleRuntime leader, out double gap)
+    {
+        leader = null!;
+        gap = double.PositiveInfinity;
+
+        var startLane = _network!.LanesByHandle[startLaneHandle];
+        var maxV = KraussModel.MaxNextSpeed(egoSpeed, egoVType, dt);
+        var lookahead = KraussModel.Speed2Dist(maxV, dt) + KraussModel.BrakeGap(maxV, egoVType.Decel, egoVType.Tau, dt);
+        var seen = startLane.Length - startPos;
+
+        foreach (var laneHandle in downstreamLanes)
+        {
+            if (seen > lookahead)
+            {
+                break;
+            }
+
+            var cand = rearmostOnLane(laneHandle);
+            if (cand is not null && (egoSelf is null || !ReferenceEquals(cand, egoSelf)))
+            {
+                gap = seen + (cand.Kinematics.Pos - cand.VType.Length) - egoVType.MinGap;
+                leader = cand;
+                return true;
+            }
+
+            seen += _network.LanesByHandle[laneHandle].Length;
+        }
+
+        return false;
     }
 
     // B1/B5-i: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on

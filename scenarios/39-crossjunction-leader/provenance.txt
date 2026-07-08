@@ -4,7 +4,7 @@ generated_utc=2026-07-08T16:10:00Z
 command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
 state_time=1
 fcd_precision=6
-# CROSS-JUNCTION LEADER FOLLOWING NON-TESTED ANCHOR (C5 follow-on; engine port not yet done -- see
+# CROSS-JUNCTION LEADER FOLLOWING PARITY ANCHOR (RungCrossJunctionLeaderParityTests, exact @1e-3; see
 #   TASKS.md). AJ(200m)->J->JB(200m), single lane. A SLOW leader (maxSpeed 3) sits on JB just past
 #   the junction; the follower (13.89) approaches on AJ and must car-follow the leader ACROSS the
 #   junction. SUMO golden: foll DECELERATES to 10.4 at t=4 while STILL ON AJ (pos 199.3) -- it sees
