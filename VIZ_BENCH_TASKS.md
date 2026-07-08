@@ -43,8 +43,10 @@ specs' hedged "if that isn't done yet" language:
     the "never reach into engine structs" rule.
 - **The engine's capability gates are already cleared.** Traffic lights (rung 10), priority
   junctions (9b), lane-changing (A2 speed-gain + keep-right), Dijkstra routing (B2), reroute
-  (B3) are all done and green (64 tests). The benchmark's "needs ~rung 10" dependency is
-  satisfied for the *small* rungs (see the C2 caveat in Phase 2).
+  (B3) are all done and green. As of `main` (`2178654`) the C-track has also landed — C1
+  (sigma>0), **C2 (strategic LC + lane continuity)**, C3, C7, C8, C11 (IDM/ACC/CACC/IDMM) —
+  and B5 (external agents). `dotnet test` = **104 green**. The benchmark's engine-capability
+  gate is fully cleared for all rungs (see Phase 2).
 
 Two **real gaps** the tasks below close:
 
@@ -84,7 +86,13 @@ Phase 0 (offline) ──> Phase 1 Sim.Viz (offline) ─────────�
 
 # PHASE 0 — shared FCD-writer seam (offline)
 
-## VB-0 — `FcdWriterObserver` + a run-and-dump entry point
+## VB-0 — `FcdWriterObserver` + a run-and-dump entry point — **DONE**
+
+**Status: DONE** (`Sim.Harness/FcdWriterObserver.cs`, `src/Sim.Run/`,
+`VehicleExportSnapshot.VehicleType`, `tests/Sim.ParityTests/Vb0FcdWriterTests.cs`). `dotnet
+test` = **105 green**; `Sim.Bench` hash **byte-identical** (`42F875C2662DB78E`, single ==
+parallel, unchanged with/without the edit). The writer is lossless (round-trippable "R"
+formatting) and the emitted engine FCD lands within `01`'s tolerance vs the SUMO golden.
 
 **Goal.** Let any engine run write a SUMO-schema FCD file, so both `Sim.Viz` and the benchmark
 can consume engine trajectories the same way they consume `golden.fcd.xml`.
@@ -244,16 +252,16 @@ plateau (not a rush-hour spike). Little's law: `concurrent ≈ insertion_rate ×
 so `rate ≈ N / mean_trip_time`. Estimate mean trip time from a short pilot, set the rate,
 **measure** actual concurrency from `--summary-output`, iterate 2–3× to land the plateau.
 
-### ⚠ Dependency caveat beyond "rung 10" — likely needs C2
+### Dependency status — C2 gate CLEARED
 
-`BENCHMARK_SPEC.md` says the engine needs "~rung 10 (traffic lights)". That clears the
-**small** rungs. But a multi-lane city with turning demand realistically needs **lane-to-lane
-continuity + strategic lane changes (C2 in `TASKS.md`, NOT yet done)** — today a vehicle can
-sit in a lane that cannot reach its route, which will **gridlock artificially** at scale and
-poison the stability metric. So:
-- Rungs 1–2 (~30, ~300 concurrent): runnable now (bring-up, wiring, viz).
-- Rungs 3–4 (~3k, ~15k): **gate on C2** (or accept single-lane-edge networks / very forgiving
-  connectivity for the first pass, and note the limitation in provenance).
+`BENCHMARK_SPEC.md` says the engine needs "~rung 10 (traffic lights)". As of `main`
+(`2178654`) the engine is well past that: **C2 (strategic route-driven lane changes +
+lane-to-lane continuity) is DONE** (`3dcf0c4`/`b5e58ff`), along with C1 (sigma>0 statistical),
+C3 (merge), C7 (speedFactor spread), C8 (ballistic), C11 (IDM/ACC/CACC/IDMM), and B5 (external
+agents). So the earlier concern — a vehicle stuck in a lane that can't reach its route,
+gridlocking a multi-lane city artificially — no longer applies. **All rungs (30 → 15k) are
+engine-capability-unblocked**; the only remaining constraint on the large rungs is the `[net]`
+side (SUMO tooling + wall-clock cost), not missing engine features.
 
 ### VB-5 [net] — parameterized generator script
 
@@ -297,7 +305,8 @@ VB-0 `FcdWriterObserver` for the viz.
   phase-1 engine runs **teleport-off** (no teleport implemented), so its analog is
   **completion + a gridlock/stuck detector** (count of vehicles making ~zero progress over a
   window). Record both SUMO teleports (reference) and the engine's stuck-count (first-class
-  metric). A stuck spike = the engine is locking up (likely the C2 gap), not merely slow.
+  metric). A stuck spike = the engine is locking up (a real routing/LC/junction defect at
+  scale), not merely slow.
 - **Performance (record, don't gate):** wall-clock, steps/sec, RTF, peak concurrent, peak RSS.
   Track across rungs (scaling curve) and across commits (regression catch).
 
@@ -323,7 +332,7 @@ view. Note the Canvas-2D ceiling (~15k boxes @60fps will strain).
 **Done-condition (initial, per BENCHMARK_SPEC).** Bring-up proven at ~30 concurrent: pipeline
 runs end-to-end from the pinned SUMO install, `replay.html` watchable, summary/tripinfo
 committed with provenance. Larger rungs are the same script with a bigger argument, run as
-engine capability (C2) lands. Stability = completes + stuck-count under the per-rung threshold;
+the `[net]` VM allows. Stability = completes + stuck-count under the per-rung threshold;
 statistical agreement tracks (looser than parity); performance recorded, not gated.
 
 ---
@@ -336,8 +345,8 @@ statistical agreement tracks (looser than parity); performance recorded, not gat
    change touches the hot path).
 3. **VB-6** (aggregate comparator) — offline, unit-testable; can be built in parallel with the
    viz.
-4. **VB-5, VB-7, VB-8** (`[net]`) — on a network-enabled VM; small rungs first, large rungs
-   after C2.
+4. **VB-5, VB-7, VB-8** (`[net]`) — on a network-enabled VM with SUMO; small rungs first, then
+   scale up (engine capability is no longer the gate — only the `[net]` tooling + wall-clock).
 
 Keep the `TASKS.md` discipline: one task = one committed green state; update this file's status
 as each lands. `dotnet test` must stay green (these tracks add tests but never move a committed

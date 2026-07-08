@@ -3680,6 +3680,7 @@ public sealed class Engine : IEngine
                 entity: v.Entity,
                 entityIndex: v.EntityIndex,
                 vehicleId: v.Def.Id,
+                vehicleType: v.Def.TypeId,
                 time: time,
                 lane: v.LaneId,
                 pos: v.Kinematics.Pos,

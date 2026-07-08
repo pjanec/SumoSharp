@@ -34,6 +34,12 @@ public readonly struct VehicleExportSnapshot
     // SUMO-facing identity -- same string TrajectoryPoint.VehicleId carries (Def.Id).
     public readonly string VehicleId;
 
+    // SUMO-facing vType id (Def.TypeId, e.g. "truck0") -- the FCD `type=` attribute a consumer
+    // joins against .rou.xml <vType> to recover length/width/vClass. VB-0: added so an FCD
+    // writer built on this seam can round-trip SUMO's FCD `type` field; inert for every other
+    // consumer (TrajectoryPoint never carried it and still doesn't).
+    public readonly string VehicleType;
+
     public readonly double Time;
     public readonly string Lane;
     public readonly double Pos;
@@ -46,6 +52,7 @@ public readonly struct VehicleExportSnapshot
         Entity entity,
         int entityIndex,
         string vehicleId,
+        string vehicleType,
         double time,
         string lane,
         double pos,
@@ -57,6 +64,7 @@ public readonly struct VehicleExportSnapshot
         Entity = entity;
         EntityIndex = entityIndex;
         VehicleId = vehicleId;
+        VehicleType = vehicleType;
         Time = time;
         Lane = lane;
         Pos = pos;
