@@ -1,0 +1,20 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-08T12:45:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C5 keepClear (don't-block-the-box) NON-TESTED ANCHOR (engine port not yet done -- see TASKS.md).
+#   4-way priority cross J: W->E major (prio 10), N->S minor (prio 1). mBlock sits STOPPED on the
+#   exit edge JE (pos 6) jamming it; mThrough (W->E) must keepClear-STOP at the J entry (WJ@91.8 =
+#   WJ.len 92.80 - DIST_TO_STOPLINE_EXPECT_PRIORITY 1.0) instead of creeping onto :J_1 and blocking
+#   the box; nCross (N->S minor) then crosses freely. The engine today has NO downstream available-
+#   space accounting (MSVehicle::checkRewindLinkLanes) NOR cross-junction leader following -- it
+#   drives mThrough straight through the junction AND through the stopped mBlock. Golden: mThrough
+#   stops WJ@91.8 from t=13; nCross clears by t=18. Euler, sigma=0, teleport off, seed 42.
+# net: netconvert from nodes/edges/connections, --no-turnarounds.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=2bac3617ce4ba3820a0132c8db4e1f142894f20cb59055961033a65bb4d44869
+input=rou.rou.xml sha256=e0970a5fff83d202e8203c63f32ccbcb6aa190e01ddc97961fe2ae4005705c94
+input=config.sumocfg sha256=fe000bd4608c185b9b7bd864a16a1e1dd64f89da6c344204c787e53059fa6cec

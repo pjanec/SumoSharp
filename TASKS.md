@@ -972,10 +972,25 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   **SCOPING (this session):** the mechanism is `MSVehicle::checkRewindLinkLanes`
   (`sumo/src/microsim/MSVehicle.cpp:5025`, ~235 lines) -- the `myLFLinkLanes` downstream
   available-space accounting that reserves room on the exit lane before committing to a link, plus
-  the `jm_ignore_keepclear_time` gate (`:7256`). This is the SAME next-lane/available-space
-  machinery C4-iv phase-2 needs, and the engine has none of it today (no downstream-lane space
-  lookup). Substantial own rung; needs a multi-vehicle downstream-jam scenario + almost certainly a
-  DEBUG trace. SUMO is available in-session for golden regen.
+  the `jm_ignore_keepclear_time` gate. keepClear applies iff `link->hasFoes() && link->keepClear()`
+  (default true) -- a junction with crossing foes. The walk seeds `seenSpace = -lengthsInFront`,
+  subtracts each downstream lane's `getBruttoVehLenSum` / adds `getSpaceTillLastStanding` until a
+  STOPPED vehicle is found, then if `availableSpace - lengthWithGap < 0` at a keepClear link sets
+  `removalBegin` -> `myVLinkPass = myVLinkWait` (brake to the stop line). The engine has none of this
+  downstream-lane occupancy machinery.
+  **ANCHOR BUILT (this session): `scenarios/34-keepclear`** (committed, NON-TESTED) -- a 4-way
+  priority cross where `mBlock` sits STOPPED on exit edge JE (pos 6), `mThrough` (W->E major) must
+  keepClear-stop at the J entry (`WJ@91.8` = WJ.len 92.80 - `DIST_TO_STOPLINE_EXPECT_PRIORITY` 1.0,
+  confirmed in the golden) instead of creeping onto `:J_1`, and `nCross` (N->S minor) then crosses.
+  The engine today drives `mThrough` straight through the junction AND through the stopped `mBlock`
+  (it lacks BOTH keepClear AND cross-junction leader following -- the stopped vehicle on the exit
+  edge is never seen as a leader). The stop POSITION is understood (the 1.0 major stop offset); what
+  remains is the AVAILABLE-SPACE ACCOUNTING that decides *when* keepClear fires (the entangled
+  `lengthsInFront` / brutto-sum / `getSpaceTillLastStanding` inputs). Trace handoff prepared:
+  `scripts/sumo-keepclear-trace-instructions.md` (`DEBUG_CHECKREWINDLINKLANES` gated to `mThrough`)
+  + `keepclear-trace.zip`. Port lands once the trace pins the per-link `avail`/`leftSpace`/
+  `removalBegin` values. Note: a full port also wants the new lane-occupancy queries
+  (`getSpaceTillLastStanding`/`getBruttoVehLenSum`/`getLastAnyVehicle`) over the frozen snapshot.
 - **C6. Actuated / adaptive traffic lights + yellow decision.** Rung 10 did STATIC `tlLogic` only.
   - **C6-i. DONE. Yellow decision ("stop if you can brake, else go").** `scenarios/30-yellow-decision`
     (`RungC6YellowDecisionParityTests`, exact @1e-3). Ported the `canBrakeBeforeStopLine` gate from

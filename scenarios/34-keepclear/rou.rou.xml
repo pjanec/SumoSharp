@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <!-- mBlock sits stopped just past the junction on the exit edge JE, jamming it. -->
+    <route id="exit"    edges="JE"/>
+    <!-- mThrough wants W->E but its exit JE is blocked: keepClear must stop it at the J entry
+         (not let it creep onto the internal lane :J_1 and block the box). -->
+    <route id="through" edges="WJ JE"/>
+    <!-- nCross crosses N->S (minor); it can only proceed if mThrough kept the box clear. -->
+    <route id="cross"   edges="NJ JS"/>
+    <vehicle id="mBlock"   type="car" route="exit"    depart="0" departPos="6"  departSpeed="0">
+        <stop lane="JE_0" endPos="6" duration="1000"/>
+    </vehicle>
+    <vehicle id="mThrough" type="car" route="through" depart="4" departPos="0" departSpeed="13.89" departLane="0"/>
+    <vehicle id="nCross"   type="car" route="cross"   depart="4" departPos="0" departSpeed="13.89" departLane="0"/>
+</routes>
