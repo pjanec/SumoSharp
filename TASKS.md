@@ -1198,7 +1198,30 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     at 25 (the pre-C6 engine wrongly halted it at the stop line -- stash-test confirms). Byte-
     identical for rung 10 (scenario 09) and emergency-red (scenario 16): those vehicles always
     approach from far enough that the gate never fires. Parity-reviewer gated.
-  - **C6-ii. SCOPED + ANCHOR BUILT (this session); port staged on a trace.** Actuated
+  - **C6-ii. DONE (parity-track, exact @1e-3). Actuated (detector-driven) TLS -- the FIRST stateful
+    traffic-light program.** Port: `src/Sim.Core/ActuatedTrafficLightLogic.cs` (new) =
+    `MSActuatedTrafficLightLogic` gap-based algorithm (`trySwitch`/`gapControl`/`duration`) +
+    `MSInductLoop` (notifyMove/getTimeSinceLastDetection); parser gained `TlLogic.Type` +
+    per-phase `TlPhase.MinDur`/`MaxDur` (`IsActuated` = MinDur != MaxDur); Engine builds one machine
+    per `type="actuated"` tlLogic in LoadScenario, resets them at Run() top, `Advance(time+dt)` before
+    PlanMovements, feeds the induction loops from ExecuteMoves (`NotifyMove`, newTime=`time+dt`), and
+    RedLightConstraint reads the machine's current phase instead of the pure-function
+    `TrafficLightState` when `IsActuated`. **TEST `RungC6iiActuatedTlsParityTests`** (scenario 35,
+    Run 40) passes exact @1e-3 across all 5 vehicles / 40 steps; suite 137 -> 138. **THE HARD PART
+    (detector-timing convention) RESOLVED:** the +1.0 lag noted below is exactly reproduced by
+    stamping `myLastLeaveTime = newTime + passingTime(...)` where `newTime = time+dt` (the FCD frame
+    the ExecuteMoves move produces = SUMO's SIMTIME during executeMove) and advancing the event-driven
+    machine at `time+dt` using detector state settled by the PREVIOUS step -- i.e. SUMO's
+    begin-of-step trySwitch seeing leave-times through step tau-1. Phase 0 extends 5->7->8->10->12->13
+    exactly as the trace; ns0-3 + ew0 FCD match to 1e-3, which pins the whole timeline (a one-step
+    phase shift would blow ew0's release by a full second). NON-VACUOUS: forcing the static path holds
+    WJ red past t=40 (ew0 never moves) -> test fails. INERT: static-TLS + all committed scenarios stay
+    byte-identical (138 green incl. the D1 determinism hash). DOCUMENTED SCOPE (unexercised, called out
+    inline in `ActuatedTrafficLightLogic.cs`): default gap-based algorithm only (no
+    switching-rules/conditions/multi-target/TraCI overrides), jam disabled, greenMinor check1a-f
+    admittance not ported (anchor's green links are all major), offset != 0 unhandled. Parity-reviewer
+    gated. *(original SCOPED briefing retained below for context.)*
+    Actuated
     (detector-driven) programs. `MSActuatedTrafficLightLogic` (~1436 lines) + `MSInductLoop`. Unlike
     the STATIC TLS (a pure function of time, `Sim.Core.TrafficLightState`), an actuated program is
     STATEFUL: each green phase EXTENDS while an induction-loop detector keeps seeing vehicles
@@ -1209,7 +1232,7 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     TIME2STEPS(detectorGap - detectionGap), 1)`, integer-rounded, capped to maxDur-actDur/latest);
     else switch to the next phase. Detectors placed at `laneLength - MIN2(detectorGap*speed,
     (minDur/passingTime + 0.5)*7.5)`. Defaults: max-gap 3.0, detector-gap 2.0, passing-time 1.9.
-    **ANCHOR `scenarios/35-actuated-tls`** (committed, NON-TESTED): a single actuated junction J (2
+    **ANCHOR `scenarios/35-actuated-tls`** (committed, NOW TESTED -- see DONE marker above): a single actuated junction J (2
     green phases Gr/rG, minDur 5 / maxDur 50, + 3s yellows). Four N-S vehicles stream over the SJ
     detector so phase 0 EXTENDS from minDur 5 to t=13 (vs the static duration=42) before ending; ew0
     waits at the WJ red and is released when phase 2 turns green at t=16. `phase-timeline.txt` records

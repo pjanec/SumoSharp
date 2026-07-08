@@ -149,18 +149,27 @@ public static class NetworkParser
         {
             var id = RequireAttribute(tlLogicEl, "id");
             var offset = double.Parse(tlLogicEl.Attribute("offset")?.Value ?? "0", CultureInfo.InvariantCulture);
+            // C6-ii: default "static" when absent (netconvert always emits type, but hand-written
+            // .tll.xml may omit it). Only "static" and "actuated" are handled downstream.
+            var type = tlLogicEl.Attribute("type")?.Value ?? "static";
 
             var phases = new List<TlPhase>();
             foreach (var phaseEl in tlLogicEl.Elements("phase"))
             {
                 var duration = double.Parse(RequireAttribute(phaseEl, "duration"), CultureInfo.InvariantCulture);
                 var state = RequireAttribute(phaseEl, "state");
-                phases.Add(new TlPhase(duration, state));
+                // C6-ii: per-phase actuated bounds (absent for static programs and for the fixed
+                // yellow/all-red phases of an actuated program -- left null, resolved to `duration`).
+                var minDurAttr = phaseEl.Attribute("minDur")?.Value;
+                var maxDurAttr = phaseEl.Attribute("maxDur")?.Value;
+                double? minDur = minDurAttr is null ? null : double.Parse(minDurAttr, CultureInfo.InvariantCulture);
+                double? maxDur = maxDurAttr is null ? null : double.Parse(maxDurAttr, CultureInfo.InvariantCulture);
+                phases.Add(new TlPhase(duration, state, minDur, maxDur));
             }
 
             // Last-wins on a duplicate id (multiple <tlLogic> programs for the same junction id,
             // e.g. an alternate programID) is a non-issue for this rung's single-program network.
-            tlLogicsById[id] = new TlLogic(id, offset, phases);
+            tlLogicsById[id] = new TlLogic(id, offset, phases, type);
         }
 
         var connectionsByFromEdgeLaneReadOnly = connectionsByFromEdgeLane

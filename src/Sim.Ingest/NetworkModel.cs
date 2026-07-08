@@ -62,19 +62,37 @@ public sealed record Connection(
     int? LinkIndex);
 
 // Rung 10: one <phase> of a <tlLogic>, ported from sumo/src/microsim/traffic_lights/
-// MSSimpleTrafficLightLogic.cpp's MSPhaseDefinition -- only `duration` and `state` are needed
-// for a 'static' program's link-state lookup (min/max duration, next-phase overrides, etc. are
-// actuated/adaptive-only concerns, out of scope per the briefing).
-public sealed record TlPhase(double Duration, string State);
+// MSSimpleTrafficLightLogic.cpp's MSPhaseDefinition -- `duration` and `state` drive a 'static'
+// program's link-state lookup.
+// C6-ii: `MinDur`/`MaxDur` are the actuated-program bounds (MSPhaseDefinition::minDuration/
+// maxDuration). SUMO defaults an unspecified minDur/maxDur to the phase `duration` itself
+// (MSPhaseDefinition's constructor), which is exactly what makes a yellow/all-red phase
+// non-actuated (minDur == maxDur == duration -> isActuated() false). We keep them nullable and
+// resolve the "== Duration" default at read time (MinDuration/MaxDuration below) so a static
+// program (no minDur/maxDur anywhere) is completely unaffected.
+public sealed record TlPhase(double Duration, string State, double? MinDur = null, double? MaxDur = null)
+{
+    // MSPhaseDefinition: an unset minDur/maxDur equals the fixed `duration`.
+    public double MinDuration => MinDur ?? Duration;
+    public double MaxDuration => MaxDur ?? Duration;
 
-// Rung 10: a parsed <tlLogic id=".." type="static" offset=".."> -- only `type="static"` is
-// supported (see scope note in Sim.Core.TrafficLightState); `Offset` shifts the cycle start
-// (MSSimpleTrafficLightLogic's constructor: myStep 0 begins at simulation time `offset`, not 0,
-// in the general case -- always 0 in this scenario, but threaded through rather than assumed).
-public sealed record TlLogic(string Id, double Offset, IReadOnlyList<TlPhase> Phases)
+    // MSPhaseDefinition::isActuated(): a phase participates in gap-based extension only when its
+    // min and max durations differ (an explicit [minDur, maxDur] window). Yellow/all-red phases,
+    // which carry a single fixed duration, return false and are never extended.
+    public bool IsActuated => MinDuration != MaxDuration;
+}
+
+// Rung 10 / C6-ii: a parsed <tlLogic id=".." type=".." offset=".."> -- `type` selects the phase
+// engine: "static" (MSSimpleTrafficLightLogic, a pure function of time; see Sim.Core.
+// TrafficLightState) or "actuated" (MSActuatedTrafficLightLogic, a stateful detector-driven phase
+// machine; see Sim.Core.ActuatedTrafficLightLogic). `Offset` shifts the cycle start
+// (MSSimpleTrafficLightLogic's constructor: myStep 0 begins at simulation time `offset`, not 0).
+public sealed record TlLogic(string Id, double Offset, IReadOnlyList<TlPhase> Phases, string Type = "static")
 {
     // MSSimpleTrafficLightLogic::computeCycleTime: sum of every phase's duration.
     public double CycleLength => Phases.Sum(p => p.Duration);
+
+    public bool IsActuated => Type == "actuated";
 }
 
 // Rung 9b-i: one link (link index) at a junction's internal-lane crossing point, i.e. one

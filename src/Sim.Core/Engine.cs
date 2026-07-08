@@ -62,6 +62,12 @@ public sealed class Engine : IEngine
     // is safe even though it is refilled twice per step.
     private LaneNeighborQuery? _neighborQuery;
 
+    // C6-ii: per-TLS stateful actuated phase machines, keyed by tlLogic id -- built once in
+    // LoadScenario for every tlLogic whose Type == "actuated", empty for a network with only
+    // 'static' programs (so RedLightConstraint's actuated branch is never entered and the static
+    // path stays byte-identical). Reset at the start of each Run().
+    private readonly Dictionary<string, ActuatedTrafficLightLogic> _actuatedLogics = new(StringComparer.Ordinal);
+
     // D5 (FastDataPlane ECS readiness): ONE reusable command buffer for structural mutations
     // (lane swap / route replacement / arrival), matching FDP's `view.GetCommandBuffer()`.
     // Recorded during a phase, `Flush()`ed at that phase's own barrier (see UpdateReroutes/
@@ -270,6 +276,19 @@ public sealed class Engine : IEngine
         // handle space -- cold path (once per LoadScenario call), never per step.
         _neighborQuery = new LaneNeighborQuery(_network.LanesByHandle.Count);
 
+        // C6-ii: (re)build the actuated phase machines for the newly loaded network. Only tlLogics
+        // with type="actuated" get one; a static-only network leaves this empty (no behavior change
+        // for any pre-C6 scenario). Their runtime state is (re)initialized here and again at the top
+        // of Run() via Reset().
+        _actuatedLogics.Clear();
+        foreach (var tlLogic in _network.TlLogicsById.Values)
+        {
+            if (tlLogic.IsActuated)
+            {
+                _actuatedLogics[tlLogic.Id] = ActuatedTrafficLightLogic.Build(tlLogic, _network, _config.Begin);
+            }
+        }
+
         _vehicles.Clear();
         // D3: side storage is keyed by EntityIndex (== _vehicles list index) -- clear it in
         // lockstep with _vehicles so a re-LoadScenario on the same Engine instance never leaves
@@ -369,6 +388,14 @@ public sealed class Engine : IEngine
         var trajectory = new TrajectorySet();
         var dt = _config.StepLength;
 
+        // C6-ii: reset every actuated phase machine (and its detectors) to its initial state so a
+        // re-Run() on the same loaded Engine starts the timeline from scratch. No-op when there are
+        // no actuated programs.
+        foreach (var actuated in _actuatedLogics.Values)
+        {
+            actuated.Reset();
+        }
+
         for (var step = 0; step < steps; step++)
         {
             var time = _config.Begin + step * dt;
@@ -421,13 +448,28 @@ public sealed class Engine : IEngine
             // no per-step allocation. This is the async-module analog in FDP terms: RO reads of
             // the frozen snapshot + immutable network/vType data, writing only each vehicle's own
             // MoveIntent (CLAUDE.md rule 3).
+            // C6-ii: advance every actuated TLS phase machine BEFORE PlanMovements, so
+            // RedLightConstraint reads the phase that governs the movement this step is about to
+            // compute. Sampled at `time + dt` for the SAME reason RedLightConstraint samples the TL
+            // state at `time + dt` (see RedLightConstraint's timing note): the move planned now
+            // becomes the trajectory emitted at the NEXT iteration's `time + dt`, so it must see the
+            // phase active at that instant. The detectors this reads were settled by the PREVIOUS
+            // step's ExecuteMoves -- exactly SUMO's begin-of-step trySwitch ordering. No-op when
+            // there are no actuated programs.
+            foreach (var actuated in _actuatedLogics.Values)
+            {
+                actuated.Advance(time + dt);
+            }
+
             var neighbors = _neighborQuery!;
             neighbors.Refill(ActiveVehicles());
             PlanMovements(neighbors, time);
 
             // [SystemPhase.PostSimulation] Apply every vehicle's own MoveIntent, integrate
-            // position, flush arrival through the command buffer.
-            ExecuteMoves(dt);
+            // position, flush arrival through the command buffer. `time` is threaded through for
+            // C6-ii's induction-loop detector feed (the move this executes produces the FCD frame
+            // at `time + dt`, which is the SIMTIME MSInductLoop stamps entry/leave with).
+            ExecuteMoves(time, dt);
 
             // [SystemPhase.PostSimulation] Rung A2 (speed-gain/overtaking lane change): SUMO's
             // own per-step order is planMovements -> executeMovements -> changeLanes
@@ -1245,7 +1287,20 @@ public sealed class Engine : IEngine
         var tlLogic = _network.TlLogicsById[connection.Tl!];
         var linkIndex = connection.LinkIndex!.Value;
         var evalTime = time + dt;
-        var state = TrafficLightState.GetLinkState(tlLogic, linkIndex, evalTime);
+
+        // C6-ii: an actuated program's phase is not a pure function of time -- read the current
+        // phase from its stateful machine (already advanced this step to the phase active at
+        // evalTime, see Run()'s Advance call). A static program stays on the pure-function path
+        // (TrafficLightState), byte-identical to every pre-C6 scenario.
+        char state;
+        if (tlLogic.IsActuated && _actuatedLogics.TryGetValue(tlLogic.Id, out var actuated))
+        {
+            state = actuated.CurrentState[linkIndex];
+        }
+        else
+        {
+            state = TrafficLightState.GetLinkState(tlLogic, linkIndex, evalTime);
+        }
 
         if (!TrafficLightState.IsRedOrYellow(state))
         {
@@ -1262,7 +1317,11 @@ public sealed class Engine : IEngine
         // JmDriveAfterRedTime = -1 (VTypeDefaults.Resolve), `-1 > redDuration` (redDuration >= 0
         // always) is always false, so this is a no-op for every scenario that doesn't set
         // jmDriveAfterRedTime -- rung 10 stays byte-identical.
-        var redDuration = TrafficLightState.GetPhaseElapsed(tlLogic, evalTime);
+        // C6-ii: same actuated/static split as the state read above (no-op unless a vType sets
+        // jmDriveAfterRedTime, which none in scope do).
+        var redDuration = tlLogic.IsActuated && _actuatedLogics.TryGetValue(tlLogic.Id, out var actuatedElapsed)
+            ? actuatedElapsed.PhaseElapsed(evalTime)
+            : TrafficLightState.GetPhaseElapsed(tlLogic, evalTime);
         if (v.VType.JmDriveAfterRedTime > redDuration)
         {
             return double.PositiveInfinity;
@@ -2532,7 +2591,7 @@ public sealed class Engine : IEngine
     //    (maximumSafeStopSpeedBallistic / followSpeed / finalizeSpeed) are deferred to a
     //    ballistic-car-following scenario (they never bind free-flow, where the speed sequence is
     //    identical to Euler). Byte-identical to the old code when Ballistic=false.
-    private void ExecuteMoves(double dt)
+    private void ExecuteMoves(double time, double dt)
     {
         // D6: the Query() analog -- see ActiveVehicles()'s own comment.
         foreach (var v in ActiveVehicles())
@@ -2540,6 +2599,10 @@ public sealed class Engine : IEngine
             // C8-i: capture the pre-move speed BEFORE overwriting it, for the ballistic
             // trapezoidal position update below (Euler ignores it).
             var oldSpeed = v.Kinematics.Speed;
+            // C6-ii: capture the pre-move lane + position for the induction-loop detector feed
+            // below (before the lane-boundary wrap advances LaneHandle/Pos).
+            var detLaneHandle = v.LaneHandle;
+            var detOldPos = v.Kinematics.Pos;
             // C11-iii: MSVehicle::getAcceleration()'s analog -- the (speed-oldSpeed)/dt this
             // vehicle just realized THIS step, written here so CaccModel's cooperative
             // gap-control law can read it as "last completed step's acceleration" from the
@@ -2562,6 +2625,22 @@ public sealed class Engine : IEngine
                 ? 0.5 * (oldSpeed + v.Intent.NewSpeed) * dt
                 : v.Intent.NewSpeed * dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
+
+            // C6-ii: feed the actuated-TLS induction loops this vehicle's within-step motion along
+            // its START-of-step lane, using the RAW advanced position (before the lane-boundary wrap
+            // below re-bases Pos onto the next lane) so a vehicle whose back crosses the detector
+            // while its front has already left the lane is still counted in this lane's coordinate.
+            // `time + dt` is the FCD time this move produces (SUMO's SIMTIME during executeMove),
+            // which MSInductLoop stamps entry/leave with. No-op when there are no actuated programs.
+            if (_actuatedLogics.Count > 0)
+            {
+                foreach (var actuated in _actuatedLogics.Values)
+                {
+                    actuated.NotifyMove(
+                        detLaneHandle, v.EntityIndex,
+                        detOldPos, v.Kinematics.Pos, oldSpeed, v.Intent.NewSpeed, v.VType.Length, time + dt);
+                }
+            }
 
             // Rung 5: apply the plan phase's proposed stop-queue update (Engine.ProcessNextStop).
             // This is the only place a vehicle's stop queue is ever mutated (CLAUDE.md rule 3).
