@@ -6,7 +6,7 @@ state_time=1
 fcd_precision=6
 # net built with: netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --connection-files connections.con.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
 # vtype defaults: golden.vtype.json (libsumo/TraCI dump)
-# C4-iv ANCHOR #2 (SYMMETRIC merge; rung NOT yet ported -- see TASKS.md). Y-merge: A->J major
+# C4-iv EXACT ANCHOR (SYMMETRIC merge -- rung PORTED, see TASKS.md). Y-merge: A->J major
 #   + B->J minor merge into JC. The two internal lanes :J_0_0/:J_1_0 are MIRROR IMAGES (equal
 #   length 19.16, symmetric shapes) so their lengthBehindCrossing is equal -- this isolates the
 #   merge-leader gap from the conflict-geometry offset that anchor #1 (29-merge-yield, asymmetric)

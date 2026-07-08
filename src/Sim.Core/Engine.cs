@@ -1436,7 +1436,15 @@ public sealed class Engine : IEngine
 
             if (conflict is null)
             {
-                // No geometric crossing recorded for this foe link -- nothing to yield to.
+                // C4-iv: no geometric CROSSING is recorded for this foe link -- but a sameTarget
+                // MERGE (ego's link and the foe's link feed the SAME downstream lane) still
+                // requires ego to follow-yield to the merging foe. Own arm; +infinity when not a
+                // merge, no foe, or the cautious approach still dominates (see the arm).
+                constraint = Math.Min(
+                    constraint,
+                    SameTargetMergeConstraint(
+                        v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane,
+                        j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed));
                 continue;
             }
 
@@ -1613,6 +1621,158 @@ public sealed class Engine : IEngine
         }
 
         return constraint;
+    }
+
+    // C4-iv (TASKS.md "sameTarget-merge yield"). Two junction links whose <connection>s feed the
+    // SAME downstream lane (an on-ramp / roundabout-entry MERGE) geometrically converge rather than
+    // cross, so no JunctionConflict is recorded -- yet a vehicle entering the merge must follow the
+    // foe already traversing the other merging lane (or drive into it at the merge point).
+    //
+    // Ported (and VERIFIED against the v1_20_0 DEBUG_PLAN_MOVE_LEADERINFO getLeaderInfo trace for
+    // scenarios/29 (rA) and 31 (vB)) from MSLink::getLeaderInfo's sameTarget branch
+    // (sumo/src/microsim/MSLink.cpp:1379/1604-1663) + MSVehicle::adaptToJunctionLeader with
+    // distToCrossing==-1 (MSVehicle.cpp:3223-3239). Two phases (the foe crosses a lane boundary):
+    //   PHASE 1 -- foe on its own merging internal lane: it is a car-following LEADER; the gap is
+    //     the trace's `gap = distToCrossing - egoMinGap - leaderBackDist`, which (crossingWidth 0
+    //     for sameTarget) reduces to `distToMerge - egoMinGap - (foeInternalLen - foeBackPos)`.
+    //     gap>=0 -> followSpeed; gap<0 -> stopSpeed to just before the junction entry (the
+    //     `stopSpeed(speed, seen - lane.length - POSITION_EPS)` arm -- NOT raw followSpeed).
+    //   PHASE 2 -- foe already on the shared TARGET lane while ego is upstream: an ordinary
+    //     downstream leader across the boundary, gap = `distToMerge + (foePos - foeLen) - egoMinGap`.
+    //
+    // GATING (MSVehicle.cpp:3478 `v = MAX2(v, lastLink->myVLinkWait)`): while ego is still on its
+    // APPROACH lane AND farther than the link's foe-visibility distance (4.5) from the junction
+    // entry, the merge-leader is RELAXED to at least the cautious-approach stop-line speed -- i.e.
+    // ego just brakes toward the entry (the C3 cautious approach already models that) and the merge
+    // is NON-BINDING here. It binds only once ego is within visibility of the entry (seen<=4.5) or
+    // has entered its internal lane -- exactly where the cautious approach itself releases. Without
+    // this gate the merge over-brakes on the far approach (verified against the trace: at seen=41 m
+    // SUMO's executed speed is the cautious 11.856, not the merge's 10.170).
+    //
+    // NOTE (asymmetric geometry): the exact SUMO gap also carries a small per-junction
+    // `lengthBehindCrossing` term `(flbc - lbc)` (MSLink.cpp:354-382 angle-based conflictSize) that
+    // this port does not yet compute -- it is ~0 for a SYMMETRIC merge (the two internal lanes are
+    // mirror images, so `flbc==lbc` cancels; scenarios/31) but ~0.005 for an asymmetric one
+    // (scenarios/29, a curved vs straight lane pair). Hence scenario 31 is the committed exact
+    // anchor; 29 stays a geometry-refinement anchor until that term is ported.
+    private double SameTargetMergeConstraint(
+        VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
+        bool egoOnInternal, Lane? approachLane, int foeLinkIndex, ActiveVehicleQuery allVehicles,
+        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (approachLane is null && !egoOnInternal)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // GATE: on the approach lane and still beyond foe-visibility of the entry -> the cautious
+        // approach governs; the merge is non-binding (MSVehicle.cpp:3478 MAX2 relaxation).
+        const double visibilityDistance = 4.5;
+        if (!egoOnInternal && (approachLane!.Length - ego.Kinematics.Pos) > visibilityDistance)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Is foe link `foeLinkIndex` a sameTarget merge with ego's link? (connections share the
+        // destination edge + lane -- MSLink.cpp:1379 `myLane == foeExitLink->getLane()`.)
+        JunctionLink? foeLink = null;
+        foreach (var l in junction.Links)
+        {
+            if (l.Index == foeLinkIndex)
+            {
+                foeLink = l;
+                break;
+            }
+        }
+
+        if (foeLink is null
+            || foeLink.Connection.To != egoLink.Connection.To
+            || foeLink.Connection.ToLane != egoLink.Connection.ToLane)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var egoInternalLane = _network!.LanesById[egoInternalLaneId];
+        var distToMerge = egoOnInternal
+            ? egoInternalLane.Length - ego.Kinematics.Pos
+            : (approachLane!.Length - ego.Kinematics.Pos) + egoInternalLane.Length;
+
+        // PHASE 1: foe still on its merging internal lane.
+        var foeInternalLaneId = junction.IntLanes[foeLinkIndex];
+        var foeInternalLaneHandle = _network.LaneHandleById[foeInternalLaneId];
+        var foeMerging = FindFoeVehicle(ego, allVehicles, foeInternalLaneHandle);
+        if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId)
+        {
+            var foeInternalLane = _network.LanesByHandle[foeInternalLaneHandle];
+            var leaderBack = foeMerging.Kinematics.Pos - foeMerging.VType.Length;
+            var gap = distToMerge - ego.VType.MinGap - (foeInternalLane.Length - leaderBack);
+            if (gap >= 0.0)
+            {
+                return FollowSpeedFor(
+                    ego.VType, ego.Kinematics.Speed, gap, foeMerging.Kinematics.Speed, foeMerging.VType.Decel,
+                    laneVehicleMaxSpeed, dt, time: time,
+                    accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime,
+                    caccControlMode: ref ego.CaccControlMode, egoAcceleration: ego.Acceleration,
+                    hasPred: true, predIsCacc: foeMerging.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService);
+            }
+
+            // gap<0 (MSVehicle.cpp:3228): stop before entering the junction.
+            return StopSpeedFor(
+                ego.VType, ego.Kinematics.Speed, distToMerge - egoInternalLane.Length - PositionEps,
+                laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+        }
+
+        // PHASE 2: the foe has moved onto the shared target lane while ego is still upstream.
+        var targetEdge = _network.EdgesById[egoLink.Connection.To];
+        Lane? targetLane = null;
+        foreach (var l in targetEdge.Lanes)
+        {
+            if (l.Index == egoLink.Connection.ToLane)
+            {
+                targetLane = l;
+                break;
+            }
+        }
+
+        if (targetLane is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var leaderOnTarget = FindRearmostOnLane(ego, allVehicles, targetLane.Id);
+        if (leaderOnTarget is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var targetGap = distToMerge + (leaderOnTarget.Kinematics.Pos - leaderOnTarget.VType.Length) - ego.VType.MinGap;
+        return FollowSpeedFor(
+            ego.VType, ego.Kinematics.Speed, targetGap, leaderOnTarget.Kinematics.Speed, leaderOnTarget.VType.Decel,
+            laneVehicleMaxSpeed, dt, time: time,
+            accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime,
+            caccControlMode: ref ego.CaccControlMode, egoAcceleration: ego.Acceleration,
+            hasPred: true, predIsCacc: leaderOnTarget.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService);
+    }
+
+    // C4-iv phase-2 helper: the rearmost vehicle (smallest Pos = ego's immediate downstream leader)
+    // CURRENTLY on the given lane, excluding ego. Frozen start-of-step snapshot.
+    private VehicleRuntime? FindRearmostOnLane(VehicleRuntime ego, ActiveVehicleQuery allVehicles, string laneId)
+    {
+        VehicleRuntime? rearmost = null;
+        foreach (var other in allVehicles)
+        {
+            if (ReferenceEquals(other, ego) || other.LaneId != laneId)
+            {
+                continue;
+            }
+
+            if (rearmost is null || other.Kinematics.Pos < rearmost.Kinematics.Pos)
+            {
+                rearmost = other;
+            }
+        }
+
+        return rearmost;
     }
 
     // B5-iii (TASKS.md "Junction foe the reducer yields to" -- the THIRD and final B5 sub-rung):
