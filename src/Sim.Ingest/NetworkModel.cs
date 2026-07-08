@@ -216,11 +216,48 @@ public sealed record NetworkModel(
     // multi-lane lane-choice/continuity heuristics when more than one connection matches the
     // same (fromEdge, fromLaneIndex, toEdge) key, and junction right-of-way (rung 9b) -- this
     // purely resolves the lane sequence, it makes no yielding decision.
+    //
+    // C2-ii: the pool/route-path sequence is resolved via the CONTINUING (best) lane on the
+    // first edge, not necessarily `departLaneIndex` itself -- a vehicle may depart on a lane
+    // that does not continue its route at all (a drop lane; scenarios/18-strategic-turnlane's
+    // E1_0), converging onto this resolved path later via a strategic lane change
+    // (Engine.TryStrategicLaneChange). `ComputeBestLanes` (C2-i) always resolves SOME
+    // continuing lane on a reachable route, so the old "no <connection> found from the depart
+    // lane" throw below can no longer be reached via a non-continuing depart lane -- it now
+    // only fires for a genuinely unreachable route (unchanged scope).
+    //
+    // Byte-identical guard: for a single-edge route (routeEdges.Count == 1) `ComputeBestLanes`
+    // is not even called (see the guard below) -- for a MULTI-edge route where the depart lane
+    // already continues (every existing multi-edge parity scenario: 9a/9b/A3/B3's 15-reroute,
+    // all single-lane-per-edge, per C2-i's own inert-control test), `ComputeBestLanes` reports
+    // `AllowsContinuation=true` for it, so `currentLaneIndex` stays exactly `departLaneIndex`
+    // -- this resolves to EXACTLY the prior behavior.
     public IReadOnlyList<string> ResolveLaneSequence(IReadOnlyList<string> routeEdges, int departLaneIndex)
     {
         var sequence = new List<string>();
+        var firstEdgeId = routeEdges[0];
         var currentLaneIndex = departLaneIndex;
-        var firstEdge = EdgesById[routeEdges[0]];
+
+        if (routeEdges.Count > 1)
+        {
+            var bestLanes = ComputeBestLanes(routeEdges, firstEdgeId);
+            foreach (var continuation in bestLanes)
+            {
+                if (continuation.LaneIndex != departLaneIndex)
+                {
+                    continue;
+                }
+
+                if (!continuation.AllowsContinuation)
+                {
+                    currentLaneIndex = departLaneIndex + continuation.BestLaneOffset;
+                }
+
+                break;
+            }
+        }
+
+        var firstEdge = EdgesById[firstEdgeId];
         var currentLane = firstEdge.Lanes.First(l => l.Index == currentLaneIndex);
         sequence.Add(currentLane.Id);
 

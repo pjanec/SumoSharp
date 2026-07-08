@@ -1545,6 +1545,25 @@ public sealed class Engine : IEngine
                     break;
                 }
 
+                // C2-ii (design point 4): the boundary advance may only cross to
+                // pool[LaneSeqIndex+1] once the vehicle's ACTUAL lane has CONVERGED onto the
+                // route pool's target lane for this edge -- TryStrategicLaneChange guarantees
+                // this before the lane end for every reachable route (scenario 18 converges at
+                // t=17, long before edge B). For every single-lane-per-edge route the pool is
+                // built from the depart lane itself (NetworkModel.ResolveLaneSequence), so
+                // actual ALWAYS equals the pool's target there and this guard is always
+                // satisfied -- byte-identical to every existing scenario. If NOT converged
+                // (stuck on a drop lane with no successful strategic change -- not exercised by
+                // any committed golden, but required for safety per the briefing), STOP at the
+                // lane end rather than teleport onto a route path this lane was never actually
+                // connected to.
+                if (v.LaneHandle != _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex])
+                {
+                    v.Kinematics.Pos = currentLane.Length;
+                    v.Kinematics.Speed = 0.0;
+                    break;
+                }
+
                 if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
                 {
                     // D5: deferred through the command buffer, flushed at the END of this
@@ -1645,6 +1664,19 @@ public sealed class Engine : IEngine
             // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string
             // hash. (ApplyKeepRightDecision above may have just changed v.LaneHandle; re-read.)
             var lane = _network!.LanesByHandle[v.LaneHandle];
+
+            // C2-ii: strategic (route-driven) lane change -- evaluated BEFORE speed-gain and,
+            // when it fires, taking priority over it (a vehicle never both strategic- and
+            // speed-gain-changes in the same step; mirrors SUMO's _wantsChange trying the
+            // STRATEGIC/URGENT block first, MSLCM_LC2013.cpp:1324-1327, before ever reaching
+            // the speed-gain code). Inert (returns false immediately, touching nothing -- not
+            // even v.LookAheadSpeed) for every existing scenario -- see
+            // TryStrategicLaneChange's own header comment for the exact gate/byte-identical
+            // argument.
+            if (TryStrategicLaneChange(v, lane, postMoveNeighbors, time, dt, actionStepLengthSecs))
+            {
+                continue;
+            }
 
             // Left neighbor = same edge, index+1 (no neighbor on the leftmost lane) -- this
             // guard is the INERT case CLAUDE.md's briefing calls for: single-lane rungs, and any
@@ -1850,6 +1882,24 @@ public sealed class Engine : IEngine
 
         if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
         {
+            // C2-ii: a narrow, commit-only port of MSLCM_LC2013.cpp:1398-1410's "opposite
+            // direction" STAY guard -- SUMO's real guard makes _wantsChange return EARLY
+            // (before myKeepRightProbability is ever decremented) whenever changing in the
+            // examined direction would move away from the best/required lane with too little
+            // room to get back; scoped here to just its OBSERVABLE effect (never actually
+            // commit onto a lane that does not continue this vehicle's remaining route), not
+            // the full early-return-before-accumulation semantics -- KeepRightProbability
+            // itself is not a compared golden attribute (only lane/pos/speed are), so this
+            // narrower, lower-risk port is sufficient. Byte-identical for every existing
+            // single-edge-route scenario (06/07/12/...): LaneContinuesRoute's own fast path
+            // returns true unconditionally there (see its own comment), so this `if` is never
+            // entered and the commit below is untouched.
+            if (!LaneContinuesRoute(v, lane, rightLane.Index))
+            {
+                v.KeepRightProbability = keepRightProbability;
+                return;
+            }
+
             // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
             // to 0 on change (changed()/resetState()). No safety/blocker veto ported here -- every
             // scenario reaching this fire has an empty target (right) lane; a real blocker veto
@@ -1878,6 +1928,187 @@ public sealed class Engine : IEngine
         }
 
         v.KeepRightProbability = keepRightProbability;
+    }
+
+    // C2-ii: does `targetLaneIndex` on `fromLane`'s edge continue this vehicle's REMAINING
+    // route? A thin wrapper over `NetworkModel.ComputeBestLanes` (C2-i) used ONLY as
+    // ApplyKeepRightDecision's commit-time veto (see that method's own comment) -- returns
+    // `true` (never vetoes) for a single-edge route WITHOUT even calling ComputeBestLanes
+    // (its own "last route edge" special case would report `AllowsContinuation=true` for
+    // every lane there anyway; this fast path just avoids the call for the common case),
+    // which is exactly why 06/07/12-overtake's existing keep-right returns are byte-identical.
+    private bool LaneContinuesRoute(VehicleRuntime v, Lane fromLane, int targetLaneIndex)
+    {
+        var route = _demand!.RoutesById[v.Def.RouteId];
+        if (route.Edges.Count <= 1)
+        {
+            return true;
+        }
+
+        var bestLanes = _network!.ComputeBestLanes(route.Edges, fromLane.EdgeId);
+        foreach (var continuation in bestLanes)
+        {
+            if (continuation.LaneIndex == targetLaneIndex)
+            {
+                return continuation.AllowsContinuation;
+            }
+        }
+
+        // Defensive: lane not found on this edge's best-lanes result -- do not veto.
+        return true;
+    }
+
+    // C2-ii: MSLCM_LC2013's STRATEGIC/URGENT block (`_wantsChange`,
+    // sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp ~1216-1327), scoped to the single-look-ahead
+    // case C2-i's `ComputeBestLanes` supports: a vehicle whose ACTUAL lane differs from its
+    // route pool's target lane on this SAME edge (a drop lane -- scenarios/18-strategic-
+    // turnlane's E1_0) must strategic-change toward the target before running off the end of
+    // the lane. Ported pieces (constants/derivation cross-checked against the vendored
+    // source):
+    //   - myLookAheadSpeed growth/decay (`.cpp:1227-1236`, `VehicleRuntime.LookAheadSpeed`).
+    //   - laDist (`.cpp:1238-1239`): myLookAheadSpeed * LOOK_FORWARD(10) * myStrategicParam(1.0
+    //     ctor default) * (right ? 1 : myLookaheadLeft(2.0 ctor default)) + 2 * lengthWithGap.
+    //   - usableDist/currentDistDisallows (`.h:189-191`, `.cpp:1288,1324-1327`):
+    //     changeToBest && bestLaneOffset==curr.bestLaneOffset && usableDist/|offset| < laDist
+    //     -- changeToBest and bestLaneOffset==curr.bestLaneOffset both collapse to trivially
+    //     true here because this method only evaluates the ONE direction `bestLaneOffset`
+    //     (the actual lane's own LaneQ field) itself requires, exactly the simplification
+    //     SUMO's own two-sided caller (wantsChangeLeft/wantsChangeRight) converges to for a
+    //     single-offset lane (see this method's own derivation notes below `right`).
+    //
+    // NOT ported (out of scope -- no committed scenario needs them yet): the stopped-leader/
+    // bidi-lane laDist overrides (`.cpp:1240-1268`), the roundabout bonus, occupation/jam terms
+    // (best.occupation is always 0 here -- an empty-road simplification consistent with this
+    // file's existing scope notes elsewhere, e.g. A2-iii/keep-right's own "empty target lane"
+    // scoping), multi-lane-offset (|offset|>1) blocker-length reservation (`.cpp:1471-1479`),
+    // and the STAY/"opposite direction" guard (`.cpp:1398-1441`) -- that guard's only needed
+    // EFFECT for this scenario (never keep-right back onto a lane that would undo an already-
+    // converged strategic requirement) is instead ported narrowly into
+    // ApplyKeepRightDecision's own commit gate (see `LaneContinuesRoute` above) rather than as
+    // a full early-return here, since a fuller port risked perturbing scenario 12's existing
+    // (golden-verified) keep-right/speed-gain byte-identical behavior without a way to verify
+    // it offline (CLAUDE.md rule: no SUMO install in this loop).
+    //
+    // Gate (design point 3) / byte-identical argument: only evaluated when the ACTUAL lane
+    // differs from the route pool's target lane's HANDLE on this SAME edge -- i.e.
+    // `pool[LaneSeqIndex] != v.LaneHandle`. For every single-lane-per-edge scenario (and any
+    // scenario where the depart lane already IS the continuing lane), NetworkModel.
+    // ResolveLaneSequence builds the pool from the depart lane itself, so this is ALWAYS false
+    // there -- the whole method returns immediately, touching NOTHING (not even
+    // v.LookAheadSpeed, not even a ComputeBestLanes call), which is the byte-identical
+    // argument for every existing multi-lane (06/07/12) and multi-edge (9a/9b/A3/15-reroute)
+    // parity scenario.
+    private bool TryStrategicLaneChange(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double time, double dt, double actionStepLengthSecs)
+    {
+        if (v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return false;
+        }
+
+        var targetLaneHandle = _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex];
+        if (targetLaneHandle == v.LaneHandle)
+        {
+            // Already converged onto the route path -- the common/inert case for every
+            // existing scenario.
+            return false;
+        }
+
+        var targetLane = _network!.LanesByHandle[targetLaneHandle];
+        if (targetLane.EdgeId != lane.EdgeId)
+        {
+            // Defensive only: ExecuteMoves' convergence guard (design point 4) never advances
+            // LaneSeqIndex past an edge boundary while actual != target, so a well-formed pool
+            // can never reach this state.
+            return false;
+        }
+
+        var route = _demand!.RoutesById[v.Def.RouteId];
+        var bestLanes = _network.ComputeBestLanes(route.Edges, lane.EdgeId);
+
+        LaneContinuation? curr = null;
+        foreach (var continuation in bestLanes)
+        {
+            if (continuation.LaneIndex == lane.Index)
+            {
+                curr = continuation;
+                break;
+            }
+        }
+
+        if (curr is null || curr.BestLaneOffset == 0)
+        {
+            // Defensive only: the pool-mismatch gate above already implies a nonzero offset --
+            // that is exactly what NetworkModel.ResolveLaneSequence used to pick the pool's
+            // target lane index in the first place.
+            return false;
+        }
+
+        var bestLaneOffset = curr.BestLaneOffset;
+        // Direction is fully determined by the offset's sign -- see this method's own header
+        // comment for why evaluating only this one (correctly-signed) direction is equivalent
+        // to SUMO's two-sided caller for the STRATEGIC/URGENT trigger.
+        var right = bestLaneOffset < 0;
+
+        // MSLCM_LC2013.cpp:1227-1236: grows instantly toward a higher speed, decays slowly
+        // otherwise (per-vehicle persistent state).
+        if (v.Kinematics.Speed > v.LookAheadSpeed)
+        {
+            v.LookAheadSpeed = v.Kinematics.Speed;
+        }
+        else
+        {
+            const double lookAheadSpeedMemory = 0.9; // LOOK_AHEAD_SPEED_MEMORY
+            var memoryFactor = 1.0 - (1.0 - lookAheadSpeedMemory) * actionStepLengthSecs;
+            v.LookAheadSpeed = Math.Max(0.0, (memoryFactor * v.LookAheadSpeed) + ((1.0 - memoryFactor) * v.Kinematics.Speed));
+        }
+
+        const double lookForward = 10.0; // LOOK_FORWARD
+        const double strategicParam = 1.0; // myStrategicParam ctor default
+        const double lookaheadLeft = 2.0; // myLookaheadLeft ctor default
+        var lengthWithGap = v.VType.Length + v.VType.MinGap;
+        var laDist = (v.LookAheadSpeed * lookForward * strategicParam * (right ? 1.0 : lookaheadLeft)) + (2.0 * lengthWithGap);
+
+        // usableDist = MAX2(currentDist - posOnLane - best.occupation*JAM_FACTOR,
+        // driveToNextStop): best.occupation is always 0 (empty-road scope, see this method's
+        // header comment) and there is no stop on this edge in any committed C2-ii scenario, so
+        // driveToNextStop is non-binding against the first MAX2 argument.
+        var currentDist = curr.Length;
+        var posOnLane = v.Kinematics.Pos;
+        var usableDist = currentDist - posOnLane;
+
+        // MSLCM_LC2013.h:189 currentDistDisallows.
+        if (usableDist / Math.Abs(bestLaneOffset) >= laDist)
+        {
+            return false;
+        }
+
+        var neighborHandle = right ? lane.RightNeighbor : lane.LeftNeighbor;
+        if (neighborHandle < 0)
+        {
+            // No lane to change into on the required side -- defensive only, not reachable by
+            // any committed scenario (ComputeBestLanes never points a route offset off the
+            // edge's own lane range).
+            return false;
+        }
+
+        var neighborLane = _network.LanesByHandle[neighborHandle];
+
+        // Safety veto, mirroring A2-iii's IsTargetLaneSafe / B5-ii's obstacle veto -- on the
+        // clear road this scenario exercises, both are trivially non-binding (no neighbor
+        // vehicle, no obstacle), matching the briefing's "on a clear road the change is always
+        // safe". A scenario WITH target-lane traffic during a strategic change is future work
+        // (LCA_URGENT's real blocker-cooperation machinery, `.cpp:1467-1517`, is not ported).
+        var neighLead = neighbors.GetNeighborLeader(v, neighborLane.Handle);
+        var neighFollow = neighbors.GetNeighborFollower(v, neighborLane.Handle);
+        if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt))
+        {
+            return false;
+        }
+
+        _commandBuffer.ChangeLane(v, neighborLane.Handle, neighborLane.Id);
+        // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
+        v.SpeedGainProbability = 0.0;
+        return true;
     }
 
     // MSLCM_LC2013::anticipateFollowSpeed (MSLCM_LC2013.cpp:1893-1941), non-accelerating-leader

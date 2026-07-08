@@ -102,6 +102,17 @@ internal sealed class VehicleRuntime
     // snapshot built at the top of that phase -- not a mid-query shared-state write).
     public double SpeedGainProbability;
 
+    // C2-ii: SUMO's MSLCM_LC2013::myLookAheadSpeed -- a stateful per-vehicle "how fast have I
+    // recently been driving" estimate feeding the STRATEGIC lane-change look-ahead distance
+    // (laDist, MSLCM_LC2013.cpp:1227-1239) and the keep-right STAY guard's own laDist term.
+    // Starts at 0.0 (SUMO's ctor default, LOOK_AHEAD_MIN_SPEED); only ever touched inside
+    // Engine.TryStrategicLaneChange, which itself is gated on the vehicle's ACTUAL lane
+    // differing from its route pool's target lane on the same edge -- for every single-lane-
+    // per-edge scenario (and any scenario where the depart lane already is the continuing
+    // lane) that gate is always false, so this field is written once at creation (0.0) and
+    // never read/advanced again, exactly like RngState's own sigma==0 byte-identical argument.
+    public double LookAheadSpeed;
+
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no

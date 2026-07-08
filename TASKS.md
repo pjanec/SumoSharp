@@ -708,36 +708,92 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     existing single-lane-per-edge parity scenario. Purely additive — touched only
     `src/Sim.Ingest/NetworkModel.cs` + the new test file; no simulation/engine/LC code path
     changed. Full suite: 93 passed, 0 failed (was 87; +6 new tests).
-  - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance. NEXT — the invasive
-    rework; design worked out below.** The hard part is that today `v.LaneHandle` (actual lane) and
-    `pool[LaneSeqStart+LaneSeqIndex]` (route-path lane) are kept in STRICT LOCKSTEP — `ExecuteMoves`'s
-    boundary advance (`v.LaneHandle = pool[start+index]`) and `JunctionYieldConstraint`'s pool scan
-    both assume it. C2 breaks that lockstep (the vehicle starts on a lane that is NOT on its route
-    path and converges via strategic LC). Concrete design:
-    1. **Pool sequence = the ROUTE PATH via continuing/best lanes** (not the depart lane). Make
-       `ResolveLaneSequenceHandles` resolve from the CONTINUING lane on edge 0 (use `ComputeBestLanes`
-       — always resolvable; never throws now), so for scenario 18 the pool is `[E1_1, :B_0_0, E2_0]`.
-       For single-lane-per-edge scenarios the continuing lane IS the only/ depart lane → pool
-       unchanged → byte-identical.
-    2. **Track the actual lane separately.** `v.LaneHandle` initializes to the DEPART lane (`E1_0`),
-       which may differ from `pool[LaneSeqIndex]` (`E1_1`) mid-edge. Emit / car-following / neighbors
-       already read `v.LaneHandle` (actual) — correct as-is. `JunctionYieldConstraint`'s pool scan
-       reads the route path — correct as-is.
-    3. **Strategic LC (new, post-move phase alongside speed-gain).** When `v.LaneHandle`'s index ≠
-       `pool[LaneSeqIndex]`'s index on the same edge, change ONE lane toward it (neighbor-query safety
-       like speed-gain; urgency/`LCA_URGENT` rising as the edge end nears). Fires only when actual ≠
-       target ⇒ `BestLaneOffset ≠ 0` ⇒ **inert for every single-lane-per-edge scenario** (C2-i's
-       inert-control proof), so 9a/9b/A3 stay byte-identical.
-    4. **Advance requires convergence.** The boundary advance (`pool[index+1]`) is valid only when
-       `v.LaneHandle == pool[LaneSeqIndex]` at the crossing (strategic LC guarantees this before the
-       junction). Add a guard: if not converged at the lane end (stuck on a drop lane), STOP at the
-       lane end rather than teleport onto the route path (SUMO's urgent-change-or-halt). For
-       single-lane-per-edge, actual == target always ⇒ advance unchanged ⇒ byte-identical.
-    Port target: LC2013 STRATEGIC block (`LCA_STRATEGIC`/`LCA_URGENT`, `MSLCM_LC2013::_wantsChange`).
-    Validate against `scenarios/18-strategic-turnlane` golden (change to `E1_1` by ~t=17, cross at
-    t=38-39). **Gate HARD byte-identical on 9a/9b/A3/every multi-edge scenario** + the full 93-test
-    suite; parity-reviewer required (this touches the core lane-advance). Likely worth its own
-    focused session — it is the single most entangled change in the roadmap.
+  - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance. DONE.** Ported
+    LC2013's STRATEGIC/URGENT block (`_wantsChange`, `sumo/src/microsim/lcmodels/MSLCM_LC2013.cpp`
+    ~1216-1327, `currentDistDisallows` at `MSLCM_LC2013.h:189-191`) plus the entangled lane-sequence
+    rework the briefing called out. Broke the old `v.LaneHandle`/`pool[LaneSeqIndex]` lockstep exactly
+    per the 4-point design:
+    1. **Pool = route path via the continuing/best lane.** `NetworkModel.ResolveLaneSequence` now
+       resolves the FIRST edge's start lane via `ComputeBestLanes` (C2-i) instead of always using
+       `departLaneIndex` literally: if the depart lane already `AllowsContinuation`, nothing changes
+       (byte-identical fast path — covers every existing scenario); otherwise it starts from
+       `departLaneIndex + BestLaneOffset` (the continuing lane `ComputeBestLanes` points at). Scenario
+       18's pool resolves to `[E1_1, :B_0_0, E2_0]` — the old "no `<connection>` found from the depart
+       lane" throw can no longer be reached via a non-continuing depart lane (unchanged for a
+       genuinely unreachable route). `ResolveLaneSequenceHandles`/`TryInsertOnLane`/`UpdateReroutes`
+       needed no changes (they already call `ResolveLaneSequence` internally).
+    2. **Actual lane tracked separately — already true.** `TryInsertOnLane` already set
+       `v.LaneId`/`v.LaneHandle` to the DEPART lane BEFORE calling `ResolveLaneSequenceHandles`, so
+       once (1) changed what the pool resolves to, actual (`E1_0`) and pool[0] (`E1_1`) diverge
+       automatically at insertion — no engine changes needed here.
+    3. **Strategic LC** — new `Engine.TryStrategicLaneChange`, called from `DecideSpeedGainChanges`
+       BEFORE the existing keep-right/speed-gain block (and `continue`s past speed-gain when it
+       fires). Gated on `pool[LaneSeqIndex]`'s HANDLE differing from `v.LaneHandle` on the same edge —
+       exactly the point-3 offset≠0 condition, and the gate that makes the whole method a no-op
+       (not even touching the new `VehicleRuntime.LookAheadSpeed` field) for every existing scenario,
+       since `NetworkModel.ResolveLaneSequence`'s own byte-identical fast path means the pool is
+       always built from the depart lane there. Ported faithfully: `myLookAheadSpeed` growth/decay
+       (`.cpp:1227-1236`), `laDist = myLookAheadSpeed·10·myStrategicParam(1.0)·(right?1:
+       myLookaheadLeft(2.0)) + 2·lengthWithGap` (`.cpp:1238-1239`), `usableDist = curr.Length −
+       posOnLane` (occupation/stop terms scoped to 0/unset — empty road, no stop on this edge) and
+       the `currentDistDisallows` trigger (`.h:189`). `changeToBest`/`bestLaneOffset==curr.
+       bestLaneOffset` collapse to trivially true because only the ONE direction `BestLaneOffset`'s
+       own sign requires is ever evaluated (equivalent to SUMO's two-sided caller for this trigger).
+       On commit: the SAME `IsTargetLaneSafe`/`TargetLaneBlockedByObstacle` veto A2/B5-ii use (clear
+       road ⇒ never binding here), then a command-buffer `ChangeLane` lateral snap + `SpeedGainProbability`
+       reset (`.cpp:1063/1080`).
+    4. **Advance requires convergence.** `ExecuteMoves`' boundary-advance loop now checks
+       `v.LaneHandle == pool[LaneSeqIndex]` before crossing to `pool[index+1]`; if not converged at
+       the lane end, it clamps `Pos` to the lane length and zeroes `Speed` (stop at the lane end)
+       instead of teleporting onto a route path this lane never connected to. Always true for
+       single-lane-per-edge routes (pool built from the depart lane) ⇒ unexercised guard, but present
+       for safety per the briefing.
+    **One extra, empirically-necessary fix beyond the 4-point design:** after convergence (on `E1_1`,
+    `bestLaneOffset=0`), the EXISTING (untouched) keep-right accumulator would have — per hand-derived
+    arithmetic (`deltaProb≈0.138/step`, threshold `-2.0`) — spuriously fired ~14 steps later and moved
+    the vehicle BACK onto the `E1_0` drop lane, contradicting the golden (which never returns to
+    `E1_0`). Root cause (found by reading `MSLCM_LC2013.cpp:1398-1410`, the "opposite direction" STAY
+    guard): real SUMO's `_wantsChange` returns early — BEFORE the keep-right accumulator is ever
+    touched — once `currentDistDisallows(neighLeftPlace, |bestLaneOffset|+2, laDist)` holds, which for
+    this net's numbers becomes true immediately upon convergence (`posOnLane > 188.2`, and the vehicle
+    enters `E1_1` at `pos=205.68`). Ported the OBSERVABLE effect only (not the full early-return-
+    before-accumulation semantics, since `KeepRightProbability` is not itself a compared golden
+    attribute — only `lane`/`pos`/`speed` are): a new commit-time veto in `ApplyKeepRightDecision`,
+    `LaneContinuesRoute(v, lane, rightLane.Index)` (a thin `ComputeBestLanes` wrapper, with a
+    `route.Edges.Count <= 1` fast path that skips the call entirely for every single-edge scenario),
+    ANDed into the existing `keepRightProbability * keepRightParam < -changeProbThresholdRight` commit
+    gate. Verified inert for 06/07/12 (the only scenarios with a valid `RightNeighbor`) by exhaustive
+    check: every scenario with multi-lane edges (06/07/12) is single-edge-route (`ComputeBestLanes`'
+    own "last route edge" special case ⇒ `AllowsContinuation=true` for every lane, unconditionally),
+    and every multi-edge scenario (9a/9b/A3/B3's 15-reroute) is single-lane-per-edge (`RightNeighbor`
+    always `-1`, guard returns before this code is ever reached).
+    **Byte-identical argument:** `TryStrategicLaneChange`'s gate (`pool[LaneSeqIndex]`'s handle ≠
+    `v.LaneHandle`) is false for every existing scenario because C2-i already proved `BestLaneOffset`
+    is 0 on every lane of every route edge for every single-lane-per-edge scenario, which is exactly
+    what makes `ResolveLaneSequence`'s new continuing-lane resolution a no-op there (the depart lane
+    always `AllowsContinuation`) — so the pool is unchanged, `ExecuteMoves`' new convergence check is
+    always satisfied (actual always equals target), and the new keep-right veto's own fast path
+    (`route.Edges.Count <= 1`) or unreachability (`RightNeighbor < 0`) makes it inert too. Full suite:
+    **94 passed, 0 failed** (was 93; +1 new `RungC2ParityTests`); `Rung9aParityTests`/
+    `Rung9bParityTests`/`RungA3ParityTests`/`RungA2ParityTests`/`Rung8bParityTests`/
+    `Rung8aParityTests`/`RungC2iBestLanesTests` all re-verified green/unchanged in the same run.
+    **Empirically confirmed trigger step** (temporary instrumentation, since removed): at `t=16`
+    (post-move `pos=191.79`) `usableDist=304.21`, `laDist=292.8` (already saturated,
+    `myLookAheadSpeed=13.89` since `t=6`) → `304.21 ≥ 292.8` → no change. At the next step
+    (`pos=205.68`, emitted as `t=17`) `usableDist=290.32 < 292.8` → fires; golden shows `lane=E1_1`
+    at `t=17` with `pos=205.68` unchanged (pure lateral snap) — exact match, pins the change at
+    `t=17` as specified. Gated ACCEPT by parity-reviewer (byte-identity of the whole existing golden
+    set proven, not merely within-tolerance, via a topology sweep: every existing scenario is either
+    single-edge-route OR single-lane-per-edge, so all four modified mechanisms are provably inert).
+    **FOLLOW-UP (non-blocking, from the C2-ii review):** the keep-right `LaneContinuesRoute` veto
+    ports only the OBSERVABLE effect of `MSLCM_LC2013.cpp:1398-1410`'s STAY guard, not the full
+    early-return-before-`myKeepRightProbability`-decrement. Latent gap (no committed golden exercises
+    it): a FUTURE multi-edge route where a vehicle sits on a lane whose right neighbor does NOT
+    continue the route would accumulate `KeepRightProbability` faster than SUMO (no early return) and
+    could fire a keep-right change one-or-more steps early onto a lane that DOES continue. When the
+    first such scenario lands (with its own golden), port the full early-return semantics (return
+    before the accumulator decrement) instead of the commit-gate veto, and re-anchor 07/12
+    byte-identical.
 - **C3. Merging / on-ramp / zipper.** Gap-acceptance merging where two lanes join (`sameTarget`
   links). Extends 9b's foe machinery + A2's neighbor leader/follower. Parity axis. Scenario: an
   on-ramp merging onto a mainline; the ramp vehicle accepts a gap or waits.
