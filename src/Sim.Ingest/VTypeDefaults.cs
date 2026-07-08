@@ -144,8 +144,10 @@ public static class VTypeDefaults
         return new ResolvedVType(
             Id: vType.Id,
             VClass: vClass,
-            // SUMOVTypeParameter.cpp:331 cfModel(SUMO_TAG_CF_KRAUSS) -- default CF model.
-            CarFollowModel: "Krauss",
+            // SUMOVTypeParameter.cpp:331 cfModel(SUMO_TAG_CF_KRAUSS) -- default CF model;
+            // overridable via rou.xml's carFollowModel="..." (C11-i: "IDM" is the only other
+            // value in scope -- SUMOXMLDefinitions::CarFollowModels' "IDM" -> SUMO_TAG_CF_IDM).
+            CarFollowModel: vType.CarFollowModel ?? "Krauss",
             // SUMOVehicleClass.cpp getDefaultVehicleLength; overridable via rou.xml's length="...".
             Length: vType.Length ?? raw.Length,
             // SUMOVTypeParameter.cpp:61 (or per-vclass override); overridable via rou.xml's

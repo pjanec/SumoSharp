@@ -829,25 +829,33 @@ public sealed class Engine : IEngine
         // formula is dead code once a real leader exists). No leader => +infinity
         // (non-binding), matching a gap=+infinity KraussOrig1 vsafe call's short-circuit
         // but via the real code path: simply contribute nothing when there is no leader.
-        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt));
+        // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
+        // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
+        // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
+        vPos = Math.Min(vPos, LeaderFollowSpeedConstraint(v, neighbors, dt, laneVehicleMaxSpeed));
 
         // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
-        // by this vehicle's speedFactor, capped by its vType maxSpeed.
-        vPos = Math.Min(vPos, laneVehicleMaxSpeed);
+        // by this vehicle's speedFactor, capped by its vType maxSpeed. C11-i: for Krauss this
+        // stays the plain laneVehicleMaxSpeed value (byte-identical -- MSCFModel_Krauss never
+        // overrides freeSpeed and our simplified single-lane engine never calls the base
+        // MSCFModel::freeSpeed braking-curve formula for this term either way, matching every
+        // pre-C11 rung exactly); for IDM this routes through IdmModel.FreeSpeed
+        // (MSCFModel_IDM.cpp:77-100) -- see FreeFlowDesiredSpeedConstraint's own header comment.
+        vPos = Math.Min(vPos, FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt));
 
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
         // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
         // there is no stop at all.
-        vPos = Math.Min(vPos, StopLineConstraint(v, dt, actionStepLengthSecs));
+        vPos = Math.Min(vPos, StopLineConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Red light (rung 10): MSVehicle.cpp's planMoveInternal per-link loop (~2641-2666,
         // 2734), yellowOrRed arm only. +infinity (non-binding) when this lane's outgoing
         // connection is not TL-controlled, or its light is green, at the time this Plan/
         // Execute cycle's result will be observed (see RedLightConstraint's own comment on
         // why that is `time + dt`, not `time`).
-        vPos = Math.Min(vPos, RedLightConstraint(v, lane, time, dt, actionStepLengthSecs));
+        vPos = Math.Min(vPos, RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
         // right-of-way gate (stop-line brake while a higher-priority foe still approaches) plus
@@ -863,7 +871,7 @@ public sealed class Engine : IEngine
         // [StartTime, EndTime) active window at the SAME instant every other obstacle read this
         // step uses (ObstacleConstraint/TargetLaneBlockedByObstacle's own convention) -- nothing
         // about the pre-existing 9b-ii/iii SUMO-foe machinery reads `time` at all.
-        vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs));
+        vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
@@ -872,7 +880,7 @@ public sealed class Engine : IEngine
         // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
         // on this lane -- this is the inert-when-absent guard: an empty store makes this a
         // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
-        vPos = Math.Min(vPos, ObstacleConstraint(v, time));
+        vPos = Math.Min(vPos, ObstacleConstraint(v, time, laneVehicleMaxSpeed));
 
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
@@ -883,7 +891,13 @@ public sealed class Engine : IEngine
         // C1-i: threaded `ref` so the dawdle draw (only taken when v.VType.Sigma>0) advances
         // THIS vehicle's own private RngState in place -- no shared/global RNG, so this remains
         // safe under UseParallelPlan (each loop iteration/task only ever touches its own `v`).
-        var newSpeed = KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
+        // C11-i: IDM's finalizeSpeed (MSCFModel_IDM.cpp:67-74) never dawdles (no sigma concept in
+        // this port's scope -- see IdmModel.FinalizeSpeed's own header comment), so it takes no
+        // `ref VehicleRng` at all; the Krauss arm below is the SAME KraussModel.FinalizeSpeed call
+        // this line always made.
+        var newSpeed = v.VType.CarFollowModel == "IDM"
+            ? IdmModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs)
+            : KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
 
         return new MoveIntent
         {
@@ -893,13 +907,69 @@ public sealed class Engine : IEngine
         };
     }
 
+    // C11-i dispatch (TASKS.md): every constraint below computes ego's OWN car-following speed
+    // against some leader/obstacle/stop -- `vType` is always the EGO vehicle's resolved vType
+    // (never a leader's/foe's), so a single vType.CarFollowModel=="IDM" check at each call site
+    // is the complete dispatch. The Krauss arm of every one of these two helpers is the EXACT
+    // pre-C11 call (same argument values, just routed through a pass-through wrapper) -- see
+    // CLAUDE.md rule "byte-identical Krauss" and this rung's briefing.
+    //
+    // FollowSpeedFor: MSCFModel_Krauss.cpp:111-127 followSpeed (KraussModel.FollowSpeed) vs.
+    // MSCFModel_IDM.cpp:104-107 followSpeed (IdmModel.FollowSpeed) -- IDM's `desSpeed` argument is
+    // `veh->getLane()->getVehicleMaxSpeed(veh)`, i.e. the caller-supplied `laneVehicleMaxSpeed`
+    // (ego's OWN current-lane desired speed, independent of which leader/foe this call is against).
+    private static double FollowSpeedFor(
+        ResolvedVType vType,
+        double egoSpeed,
+        double gap,
+        double predSpeed,
+        double predMaxDecel,
+        double laneVehicleMaxSpeed,
+        double dt) =>
+        vType.CarFollowModel == "IDM"
+            ? IdmModel.FollowSpeed(egoSpeed, gap, predSpeed, laneVehicleMaxSpeed, vType, dt)
+            : KraussModel.FollowSpeed(egoSpeed, gap, predSpeed, predMaxDecel, vType, dt);
+
+    // StopSpeedFor: MSCFModel_Krauss.cpp:100-107 stopSpeed (KraussModel.StopSpeed) vs.
+    // MSCFModel_IDM.cpp:151-173 stopSpeed (IdmModel.StopSpeed) -- same `desSpeed`=
+    // laneVehicleMaxSpeed convention as FollowSpeedFor above.
+    private static double StopSpeedFor(
+        ResolvedVType vType,
+        double speed,
+        double gap,
+        double laneVehicleMaxSpeed,
+        double dt,
+        double actionStepLengthSecs) =>
+        vType.CarFollowModel == "IDM"
+            ? IdmModel.StopSpeed(speed, gap, laneVehicleMaxSpeed, vType, dt, actionStepLengthSecs)
+            : KraussModel.StopSpeed(gap, speed, vType, dt, actionStepLengthSecs);
+
+    // Desired free-flow speed term (Engine.cs's simplified single-constraint analog of
+    // MSVehicle.cpp:2908's per-link `cfModel.freeSpeed(this, getSpeed(), seen, laneMaxV)` call).
+    // Krauss: MSCFModel_Krauss never overrides freeSpeed, and our engine never calls the base
+    // MSCFModel::freeSpeed braking-curve formula for this term (no upcoming-speed-limit-drop
+    // lookahead is modeled here) -- so this stays the literal `laneVehicleMaxSpeed` value, exactly
+    // the pre-C11 code (byte-identical: FinalizeSpeed's own aMax term is what actually bounds the
+    // acceleration ramp toward it, matching every prior rung).
+    // IDM: routes through IdmModel.FreeSpeed (MSCFModel_IDM.cpp:77-100) with `seen` set to
+    // +infinity -- this engine has no "distance until the next lane's speed limit changes"
+    // concept for this term, and the briefing's own scope note confirms that for a normal
+    // free-flow lane (no speed-limit drop) `seen` is effectively unbounded, which collapses
+    // freeSpeed to its free-accel branch (`speed<=maxSpeed`) exactly, both `maxSpeed` and
+    // `desSpeed` being this same `laneVehicleMaxSpeed` value (ego's own current lane, no
+    // separate "next lane" tracked here -- see IdmModel.FreeSpeed's own header comment).
+    private static double FreeFlowDesiredSpeedConstraint(VehicleRuntime v, double laneVehicleMaxSpeed, double dt) =>
+        v.VType.CarFollowModel == "IDM"
+            ? IdmModel.FreeSpeed(v.Kinematics.Speed, double.PositiveInfinity, laneVehicleMaxSpeed, laneVehicleMaxSpeed, v.VType, dt)
+            : laneVehicleMaxSpeed;
+
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
     // (stop.getSpeed()==0) arm only: newStopDist = seen + endPos - lane->getLength(), which on a
     // single lane (seen = laneLength - pos) collapses to `endPos + NUMERICAL_EPS - pos`;
     // stopSpeed = MAX2(cfModel.stopSpeed(this, getSpeed(), newStopDist), vMinComfortable) where
     // vMinComfortable = cfModel.minNextSpeed(getSpeed()) (line 2191). Non-binding (+infinity)
     // once the stop is reached (matches the source's own approach-block guard) or absent.
-    private double StopLineConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs)
+    private double StopLineConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         // D3: side table lookup instead of v.Stops.Count == 0 -- absent from _stopsByEntity is
         // exactly the "no stops" fast path.
@@ -916,8 +986,13 @@ public sealed class Engine : IEngine
         }
 
         var newStopDist = stop.EndPos + KraussModel.NumericalEps - v.Kinematics.Pos;
-        var vMinComfortable = KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
-        var stopSpeed = KraussModel.StopSpeed(newStopDist, v.Kinematics.Speed, v.VType, dt, actionStepLengthSecs);
+        // MSVehicle.cpp:2191 `vMinComfortable = cfModel.minNextSpeed(getSpeed())` -- virtual;
+        // IDM overrides minNextSpeed (see IdmModel.MinNextSpeed's own header comment), so this
+        // dispatches too, not just the stopSpeed call below.
+        var vMinComfortable = v.VType.CarFollowModel == "IDM"
+            ? IdmModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt)
+            : KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        var stopSpeed = StopSpeedFor(v.VType, v.Kinematics.Speed, newStopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs);
 
         return Math.Max(stopSpeed, vMinComfortable);
     }
@@ -942,7 +1017,7 @@ public sealed class Engine : IEngine
     // the naive "just use `time`" reading: the golden's t=30 row already shows free-flow
     // acceleration through the junction, i.e. green was already in effect for the Plan/Execute
     // that produced it).
-    private double RedLightConstraint(VehicleRuntime v, Lane lane, double time, double dt, double actionStepLengthSecs)
+    private double RedLightConstraint(VehicleRuntime v, Lane lane, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         if (!_network!.TryGetTlControlledConnection(lane.EdgeId, lane.Index, out var connection))
         {
@@ -1003,7 +1078,7 @@ public sealed class Engine : IEngine
         laneStopOffset = Math.Max(positionEps, laneStopOffset);
         var stopDist = Math.Max(0.0, seen - laneStopOffset);
 
-        return KraussModel.StopSpeed(stopDist, v.Kinematics.Speed, v.VType, dt, actionStepLengthSecs);
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs);
     }
 
     // sumo/src/microsim/MSLink.cpp's POSITION_EPS (used throughout its getLeaderInfo/
@@ -1042,7 +1117,7 @@ public sealed class Engine : IEngine
     // check below -- see this method's foe-link loop) is the only change to this method's
     // pre-existing 9b-ii/iii signature/logic; every SUMO-foe code path above and below is
     // untouched.
-    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs)
+    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         // Step 1: ego's own upcoming/current junction link -- the first internal lane in
         // the pool slice at or after LaneSeqIndex. A lane already passed is simply never found
@@ -1154,9 +1229,10 @@ public sealed class Engine : IEngine
             {
                 var extConstraint = egoOnInternal
                     ? double.PositiveInfinity
-                    : KraussModel.StopSpeed(
+                    : StopSpeedFor(
+                        v.VType, v.Kinematics.Speed,
                         approachLane!.Length - v.Kinematics.Pos - PositionEps,
-                        v.Kinematics.Speed, v.VType, dt, actionStepLengthSecs);
+                        laneVehicleMaxSpeed, dt, actionStepLengthSecs);
                 constraint = Math.Min(constraint, extConstraint);
             }
 
@@ -1172,7 +1248,7 @@ public sealed class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 // On-junction: MSVehicle::adaptToJunctionLeader.
-                thisConstraint = AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, actionStepLengthSecs);
+                thisConstraint = AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
             else if (foeInternalSeqIndex > foe.LaneSeqIndex)
             {
@@ -1182,9 +1258,10 @@ public sealed class Engine : IEngine
                 // approach state.
                 thisConstraint = egoOnInternal
                     ? double.PositiveInfinity
-                    : KraussModel.StopSpeed(
+                    : StopSpeedFor(
+                        v.VType, v.Kinematics.Speed,
                         approachLane!.Length - v.Kinematics.Pos - PositionEps,
-                        v.Kinematics.Speed, v.VType, dt, actionStepLengthSecs);
+                        laneVehicleMaxSpeed, dt, actionStepLengthSecs);
             }
             else
             {
@@ -1263,7 +1340,8 @@ public sealed class Engine : IEngine
         JunctionConflict conflict,
         VehicleRuntime foe,
         double dt,
-        double actionStepLengthSecs)
+        double actionStepLengthSecs,
+        double laneVehicleMaxSpeed)
     {
         // D2: hot per-vehicle lookup -- handle-indexed array instead of a string hash.
         var foeLane = _network!.LanesByHandle[foe.LaneHandle];
@@ -1289,13 +1367,13 @@ public sealed class Engine : IEngine
         var vsafeLeader = 0.0;
         if (gap >= 0)
         {
-            vsafeLeader = KraussModel.FollowSpeed(ego.Kinematics.Speed, gap, foe.Kinematics.Speed, foe.VType.Decel, ego.VType, dt);
+            vsafeLeader = FollowSpeedFor(ego.VType, ego.Kinematics.Speed, gap, foe.Kinematics.Speed, foe.VType.Decel, laneVehicleMaxSpeed, dt);
         }
         else
         {
             // MSVehicle.cpp:3225-3228: leaderInfo.first != this is always true here (foe is a
             // distinct vehicle, never the ego "pedestrian" self-reference).
-            vsafeLeader = KraussModel.StopSpeed(seen - egoLane.Length - PositionEps, ego.Kinematics.Speed, ego.VType, dt, actionStepLengthSecs);
+            vsafeLeader = StopSpeedFor(ego.VType, ego.Kinematics.Speed, seen - egoLane.Length - PositionEps, laneVehicleMaxSpeed, dt, actionStepLengthSecs);
         }
 
         if (distToCrossing >= 0)
@@ -1304,7 +1382,7 @@ public sealed class Engine : IEngine
             // leaderInfo.second == -DBL_MAX (continuation-lane/opposite-direction foe) never
             // occur for this rung's foe-vehicle-on-a-plain-internal-lane case, so only the
             // final "else" branch (lines 3260-3280) is reachable here.
-            var vStop = KraussModel.StopSpeed(distToCrossing - ego.VType.MinGap, ego.Kinematics.Speed, ego.VType, dt, actionStepLengthSecs);
+            var vStop = StopSpeedFor(ego.VType, ego.Kinematics.Speed, distToCrossing - ego.VType.MinGap, laneVehicleMaxSpeed, dt, actionStepLengthSecs);
             var leaderDistToCrossing = distToCrossing - gap;
             var leaderPastCPTime = leaderDistToCrossing / Math.Max(foe.Kinematics.Speed, KraussModel.HaltingSpeed);
             var vFinal = Math.Max(ego.Kinematics.Speed, (2.0 * (distToCrossing - ego.VType.MinGap) / leaderPastCPTime) - ego.Kinematics.Speed);
@@ -1432,7 +1510,7 @@ public sealed class Engine : IEngine
     // leader's OWN decel (MSVehicle::getCurrentApparentDecel(), which for our phase-1 vTypes
     // -- no apparent-decel override beyond the vType default -- equals the leader's vType
     // decel). Returns +infinity (non-binding) when ego has no leader on its lane.
-    private static double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt)
+    private static double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double laneVehicleMaxSpeed)
     {
         var leader = neighbors.GetLeader(ego);
         if (leader is null)
@@ -1443,12 +1521,13 @@ public sealed class Engine : IEngine
         var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
         var gap = leaderBackPos - ego.VType.MinGap - ego.Kinematics.Pos;
 
-        return KraussModel.FollowSpeed(
+        return FollowSpeedFor(
+            ego.VType,
             egoSpeed: ego.Kinematics.Speed,
             gap: gap,
             predSpeed: leader.Kinematics.Speed,
             predMaxDecel: leader.VType.Decel,
-            vType: ego.VType,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
             dt: dt);
     }
 
@@ -1479,7 +1558,7 @@ public sealed class Engine : IEngine
     // active at `time`, none is on v's current lane, or none is still ahead of v (back position
     // >= v's own position) -- an empty store trivially falls through this loop with the seed
     // value untouched.
-    private double ObstacleConstraint(VehicleRuntime v, double time)
+    private double ObstacleConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
     {
         ExternalObstacle? nearest = null;
         var nearestBack = double.PositiveInfinity;
@@ -1511,12 +1590,13 @@ public sealed class Engine : IEngine
 
         var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
 
-        return KraussModel.FollowSpeed(
+        return FollowSpeedFor(
+            v.VType,
             egoSpeed: v.Kinematics.Speed,
             gap: gap,
             predSpeed: nearest.Speed,
             predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
-            vType: v.VType,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
             dt: _config!.StepLength);
     }
 

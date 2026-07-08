@@ -989,6 +989,36 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   `MSCFModel_CACC` for modern / automated traffic. Each is a resolver dispatch (`carFollowModel`
   attribute) + a model port behind the same `KraussModel`-style constraint interface. Parity axis, one
   scenario per model.
+  - **C11-i. DONE. IDM (Intelligent Driver Model).** Ported `sumo/src/microsim/cfmodels/
+    MSCFModel_IDM.cpp` (whole file, plain-IDM ctor arm — `myIDMM=false` — only; ACC/CACC/IDMM
+    deferred, see below) as `src/Sim.Core/IdmModel.cs`: the iterated `_v` core (delta=4.0,
+    iterations=`MAX2(1,int(TS/stepping(0.25)+.5))`=4 at dt=1s, `twoSqrtAccelDecel=2*sqrt(accel*decel)`,
+    headwayTime=tau — the `myAdaptationFactor!=1` headway-scaling/level-of-service branches are
+    provably dead for plain IDM, adaptationFactor hardwired to 1.0, and are omitted, not ported as
+    no-ops); the four entry points `freeSpeed`/`followSpeed`/`stopSpeed`/`finalizeSpeed`
+    (finalizeSpeed = the shared base `MSCFModel::finalizeSpeed` accel/decel-bound clamp with NO
+    dawdle — IDM never overrides `patchSpeedBeforeLC`, whose base default is a plain `return vMax`);
+    `getSecureGap`; and the `minNextSpeed` OVERRIDE (`MAX2(myDecel, MIN2(myEmergencyDecel,1.5))` —
+    virtual-dispatched from both `MSCFModel::finalizeSpeed`'s own vMin term and
+    `StopLineConstraint`'s `vMinComfortable`, not just the stopSpeed call).
+    `carFollowModel` is now parsed from `<vType>` (`DemandParser`/`DemandModel.VType.CarFollowModel`)
+    and resolved into `ResolvedVType.CarFollowModel` (`VTypeDefaults.Resolve`, default "Krauss"
+    unchanged). `Engine.ComputeMoveIntent` dispatches per EGO vehicle (`vType.CarFollowModel=="IDM"`)
+    at every constraint that computes ego's own car-following speed: `LeaderFollowSpeedConstraint`,
+    the free-flow desired-speed term (`FreeFlowDesiredSpeedConstraint`, new — IDM routes through
+    `IdmModel.FreeSpeed` with `seen=+infinity`, i.e. the free-accel branch, since this engine has no
+    "next lane's speed limit" lookahead for this term), `StopLineConstraint`, `RedLightConstraint`,
+    `JunctionYieldConstraint`/`AdaptToJunctionLeader`, `ObstacleConstraint`, and the top-level
+    `FinalizeSpeed` call — via two small dispatch wrappers (`FollowSpeedFor`/`StopSpeedFor`) whose
+    Krauss arm is the EXACT pre-C11 `KraussModel.FollowSpeed`/`StopSpeed` call (same argument values,
+    same order) — Krauss stays byte-identical (100 pre-existing parity tests unchanged, verified
+    including `Rung1`/`Rung9b`/`RungB1`). New anchor: `scenarios/22-idm-carfollow`
+    (`tests/Sim.ParityTests/RungC11ParityTests.cs`, 60 steps, exact 1e-3) — both vTypes IDM, leader
+    maxSpeed=6 free-accelerates, follower free-accelerates to ~13.7 then brakes via IDM's gap term
+    and settles following the leader at the IDM equilibrium gap. **Deferred**: ACC/CACC (separate
+    `MSCFModel_ACC`/`_CACC` ports), IDMM (`myIDMM=true`'s adaptation-factor/level-of-service state),
+    and IDM+junction/stop interplay beyond what `stopSpeed`'s port itself guarantees (ported but only
+    anchored by this rung's follow/free scenario, not exercised end-to-end by a junction golden yet).
 - **C12. Pedestrians & crossings; public transport.** Pedestrians already appear as junction foes in
   the ported `getLeaderInfo` (the `leader==nullptr` ped branch); add vehicles yielding at crosswalks,
   and bus stops / dwell times / schedules. Breadth; behavioral, with parity where a SUMO analog exists

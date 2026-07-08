@@ -41,7 +41,10 @@ public static class DemandParser
                 // Rung A3: a vType ATTRIBUTE, not a <param> child -- SUMO's getJMParam reads the
                 // attribute map (SUMOVTypeParameter's map of junction-model params populated
                 // straight from the <vType>'s own XML attributes for jm* names).
-                JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"));
+                JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"),
+                // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
+                // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
+                CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value);
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;

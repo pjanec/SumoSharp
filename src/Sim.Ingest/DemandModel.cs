@@ -25,7 +25,12 @@ public sealed record VType(
     // getJMParam(SUMO_ATTR_JM_DRIVE_AFTER_RED_TIME, -1) -- a vType-level (not <param> child)
     // junction-model attribute; null here (no override present) resolves to SUMO's -1 default
     // in VTypeDefaults.Resolve ("never ignore red").
-    double? JmDriveAfterRedTime = null);
+    double? JmDriveAfterRedTime = null,
+    // C11-i: sumo/src/utils/vehicle/SUMOVTypeParameter.cpp:331's `carFollowModel` vType
+    // attribute (SUMO_TAG_CF_KRAUSS's XML tag name is "Krauss", SUMO_TAG_CF_IDM's is "IDM").
+    // null here (no override present) resolves to "Krauss" in VTypeDefaults.Resolve, exactly as
+    // before this rung.
+    string? CarFollowModel = null);
 
 public sealed record Route(
     string Id,
