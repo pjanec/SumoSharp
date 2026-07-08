@@ -661,8 +661,41 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
   (`LCA_STRATEGIC`/`LCA_URGENT`, `getBestLanes`/`bestLaneOffset` — `MSLCM_LC2013::_wantsChange` +
   `MSLane::getBestLanes`) so a vehicle moves into a lane that continues its route. Requires
   **lane-level** routing: honor `<connection fromLane/toLane>` turn permissions (B2 is edge-level).
-  Parity axis. Scenario: a multi-lane approach where a vehicle must reach a dedicated turn lane before
-  the junction. Reuses A2's neighbor query + the post-move LC phase.
+  Parity axis. Reuses A2's neighbor query + the post-move LC phase.
+
+  **ARCHITECTURAL FINDING (this session): C2 is the largest structural Group-C rung — it reworks the
+  lane-sequence model.** Today `NetworkModel.ResolveLaneSequence` precomputes an EXACT lane path
+  (`_laneSeqPool` slice) at insertion and THROWS if the depart lane has no `<connection>` to the next
+  edge; `ExecuteMoves`'s lane-boundary advance blindly walks that precomputed sequence
+  (`v.LaneSeqIndex++; v.LaneHandle = pool[start+index]`), while speed-gain/keep-right LC change
+  `v.LaneHandle` to a neighbor WITHOUT updating the sequence. These never conflict today only because
+  every multi-edge route is single-lane-per-edge (no LC) and every multi-lane scenario is single-edge
+  (no advance). C2 is the first rung to combine multi-lane + multi-edge + lane choice, so the
+  advance must follow the vehicle's ACTUAL current lane's connection, not a precomputed path — a
+  change that touches the core every multi-edge parity scenario (9a/9b/A3) depends on. Gate HARD for
+  byte-identical on those.
+
+  **`[net]` anchor DONE: `scenarios/18-strategic-turnlane`** (committed golden). E1 (2 lanes, A→B,
+  500m) → E2 (1 lane, B→C); ONLY `E1_1` (left) connects to E2 (via `:B_0_0`), `E1_0` (right) is a
+  drop lane. `veh0` routes E1→E2 departing `E1_0`, so it MUST strategic-change left before B. Verified
+  SUMO trajectory (`golden.fcd.xml`, `sigma=0`, seed 42): on `E1_0` through t≤16, strategic-changes to
+  `E1_1` by t=17, crosses `:B_0_0` at t=38, reaches `E2_0` at t=39. Net built from committed
+  `nodes.nod.xml`/`edges.edg.xml`/`connections.con.xml` via netconvert. `tolerance.json` exact,
+  `["lane","pos","speed"]` @1e-3.
+
+  **Suggested decomposition (engine work, offline against the anchor golden):**
+  - **C2-i (additive, byte-identical). `getBestLanes` lane-continuity data.** For a vehicle's route,
+    compute per (route-edge, lane) the signed `bestLaneOffset` (lanes toward the nearest lane that
+    continues the route through the next `<connection>`) + the continuation length. Additive data +
+    offline unit test on the scenario-18 net; NO behavior change (inert until C2-ii). Note SUMO's
+    `getBestLanes` is TraCI-exposed → can be cross-checked as a `[net]` step if desired.
+  - **C2-ii (behavioral, SUMO golden). Strategic LC + actual-lane advance.** Make
+    `ResolveLaneSequence` tolerant (resolve the route path via the CONTINUING lane rather than
+    throwing when the depart lane doesn't connect; track the vehicle's actual lane separately),
+    make `ExecuteMoves`'s boundary advance follow the actual current lane's `<connection>`, and port
+    the LC2013 STRATEGIC block (change toward `bestLaneOffset`, `LCA_URGENT` as the junction nears)
+    into the post-move LC phase alongside speed-gain. Validate against `scenarios/18-strategic-turnlane`.
+    Gate byte-identical on 9a/9b/A3 (single-lane-per-edge → strategic offset is always 0 → inert).
 - **C3. Merging / on-ramp / zipper.** Gap-acceptance merging where two lanes join (`sameTarget`
   links). Extends 9b's foe machinery + A2's neighbor leader/follower. Parity axis. Scenario: an
   on-ramp merging onto a mainline; the ramp vehicle accepts a gap or waits.

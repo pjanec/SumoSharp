@@ -1,0 +1,15 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C2 anchor: strategic (route-driven) lane change. net built from nodes.nod.xml/edges.edg.xml/
+#   connections.con.xml via netconvert (--no-turnarounds, --junctions.corner-detail 0).
+# geometry: E1 (2 lanes, A->B, 500m) -> E2 (1 lane, B->C, 500m). ONLY E1_1 (left) connects to E2
+#   (via :B_0_0); E1_0 (right) is a drop lane. veh0 routes E1->E2 departing in E1_0, so it MUST
+#   strategic-change left to E1_1 before the B junction. sigma=0, Euler, teleport off,
+#   lanechange.duration=0, seed 42.
+# observed SUMO trajectory: veh0 on E1_0 at t<=16, strategic-changes to E1_1 by t=17, crosses
+#   :B_0_0 at t=38, reaches E2_0 at t=39. This is the LCA_STRATEGIC behavior C2 ports.
+# NOTE: no golden.vtype.json committed (standard passenger defaults, already cross-checked by
+#   scenarios 01+); ParameterCrossCheckTests skips scenarios without it.
