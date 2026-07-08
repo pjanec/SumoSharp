@@ -794,6 +794,61 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     first such scenario lands (with its own golden), port the full early-return semantics (return
     before the accumulator decrement) instead of the commit-gate veto, and re-anchor 07/12
     byte-identical.
+  - **C2-iii. TODO (parity-track, exact @1e-3). Multi-hop lane-to-lane continuity (route-wide
+    best-lanes backward pass).** The deferred second half of C2-i/ii. **BLOCKS the scaled-city
+    benchmark's multi-lane rungs** (`-L 2+`, the 300/3k/15k concurrency levels in
+    `BENCHMARK_SPEC.md`/`VIZ_BENCH_TASKS.md` Phase 2 -- bring-up is pinned to `-L 1` today precisely
+    because of this gap, `scenarios/_bench/city-30/NOTES.md`); also a real realism gap (any
+    multi-lane route with a forced turn a couple of junctions out is currently unroutable by the
+    engine though SUMO handles it).
+    **The gap (verified on `main@e30269a`):** the engine's route->lane resolution is
+    SINGLE-look-ahead. `NetworkModel.ResolveLaneSequence(routeEdges, departLaneIndex)`
+    (`src/Sim.Ingest/NetworkModel.cs:255-308`) picks the depart lane once via `ComputeBestLanes`
+    (which only considers the transition to the IMMEDIATELY next route edge) and then walks the route
+    HARD-REQUIRING an exact `ConnectionsByFromLaneTo[(fromEdge, currentLaneIndex, toEdge)]` at every
+    hop (`NetworkModel.cs:288-294`) -- `currentLaneIndex` only advances by each hop's
+    `connection.ToLane`, with NO lane-change planning across hops. If hop k's `ToLane` has no
+    `<connection>` onward to edge k+2, insertion throws
+    `InvalidDataException: No <connection> found from edge '...' lane N to edge '...'`
+    (`NetworkModel.cs:292`, via `Engine.TryInsertOnLane` ~`Engine.cs:588` during
+    `InsertDepartingVehicles`). `ComputeBestLanes` (`NetworkModel.cs:328-368`) documents this scope
+    itself: its own comment (`:346-353`) says the BACKWARD PASS is DEFERRED.
+    **Port target:** SUMO's backward pass in `MSVehicle::updateBestLanes`
+    (`sumo/src/microsim/MSVehicle.cpp:6003-6063`; `LaneQ` at `MSVehicle.h:865-886`; the already-ported
+    forward/per-edge `LaneQ` build is `:5896-5918`, last-route-edge special case `:5951-5989`,
+    non-continuing-lane offset tie-break `:5970-5976`). The missing piece: for each CONTINUING lane,
+    recurse to the best downstream lane, ACCUMULATE route-wide continuation `length`, and set
+    `bestLaneOffset` so the vehicle is steered -- across multiple junctions -- toward a lane that
+    stays connected to the END of its route. This makes `bestLaneOffset` a route-wide quantity, not a
+    one-junction hint.
+    **Repro:** `netgenerate --grid --grid.number=3 --grid.length=200 -L 2 --tls.guess --seed 42`
+    + `randomTrips.py`/`duarouter --named-routes` -> the engine throws at `A1B1` lane 1 -> `B1B0`; a
+    single-lane net (`-L 1`) never hits it (one unambiguous connection per direction).
+    **Done-condition (standard isolate -> golden -> reverse-engineer -> port -> gate):**
+    (1) `ComputeBestLanes`/`ResolveLaneSequence` thread a valid `<connection>` at EVERY hop of a
+    multi-lane, multi-junction route (SUMO's backward recursion picks the best downstream lane); no
+    `InvalidDataException` for any route SUMO itself routes. (2) Where the depart/upstream lane can't
+    reach the route but a lateral neighbor can, the vehicle strategic-changes into the connecting lane
+    -- REUSE the existing C2-ii `Engine.TryStrategicLaneChange`/`bestLaneOffset` path, do not
+    hard-throw. (3) Anchor `scenarios/NN-multihop-lanes/`: a minimal 2-lane, >=2-junction net where
+    the correct INSERTION lane is dictated by a connection TWO hops ahead (so the single-look-ahead
+    choice is wrong), one `sigma=0` vehicle, forced turn; SUMO golden `--precision 6`; match
+    lane/pos/speed @1e-3 EXACT. (4) INERT-when-absent: `scenarios/18-strategic-turnlane` and every
+    committed scenario stay byte-for-byte within tolerance (`dotnet test` green; the `Sim.Bench`
+    highway-dense determinism hash must NOT move) -- the single-junction fast path stays
+    behavior-identical. (5) parity-reviewer ACCEPT; faithful to `MSVehicle.cpp` (not a curve-fit).
+    Fits the C-track after the merge/junction rungs; portable in-session (deterministic net-graph
+    algorithm, SUMO golden as oracle -- no runtime DEBUG trace needed, unlike the timing rungs).
+  - **C2-iv (optional, ingest-robustness -- NOT parity-critical). `DemandParser` stock-output
+    loading.** Two things the benchmark works around at the generation layer; fixing them in
+    `Sim.Ingest.DemandParser` would let stock `duarouter`/`randomTrips` output load directly.
+    (a) **Embedded routes:** `duarouter`'s default output nests `<route edges="..."/>` INSIDE
+    `<vehicle>`; `DemandParser` only accepts the two-part `<route id=.../>` + `<vehicle route="id"/>`
+    form (benchmark forces the supported form with `duarouter --named-routes`). (b) **`DEFAULT_VEHTYPE`
+    synthesis:** a `<vehicle>` with no `type=` should fall back to SUMO's built-in `DEFAULT_VEHTYPE`;
+    `DemandParser`/`Engine.LoadScenario` instead throw `KeyNotFoundException` on `VTypesById[""]`
+    (benchmark post-processes an explicit `DEFAULT_VEHTYPE` vType in). Both are ingest ergonomics for
+    the benchmark, not parity axes; pick up alongside C2-iii if convenient.
 - **C3. Merging / on-ramp / zipper. DONE (exact parity @1e-3).** Minor-link CAUTIOUS APPROACH —
   the "slow to the stop line, then go once the gap is confirmed" half of the priority-junction
   mechanism that 9b did not cover (9b ported only yield-to-a-present-foe). Test:
