@@ -285,31 +285,96 @@ stop-line standoff into a mid-junction one. It is out of willPass scope by const
 yielding to EGO and a foe yielding to a THIRD party both read `WillPass=false`, and the gate cannot
 tell them apart without settled per-vehicle ordering.)
 
-SUMO breaks the symmetry because willPass is computed **sequentially** per vehicle during `planMove`
-(`MSLink::setApproaching` runs before the `opened()` foe-checks): the lower-link-index axis (N-S, links
-0–3) registers its pass first, and the E-W vehicles read that *settled* `willPass=true` and stay
-stop-line-held.
+**How SUMO breaks it (verified in the vendored source — this CORRECTS an earlier "sequential ordering"
+guess).** `MSVehicle::planMoveInternal` (MSVehicle.cpp:2818–2839) has an EXPLICIT right-before-left
+deadlock detector. For a link in `LINKSTATE_EQUAL` (netconvert's `state="="` for the straight/left
+movements at a `right_before_left` junction) with `myWaitingTime > 0` (ego already halted at the stop
+line), SUMO walks the blocker chain `MSLink::getFirstApproachingFoe` (MSLink.cpp:1080 — the closest
+`willPass` foe on each foeLink) up to 100 hops; if the chain WRAPS BACK to ego's own link
+(`blocker.second == *link`) it is a circular-yield deadlock, and SUMO breaks it **randomly**:
+`if (RandHelper::rand(getRNG()) < threshold) setRequest = false`, `threshold = 0.25` for a STRAIGHT
+movement and `0.75` for a turn. A deadlocked vehicle rolls its RNG each step and, with per-step prob
+0.25 (straight), aborts its request — yields — and the cycle unwinds (here N-S goes at t=17, E-W at t=19).
 
-### Fix design (own rung — deterministic, order-independent, gated)
-The engine must NOT depend on thread/processing order (CLAUDE.md determinism), so port SUMO's sequential
-resolution as a **canonical** sweep, not a scheduling artifact:
-1. In `ComputeWillPass`, resolve conflicting movements in a **deterministic priority order** (junction
-   link index, then a stable vehicle key) so each vehicle sees the already-settled `WillPass` of
-   higher-priority conflicting vehicles — equivalent to selecting a maximal set of mutually
-   non-conflicting movements with the highest static priority (here the N-S axis) to pass while the
-   rest keep `WillPass=false`.
-2. The loser then keeps yielding in the real pass (its foe’s `WillPass=true` ⇒ `foeYieldsThisStep`
-   false ⇒ it holds at the stop line, not mid-junction).
-3. Faithful reference: `MSLink::blockedByFoe` (MSLink.cpp:919 — the `!avi.willPass` short-circuit, the
-   leader/follower/hard-conflict arrival-window branches, and the ALLWAY_STOP `waitingTime`/`arrivalTime`
-   tie-break at :938–945) + `setApproaching` ordering.
+### Fix design (own rung — statistical only, gated)
+This is a RANDOM tie-break keyed on the vehicle RNG. Per the engine's determinism policy (CLAUDE.md /
+C1: "distribution SHAPE ported, RNG STREAM is ours" — VehicleRng/SplitMix64, never SUMO's RandHelper),
+which vehicle backs off on which step will NOT match SUMO, so **exact @1e-3 FCD parity is NOT
+achievable** — only STUCK-COUNT / statistical parity (deadlock breaks, all four drain to SUMO's 0
+stuck, but the per-step trajectory differs). Port:
+1. In `ComputeWillPass` (or the crossing gate), for a vehicle with `WaitingTime > 0` at a
+   `LINKSTATE_EQUAL` link, detect a circular yield: follow the foe-it-yields-to (closest willPass foe on
+   its response-matrix foeLinks), then that foe's yield target, up to N hops; if it wraps back to ego's
+   link, it is a cycle.
+2. Roll `VehicleRng` with `threshold` 0.25 (straight) / 0.75 (turn); on success force `WillPass = false`
+   (abort the request) so ego yields and the cycle unwinds.
+3. Faithful reference: `MSVehicle.cpp:2818–2839` (detector + abort) and `MSLink::getFirstApproachingFoe`
+   (MSLink.cpp:1080). The engine already has the response matrix + `FindFoeVehicle`; the new piece is the
+   bounded foe-chain walk and the seeded roll, computed order-independently from the frozen snapshot.
 
-**Gate HARD**: full committed suite byte-identical (the sequential sweep must not perturb any single-foe
-crossing scenario — those have a unique priority/arrival winner, so a canonical sweep should reproduce
-them), `Sim.Bench` hash unchanged (`909605E965BFFE59`), `RungSymRblStraightDiagTests` un-skipped and
-green (exact @1e-3 reachable for this 4-vehicle deterministic case once the tie-break matches SUMO),
-parity-reviewer ACCEPT. If the sweep moves ANY committed golden, revert — it means the tie-break
-diverges from SUMO’s and needs the trace.
+**Gate**: the detector is INERT wherever no `LINKSTATE_EQUAL` cycle exists (every committed single-foe
+crossing scenario has a unique priority/arrival winner, no cycle), so the full committed suite should
+stay byte-identical and `Sim.Bench` hash unchanged (`909605E965BFFE59`); `RungSymRblStraightDiagTests`
+asserts `stuck==0` (stuck-count, NOT FCD parity); parity-reviewer ACCEPT. If it moves ANY committed
+golden, revert.
+
+---
+
+## #4 Multi-lane cont-turn SPEED (C4-vii-a parts 2a–2c) — refined with exact SUMO mechanism + trajectory
+
+**Status: mechanism pinned + trajectory captured, NOT fixed (large multi-part junction-speed port,
+HIGH regression risk to every minor-link turn).** Part 1 (the internal via-chain SEQUENCE) is DONE on
+`main`; this is the cont-turn SPEED that keeps scenario 44 skip-gated.
+
+### Trajectory evidence (lone `NC→CE` left turn, `scenarios/_diag/cont-turn-sequence`)
+SUMO (`--precision 6`) vs engine, the divergence window:
+
+| t | SUMO lane / speed | engine lane / speed |
+|---|---|---|
+| 15 | `NC_1` 13.890 | `NC_1` 13.890 |
+| 16 | `NC_1` **10.036** | `NC_1` 11.700 |
+| 17 | `:C_3_0` **5.536** | `:C_16_0` 9.260 |
+| 18 | `:C_16_0` 8.136 | `:C_16_0` 9.260 |
+| 19 | `CE_1` 9.260 | `CE_1` 9.260 |
+
+The turn is a MINOR link (connection `state="m"`) and both internal lanes (`:C_3` 5.01 m, `:C_16`
+14.34 m) are speed-capped at 9.26. SUMO brakes to **10.04** approaching junction C, then dips to
+**5.54** on `:C_3` (cautiously approaching the internal junction `:C_16`), then re-accelerates. The
+engine does neither dip — it just clamps at the 9.26 internal-lane cap.
+
+### Exact mechanism (verified, MSVehicle.cpp:2805–2812 — the `couldBrakeForMinor` cautious approach)
+```
+couldBrakeForMinor = !link.havePriority() && brakeDist < seen && !link.lastWasContMajor();
+determinedFoePresence = seen <= link.getFoeVisibilityDistance();
+if (couldBrakeForMinor && !determinedFoePresence) {           // too far to see foes yet -> slow so you CAN stop
+    maxSpeedAtVisibilityDist = maximumSafeStopSpeed(visibilityDistance, maxDecel, speed, false, 0, false);
+    maxArrivalSpeed = estimateSpeedAfterDistance(visibilityDistance, maxSpeedAtVisibilityDist, maxAccel);
+    arrivalSpeed = MIN2(vLinkPass, maxArrivalSpeed);
+    slowedDownForMinor = true;
+}
+```
+`arrivalSpeed` (the capped speed AT the link) then feeds the car-follow `freeSpeed` toward the link,
+producing the observed decel-then-accel. This DETERMINISTIC branch (no RNG) means #4 IS exact-parity
+achievable — unlike #2 which is the RNG-keyed `else if` sibling at :2818. The lone turn needs it fired
+at BOTH minor links: the entry `NC→:C_3` (the 10.04 dip) and the internal-junction `:C_3→:C_16`
+(the 5.54 dip). The engine already applies a cautious minor-link approach for single-internal-lane
+turns (scenarios 11/26/32/33 pass), so the missing pieces are exactly the doc's 2a–2c:
+
+- **2a** — for a `cont` link, `JunctionYieldConstraint`'s `approachLane` resolves to the intermediate
+  internal lane `:C_3_0`, not the normal lane `NC_1`, so `seen` is wrong (goes negative) and the
+  cautious arm never fires. Walk `approachLane` back over `:`-edge pool lanes to the last normal lane.
+- **2b** — gate the whole braking unconditionally (SUMO computes `stopSpeed`/`arrivalSpeed` always and
+  only gates the `laneStopOffset` clamp on `canBrakeBeforeLaneEnd`), and add the `couldBrakeForMinor`
+  `arrivalSpeed` cap above.
+- **2c** — model the internal junction `:C_16` as a FIRST-CLASS minor link with its own
+  `getFoeVisibilityDistance` + `<request>` foes, so the 5.54 dip fires there (a lone turn enters
+  `:C_3_0` at 5.54 in SUMO but the engine enters at ~9.26).
+
+**Why deferred.** This changes the junction-approach SPEED for EVERY minor-link turn, so it must stay
+byte-identical on scenarios 08/11/26/32/33/38/39/40 while adding the cont-turn dips — a delicate
+multi-part port needing `getFoeVisibilityDistance` (netconvert-derived) and internal-junction modelling.
+Its own rung; the exact target trajectory + formula above make it a well-specified next task. Anchor
+`scenarios/_diag/cont-turn-sequence` (sequence only today) + scenario 44 (skip-gated) are the gates.
 
 ---
 

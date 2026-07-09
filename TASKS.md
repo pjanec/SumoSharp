@@ -953,13 +953,16 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
         `RungSymRblStraightDiagTests`). The four straights form a directed right-before-left 4-CYCLE
         (`NC→CS`→`WC→CE`→`SC→CN`→`EC→CW`→back); with no priority winner the C4-viii willPass pre-pass
         sets `WillPass=false` for all four, so the crossing gate's `foeYieldsThisStep=!foe.WillPass`
-        lets ALL four enter the junction simultaneously → mutual mid-junction gridlock (SUMO flows the
-        N-S axis first, then E-W, via SEQUENTIAL setApproaching-before-opened ordering). Fix = a
-        DETERMINISTIC (canonical, not thread-order) conflict-cycle resolution in `ComputeWillPass`
-        (independent-set / link-index priority); HIGH regression risk to the ~11 committed crossing
-        scenarios, needs a `MSLink_DEBUG_OPENED` trace for @1e-3. Full fix design in
-        `C4-VII-REMAINING.md` "#2 Symmetric arrival-time RoW". Its own rung — deliberately not landed
-        in the autonomous run.
+        lets ALL four enter the junction simultaneously → mutual mid-junction gridlock. SUMO breaks it
+        with an EXPLICIT deadlock detector (verified: `MSVehicle::planMoveInternal` MSVehicle.cpp:
+        2818-2839): a `LINKSTATE_EQUAL` link with `waitingTime>0` walks the `getFirstApproachingFoe`
+        blocker chain, and if it wraps back to ego it aborts the request RANDOMLY (`RandHelper::rand <
+        0.25` straight / `0.75` turn). Fix = port that cycle-detect + seeded-`VehicleRng` abort; because
+        the tie-break is RNG-keyed and the engine's RNG stream is its own (C1 policy), it is
+        STATISTICAL-only (stuck-count parity, NOT @1e-3 — corrects an earlier "arrival-time /
+        deterministic canonical sweep" guess). INERT wherever no LINKSTATE_EQUAL cycle exists (all
+        committed crossing scenarios have a unique winner). Full fix design in `C4-VII-REMAINING.md`
+        "#2". Its own rung — deliberately not landed in the autonomous run.
       - **C4-vii-b. DONE (parity-track, exact @1e-3). Keep-right over-accumulation + final-edge arrival
         strand.** Root-caused to TWO entangled bugs: (1) the narrow keep-right port
         (`ApplyKeepRightDecision`) accumulated the keep-right probability on a REQUIRED lane (it vetoed

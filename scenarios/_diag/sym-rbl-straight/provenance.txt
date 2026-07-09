@@ -31,17 +31,33 @@ own foe, and all arrive together, so the willPass pre-pass resolves WillPass=fal
 `foeYieldsThisStep = !foe.WillPass` is then TRUE for every ego (its foe "won't pass"), so ALL four
 proceed onto the junction simultaneously -> mutual mid-junction gridlock.
 
-SUMO breaks the symmetry because willPass is computed SEQUENTIALLY per vehicle during planMove
-(MSLink::setApproaching-before-opened()): the lower-link-index axis (N-S, links 0-3) registers its
-pass first, and the E-W vehicles read that settled willPass=true and stay stop-line-held. Replicating
-this in the engine faithfully requires a DETERMINISTIC (canonical, NOT thread-order) resolution of the
-conflict cycle -- effectively selecting a maximal set of mutually-non-conflicting movements with the
-highest static priority (the N-S axis here) to pass while the rest yield. That is a conflict-graph
-independent-set / arrival-time priority resolution, a new mechanism with HIGH regression risk to the
-~11 committed crossing scenarios (08/11/26/27/29/31/32/38/39/40 + 44), and needs a SUMO
-MSLink_DEBUG_OPENED trace to nail the exact per-step tie-break for @1e-3 parity. It is its own rung,
-NOT landed here. See C4-VII-REMAINING.md "#2 Symmetric arrival-time RoW" for the full fix design.
+HOW SUMO BREAKS IT (verified in the vendored source, MSVehicle::planMoveInternal
+MSVehicle.cpp:2818-2839): an EXPLICIT right-before-left deadlock detector. For a link in state
+LINKSTATE_EQUAL (netconvert emits connection state "=" for the straight/left movements at a
+right_before_left junction) with `myWaitingTime > 0` (ego already halted at the stop line), SUMO walks
+the blocker chain `MSLink::getFirstApproachingFoe` (MSLink.cpp:1080 -- the closest willPass foe on each
+foeLink) up to 100 hops; if the chain WRAPS BACK to ego's own link (`blocker.second == *link`) it has
+found a circular-yielding deadlock, and breaks it RANDOMLY: `if (RandHelper::rand(getRNG()) <
+threshold) setRequest = false`, with `threshold = 0.25` for a STRAIGHT movement and `0.75` for a turn.
+That is: a deadlocked vehicle rolls its RNG each step and, with per-step probability 0.25 (straight),
+ABORTS its junction request -- yields, letting the cycle unwind. Over a few steps the rolls
+desynchronise the four and one axis goes, then the other (here N-S at t=17, E-W at t=19).
 
-This anchor is skip-gated (RungSymRblStraightDiagTests) until that rung lands; unskip it then and
-compare against golden.fcd.xml (exact @1e-3 is reachable for this 4-vehicle deterministic case once
-the tie-break matches SUMO's).
+CONSEQUENCE FOR PARITY: this is a RANDOM tie-break keyed on the vehicle RNG. The engine's determinism
+policy (CLAUDE.md / C1) is "distribution SHAPE ported faithfully, RNG STREAM is ours" (VehicleRng /
+SplitMix64, never SUMO's RandHelper/MT19937), so which vehicle backs off on which step will NOT match
+SUMO. Therefore EXACT @1e-3 FCD parity is NOT achievable for this scenario -- only STUCK-COUNT /
+statistical parity (the deadlock breaks and all four drain, matching SUMO's 0 stuck, but the exact
+per-step trajectory differs). golden.fcd.xml is kept as the "SUMO flows, N-S-then-E-W" reference, NOT
+an @1e-3 target; RungSymRblStraightDiagTests asserts stuck==0 (the _diag stuck-count convention), not
+FCD parity.
+
+FIX (its own rung, statistical-only): port the LINKSTATE_EQUAL cycle detector + random abort. Detect,
+in the willPass pre-pass, when a waiting vehicle's yield chain (foe-it-yields-to, then that foe's
+yield target, per the response matrix) wraps back to itself; roll VehicleRng with threshold 0.25
+(straight) / 0.75 (turn) and, on success, force WillPass=false (abort request) so it yields and the
+cycle unwinds. HIGH regression risk to the ~11 committed crossing scenarios (08/11/26/27/29/31/32/38/
+39/40 + 44), but the detector is INERT wherever no LINKSTATE_EQUAL cycle exists (every committed
+single-foe crossing scenario has a unique priority/arrival winner, no cycle), so it should be provably
+byte-identical there. Gate on: suite byte-identical, Sim.Bench hash unchanged, stuck==0 here,
+parity-reviewer ACCEPT. See C4-VII-REMAINING.md "#2".

@@ -17,13 +17,15 @@ namespace Sim.ParityTests;
 // WillPass=false for all four (each braking-to-yield), so the crossing gate's
 // `foeYieldsThisStep = !foe.WillPass` is true for every ego and all four proceed simultaneously.
 //
-// SUMO breaks the tie via SEQUENTIAL per-vehicle planMove (setApproaching-before-opened()): the
-// lower-link-index axis registers its pass first and the others read that settled willPass and hold.
-// A faithful port needs a DETERMINISTIC (canonical, not thread-order) conflict-cycle resolution
-// (independent-set / arrival-time priority) -- HIGH regression risk to the committed crossing
-// scenarios, its own rung. Full diagnosis + fix design: scenarios/_diag/sym-rbl-straight/provenance.txt
-// and C4-VII-REMAINING.md "#2 Symmetric arrival-time RoW". Unskip when that rung lands and compare
-// against golden.fcd.xml (exact @1e-3 is reachable for this 4-vehicle deterministic case).
+// SUMO breaks the tie with an EXPLICIT right-before-left deadlock detector (MSVehicle.cpp:2818-2839):
+// for a LINKSTATE_EQUAL link with waitingTime>0 it walks the getFirstApproachingFoe blocker chain, and
+// if it wraps back to ego it aborts the request RANDOMLY (RandHelper::rand < 0.25 straight / 0.75 turn).
+// Because that tie-break is RNG-keyed and the engine's RNG stream is its own (VehicleRng, never SUMO's
+// per the C1/determinism policy), EXACT @1e-3 FCD parity is NOT achievable -- only stuck-count /
+// statistical parity. This test asserts stuck==0 (the _diag convention), not FCD parity. Fix = port the
+// cycle detector + seeded-RNG abort; HIGH regression risk but inert wherever no LINKSTATE_EQUAL cycle
+// exists. Full diagnosis + fix design: scenarios/_diag/sym-rbl-straight/provenance.txt and
+// C4-VII-REMAINING.md "#2 Symmetric arrival-time RoW".
 public class RungSymRblStraightDiagTests
 {
     private static readonly string Dir = System.IO.Path.Combine(
