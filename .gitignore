@@ -26,3 +26,4 @@ scenarios/_bench/city-*/engine.fcd.xml
 scenarios/_bench/city-*/engine.summary.xml
 scenarios/_bench/city-*/engine.tripinfo.xml
 scenarios/_bench/city-organic-L2/replay.html
+scenarios/_bench/city-mixed-1k/replay.html

@@ -1,0 +1,13 @@
+scenario=city-mixed-1k (1000-concurrent mixed-junction multi-lane city)
+generated_by=synthetic (netgenerate --rand + 3x roundabout splice + netconvert + randomTrips + duarouter), SUMO 1.20.0
+seed=33 (demand), base net from netgenerate --rand seed (organic base)
+# 1. Base organic net: netgenerate --rand (2-lane edges), plain output (nod/edg).
+# 2. Roundabouts: 3x chained splice via scenarios/_bench/city-organic/gen-splice-roundabout.py
+#    (proven scenario-32-style single-lane priority roundabout), each run reads the previous
+#    result, renamed rbX->rb1/rb2/rb3, picks the longest remaining interior bidirectional edge
+#    pair. The plural gen-splice-roundabouts.py (city-organic) was NOT used -- it produced 0 rings.
+# 3. netconvert --node-files work.nod --edge-files work.edg --connection-files rings.con
+#    --tls.guess --roundabouts.guess --no-turnarounds -o net.net.xml
+# 4. randomTrips.py -n net.net.xml -e 500 -p 0.4 --fringe-factor 15 --min-distance 500 --seed 33 -o trips.xml
+# 5. duarouter -n net.net.xml -r trips.xml -o rou.rou.xml --seed 33 --named-routes --ignore-errors
+config=begin 0, end 700, step-length 1, Euler, teleport off, sigma 0
