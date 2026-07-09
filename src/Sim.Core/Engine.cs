@@ -3198,6 +3198,20 @@ public sealed class Engine : IEngine
         // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
         var lane = _network!.LanesByHandle[v.LaneHandle];
 
+        // No lane change while inside a junction interior: SUMO's MSLaneChanger runs only on normal
+        // edges, never on internal (`:`-prefixed) lanes. This guard is also load-bearing for the
+        // C4-vii-b stayOnBest veto below -- KeepRightStrategicStay -> ComputeBestLanes(route,
+        // lane.EdgeId) requires lane.EdgeId to be ON the route, which an internal lane never is
+        // (it would throw "edge not part of route"). Multi-lane junctions have 2+-lane internal
+        // edges (e.g. a straight-through :C_13_0/:C_13_1), so a vehicle traversing the right one has
+        // a RightNeighbor and would otherwise reach that call; every committed scenario is a single-
+        // lane junction (internal lanes have no right neighbor) so this is inert there, but a general
+        // -L2 net hits it every junction crossing.
+        if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+        {
+            return;
+        }
+
         // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
         // guard is exactly what leaves single-lane rungs 1/3/4/5/6/7 and 8a (vehicle on index 0)
         // completely unaffected: the accumulator simply never advances off 0. D4:
