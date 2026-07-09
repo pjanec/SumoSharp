@@ -345,7 +345,13 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
     camera.offsetY = ch / 2 + wcy * scale;
   }
 
+  // Set once the user manually zooms/pans, so auto-fit stops fighting them. Until then the
+  // camera keeps re-fitting to the viewport every frame -- which is what makes the replay robust
+  // to a layout whose real size only settles a few frames in (iOS Safari address-bar / flex).
+  var userAdjusted = false;
+
   function zoomAt(screenX, screenY, factor) {
+    userAdjusted = true;
     var before = screenToWorld(screenX, screenY);
     camera.scale = Math.max(0.02, Math.min(4000, camera.scale * factor));
     // Re-anchor so `before` still projects to (screenX, screenY).
@@ -354,6 +360,7 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
   }
 
   function panBy(dxScreen, dyScreen) {
+    userAdjusted = true;
     camera.offsetX += dxScreen;
     camera.offsetY += dyScreen;
   }
@@ -362,26 +369,38 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
   // Canvas sizing (devicePixelRatio-aware)
   // ---------------------------------------------------------------------
   var dpr = Math.max(1, window.devicePixelRatio || 1);
-  var firstFit = true;
   function resizeCanvas() {
     var cw = wrap.clientWidth;
     var ch = wrap.clientHeight;
-    // Guard against a zero-size first layout (some mobile browsers run the end-of-body script
-    // before the flex layout has a measurable height): don't fit the camera to bogus 0/300
-    // dimensions and latch firstFit=false on them, or the scene ends up off-screen forever.
+    // Skip while the layout has no measurable size yet (iOS Safari can report 0 height at the
+    // end-of-body script and again during address-bar transitions). resizeCanvas is called every
+    // frame from frame(), so it self-corrects the moment a real size appears.
     if (cw <= 0 || ch <= 0) {
       return;
     }
-    canvas.width = Math.max(1, Math.round(cw * dpr));
-    canvas.height = Math.max(1, Math.round(ch * dpr));
-    canvas.style.width = cw + "px";
-    canvas.style.height = ch + "px";
-    if (firstFit) {
+    var needW = Math.max(1, Math.round(cw * dpr));
+    var needH = Math.max(1, Math.round(ch * dpr));
+    if (canvas.width !== needW || canvas.height !== needH) {
+      canvas.width = needW;
+      canvas.height = needH;
+      canvas.style.width = cw + "px";
+      canvas.style.height = ch + "px";
+    }
+    // Keep the whole network framed until the user takes manual control. This is deliberately
+    // NOT a one-shot "first fit": on iOS the first non-zero size can be a transient wrong value,
+    // so re-fitting every frame (until userAdjusted) guarantees the scene is on-screen once the
+    // real viewport settles, instead of latching a bad camera forever.
+    if (!userAdjusted) {
       fitToView();
-      firstFit = false;
     }
   }
   window.addEventListener("resize", resizeCanvas);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", resizeCanvas);
+  }
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(resizeCanvas).observe(wrap);
+  }
 
   // ---------------------------------------------------------------------
   // Pointer input: wheel zoom, drag pan, touch pinch/pan.
@@ -391,8 +410,8 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
     function (ev) {
       ev.preventDefault();
       var rect = canvas.getBoundingClientRect();
-      var sx = (ev.clientX - rect.left) * dpr;
-      var sy = (ev.clientY - rect.top) * dpr;
+      var sx = ev.clientX - rect.left;
+      var sy = ev.clientY - rect.top;
       var factor = Math.exp(-ev.deltaY * 0.0015);
       zoomAt(sx, sy, factor);
     },
@@ -409,8 +428,8 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
   });
   window.addEventListener("mousemove", function (ev) {
     if (!dragging) return;
-    var dx = (ev.clientX - lastX) * dpr;
-    var dy = (ev.clientY - lastY) * dpr;
+    var dx = ev.clientX - lastX;
+    var dy = ev.clientY - lastY;
     lastX = ev.clientX;
     lastY = ev.clientY;
     panBy(dx, dy);
@@ -452,8 +471,8 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
       if (!touchState) return;
       var rect = canvas.getBoundingClientRect();
       if (touchState.mode === "pan" && ev.touches.length === 1) {
-        var dx = (ev.touches[0].clientX - touchState.x) * dpr;
-        var dy = (ev.touches[0].clientY - touchState.y) * dpr;
+        var dx = ev.touches[0].clientX - touchState.x;
+        var dy = ev.touches[0].clientY - touchState.y;
         touchState.x = ev.touches[0].clientX;
         touchState.y = ev.touches[0].clientY;
         panBy(dx, dy);
@@ -464,7 +483,7 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
         var midX = (t0.clientX + t1.clientX) / 2 - rect.left;
         var midY = (t0.clientY + t1.clientY) / 2 - rect.top;
         var factor = dist / (touchState.dist || dist);
-        zoomAt(midX * dpr, midY * dpr, factor);
+        zoomAt(midX, midY, factor);
         touchState.dist = dist;
         touchState.midX = midX;
         touchState.midY = midY;
@@ -782,11 +801,12 @@ const REPLAY_DATA = {"scenario":"11-priority-junction","network":{"lanes":[{"id"
   // ---------------------------------------------------------------------
   var lastFrameMs = null;
   function frame(nowMs) {
-    // iOS Safari (and some mobile engines) can report the flex container's clientHeight as 0 at
-    // the end-of-body script, so the single init resizeCanvas() no-ops and never fits the camera.
-    // Retry every frame until the layout has a real size (firstFit stays true until a valid fit
-    // actually happens) -- cheap, and self-disabling once sized.
-    if (firstFit) resizeCanvas();
+    // Re-measure/size/fit every frame until the user manually zooms or pans. This makes the
+    // replay robust to a viewport whose real size only appears (or changes) a few frames in --
+    // the iOS Safari failure mode where the one-shot init fit ran against a 0/transient height
+    // and the scene ended up drawn off-screen (all-dark canvas). Self-disables on first user
+    // gesture (userAdjusted), after which the camera is left exactly where the user put it.
+    if (!userAdjusted) resizeCanvas();
     if (lastFrameMs === null) lastFrameMs = nowMs;
     var realDelta = (nowMs - lastFrameMs) / 1000;
     lastFrameMs = nowMs;
