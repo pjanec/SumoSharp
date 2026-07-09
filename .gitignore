@@ -25,3 +25,4 @@ sumo-local/
 scenarios/_bench/city-*/engine.fcd.xml
 scenarios/_bench/city-*/engine.summary.xml
 scenarios/_bench/city-*/engine.tripinfo.xml
+scenarios/_bench/city-organic-L2/replay.html

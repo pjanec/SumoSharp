@@ -1,0 +1,7 @@
+scenario=city-organic-L2 (multi-lane organic demo)
+generated_by=synthetic (netgenerate --rand + randomTrips + duarouter), SUMO 1.20.0
+seed=21
+net_command=netgenerate --rand --rand.iterations 120 --rand.min-distance 90 --rand.max-distance 260 --default.lanenumber 2 --rand.neighbor-dist2 6 --tls.guess --no-turnarounds --seed 21 -o net.net.xml
+demand_command_randomtrips=python3 $SUMO_HOME/tools/randomTrips.py -n net.net.xml -e 500 -p 0.8 --fringe-factor 15 --min-distance 500 --seed 21 -o trips.xml
+demand_command_duarouter=duarouter -n net.net.xml -r trips.xml -o rou.rou.xml --seed 21 --named-routes --ignore-errors
+config=begin 0, end 500, step-length 1, Euler, teleport off, sigma 0
