@@ -2891,6 +2891,34 @@ public sealed class Engine : IEngine
                     break;
                 }
 
+                if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
+                {
+                    // Last route edge: the vehicle runs off the end of its route and ARRIVES.
+                    // C4-vii-b: this check precedes the pool-convergence guard below because SUMO's
+                    // arrival is position-based on the FINAL edge and lane-AGNOSTIC (MSVehicle removes
+                    // the vehicle when it passes arrivalPos on whatever lane it currently occupies).
+                    // A legitimate keep-right onto a SIBLING lane of the same final edge -- which SUMO
+                    // itself performs (verified on scenarios/45: a through-vehicle keep-rights onto its
+                    // arrival edge's right lane and STILL arrives) -- must therefore arrive here, not
+                    // strand at the lane end. The convergence guard is only meaningful for a MID-route
+                    // edge, where the NEXT edge requires a specific connecting lane; on the last edge
+                    // there is no next edge, so requiring exact-pool-lane arrival was a bug that froze
+                    // any final-edge lane-changer at speed 0 forever. Byte-identical for every existing
+                    // scenario: their vehicles reach the last lane end already ON the pool lane, so both
+                    // orderings arrive them identically.
+                    //
+                    // D5: deferred through the command buffer, flushed at the END of this method's
+                    // outer foreach (see below) -- safe because the `break` right after this, not the
+                    // `while (!v.Arrived)` condition, is what exits this loop (the condition is never
+                    // RE-evaluated after this assignment within this same call), and nothing later in
+                    // this vehicle's own iteration or any OTHER vehicle's iteration this SAME
+                    // ExecuteMoves pass reads v.Arrived (the outer foreach's own `if (!v.Inserted ||
+                    // v.Arrived) continue;` guard only ever reads a vehicle's OWN Arrived value, set at
+                    // the top of ITS OWN iteration, never another vehicle's just-this-step arrival).
+                    _commandBuffer.Destroy(v);
+                    break;
+                }
+
                 // C2-ii (design point 4): the boundary advance may only cross to
                 // pool[LaneSeqIndex+1] once the vehicle's ACTUAL lane has CONVERGED onto the
                 // route pool's target lane for this edge -- TryStrategicLaneChange guarantees
@@ -2902,26 +2930,12 @@ public sealed class Engine : IEngine
                 // (stuck on a drop lane with no successful strategic change -- not exercised by
                 // any committed golden, but required for safety per the briefing), STOP at the
                 // lane end rather than teleport onto a route path this lane was never actually
-                // connected to.
+                // connected to. (Only reached for a NON-last edge now -- the last-edge arrival
+                // above already returned.)
                 if (v.LaneHandle != _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex])
                 {
                     v.Kinematics.Pos = currentLane.Length;
                     v.Kinematics.Speed = 0.0;
-                    break;
-                }
-
-                if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
-                {
-                    // D5: deferred through the command buffer, flushed at the END of this
-                    // method's outer foreach (see below) -- safe because the `break` right
-                    // after this, not the `while (!v.Arrived)` condition, is what exits this
-                    // loop (the condition is never RE-evaluated after this assignment within
-                    // this same call), and nothing later in this vehicle's own iteration or any
-                    // OTHER vehicle's iteration this SAME ExecuteMoves pass reads v.Arrived
-                    // (the outer foreach's own `if (!v.Inserted || v.Arrived) continue;` guard
-                    // only ever reads a vehicle's OWN Arrived value, set at the top of ITS OWN
-                    // iteration, never another vehicle's just-this-step arrival).
-                    _commandBuffer.Destroy(v);
                     break;
                 }
 
@@ -3196,6 +3210,43 @@ public sealed class Engine : IEngine
 
         var rightLane = _network.LanesByHandle[lane.RightNeighbor];
 
+        // C4-vii-b: strategic STAY-on-best (MSLCM_LC2013.cpp:1421-1440, "VARIANT_21 stayOnBest").
+        // When ego is on a route-continuing lane whose RIGHT neighbour is a turn/exit lane that
+        // leaves the route within TURN_LANE_DIST, SUMO's `_wantsChange` sets LCA_STAY|LCA_STRATEGIC
+        // and RETURNS *before* the keep-right accumulator runs -- so myKeepRightProbability is never
+        // decremented while ego is held on that required lane. This is the full early-return-before-
+        // accumulation semantics the former commit-only shortcut omitted: that earlier form let the
+        // accumulator run on every lane and only vetoed the COMMIT, so a vehicle held on a required
+        // lane over-accumulated keep-right and then fired a SPURIOUS change on a LATER lane where the
+        // veto lifted -- e.g. a left-turner reaching its multi-lane arrival edge would immediately
+        // keep-right off its arrival lane and strand itself (scenarios/44 / 45 bug B). Confirmed
+        // against SUMO via TraCI: on the scenarios/44 net a left-turner's keepRightProbability stays
+        // exactly 0 on the approach turn-lane and only starts accumulating once it reaches the arrival
+        // edge, never crossing the fire threshold over the short remaining distance.
+        //
+        // The DISTANCE gate is load-bearing (MSLCM_LC2013.cpp:1428 `neighDist < TURN_LANE_DIST`): a
+        // right lane that leaves the route but only FAR ahead (>= 200 m of usable length) is NOT a
+        // must-avoid turn lane -- SUMO DOES keep-right onto it (there is room to change back before
+        // the split), so this stay must NOT fire there. `neighDist` is the right lane's best-lanes
+        // continuation length (ComputeBestLanes' Length), matching SUMO's `neigh.length`. The stay
+        // decision is a pure function of (current lane, remaining route) -> memoized per lane (see
+        // VehicleRuntime) so the allocating ComputeBestLanes pass stays off the per-step hot path.
+        // Byte-identical for single-edge routes (fast path: no stay) and for the highway benchmark
+        // (right lanes all continue the route, so !AllowsContinuation is never true) -- verified: the
+        // Sim.Bench determinism hash is unchanged. SIMPLIFICATION (documented): only VARIANT_21 of
+        // SUMO's several strategic-STAY rules is ported; the change-back-in-time rules (:1398-1420)
+        // and the `getLinkCont().size()!=0` "leads somewhere" guard are not modelled -- the committed
+        // anchors' right lanes all lead onward and sit inside/outside the 200 m band unambiguously.
+        if (v.KeepRightStayCacheLane != v.LaneHandle)
+        {
+            v.KeepRightStayCacheLane = v.LaneHandle;
+            v.KeepRightStaySuppress = KeepRightStrategicStay(v, lane, rightLane.Index);
+        }
+        if (v.KeepRightStaySuppress)
+        {
+            return;
+        }
+
         // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
         const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
         const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
@@ -3241,24 +3292,6 @@ public sealed class Engine : IEngine
 
         if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
         {
-            // C2-ii: a narrow, commit-only port of MSLCM_LC2013.cpp:1398-1410's "opposite
-            // direction" STAY guard -- SUMO's real guard makes _wantsChange return EARLY
-            // (before myKeepRightProbability is ever decremented) whenever changing in the
-            // examined direction would move away from the best/required lane with too little
-            // room to get back; scoped here to just its OBSERVABLE effect (never actually
-            // commit onto a lane that does not continue this vehicle's remaining route), not
-            // the full early-return-before-accumulation semantics -- KeepRightProbability
-            // itself is not a compared golden attribute (only lane/pos/speed are), so this
-            // narrower, lower-risk port is sufficient. Byte-identical for every existing
-            // single-edge-route scenario (06/07/12/...): LaneContinuesRoute's own fast path
-            // returns true unconditionally there (see its own comment), so this `if` is never
-            // entered and the commit below is untouched.
-            if (!LaneContinuesRoute(v, lane, rightLane.Index))
-            {
-                v.KeepRightProbability = keepRightProbability;
-                return;
-            }
-
             // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
             // to 0 on change (changed()/resetState()). No safety/blocker veto ported here -- every
             // scenario reaching this fire has an empty target (right) lane; a real blocker veto
@@ -3289,32 +3322,44 @@ public sealed class Engine : IEngine
         v.KeepRightProbability = keepRightProbability;
     }
 
-    // C2-ii: does `targetLaneIndex` on `fromLane`'s edge continue this vehicle's REMAINING
-    // route? A thin wrapper over `NetworkModel.ComputeBestLanes` (C2-i) used ONLY as
-    // ApplyKeepRightDecision's commit-time veto (see that method's own comment) -- returns
-    // `true` (never vetoes) for a single-edge route WITHOUT even calling ComputeBestLanes
-    // (its own "last route edge" special case would report `AllowsContinuation=true` for
-    // every lane there anyway; this fast path just avoids the call for the common case),
-    // which is exactly why 06/07/12-overtake's existing keep-right returns are byte-identical.
-    private bool LaneContinuesRoute(VehicleRuntime v, Lane fromLane, int targetLaneIndex)
+    // C4-vii-b: SUMO's stayOnBest keep-right suppressor (MSLCM_LC2013.cpp:1421-1440, VARIANT_21).
+    // Returns true when ego must NOT accumulate the keep-right incentive because its RIGHT neighbour
+    // (`rightLaneIndex` on `fromLane`'s edge) is a must-avoid turn/exit lane: ego is on a route-
+    // continuing lane (its own best-lanes offset is 0), the right lane does NOT continue the route,
+    // AND the right lane leaves the route within TURN_LANE_DIST (its best-lanes continuation length
+    // is short enough that there is no room to keep-right and change back before the split). A
+    // single-edge route never stays (fast path: no ComputeBestLanes call, so 06/07/12-overtake's
+    // keep-right stays byte-identical). See ApplyKeepRightDecision's call site for the full rationale
+    // and TraCI cross-check.
+    private const double KeepRightTurnLaneDist = 200.0; // MSLCM_LC2013.cpp:71 TURN_LANE_DIST
+
+    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
         var route = _demand!.RoutesById[v.Def.RouteId];
         if (route.Edges.Count <= 1)
         {
-            return true;
+            return false;
         }
 
         var bestLanes = _network!.ComputeBestLanes(route.Edges, fromLane.EdgeId);
+        var currContinues = false;
+        var rightLeavesRoute = false;
+        var rightSoon = false;
         foreach (var continuation in bestLanes)
         {
-            if (continuation.LaneIndex == targetLaneIndex)
+            if (continuation.LaneIndex == fromLane.Index)
             {
-                return continuation.AllowsContinuation;
+                // SUMO's `bestLaneOffset == 0`: ego's own lane is on the best (route) path.
+                currContinues = continuation.BestLaneOffset == 0;
+            }
+            else if (continuation.LaneIndex == rightLaneIndex)
+            {
+                rightLeavesRoute = !continuation.AllowsContinuation;
+                rightSoon = continuation.Length < KeepRightTurnLaneDist;
             }
         }
 
-        // Defensive: lane not found on this edge's best-lanes result -- do not veto.
-        return true;
+        return currContinues && rightLeavesRoute && rightSoon;
     }
 
     // C2-ii: MSLCM_LC2013's STRATEGIC/URGENT block (`_wantsChange`,

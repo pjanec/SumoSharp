@@ -1,0 +1,40 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T08:35:03Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C4-vii-b (keep-right over-accumulation + final-edge arrival strand) parity anchor. Straight-through
+# ONLY (no turn, single internal lane) so it isolates the keep-right/arrival interaction cleanly --
+# distinct from scenarios/44 (which also carries the still-open cont-internal-lane and junction-timing
+# gaps). sigma=0, speeddev=0, Euler, teleport off, seed 42.
+#
+# NET (netconvert --no-turnarounds): A->B->C through route, plus an off-ramp B->D fed ONLY by the
+# right lane. AB_0 -> BD (off-ramp); AB_1 -> BC_1 (the sole through connection). So a through-vehicle
+# A->B->C MUST occupy AB_1, and its resolved arrival lane is BC_1. AB is 150 m, BC 64 m, all lanes
+# 8 m/s (a low speed makes the keep-right accumulator advance fast enough to bite within a short net).
+# DEMAND: one through-vehicle v0 (AB_1 -> BC_1), departing from rest.
+#
+# SUMO reference: v0 stays on AB_1 the whole approach (0 lane changes), crosses B via :B_1_0, and
+# arrives on BC_1 -- verified via --lanechange-output (empty) AND TraCI (keepRightProbability stays
+# exactly 0 on AB_1, only starting to accumulate on BC_1 where the 64 m remaining never reaches the
+# fire threshold). SUMO's stayOnBest (MSLCM_LC2013.cpp:1421, neighDist < TURN_LANE_DIST=200) suppresses
+# the keep-right incentive on AB_1 because its right neighbour AB_0 is a must-avoid exit lane leaving
+# the route within ~150 m (< 200).
+#
+# ENGINE BUG this anchor pins (pre-C4-vii-b, baseline f378d3a): the engine's narrow keep-right port
+# (a) accumulated the keep-right probability on AB_1 even though AB_0 leaves the route (it only vetoed
+# the COMMIT, not the accumulation), so v0 reached BC_1 already past the fire threshold and immediately
+# keep-changed BC_1 -> BC_0; and (b) BC_0 is NOT v0's resolved arrival lane, and the final-edge advance
+# required the vehicle to be on the exact pool lane to arrive -- so v0 froze at the BC_0 lane end
+# (pos 60, speed 0) and NEVER arrived (permanent stuck). The fix: (a) port SUMO's stayOnBest gate to
+# suppress keep-right ACCUMULATION (not just the commit) when the right lane leaves the route within
+# TURN_LANE_DIST, and (b) make last-edge arrival lane-AGNOSTIC (any lane of the final route edge
+# arrives at the lane end, matching SUMO's position-based arrival). Non-vacuous: the pre-fix engine
+# strands v0 at BC_0 pos 60 speed 0; the fix arrives it on BC_1 exact @1e-3.
+sha256  net.net.xml        3ac930ff378da0b64b371b0df7c8c81f7cda8dc5be7cef5c799d8ad4f77325d9
+sha256  rou.rou.xml        151188e0df2d59f006f647cdc001363a501e8e9212b760f78a3843dcc494e91c
+sha256  config.sumocfg     76b1b36047348c09b4b47beb8f5f86703085ced6ee3c6d5359ee5a3da5e991af
+sha256  golden.fcd.xml     b4cea9fe9613b7f8234dd8ceba2a4d9e0770d5a667ea698ac92822398a3808e5
+sha256  golden.state.xml   f6fbf28a91ab0bb371f47a815332be4f5433a80dadbe0b2c1af6c3608394de6a
+sha256  golden.vtype.json  a21e12785764969e565a81140a16c05a2f3d378971112282629fef6a9de36c78

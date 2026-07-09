@@ -888,13 +888,32 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
         the internal-junction (via-lane chain) so multi-part junction paths resolve fully. A LONE
         left-turner still arrives (collapse alone is not fatal), so anchor this against the internal-
         lane SEQUENCE, not arrival.
-      - **C4-vii-b (spurious final-edge lane change breaks arrival).** With conflicting traffic, `vN`
-        (`NC->CE`, arrival lane `CE_1`) is moved `CE_1 -> CE_0` mid-edge (~t=29) then brakes to a dead
-        stop at the `CE_0` lane end (pos 189.6) and NEVER arrives -- permanent stuck. A LONE left-turner
-        does NOT reproduce it (stays on `CE_1`, exits), so this is an INTERACTION-triggered lane-change
-        bug, not static arrival-lane resolution. This (not willPass) is what strands vehicles in the 4-
-        left anchor. Isolate WHICH lane-change decision fires on a downstream-less final edge with no
-        neighbour on the target lane.
+      - **C4-vii-b. DONE (parity-track, exact @1e-3). Keep-right over-accumulation + final-edge arrival
+        strand.** Root-caused to TWO entangled bugs: (1) the narrow keep-right port
+        (`ApplyKeepRightDecision`) accumulated the keep-right probability on a REQUIRED lane (it vetoed
+        the COMMIT but not the accumulation), so a vehicle held on a turn/route lane over-accumulated
+        and then fired a SPURIOUS keep-right on a LATER multi-lane edge; (2) that change moved the
+        vehicle off its resolved arrival lane, and the final-edge advance required the exact pool lane
+        to arrive -- so it FROZE at the lane end (speed 0) forever. Confirmed against SUMO via TraCI: a
+        held vehicle's `keepRightProbability` stays exactly 0 on its required lane (SUMO's stayOnBest,
+        `MSLCM_LC2013.cpp:1421`, suppresses accumulation when the right lane leaves the route within
+        `TURN_LANE_DIST=200`). **FIX:** (a) port stayOnBest to gate keep-right ACCUMULATION (new
+        `Engine.KeepRightStrategicStay`, memoized per-lane on `VehicleRuntime` so `ComputeBestLanes`
+        stays off the per-step hot path); the `neighDist < 200` distance gate is load-bearing -- on a
+        LONG off-lane SUMO DOES keep-right-and-back (verified 8 m/s / 400 m off-ramp: SUMO 3 changes,
+        fixed engine reproduces the excursion) so an unconditional veto would be UNfaithful. (b) make
+        last-edge arrival lane-AGNOSTIC (`Engine.ExecuteMoves`: the "last route edge -> arrive" check
+        now precedes the pool-lane-convergence guard) -- SUMO's arrival is position-based on the final
+        edge. **ANCHOR:** `scenarios/45-multilane-keepright-arrival` (`RungC4viibKeepRightArrivalParity`
+        Tests, Run 30), STRAIGHT-through (off-ramp forces the through-vehicle onto `AB_1`; SUMO stays
+        `AB_1`->`BC_1`, 0 lane changes, arrives `BC_1`); pre-fix engine strands v0 at `BC_0` pos 60
+        speed 0 (non-vacuous: baseline fails at step 21, lane err + presence mismatch). INERT: full
+        suite 161 green + 1 skip; `Sim.Bench` hash unchanged (`7291978050025285112` both ways -- the
+        highway's right lanes all continue the route so stayOnBest never fires there). SIMPLIFICATION:
+        only VARIANT_21 of SUMO's strategic-STAY rules is ported (the change-back-in-time rules and the
+        `getLinkCont()!=0` "leads somewhere" guard are not modelled -- the committed anchors sit
+        unambiguously inside/outside the 200 m band). Note: this does NOT resolve scenarios/44 (still
+        skip-gated for bugs a + c).
       - **C4-vii-c (willPass gridlock, the ORIGINAL -L2 grid symptom).** Ego yields forever to a foe
         that is itself stopped/yielding. **CORRECTED port target:** the willPass signal is NOT
         `speed<=eps` -- it is VISIBILITY-DISTANCE based. A foe approaching its own MINOR link from
@@ -906,8 +925,9 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
         REVERTED, not committed. Reproducing bug C deterministically needs a CYCLIC anchor (>=3 turning
         foes forming a yield loop); the straight-priority 4-left anchor exercises a+b only (priority
         breaks the straight-4-way symmetry so it never gridlocks).
-    Sequence a -> b -> c (each isolated, gated, parity-reviewed); c is the highest-regression-risk piece
-    (touches the RoW core underpinning ~30 scenarios). Anchor `44` is committed and ready to unskip.
+    Remaining sequence a -> c (b DONE above; each isolated, gated, parity-reviewed); c is the highest-
+    regression-risk piece (touches the RoW core underpinning ~30 scenarios). Anchor `44` is committed
+    and stays skip-gated until a + c also land.
   - **C4-vi. DONE (parity-track, exact @1e-3). Priority-junction far-routed-foe false positive fixed.**
     The crossing approaching-foe arm of `JunctionYieldConstraint` (`Engine.cs`, the
     `foeInternalSeqIndex > foe.LaneSeqIndex` branch) now gates the yield by the foe's

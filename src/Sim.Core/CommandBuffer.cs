@@ -115,6 +115,9 @@ internal sealed class CommandBuffer : ICommandBuffer
                     cmd.Vehicle.LaneSeqStart = cmd.IntArg0;
                     cmd.Vehicle.LaneSeqLen = cmd.IntArg1;
                     cmd.Vehicle.LaneSeqIndex = 0;
+                    // C4-vii-b: the remaining route changed -> the keep-right stayOnBest memo
+                    // (ApplyKeepRightDecision) may be stale even on the same lane; force recompute.
+                    cmd.Vehicle.KeepRightStayCacheLane = -1;
                     break;
 
                 case Kind.Destroy:

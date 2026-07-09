@@ -117,6 +117,19 @@ internal sealed class VehicleRuntime
     // (CLAUDE.md rule 3 -- Plan writes only MoveIntent, never this field directly).
     public double KeepRightProbability;
 
+    // C4-vii-b: memo for ApplyKeepRightDecision's strategic stayOnBest suppressor
+    // (KeepRightStrategicStay) -- "must this vehicle NOT accumulate keep-right because its right
+    // neighbour is a must-avoid turn/exit lane within TURN_LANE_DIST". That answer is a pure
+    // function of the current lane + remaining route, so it only changes when the vehicle changes
+    // lane (or reroutes); the underlying ComputeBestLanes is an allocating route-wide pass, so
+    // memoizing it here (keyed by the LaneHandle it was computed for; -1 = not yet computed) keeps
+    // that pass off the per-step hot path -- it fires at most once per lane the vehicle occupies
+    // instead of every step. Invalidated on reroute (CommandBuffer's ReplaceRoute resets it to -1).
+    // Inert for lane-0/single-lane vehicles: ApplyKeepRightDecision returns on `RightNeighbor < 0`
+    // before ever reading this.
+    public int KeepRightStayCacheLane = -1;
+    public bool KeepRightStaySuppress;
+
     // Rung A2: SUMO's MSLCM_LC2013::mySpeedGainProbability -- a stateful per-vehicle accumulator
     // for the speed-gain (overtaking) lane-change incentive. Starts at 0 (SUMO's ctor default);
     // unlike KeepRightProbability (plan-phase, pre-move), this is decided/written by the new
