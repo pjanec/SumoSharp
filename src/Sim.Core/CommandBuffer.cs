@@ -31,6 +31,7 @@ internal sealed class CommandBuffer : ICommandBuffer
     private enum Kind : byte
     {
         ChangeLane,
+        StartLaneChangeManeuver,
         ReplaceRoute,
         Destroy,
     }
@@ -41,6 +42,7 @@ internal sealed class CommandBuffer : ICommandBuffer
         public VehicleRuntime Vehicle;
 
         // ChangeLane: IntArg0 = newLaneHandle, StringArg0 = newLaneId.
+        // StartLaneChangeManeuver: IntArg0 = targetLaneHandle, StringArg0 = targetLaneId, IntArg1 = totalSteps.
         // ReplaceRoute: IntArg0 = laneSeqStart, IntArg1 = laneSeqLen.
         // Destroy: unused.
         public int IntArg0;
@@ -57,6 +59,15 @@ internal sealed class CommandBuffer : ICommandBuffer
     public void ChangeLane(VehicleRuntime v, int newLaneHandle, string newLaneId)
     {
         _commands.Add(new Command { Kind = Kind.ChangeLane, Vehicle = v, IntArg0 = newLaneHandle, StringArg0 = newLaneId });
+    }
+
+    // C10-i: START a continuous lane-change maneuver (lanechange.duration > 0) instead of the
+    // instant snap above. The vehicle KEEPS its current (source) lane label; `Engine.AdvanceLaneChanges`
+    // then slides it over `totalSteps` steps and flips the label at the midpoint. Records the
+    // maneuver target/duration onto the vehicle's own Lc* fields at flush time.
+    public void StartLaneChangeManeuver(VehicleRuntime v, int targetLaneHandle, string targetLaneId, int totalSteps)
+    {
+        _commands.Add(new Command { Kind = Kind.StartLaneChangeManeuver, Vehicle = v, IntArg0 = targetLaneHandle, StringArg0 = targetLaneId, IntArg1 = totalSteps });
     }
 
     // Route/lane-sequence-slice swap (reroute): repoints the vehicle's `[LaneSeqStart,
@@ -89,6 +100,15 @@ internal sealed class CommandBuffer : ICommandBuffer
                 case Kind.ChangeLane:
                     cmd.Vehicle.LaneId = cmd.StringArg0!;
                     cmd.Vehicle.LaneHandle = cmd.IntArg0;
+                    break;
+
+                case Kind.StartLaneChangeManeuver:
+                    // Keep the current (source) lane label; record the target + duration. The label
+                    // flips mid-maneuver in Engine.AdvanceLaneChanges.
+                    cmd.Vehicle.LcTargetHandle = cmd.IntArg0;
+                    cmd.Vehicle.LcTargetId = cmd.StringArg0!;
+                    cmd.Vehicle.LcStepsTotal = cmd.IntArg1;
+                    cmd.Vehicle.LcStepsElapsed = 0;
                     break;
 
                 case Kind.ReplaceRoute:

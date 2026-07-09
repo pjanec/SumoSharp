@@ -33,7 +33,9 @@ public static class ScenarioConfigParser
             TimeToTeleport: ParseDouble(processingEl, "time-to-teleport", -1.0),
             ActionStepLength: ParseDouble(processingEl, "default.action-step-length", 0.0),
             SpeedDev: ParseDouble(processingEl, "default.speeddev", 0.1),
-            Seed: ParseInt(randomEl, "seed", 42));
+            Seed: ParseInt(randomEl, "seed", 42),
+            // C10-i: SUMO's <processing><lanechange.duration> (default 0 = instant snap).
+            LaneChangeDuration: ParseDouble(processingEl, "lanechange.duration", 0.0));
     }
 
     private static double ParseDouble(XElement? parent, string name, double defaultValue)

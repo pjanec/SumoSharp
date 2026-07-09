@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-09 06:54:39 by Eclipse SUMO netconvert Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/netconvertConfiguration.xsd">
+
+    <input>
+        <node-files value="scenarios/43-continuous-lanechange/nodes.nod.xml"/>
+        <edge-files value="scenarios/43-continuous-lanechange/edges.edg.xml"/>
+        <connection-files value="scenarios/43-continuous-lanechange/connections.con.xml"/>
+    </input>
+
+    <output>
+        <output-file value="scenarios/43-continuous-lanechange/net.net.xml"/>
+    </output>
+
+    <junctions>
+        <no-turnarounds value="true"/>
+    </junctions>
+
+</configuration>
+-->
+
+<net version="1.20" junctionCornerDetail="5" limitTurnSpeed="5.50" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/net_file.xsd">
+
+    <location netOffset="0.00,0.00" convBoundary="0.00,0.00,600.00,0.00" origBoundary="0.00,0.00,600.00,0.00" projParameter="!"/>
+
+    <edge id=":B_0" function="internal">
+        <lane id=":B_0_0" index="0" speed="13.89" length="8.00" shape="296.00,-1.60 304.00,-1.60"/>
+    </edge>
+
+    <edge id="E0" from="A" to="B" priority="-1">
+        <lane id="E0_0" index="0" speed="13.89" length="296.00" shape="0.00,-4.80 296.00,-4.80"/>
+        <lane id="E0_1" index="1" speed="13.89" length="296.00" shape="0.00,-1.60 296.00,-1.60"/>
+    </edge>
+    <edge id="E1" from="B" to="C" priority="-1">
+        <lane id="E1_0" index="0" speed="13.89" length="296.00" shape="304.00,-1.60 600.00,-1.60"/>
+    </edge>
+
+    <junction id="A" type="dead_end" x="0.00" y="0.00" incLanes="" intLanes="" shape="0.00,0.00 0.00,-6.40"/>
+    <junction id="B" type="priority" x="300.00" y="0.00" incLanes="E0_0 E0_1" intLanes=":B_0_0" shape="304.00,0.00 304.00,-3.20 300.97,-4.03 299.03,-5.57 297.79,-6.16 296.00,-6.40 296.00,0.00">
+        <request index="0" response="0" foes="0" cont="0"/>
+    </junction>
+    <junction id="C" type="dead_end" x="600.00" y="0.00" incLanes="E1_0" intLanes="" shape="600.00,-3.20 600.00,0.00"/>
+
+    <connection from="E0" to="E1" fromLane="1" toLane="0" via=":B_0_0" dir="s" state="M"/>
+
+    <connection from=":B_0" to="E1" fromLane="0" toLane="0" dir="s" state="M"/>
+
+</net>

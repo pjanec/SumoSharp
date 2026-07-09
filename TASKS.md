@@ -1524,13 +1524,38 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     emergency-decel correction -- both latent Euler paths today; port them when authoring that rung.
 - **C9. Cooperative lane changes.** LC2013's COOPERATIVE block (`LCA_COOPERATIVE` — make room for a
   blocked/merging neighbor). Depends on A2's neighbor query + C3 (merging pressure). Parity axis.
-- **C10. Sublane / continuous lateral (SL2015). The lateral axis and the BRIDGE to navmesh/RVO.**
-  Continuous lateral position (`minGapLat`, lateral speed, `latAlignment`), movement within and across
-  lanes without discrete index snaps (`lanechange.duration>0` is the first step). Seam 2 (the lateral
-  field, always-written-0 today) and seam 1 (neighbor query → spatial hash) were built precisely for
-  this. Where it leaves SUMO's lane model it moves to a **behavioral** bar — and it is the natural
-  meeting point with the navmesh/RVO continuous-movement layer (B4's U-turn, free-form avoidance).
-  Large; its own phase. Ref `MSLCM_SL2015`, `MSLaneChangerSublane`.
+- **C10. Continuous lateral / lane changes over time (the lateral axis). SCOPE (per user, 2026-07):
+  stay ENTIRELY within SUMO-proven mechanisms and SUMO's lane model -- NO divergences, NO navmesh/RVO.**
+  navmesh/RVO is a SEPARATE layer for special maneuvers (threat-zone escape, fully-blocked street) and
+  EXTERNAL vehicles, out of scope for this SUMO port; the only thing this port owes the external world
+  is an input surface to be TOLD about external vehicles (the B-group obstacle seam), not the avoidance
+  math. The lateral axis grows only as far as SUMO's own behaviors need (continuous lane change, then
+  the emergency rescue-lane give-way), staying golden-testable.
+  - **C10-i. DONE (parity-track, exact @1e-3). Continuous lane change (`lanechange.duration>0`) --
+    lane-label TIMING.** A lane change now spreads over `round(duration/stepLength)` steps instead of an
+    instant lane-index snap: SUMO emits the SOURCE lane until the vehicle center crosses the lane
+    midpoint (halfway), then the target. Port: `VehicleRuntime.Lc*` maneuver state + the
+    `StartLaneChangeManeuver` command + `Engine.AdvanceLaneChanges` (a per-step Input-phase pass run
+    before EmitTrajectory) + `CommitLaneChange` (routes decided changes to instant-snap when
+    `LaneChangeSteps() <= 1`, else a maneuver) + mid-maneuver guards (no new keep-right/strategic/
+    speed-gain decision until the maneuver completes). `ScenarioConfig.LaneChangeDuration` parsed from
+    `<processing><lanechange.duration>` (default 0). **TEST `RungC10iContinuousLaneChangeParityTests`**
+    (`scenarios/43-continuous-lanechange`, Run 40): E0(2 lanes)->E1(1 lane), E0_0 dead-ends so v0
+    strategic-changes E0_0->E0_1 on a CLEAR road; SUMO holds E0_0 through t=1, flips at t=2 (duration
+    3), pos/speed free-flow -- exact. Suite 156 -> 158. INERT: gated on duration>0, so every duration-0
+    scenario keeps the instant snap (all committed + D1 hash byte-identical). NON-VACUOUS: forcing the
+    instant snap fails at step 1 (E0_1 too early). SIMPLIFICATION (documented): an EVEN `total`
+    resolves the exact-midpoint step to the source lane (no committed scenario uses an even duration).
+    Parity-reviewer gate pending. **FOLLOW-ONS (each its own rung):** (C10-ii) the lateral POSITION
+    (`LatOffset` interpolation + y/posLat emit + a lateral-comparison harness) -- the y-slide is
+    deterministic (verified: -4.8 -> -1.6 over 3 steps) so it is exact-parity-testable once the harness
+    compares lateral; (C10-iii) SHADOW-LANE car-following during the straddle (a blocked-road change
+    decelerates while still overlapping the slow leader's lane -- verified on a blocker scenario: the
+    mover drops to 6.64 mid-change); then the emergency rescue-lane give-way on top (SUMO's
+    `MSDevice_Bluelight` -- sublane lateral-alignment + a STOCHASTIC reaction, so statistical not exact
+    parity, matched via SUMO's own mechanism, not an approximation).
+    Ref `MSAbstractLaneChangeModel` (continuous change), `MSLCM_SL2015`/`MSLaneChangerSublane` (full
+    sublane), `MSDevice_Bluelight` (give-way).
 - **C11. Alternative car-following models (IDM, ACC/CACC).** `MSCFModel_IDM`, `MSCFModel_ACC`,
   `MSCFModel_CACC` for modern / automated traffic. Each is a resolver dispatch (`carFollowModel`
   attribute) + a model port behind the same `KraussModel`-style constraint interface. Parity axis, one

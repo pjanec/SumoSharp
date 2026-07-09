@@ -421,6 +421,12 @@ public sealed class Engine : IEngine
             // is present starting at its own depart-time row, not one step late).
             InsertDepartingVehicles(time);
 
+            // [SystemPhase.Input] C10-i: advance any in-progress continuous lane-change maneuver
+            // (lanechange.duration > 0) by one step BEFORE this frame is emitted, so the emitted lane
+            // reflects the maneuver's progress (source until the midpoint, then target). No-op for
+            // every duration-0 scenario (no vehicle is ever mid-maneuver).
+            AdvanceLaneChanges();
+
             // [SystemPhase.Export] Export of the previous frame. This emits the SETTLED state
             // produced by the PRIOR step's PostSimulation phase (plus any vehicle just inserted
             // above) -- it must stay at the TOP of the loop, BEFORE this step's
@@ -3001,6 +3007,14 @@ public sealed class Engine : IEngine
         // D6: the Query() analog -- see ActiveVehicles()'s own comment.
         foreach (var v in ActiveVehicles())
         {
+            // C10-i: a vehicle mid continuous-maneuver is committed to that change -- it makes no
+            // new keep-right/strategic/speed-gain decision until the maneuver completes (SUMO holds
+            // the change to completion). Inert when lanechange.duration 0 (LcTargetHandle stays -1).
+            if (v.LcTargetHandle >= 0)
+            {
+                continue;
+            }
+
             // Keep-right (rung 8b) evaluated FIRST, against this iteration's starting lane; may
             // update v.LaneId/v.KeepRightProbability directly (own comment: same reasoning as the
             // speed-gain veto below for why a direct write here still honors CLAUDE.md rule 3).
@@ -3136,7 +3150,7 @@ public sealed class Engine : IEngine
             // that one would change which lane the speed-gain decision runs against.
             if (targetLaneId is not null)
             {
-                _commandBuffer.ChangeLane(v, targetLaneHandle, targetLaneId);
+                CommitLaneChange(v, targetLaneHandle, targetLaneId);
             }
         }
 
@@ -3343,8 +3357,75 @@ public sealed class Engine : IEngine
     // v.LookAheadSpeed, not even a ComputeBestLanes call), which is the byte-identical
     // argument for every existing multi-lane (06/07/12) and multi-edge (9a/9b/A3/15-reroute)
     // parity scenario.
+    // C10-i: round(lanechange.duration / stepLength) -- the number of steps a continuous lane change
+    // spans. <= 1 means "instant" (duration 0, every pre-C10 scenario), the discrete-snap default.
+    private int LaneChangeSteps() =>
+        (int)Math.Round(_config!.LaneChangeDuration / _config.StepLength, MidpointRounding.AwayFromZero);
+
+    // C10-i: commit a decided lane change -- an INSTANT lane-index snap (lanechange.duration 0, the
+    // discrete default) or a continuous MANEUVER (duration > 0) that holds the source lane label and
+    // slides over LaneChangeSteps() steps (Engine.AdvanceLaneChanges). Both go through the command
+    // buffer, so the decision phase (DecideSpeedGainChanges / its TryStrategicLaneChange) still only
+    // records; nothing mutates mid-scan.
+    private void CommitLaneChange(VehicleRuntime v, int targetHandle, string targetId)
+    {
+        var steps = LaneChangeSteps();
+        if (steps <= 1)
+        {
+            _commandBuffer.ChangeLane(v, targetHandle, targetId);
+        }
+        else
+        {
+            _commandBuffer.StartLaneChangeManeuver(v, targetHandle, targetId, steps);
+        }
+    }
+
+    // C10-i: advance every in-progress continuous lane-change maneuver by one step (runs at the TOP
+    // of the loop, before EmitTrajectory, so the emitted lane reflects the maneuver's progress this
+    // frame). The emitted lane stays the SOURCE until the vehicle center crosses the lane midpoint --
+    // halfway through the maneuver (MSVehicle emits the lane whose half its center is in) -- then
+    // becomes the target; the maneuver completes after LcStepsTotal steps. No-op (LcTargetHandle < 0)
+    // for every vehicle not mid-change, so a duration-0 scenario never enters here.
+    private void AdvanceLaneChanges()
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (v.LcTargetHandle < 0)
+            {
+                continue;
+            }
+
+            v.LcStepsElapsed++;
+            // Flip the emitted lane once past the midpoint: with a constant lateral speed
+            // laneWidth/duration, the center crosses the mid-line (laneWidth/2 lateral travel) after
+            // duration/2 steps, i.e. once 2*elapsed > total. (SIMPLIFICATION, documented: at an even
+            // `total` the exact-midpoint step resolves to the source lane -- no committed scenario
+            // uses an even duration; scenario 43 is duration 3.)
+            if (v.LaneHandle != v.LcTargetHandle && (2 * v.LcStepsElapsed) > v.LcStepsTotal)
+            {
+                v.LaneHandle = v.LcTargetHandle;
+                v.LaneId = v.LcTargetId;
+            }
+
+            if (v.LcStepsElapsed >= v.LcStepsTotal)
+            {
+                v.LcTargetHandle = -1;
+                v.LcTargetId = string.Empty;
+                v.LcStepsElapsed = 0;
+                v.LcStepsTotal = 0;
+            }
+        }
+    }
+
     private bool TryStrategicLaneChange(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double time, double dt, double actionStepLengthSecs)
     {
+        // C10-i: a vehicle already mid-maneuver is committed to it -- do not start a second change
+        // (SUMO holds the maneuver to completion). Inert when duration 0 (LcTargetHandle stays -1).
+        if (v.LcTargetHandle >= 0)
+        {
+            return false;
+        }
+
         if (v.LaneSeqIndex >= v.LaneSeqLen)
         {
             return false;
@@ -3450,7 +3531,7 @@ public sealed class Engine : IEngine
             return false;
         }
 
-        _commandBuffer.ChangeLane(v, neighborLane.Handle, neighborLane.Id);
+        CommitLaneChange(v, neighborLane.Handle, neighborLane.Id);
         // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
         v.SpeedGainProbability = 0.0;
         return true;

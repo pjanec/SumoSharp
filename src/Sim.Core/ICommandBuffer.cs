@@ -21,6 +21,10 @@ internal interface ICommandBuffer
     // comment for the full mapping.
     void ChangeLane(VehicleRuntime v, int newLaneHandle, string newLaneId);
 
+    // C10-i: start a continuous lane-change maneuver (lanechange.duration > 0) -- see
+    // CommandBuffer.StartLaneChangeManeuver's own comment.
+    void StartLaneChangeManeuver(VehicleRuntime v, int targetLaneHandle, string targetLaneId, int totalSteps);
+
     // Route/lane-sequence-slice swap (reroute) -- see CommandBuffer.ReplaceRoute's own comment.
     void ReplaceRoute(VehicleRuntime v, int laneSeqStart, int laneSeqLen);
 

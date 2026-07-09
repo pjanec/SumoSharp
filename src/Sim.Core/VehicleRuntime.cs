@@ -52,6 +52,17 @@ internal sealed class VehicleRuntime
     // instead of hashing a string every vehicle, every step.
     public int LaneHandle;
 
+    // C10-i: continuous lane-change maneuver (lanechange.duration > 0). While a change is in
+    // progress the vehicle slides laterally over several steps instead of snapping; `LaneHandle`
+    // (the emitted lane) stays the SOURCE lane until the vehicle crosses the lane midpoint, then
+    // becomes the target. LcTargetHandle == -1 means "no maneuver in progress" (the instant-snap
+    // default for every duration==0 scenario). LcStepsElapsed counts steps since the change was
+    // committed; LcStepsTotal is round(duration/stepLength). See Engine.AdvanceLaneChanges.
+    public int LcTargetHandle = -1;
+    public string LcTargetId = string.Empty;
+    public int LcStepsElapsed;
+    public int LcStepsTotal;
+
     // D3: this vehicle's lane-sequence is now a SLICE `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`
     // into Engine's shared `_laneSeqPool` (a single `List<int>` of lane HANDLES, blob-style) --
     // replacing the old per-vehicle `IReadOnlyList<string> LaneSequence`/`int[]

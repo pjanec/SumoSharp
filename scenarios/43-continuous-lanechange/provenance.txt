@@ -1,0 +1,23 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T06:40:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --no-step-log true
+fcd_precision=6
+# C10-i CONTINUOUS LANE CHANGE PARITY ANCHOR (RungC10iContinuousLaneChangeParityTests, exact @1e-3).
+#   lanechange.duration=3. E0(2 lanes)->E1(1 lane); E0_0 does NOT connect to E1 (only E0_1 does),
+#   so v0 departs E0_0 and must strategic-change to E0_1 -- on a CLEAR road (no leader), isolating
+#   the continuous-change TIMING from any car-following. SUMO golden: v0 on E0_0 (t=0,1), E0_1
+#   (t=2+). The change is DECIDED at t=0 (same as the engine) but SUMO holds the SOURCE lane label
+#   until the vehicle center crosses the lane midpoint -- halfway through the 3-step maneuver -- so
+#   the label flips at t=2, NOT t=1. Pre-C10 the engine snapped the lane instantly (E0_1 at t=1).
+#   Port: Engine.AdvanceLaneChanges + the StartLaneChangeManeuver command; gated on
+#   lanechange.duration>0 so every duration-0 scenario keeps the instant snap (byte-identical).
+#   pos/speed stay free-flow throughout (the clear-road isolation). DEFERRED to follow-ons: the
+#   lateral POSITION (y/LatOffset, needs a lateral-comparison harness) and the SHADOW-LANE
+#   car-following during the straddle (a blocked-road change decelerates). Euler, sigma=0, seed 42.
+# net: netconvert from nodes/edges/connections, --no-turnarounds.
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+# input file hashes (sha256):
+input=net.net.xml sha256=ddba85e354877c78ade31bd61ace59ee5ab5bc11aaad9ae4328857773bedae1b
+input=rou.rou.xml sha256=67e5a3049650fd3a786b17a325f03c0fe0e4739ea40d9c9ae68577282e238aaf
+input=config.sumocfg sha256=bd542bb5ec1b60efb6f16394c48fe7b4460c836824635565c48fc653418b40ab
