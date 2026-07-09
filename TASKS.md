@@ -1517,7 +1517,11 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     than maxDecel so `finalizeSpeed`'s ballistic `minNextSpeed`/negative-speed branch is not
     exercised; a ballistic EMERGENCY-brake scenario (vehicle stops within a step, speed goes negative)
     would need that branch + the ballistic position update for a stopping vehicle. Parity-reviewer
-    gate pending.
+    ACCEPT (faithful port of MSCFModel.cpp:854-917; byte-identical Euler -- 156 green incl. D1 hash;
+    non-vacuous, Euler-forced fails at step 8). **RE-GATE FLAG (reviewer):** a HARD-BRAKING ballistic
+    scenario (per-step delta > decel -> safe speed goes negative) would exercise `finalizeSpeed`'s
+    ballistic `minNextSpeed`/negative-speed branch AND the Euler-flavored `MAX2(x,0)` clamp in the
+    emergency-decel correction -- both latent Euler paths today; port them when authoring that rung.
 - **C9. Cooperative lane changes.** LC2013's COOPERATIVE block (`LCA_COOPERATIVE` — make room for a
   blocked/merging neighbor). Depends on A2's neighbor query + C3 (merging pressure). Parity axis.
 - **C10. Sublane / continuous lateral (SL2015). The lateral axis and the BRIDGE to navmesh/RVO.**
