@@ -1,0 +1,879 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-09 04:27:09 by Eclipse SUMO duarouter Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
+
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="trips_final.xml"/>
+    </input>
+
+    <output>
+        <output-file value="rou_final.xml"/>
+        <named-routes value="true"/>
+    </output>
+
+    <report>
+        <ignore-errors value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <route id="r0" edges="-440 -393 -370 -231 -186 -25 -9 19 49 234 -340 -193"/>
+    <vehicle id="0" depart="0.00" route="r0"/>
+    <route id="r1" edges="-407 415 -424 -387 -360 -339 338"/>
+    <vehicle id="1" depart="1.50" route="r1"/>
+    <route id="r2" edges="369 415 -424 -387 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370"/>
+    <vehicle id="2" depart="3.00" route="r2"/>
+    <route id="r3" edges="-424 -387 -360 -225"/>
+    <vehicle id="3" depart="4.50" route="r3"/>
+    <route id="r4" edges="-405 -369 -229 -184 172 227 361 -231 233 372 417"/>
+    <vehicle id="4" depart="6.00" route="r4"/>
+    <route id="r5" edges="-193 -166 -53 59 172 227"/>
+    <vehicle id="5" depart="7.50" route="r5"/>
+    <route id="r6" edges="-440 -393 -370 -231 233 372 417"/>
+    <vehicle id="6" depart="9.00" route="r6"/>
+    <route id="r7" edges="-405 415 -424 -387 -360 354 384 387 424"/>
+    <vehicle id="7" depart="10.50" route="r7"/>
+    <route id="r8" edges="-9 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="8" depart="12.00" route="r8"/>
+    <route id="r9" edges="-417 -372 -233 231 -361 -227 -172 -59"/>
+    <vehicle id="9" depart="13.50" route="r9"/>
+    <route id="r10" edges="53 166 193 352 383"/>
+    <vehicle id="10" depart="15.00" route="r10"/>
+    <route id="r11" edges="-372 -233 -186 -25 -9 7 -52 -38"/>
+    <vehicle id="11" depart="16.50" route="r11"/>
+    <route id="r12" edges="231 -361 -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="12" depart="18.00" route="r12"/>
+    <vehicle id="13" depart="19.50" route="r8"/>
+    <route id="r13" edges="-430 -393 -370 -361 rbX_226_in"/>
+    <vehicle id="14" depart="21.00" route="r13"/>
+    <route id="r14" edges="191 339 360 391 426"/>
+    <vehicle id="15" depart="22.50" route="r14"/>
+    <route id="r15" edges="3 38 53 166 191 338 418"/>
+    <vehicle id="16" depart="24.00" route="r15"/>
+    <route id="r16" edges="-405 415 -424 -387 -360 -225 193 352 383"/>
+    <vehicle id="18" depart="27.00" route="r16"/>
+    <route id="r17" edges="-361 -227 -172 -59 53 166 193 352"/>
+    <vehicle id="19" depart="28.50" route="r17"/>
+    <route id="r18" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="20" depart="30.00" route="r18"/>
+    <route id="r19" edges="-407 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="21" depart="31.50" route="r19"/>
+    <route id="r20" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="22" depart="33.00" route="r20"/>
+    <route id="r21" edges="-383 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="23" depart="34.50" route="r21"/>
+    <route id="r22" edges="-383 -352 -193 225 360 387 424 -415 405"/>
+    <vehicle id="24" depart="36.00" route="r22"/>
+    <route id="r23" edges="rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="25" depart="37.50" route="r23"/>
+    <route id="r24" edges="227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="26" depart="39.00" route="r24"/>
+    <route id="r25" edges="-405 415 -424 -387 -360 -225"/>
+    <vehicle id="27" depart="40.50" route="r25"/>
+    <route id="r26" edges="-407 415 -424 -387 -360 -225 193 352 381"/>
+    <vehicle id="28" depart="42.00" route="r26"/>
+    <route id="r27" edges="-405 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="29" depart="43.50" route="r27"/>
+    <route id="r28" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="30" depart="45.00" route="r28"/>
+    <route id="r29" edges="387 424 -415 407"/>
+    <vehicle id="31" depart="46.50" route="r29"/>
+    <route id="r30" edges="-430 -393 -370 -231 -186 -25 -9 3 38"/>
+    <vehicle id="32" depart="48.00" route="r30"/>
+    <route id="r31" edges="-417 -372 -233 -186 -25 -9 3"/>
+    <vehicle id="33" depart="49.50" route="r31"/>
+    <route id="r32" edges="rbX_ring_WS rbX_366_out -370 -231 233 372 417"/>
+    <vehicle id="34" depart="51.00" route="r32"/>
+    <route id="r33" edges="-372 -233 -186 -25 -9 19 51 166 189 -234"/>
+    <vehicle id="35" depart="52.50" route="r33"/>
+    <route id="r34" edges="-383 -352 -193 225 360 391 426"/>
+    <vehicle id="36" depart="54.00" route="r34"/>
+    <route id="r35" edges="-52 59 184 229 369 405"/>
+    <vehicle id="37" depart="55.50" route="r35"/>
+    <route id="r36" edges="-339 -191 225 360 387 424 -415 405"/>
+    <vehicle id="38" depart="57.00" route="r36"/>
+    <route id="r37" edges="rbX_ring_SE rbX_ring_EN rbX_ring_NW rbX_ring_WS rbX_366_out -370 -231 233 372 417"/>
+    <vehicle id="39" depart="58.50" route="r37"/>
+    <route id="r38" edges="9 25 186 231 370 393 440"/>
+    <vehicle id="40" depart="60.00" route="r38"/>
+    <route id="r39" edges="-186 -25 -9 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="41" depart="61.50" route="r39"/>
+    <vehicle id="42" depart="63.00" route="r6"/>
+    <route id="r40" edges="-407 415 -424 -387 391 426"/>
+    <vehicle id="43" depart="64.50" route="r40"/>
+    <route id="r41" edges="-383 -352 -193 225 360 387 424 -415 407"/>
+    <vehicle id="44" depart="66.00" route="r41"/>
+    <route id="r42" edges="-426 -391 -360 -225 -166 -53 52"/>
+    <vehicle id="45" depart="67.50" route="r42"/>
+    <route id="r43" edges="352 381 -418 -338 -191 -166 -51 -19 3 38"/>
+    <vehicle id="46" depart="69.00" route="r43"/>
+    <route id="r44" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 189"/>
+    <vehicle id="47" depart="70.50" route="r44"/>
+    <route id="r45" edges="384 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="48" depart="72.00" route="r45"/>
+    <vehicle id="49" depart="73.50" route="r40"/>
+    <route id="r46" edges="-436 -393 -370 -231 -186 -25 -9 19 51 -53"/>
+    <vehicle id="50" depart="75.00" route="r46"/>
+    <route id="r47" edges="-446 -403 -370 -231 233 372 417"/>
+    <vehicle id="51" depart="76.50" route="r47"/>
+    <vehicle id="52" depart="78.00" route="r47"/>
+    <route id="r48" edges="-19 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="53" depart="79.50" route="r48"/>
+    <route id="r49" edges="354 384 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="54" depart="81.00" route="r49"/>
+    <route id="r50" edges="-407 415 -424 -387 -360 -225 193 352 381 -418 -338"/>
+    <vehicle id="55" depart="82.50" route="r50"/>
+    <route id="r51" edges="-352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="56" depart="84.00" route="r51"/>
+    <route id="r52" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 381 -418"/>
+    <vehicle id="57" depart="85.50" route="r52"/>
+    <route id="r53" edges="-426 -391 -360 -225 -166 -51 -19 9 25 186 233 372 417"/>
+    <vehicle id="58" depart="87.00" route="r53"/>
+    <route id="r54" edges="-407 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="59" depart="88.50" route="r54"/>
+    <route id="r55" edges="-424 -387 -360 -225 -166 -51 49 234"/>
+    <vehicle id="60" depart="90.00" route="r55"/>
+    <vehicle id="61" depart="91.50" route="r16"/>
+    <route id="r56" edges="rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="62" depart="93.00" route="r56"/>
+    <vehicle id="63" depart="94.50" route="r53"/>
+    <route id="r57" edges="-383 -352 -193 191 338"/>
+    <vehicle id="64" depart="96.00" route="r57"/>
+    <route id="r58" edges="-405 -369 -229 -184 -59 52 -7 3"/>
+    <vehicle id="65" depart="97.50" route="r58"/>
+    <route id="r59" edges="-352 -193 225 360 391 426"/>
+    <vehicle id="66" depart="99.00" route="r59"/>
+    <vehicle id="67" depart="100.50" route="r27"/>
+    <route id="r60" edges="-405 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="68" depart="102.00" route="r60"/>
+    <route id="r61" edges="-405 415 -424 -387 391 -423"/>
+    <vehicle id="69" depart="103.50" route="r61"/>
+    <route id="r62" edges="418 -381 -352 340 -234 -49 -19 9 25 186 233 372 417"/>
+    <vehicle id="70" depart="105.00" route="r62"/>
+    <route id="r63" edges="-426 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="71" depart="106.50" route="r63"/>
+    <route id="r64" edges="166 193"/>
+    <vehicle id="72" depart="108.00" route="r64"/>
+    <route id="r65" edges="-38 -3 7 -52 59 184 229 369 407"/>
+    <vehicle id="73" depart="109.50" route="r65"/>
+    <route id="r66" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 225 354 384"/>
+    <vehicle id="74" depart="111.00" route="r66"/>
+    <route id="r67" edges="3 38 59 184 229 369"/>
+    <vehicle id="75" depart="112.50" route="r67"/>
+    <route id="r68" edges="-403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="76" depart="114.00" route="r68"/>
+    <route id="r69" edges="-424 -387 -360 -225 193 352 383"/>
+    <vehicle id="77" depart="115.50" route="r69"/>
+    <vehicle id="78" depart="117.00" route="r27"/>
+    <route id="r70" edges="-426 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="79" depart="118.50" route="r70"/>
+    <route id="r71" edges="-430 -393 -370 -231 -186 -25"/>
+    <vehicle id="80" depart="120.00" route="r71"/>
+    <route id="r72" edges="9 25 186 231 370 403 446"/>
+    <vehicle id="81" depart="121.50" route="r72"/>
+    <route id="r73" edges="231 -361 -227 -172 -59 53 166"/>
+    <vehicle id="82" depart="123.00" route="r73"/>
+    <route id="r74" edges="-426 -391 -360 -225 -166 -51 49 234"/>
+    <vehicle id="83" depart="124.50" route="r74"/>
+    <route id="r75" edges="-417 -372 -233 -186 -25 -9 19 49 234 -340 352 381 -418 -338"/>
+    <vehicle id="84" depart="126.00" route="r75"/>
+    <route id="r76" edges="-417 -372 -233 231 -361 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out"/>
+    <vehicle id="85" depart="127.50" route="r76"/>
+    <route id="r77" edges="-407 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="86" depart="129.00" route="r77"/>
+    <route id="r78" edges="-426 -391 387 424 -415 405"/>
+    <vehicle id="87" depart="130.50" route="r78"/>
+    <route id="r79" edges="53 -51 -19 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE"/>
+    <vehicle id="88" depart="132.00" route="r79"/>
+    <route id="r80" edges="9 25 186 231 -361 -227 -172 -59 53 166 193 352 377 420"/>
+    <vehicle id="89" depart="133.50" route="r80"/>
+    <route id="r81" edges="-383 -352 -193 -166 -53 59"/>
+    <vehicle id="90" depart="135.00" route="r81"/>
+    <route id="r82" edges="-361 -227 -172 -59 53 166 191"/>
+    <vehicle id="91" depart="136.50" route="r82"/>
+    <route id="r83" edges="369 415 -424 -387 -360 -225 -166 -53 59 172 227 361"/>
+    <vehicle id="93" depart="139.50" route="r83"/>
+    <route id="r84" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="94" depart="141.00" route="r84"/>
+    <vehicle id="95" depart="142.50" route="r60"/>
+    <route id="r85" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 383"/>
+    <vehicle id="96" depart="144.00" route="r85"/>
+    <vehicle id="97" depart="145.50" route="r77"/>
+    <route id="r86" edges="-354 360 387 424 -415 407"/>
+    <vehicle id="98" depart="147.00" route="r86"/>
+    <route id="r87" edges="-354 -225 -166 -51 49 234"/>
+    <vehicle id="99" depart="148.50" route="r87"/>
+    <vehicle id="100" depart="150.00" route="r19"/>
+    <route id="r88" edges="354 384 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="101" depart="151.50" route="r88"/>
+    <route id="r89" edges="-417 -372 -233 -186 -25 -9 3 38 52 -7"/>
+    <vehicle id="102" depart="153.00" route="r89"/>
+    <route id="r90" edges="193 340 -234 -49 -19 9 25 186 231 370 393 430"/>
+    <vehicle id="103" depart="154.50" route="r90"/>
+    <route id="r91" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 387 424 -415 -369 -229 -184"/>
+    <vehicle id="104" depart="156.00" route="r91"/>
+    <route id="r92" edges="184 229 369 415 -424 -387 -360 -225 193 352 383"/>
+    <vehicle id="105" depart="157.50" route="r92"/>
+    <route id="r93" edges="-383 -352 340 -234 -49 -19 9 25 186 233 372 417"/>
+    <vehicle id="107" depart="160.50" route="r93"/>
+    <vehicle id="108" depart="162.00" route="r40"/>
+    <route id="r94" edges="-436 -393 -370 -231 -186 -25 -9 3 38"/>
+    <vehicle id="109" depart="163.50" route="r94"/>
+    <route id="r95" edges="-426 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="110" depart="165.00" route="r95"/>
+    <vehicle id="112" depart="168.00" route="r69"/>
+    <route id="r96" edges="-166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="113" depart="169.50" route="r96"/>
+    <vehicle id="114" depart="171.00" route="r94"/>
+    <vehicle id="115" depart="172.50" route="r47"/>
+    <route id="r97" edges="-426 -391 387 424 -415 -369 -229 -184"/>
+    <vehicle id="116" depart="174.00" route="r97"/>
+    <route id="r98" edges="-360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="117" depart="175.50" route="r98"/>
+    <route id="r99" edges="38 59 172 227 361 -231 233 372 417"/>
+    <vehicle id="118" depart="177.00" route="r99"/>
+    <route id="r100" edges="193 340 -189 225 354 423"/>
+    <vehicle id="119" depart="178.50" route="r100"/>
+    <route id="r101" edges="-383 381 -418"/>
+    <vehicle id="120" depart="180.00" route="r101"/>
+    <vehicle id="121" depart="181.50" route="r19"/>
+    <route id="r102" edges="-53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="122" depart="183.00" route="r102"/>
+    <route id="r103" edges="-405 415 -424 -387 -360 -339 338 418 -381"/>
+    <vehicle id="123" depart="184.50" route="r103"/>
+    <route id="r104" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 225 360 391 426"/>
+    <vehicle id="124" depart="186.00" route="r104"/>
+    <route id="r105" edges="-383 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="125" depart="187.50" route="r105"/>
+    <route id="r106" edges="338 418 -381 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out"/>
+    <vehicle id="126" depart="189.00" route="r106"/>
+    <route id="r107" edges="172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="127" depart="190.50" route="r107"/>
+    <route id="r108" edges="-191 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="128" depart="192.00" route="r108"/>
+    <vehicle id="129" depart="193.50" route="r19"/>
+    <route id="r109" edges="172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 381"/>
+    <vehicle id="130" depart="195.00" route="r109"/>
+    <route id="r110" edges="340 -234 -49 -19 9 25 186 231 370 393 440"/>
+    <vehicle id="131" depart="196.50" route="r110"/>
+    <route id="r111" edges="-405 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="132" depart="198.00" route="r111"/>
+    <route id="r112" edges="-426 -391 -360 -225 193 352 383"/>
+    <vehicle id="133" depart="199.50" route="r112"/>
+    <vehicle id="134" depart="201.00" route="r54"/>
+    <route id="r113" edges="7 -52 53 166 193 352 383"/>
+    <vehicle id="135" depart="202.50" route="r113"/>
+    <vehicle id="136" depart="204.00" route="r28"/>
+    <route id="r114" edges="rbX_366_in rbX_ring_SE rbX_ring_EN rbX_ring_NW rbX_ring_WS rbX_366_out -370 -231 233 372 417"/>
+    <vehicle id="137" depart="205.50" route="r114"/>
+    <route id="r115" edges="59 184 229 369 415 -424 -387 -360 -225 193 352 381"/>
+    <vehicle id="139" depart="208.50" route="r115"/>
+    <vehicle id="140" depart="210.00" route="r41"/>
+    <route id="r116" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 383"/>
+    <vehicle id="141" depart="211.50" route="r116"/>
+    <route id="r117" edges="-436 -393 -370 -231 233 372 417"/>
+    <vehicle id="142" depart="213.00" route="r117"/>
+    <route id="r118" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 191 338 418"/>
+    <vehicle id="143" depart="214.50" route="r118"/>
+    <vehicle id="144" depart="216.00" route="r60"/>
+    <route id="r119" edges="-166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="145" depart="217.50" route="r119"/>
+    <route id="r120" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 191 338 418 -381 -352"/>
+    <vehicle id="146" depart="219.00" route="r120"/>
+    <vehicle id="147" depart="220.50" route="r85"/>
+    <vehicle id="148" depart="222.00" route="r54"/>
+    <vehicle id="149" depart="223.50" route="r116"/>
+    <route id="r121" edges="-417 -372 -233 -186 -25 -9 19 49 234 -340 352 383"/>
+    <vehicle id="150" depart="225.00" route="r121"/>
+    <vehicle id="151" depart="226.50" route="r22"/>
+    <route id="r122" edges="423 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="152" depart="228.00" route="r122"/>
+    <route id="r123" edges="377 420 -418 -338 339 360 391 426"/>
+    <vehicle id="153" depart="229.50" route="r123"/>
+    <route id="r124" edges="-407 -369 -229 -184 172 227 361 -231 233 372 417"/>
+    <vehicle id="154" depart="231.00" route="r124"/>
+    <route id="r125" edges="-426 -391 -360 -225 193 352 377 420"/>
+    <vehicle id="155" depart="232.50" route="r125"/>
+    <route id="r126" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="156" depart="234.00" route="r126"/>
+    <vehicle id="157" depart="235.50" route="r74"/>
+    <vehicle id="158" depart="237.00" route="r95"/>
+    <route id="r127" edges="-53 59 172"/>
+    <vehicle id="159" depart="238.50" route="r127"/>
+    <route id="r128" edges="-369 -229 -184 172 227 361 -231 233 372 417"/>
+    <vehicle id="160" depart="240.00" route="r128"/>
+    <route id="r129" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 383"/>
+    <vehicle id="161" depart="241.50" route="r129"/>
+    <route id="r130" edges="186 231 370 393 436"/>
+    <vehicle id="162" depart="243.00" route="r130"/>
+    <route id="r131" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 191 338"/>
+    <vehicle id="163" depart="244.50" route="r131"/>
+    <route id="r132" edges="-405 415 -424 -387 -360 -339 -191"/>
+    <vehicle id="164" depart="246.00" route="r132"/>
+    <route id="r133" edges="231 -361 -227 -172 -59 53 166 225 360 -384 -354"/>
+    <vehicle id="165" depart="247.50" route="r133"/>
+    <route id="r134" edges="-420 -377 -352 -193 225 360 391 426"/>
+    <vehicle id="166" depart="249.00" route="r134"/>
+    <vehicle id="167" depart="250.50" route="r60"/>
+    <route id="r135" edges="-426 -391 -360 -225 -166 -53 59 172 227 361"/>
+    <vehicle id="168" depart="252.00" route="r135"/>
+    <route id="r136" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172"/>
+    <vehicle id="169" depart="253.50" route="r136"/>
+    <vehicle id="170" depart="255.00" route="r22"/>
+    <vehicle id="171" depart="256.50" route="r71"/>
+    <vehicle id="172" depart="258.00" route="r111"/>
+    <vehicle id="173" depart="259.50" route="r63"/>
+    <route id="r137" edges="-436 -393 -370 -231 -186 -25 -9 19 51"/>
+    <vehicle id="174" depart="261.00" route="r137"/>
+    <route id="r138" edges="369 415 -424 -387 391 426"/>
+    <vehicle id="175" depart="262.50" route="r138"/>
+    <vehicle id="176" depart="264.00" route="r47"/>
+    <route id="r139" edges="191 339 -225 -166 -51 -19 9 25 186 233 372 417"/>
+    <vehicle id="177" depart="265.50" route="r139"/>
+    <route id="r140" edges="-426 -391 -360 -225 193 352 377"/>
+    <vehicle id="179" depart="268.50" route="r140"/>
+    <route id="r141" edges="-405 415 -424 -387 391 426"/>
+    <vehicle id="180" depart="270.00" route="r141"/>
+    <vehicle id="181" depart="271.50" route="r47"/>
+    <vehicle id="182" depart="273.00" route="r129"/>
+    <route id="r142" edges="-360 -225 193 352 383"/>
+    <vehicle id="183" depart="274.50" route="r142"/>
+    <route id="r143" edges="-407 415 -424 -387 -360 -225 193 352 383"/>
+    <vehicle id="184" depart="276.00" route="r143"/>
+    <route id="r144" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 415 -424"/>
+    <vehicle id="185" depart="277.50" route="r144"/>
+    <vehicle id="186" depart="279.00" route="r60"/>
+    <route id="r145" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 -339"/>
+    <vehicle id="187" depart="280.50" route="r145"/>
+    <route id="r146" edges="-420 -377 -352 340 -234 -49 -19 9 25 186 231"/>
+    <vehicle id="188" depart="282.00" route="r146"/>
+    <route id="r147" edges="-423 -354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="189" depart="283.50" route="r147"/>
+    <route id="r148" edges="234 -189 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="190" depart="285.00" route="r148"/>
+    <route id="r149" edges="-417 -372 -233 231 -361 -227 -172"/>
+    <vehicle id="191" depart="286.50" route="r149"/>
+    <route id="r150" edges="-417 -372 -233 231 370 393 436"/>
+    <vehicle id="192" depart="288.00" route="r150"/>
+    <route id="r151" edges="-423 -354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="194" depart="291.00" route="r151"/>
+    <route id="r152" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="195" depart="292.50" route="r152"/>
+    <vehicle id="196" depart="294.00" route="r58"/>
+    <route id="r153" edges="-426 -391 -360 -225"/>
+    <vehicle id="197" depart="295.50" route="r153"/>
+    <route id="r154" edges="-415 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="198" depart="297.00" route="r154"/>
+    <route id="r155" edges="-417 -372 -233 -186 -25 -9 19 51 166"/>
+    <vehicle id="199" depart="298.50" route="r155"/>
+    <route id="r156" edges="-436 -393 -370 -231 -186 -25 -9 19 49 234 -340 -193"/>
+    <vehicle id="200" depart="300.00" route="r156"/>
+    <route id="r157" edges="-193 225 360 391 426"/>
+    <vehicle id="201" depart="301.50" route="r157"/>
+    <vehicle id="202" depart="303.00" route="r41"/>
+    <route id="r158" edges="-25 -9 3 38 59 184 229 369 405"/>
+    <vehicle id="203" depart="304.50" route="r158"/>
+    <vehicle id="204" depart="306.00" route="r16"/>
+    <route id="r159" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="205" depart="307.50" route="r159"/>
+    <route id="r160" edges="-405 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370 -361"/>
+    <vehicle id="206" depart="309.00" route="r160"/>
+    <route id="r161" edges="-19 9 25 186 233 372 417"/>
+    <vehicle id="207" depart="310.50" route="r161"/>
+    <route id="r162" edges="rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391"/>
+    <vehicle id="208" depart="312.00" route="r162"/>
+    <route id="r163" edges="49 234 -189 -166 -53 59 172 227"/>
+    <vehicle id="209" depart="313.50" route="r163"/>
+    <vehicle id="210" depart="315.00" route="r21"/>
+    <route id="r164" edges="-430 -393 -370 -231 -186 -25 -9 3"/>
+    <vehicle id="211" depart="316.50" route="r164"/>
+    <vehicle id="212" depart="318.00" route="r34"/>
+    <route id="r165" edges="-407 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="213" depart="319.50" route="r165"/>
+    <route id="r166" edges="53 166 225 360 387 424 -415 405"/>
+    <vehicle id="214" depart="321.00" route="r166"/>
+    <route id="r167" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 415 -424 -387 -360"/>
+    <vehicle id="215" depart="322.50" route="r167"/>
+    <vehicle id="216" depart="324.00" route="r20"/>
+    <route id="r168" edges="-381 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="217" depart="325.50" route="r168"/>
+    <route id="r169" edges="-383 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out"/>
+    <vehicle id="219" depart="328.50" route="r169"/>
+    <route id="r170" edges="-49 51 166 225 360 391"/>
+    <vehicle id="220" depart="330.00" route="r170"/>
+    <vehicle id="221" depart="331.50" route="r78"/>
+    <route id="r171" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 354 384"/>
+    <vehicle id="222" depart="333.00" route="r171"/>
+    <route id="r172" edges="231 370 393 440"/>
+    <vehicle id="223" depart="334.50" route="r172"/>
+    <vehicle id="224" depart="336.00" route="r81"/>
+    <vehicle id="225" depart="337.50" route="r126"/>
+    <route id="r173" edges="-446 -403 -370 -231 -186 -25 -9 7"/>
+    <vehicle id="226" depart="339.00" route="r173"/>
+    <vehicle id="227" depart="340.50" route="r54"/>
+    <route id="r174" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="228" depart="342.00" route="r174"/>
+    <route id="r175" edges="-426 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="229" depart="343.50" route="r175"/>
+    <vehicle id="230" depart="345.00" route="r54"/>
+    <route id="r176" edges="191 339 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370"/>
+    <vehicle id="231" depart="346.50" route="r176"/>
+    <route id="r177" edges="354 384 -360 -225 -166 -53 59 172 227 361"/>
+    <vehicle id="232" depart="348.00" route="r177"/>
+    <route id="r178" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 191 339 -225"/>
+    <vehicle id="233" depart="349.50" route="r178"/>
+    <route id="r179" edges="-405 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="234" depart="351.00" route="r179"/>
+    <route id="r180" edges="-417 -372 -233 231 370 403 446"/>
+    <vehicle id="235" depart="352.50" route="r180"/>
+    <vehicle id="236" depart="354.00" route="r85"/>
+    <route id="r181" edges="-369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="237" depart="355.50" route="r181"/>
+    <vehicle id="238" depart="357.00" route="r63"/>
+    <vehicle id="239" depart="358.50" route="r20"/>
+    <vehicle id="240" depart="360.00" route="r63"/>
+    <vehicle id="241" depart="361.50" route="r85"/>
+    <route id="r182" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="242" depart="363.00" route="r182"/>
+    <route id="r183" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="243" depart="364.50" route="r183"/>
+    <vehicle id="244" depart="366.00" route="r116"/>
+    <vehicle id="245" depart="367.50" route="r85"/>
+    <route id="r184" edges="-391 -360 -225 -166 -51 -19 9 25"/>
+    <vehicle id="247" depart="370.50" route="r184"/>
+    <vehicle id="248" depart="372.00" route="r175"/>
+    <route id="r185" edges="rbX_226_out 361 -231 233 372 417"/>
+    <vehicle id="249" depart="373.50" route="r185"/>
+    <route id="r186" edges="-407 415 -424 -387 -360 -339 338 418 -381"/>
+    <vehicle id="250" depart="375.00" route="r186"/>
+    <route id="r187" edges="-405 415 -424 -387 -360 -225 191 339"/>
+    <vehicle id="251" depart="376.50" route="r187"/>
+    <route id="r188" edges="-387 -360 -225 -166 -53 59 172 227 361 -231 -186"/>
+    <vehicle id="252" depart="378.00" route="r188"/>
+    <route id="r189" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 383"/>
+    <vehicle id="253" depart="379.50" route="r189"/>
+    <route id="r190" edges="rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370 -231 233 372 417"/>
+    <vehicle id="254" depart="381.00" route="r190"/>
+    <route id="r191" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 381 -418"/>
+    <vehicle id="255" depart="382.50" route="r191"/>
+    <route id="r192" edges="339 360 387 424 -415 407"/>
+    <vehicle id="256" depart="384.00" route="r192"/>
+    <route id="r193" edges="340 -234 -49 -19 9 25 186 233 372 417"/>
+    <vehicle id="257" depart="385.50" route="r193"/>
+    <route id="r194" edges="-426 -391 387 424 -415 407"/>
+    <vehicle id="258" depart="387.00" route="r194"/>
+    <route id="r195" edges="-391 -360 -225 -166 -53 59 172 227 361 -231 -186 -25"/>
+    <vehicle id="259" depart="388.50" route="r195"/>
+    <route id="r196" edges="423 -391 387 424 -415 407"/>
+    <vehicle id="260" depart="390.00" route="r196"/>
+    <route id="r197" edges="189 -234 -49 -19 3 38 59 184 229 369 405"/>
+    <vehicle id="261" depart="391.50" route="r197"/>
+    <vehicle id="262" depart="393.00" route="r189"/>
+    <route id="r198" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="263" depart="394.50" route="r198"/>
+    <route id="r199" edges="-52 53 166 191 339"/>
+    <vehicle id="264" depart="396.00" route="r199"/>
+    <vehicle id="265" depart="397.50" route="r174"/>
+    <vehicle id="266" depart="399.00" route="r70"/>
+    <route id="r200" edges="rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352 383"/>
+    <vehicle id="267" depart="400.50" route="r200"/>
+    <vehicle id="268" depart="402.00" route="r84"/>
+    <route id="r201" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 -51 49"/>
+    <vehicle id="269" depart="403.50" route="r201"/>
+    <route id="r202" edges="-405 -369 -229 -184 -59 53 -51 49 234"/>
+    <vehicle id="270" depart="405.00" route="r202"/>
+    <route id="r203" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59"/>
+    <vehicle id="271" depart="406.50" route="r203"/>
+    <route id="r204" edges="-383 -352 -193 225 354 384 -360"/>
+    <vehicle id="272" depart="408.00" route="r204"/>
+    <route id="r205" edges="-166 -53 59 184 229 369 407"/>
+    <vehicle id="273" depart="409.50" route="r205"/>
+    <vehicle id="274" depart="411.00" route="r129"/>
+    <vehicle id="275" depart="412.50" route="r60"/>
+    <vehicle id="276" depart="414.00" route="r126"/>
+    <route id="r206" edges="-51 49 234 -189 225 360 391 426"/>
+    <vehicle id="277" depart="415.50" route="r206"/>
+    <vehicle id="278" depart="417.00" route="r53"/>
+    <route id="r207" edges="19 49 234 -189 191 338 418 -381 -352"/>
+    <vehicle id="279" depart="418.50" route="r207"/>
+    <vehicle id="280" depart="420.00" route="r47"/>
+    <route id="r208" edges="423 -391 -360 -225 -166 -53 59 184 229 369 415"/>
+    <vehicle id="281" depart="421.50" route="r208"/>
+    <route id="r209" edges="-426 -391 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370 -361"/>
+    <vehicle id="282" depart="423.00" route="r209"/>
+    <route id="r210" edges="-231 -186 -25 -9 3 38 59 184 229 369 407"/>
+    <vehicle id="283" depart="424.50" route="r210"/>
+    <route id="r211" edges="-407 -369 -229 -184 172 227 361 370"/>
+    <vehicle id="284" depart="426.00" route="r211"/>
+    <route id="r212" edges="-372 -233 -186 -25 -9 3 38 59"/>
+    <vehicle id="285" depart="427.50" route="r212"/>
+    <route id="r213" edges="51 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS"/>
+    <vehicle id="286" depart="429.00" route="r213"/>
+    <vehicle id="287" depart="430.50" route="r85"/>
+    <route id="r214" edges="387 424 -415 -369 -229 -184 -59 53 166 189"/>
+    <vehicle id="288" depart="432.00" route="r214"/>
+    <vehicle id="289" depart="433.50" route="r84"/>
+    <vehicle id="291" depart="436.50" route="r121"/>
+    <vehicle id="292" depart="438.00" route="r165"/>
+    <vehicle id="293" depart="439.50" route="r19"/>
+    <route id="r215" edges="172 227 361 -231 233 372 417"/>
+    <vehicle id="294" depart="441.00" route="r215"/>
+    <vehicle id="295" depart="442.50" route="r112"/>
+    <route id="r216" edges="-407 -369 -229 -184 -59 -38 -3 9"/>
+    <vehicle id="296" depart="444.00" route="r216"/>
+    <route id="r217" edges="rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="297" depart="445.50" route="r217"/>
+    <vehicle id="298" depart="447.00" route="r183"/>
+    <route id="r218" edges="-393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="299" depart="448.50" route="r218"/>
+    <vehicle id="300" depart="450.00" route="r198"/>
+    <route id="r219" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229"/>
+    <vehicle id="301" depart="451.50" route="r219"/>
+    <vehicle id="302" depart="453.00" route="r175"/>
+    <route id="r220" edges="-383 -352 -193 -166 -53 59 172 227 rbX_226_in"/>
+    <vehicle id="303" depart="454.50" route="r220"/>
+    <route id="r221" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360"/>
+    <vehicle id="304" depart="456.00" route="r221"/>
+    <vehicle id="305" depart="457.50" route="r93"/>
+    <route id="r222" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 191 338 418 -420 -377"/>
+    <vehicle id="306" depart="459.00" route="r222"/>
+    <route id="r223" edges="193 340 -189 225 360 387 424 -415 407"/>
+    <vehicle id="308" depart="462.00" route="r223"/>
+    <vehicle id="309" depart="463.50" route="r47"/>
+    <vehicle id="310" depart="465.00" route="r54"/>
+    <vehicle id="311" depart="466.50" route="r183"/>
+    <vehicle id="313" depart="469.50" route="r49"/>
+    <vehicle id="314" depart="471.00" route="r77"/>
+    <route id="r224" edges="-420 -377 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="315" depart="472.50" route="r224"/>
+    <vehicle id="316" depart="474.00" route="r143"/>
+    <route id="r225" edges="-426 -391 -360 -225 -166 -51 -19 7 -52"/>
+    <vehicle id="317" depart="475.50" route="r225"/>
+    <route id="r226" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 387"/>
+    <vehicle id="318" depart="477.00" route="r226"/>
+    <route id="r227" edges="-430 -393 -370 -231 233 372 417"/>
+    <vehicle id="319" depart="478.50" route="r227"/>
+    <vehicle id="320" depart="480.00" route="r112"/>
+    <route id="r228" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 193 352"/>
+    <vehicle id="321" depart="481.50" route="r228"/>
+    <route id="r229" edges="172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 405"/>
+    <vehicle id="323" depart="484.50" route="r229"/>
+    <route id="r230" edges="rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="324" depart="486.00" route="r230"/>
+    <route id="r231" edges="340 -189 225 360 387 424 -415 407"/>
+    <vehicle id="325" depart="487.50" route="r231"/>
+    <vehicle id="326" depart="489.00" route="r174"/>
+    <vehicle id="327" depart="490.50" route="r159"/>
+    <vehicle id="328" depart="492.00" route="r203"/>
+    <route id="r232" edges="-426 -391 -360 -225 -166 -51 -19 9"/>
+    <vehicle id="329" depart="493.50" route="r232"/>
+    <vehicle id="330" depart="495.00" route="r154"/>
+    <vehicle id="332" depart="498.00" route="r121"/>
+    <route id="r233" edges="340 -189 225 360 387 424 -415 -369 -229"/>
+    <vehicle id="333" depart="499.50" route="r233"/>
+    <vehicle id="334" depart="501.00" route="r59"/>
+    <route id="r234" edges="391 -423 -354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS"/>
+    <vehicle id="335" depart="502.50" route="r234"/>
+    <route id="r235" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="336" depart="504.00" route="r235"/>
+    <route id="r236" edges="-38 -3 19 49 234 -189 225 360 391 426"/>
+    <vehicle id="337" depart="505.50" route="r236"/>
+    <vehicle id="338" depart="507.00" route="r231"/>
+    <route id="r237" edges="-233 231 370 393 436"/>
+    <vehicle id="339" depart="508.50" route="r237"/>
+    <vehicle id="340" depart="510.00" route="r93"/>
+    <route id="r238" edges="-383 -352 340 -234 -49 -19 9 25 186 231 -361"/>
+    <vehicle id="341" depart="511.50" route="r238"/>
+    <route id="r239" edges="339 360 391 426"/>
+    <vehicle id="342" depart="513.00" route="r239"/>
+    <vehicle id="343" depart="514.50" route="r27"/>
+    <vehicle id="344" depart="516.00" route="r41"/>
+    <route id="r240" edges="-405 -369 -229 -184 172 227 361 -231 233 372"/>
+    <vehicle id="345" depart="517.50" route="r240"/>
+    <route id="r241" edges="-184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="346" depart="519.00" route="r241"/>
+    <route id="r242" edges="377 420 -418 -338 -191 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="347" depart="520.50" route="r242"/>
+    <vehicle id="348" depart="522.00" route="r41"/>
+    <route id="r243" edges="-417 -372 -233 -186 -25 -9 19 49 234 -189 225 360 387 424"/>
+    <vehicle id="349" depart="523.50" route="r243"/>
+    <vehicle id="350" depart="525.00" route="r18"/>
+    <vehicle id="351" depart="526.50" route="r111"/>
+    <vehicle id="352" depart="528.00" route="r117"/>
+    <vehicle id="353" depart="529.50" route="r200"/>
+    <route id="r244" edges="rbX_226_out -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="354" depart="531.00" route="r244"/>
+    <vehicle id="355" depart="532.50" route="r124"/>
+    <route id="r245" edges="-234 -49 51 166 225 360 391 426"/>
+    <vehicle id="356" depart="534.00" route="r245"/>
+    <vehicle id="357" depart="535.50" route="r77"/>
+    <vehicle id="358" depart="537.00" route="r84"/>
+    <vehicle id="359" depart="538.50" route="r85"/>
+    <vehicle id="360" depart="540.00" route="r125"/>
+    <vehicle id="362" depart="543.00" route="r77"/>
+    <vehicle id="363" depart="544.50" route="r13"/>
+    <route id="r246" edges="191 339 -225 -166 -51 -19 9 25 186 233 372"/>
+    <vehicle id="364" depart="546.00" route="r246"/>
+    <route id="r247" edges="189 -234 -49 -19 3 38 59 184 229 369 407"/>
+    <vehicle id="365" depart="547.50" route="r247"/>
+    <route id="r248" edges="-9 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="366" depart="549.00" route="r248"/>
+    <route id="r249" edges="7 -52 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="368" depart="552.00" route="r249"/>
+    <vehicle id="369" depart="553.50" route="r249"/>
+    <vehicle id="370" depart="555.00" route="r150"/>
+    <vehicle id="371" depart="556.50" route="r175"/>
+    <route id="r250" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 354 423"/>
+    <vehicle id="372" depart="558.00" route="r250"/>
+    <route id="r251" edges="189 -234 -49 -19 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="373" depart="559.50" route="r251"/>
+    <route id="r252" edges="-193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="374" depart="561.00" route="r252"/>
+    <route id="r253" edges="-405 415 -424 -387 -360 -339"/>
+    <vehicle id="375" depart="562.50" route="r253"/>
+    <vehicle id="376" depart="564.00" route="r251"/>
+    <vehicle id="377" depart="565.50" route="r105"/>
+    <route id="r254" edges="-38 -3 9 25 186 231 370 403 446"/>
+    <vehicle id="378" depart="567.00" route="r254"/>
+    <vehicle id="379" depart="568.50" route="r41"/>
+    <route id="r255" edges="424 -415 405"/>
+    <vehicle id="380" depart="570.00" route="r255"/>
+    <route id="r256" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59"/>
+    <vehicle id="381" depart="571.50" route="r256"/>
+    <route id="r257" edges="-420 -377 -352 -193 -166 -53 -38"/>
+    <vehicle id="382" depart="573.00" route="r257"/>
+    <vehicle id="383" depart="574.50" route="r78"/>
+    <route id="r258" edges="51 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE rbX_ring_EN rbX_226_out -227"/>
+    <vehicle id="384" depart="576.00" route="r258"/>
+    <route id="r259" edges="-417 -372 -233 231 -361 -227 -172 184 229 369 407"/>
+    <vehicle id="385" depart="577.50" route="r259"/>
+    <route id="r260" edges="51 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="386" depart="579.00" route="r260"/>
+    <route id="r261" edges="-38 -3 9 25 186 231 370 393 430"/>
+    <vehicle id="387" depart="580.50" route="r261"/>
+    <route id="r262" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out"/>
+    <vehicle id="388" depart="582.00" route="r262"/>
+    <route id="r263" edges="-417 -372 -233 231 -361 -227 -172 184 229 369 405"/>
+    <vehicle id="389" depart="583.50" route="r263"/>
+    <route id="r264" edges="-403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 360 387 424 -415"/>
+    <vehicle id="390" depart="585.00" route="r264"/>
+    <route id="r265" edges="231 -361 -227 -172 184 229 369 407"/>
+    <vehicle id="391" depart="586.50" route="r265"/>
+    <vehicle id="392" depart="588.00" route="r20"/>
+    <route id="r266" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 -51 -19"/>
+    <vehicle id="393" depart="589.50" route="r266"/>
+    <route id="r267" edges="-51 -19 3 38 59 172 227 361"/>
+    <vehicle id="394" depart="591.00" route="r267"/>
+    <vehicle id="395" depart="592.50" route="r93"/>
+    <vehicle id="396" depart="594.00" route="r51"/>
+    <route id="r268" edges="-405 -369 -229 -184 -59 -38 -3 9 25"/>
+    <vehicle id="397" depart="595.50" route="r268"/>
+    <route id="r269" edges="339 -225 193 352 383"/>
+    <vehicle id="398" depart="597.00" route="r269"/>
+    <vehicle id="399" depart="598.50" route="r105"/>
+    <route id="r270" edges="-166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="400" depart="600.00" route="r270"/>
+    <vehicle id="401" depart="601.50" route="r0"/>
+    <route id="r271" edges="-189 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="402" depart="603.00" route="r271"/>
+    <vehicle id="403" depart="604.50" route="r16"/>
+    <vehicle id="404" depart="606.00" route="r47"/>
+    <vehicle id="405" depart="607.50" route="r235"/>
+    <vehicle id="406" depart="609.00" route="r47"/>
+    <vehicle id="407" depart="610.50" route="r93"/>
+    <route id="r272" edges="-49 -19 9 25 186 231 370 393 440"/>
+    <vehicle id="409" depart="613.50" route="r272"/>
+    <vehicle id="410" depart="615.00" route="r174"/>
+    <route id="r273" edges="59 184 229 369 415 -424 -387 -360 -339"/>
+    <vehicle id="411" depart="616.50" route="r273"/>
+    <vehicle id="412" depart="618.00" route="r78"/>
+    <vehicle id="413" depart="619.50" route="r126"/>
+    <route id="r274" edges="381 -418 -338 339 360 -384 -354"/>
+    <vehicle id="414" depart="621.00" route="r274"/>
+    <route id="r275" edges="-361 -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="415" depart="622.50" route="r275"/>
+    <vehicle id="416" depart="624.00" route="r117"/>
+    <route id="r276" edges="-407 -369 -229 -184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_ring_SE"/>
+    <vehicle id="417" depart="625.50" route="r276"/>
+    <vehicle id="418" depart="627.00" route="r174"/>
+    <route id="r277" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 -38"/>
+    <vehicle id="419" depart="628.50" route="r277"/>
+    <route id="r278" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 -38 -3 9 25"/>
+    <vehicle id="420" depart="630.00" route="r278"/>
+    <route id="r279" edges="-426 -391 -360 -225 191 339"/>
+    <vehicle id="421" depart="631.50" route="r279"/>
+    <vehicle id="422" depart="633.00" route="r175"/>
+    <route id="r280" edges="-417 -372 -233 -186 -25 -9 19 51 -53"/>
+    <vehicle id="423" depart="634.50" route="r280"/>
+    <route id="r281" edges="-38 -3 9 25 186 231 370 393 436"/>
+    <vehicle id="425" depart="637.50" route="r281"/>
+    <vehicle id="426" depart="639.00" route="r215"/>
+    <vehicle id="427" depart="640.50" route="r117"/>
+    <route id="r282" edges="-417 -372 -233 231 370 393 430"/>
+    <vehicle id="428" depart="642.00" route="r282"/>
+    <route id="r283" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 -38 -3 9"/>
+    <vehicle id="429" depart="643.50" route="r283"/>
+    <route id="r284" edges="-436 -393 -370 -231 -186 -25 -9 19 49 234"/>
+    <vehicle id="430" depart="645.00" route="r284"/>
+    <vehicle id="431" depart="646.50" route="r131"/>
+    <route id="r285" edges="-383 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="432" depart="648.00" route="r285"/>
+    <vehicle id="433" depart="649.50" route="r150"/>
+    <route id="r286" edges="229 369 415 -424 -387 -360 -225 -166 -53 59 172 227 rbX_226_in"/>
+    <vehicle id="434" depart="651.00" route="r286"/>
+    <route id="r287" edges="186 231 -361 -227 -172 -59 53 166 225 360 391 426"/>
+    <vehicle id="435" depart="652.50" route="r287"/>
+    <vehicle id="436" depart="654.00" route="r0"/>
+    <route id="r288" edges="415 -424 -387 -360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="437" depart="655.50" route="r288"/>
+    <route id="r289" edges="-407 415 -424 -387 -360 -225 189"/>
+    <vehicle id="438" depart="657.00" route="r289"/>
+    <vehicle id="439" depart="658.50" route="r85"/>
+    <vehicle id="440" depart="660.00" route="r149"/>
+    <route id="r290" edges="339 -225 -166 -51 -19 9 25 186 233 372 417"/>
+    <vehicle id="441" depart="661.50" route="r290"/>
+    <route id="r291" edges="-417 -372 -233 -186 -25 -9 19 51 166 189 -234 -49"/>
+    <vehicle id="442" depart="663.00" route="r291"/>
+    <route id="r292" edges="-436 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 191 339 -225"/>
+    <vehicle id="443" depart="664.50" route="r292"/>
+    <vehicle id="444" depart="666.00" route="r278"/>
+    <vehicle id="445" depart="667.50" route="r282"/>
+    <vehicle id="446" depart="669.00" route="r47"/>
+    <route id="r293" edges="-369 -229 -184 172 227 361 -231 -186 -25"/>
+    <vehicle id="447" depart="670.50" route="r293"/>
+    <vehicle id="448" depart="672.00" route="r34"/>
+    <vehicle id="449" depart="673.50" route="r85"/>
+    <vehicle id="450" depart="675.00" route="r126"/>
+    <vehicle id="451" depart="676.50" route="r112"/>
+    <route id="r294" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 354 423 -391"/>
+    <vehicle id="452" depart="678.00" route="r294"/>
+    <vehicle id="453" depart="679.50" route="r112"/>
+    <vehicle id="454" depart="681.00" route="r126"/>
+    <vehicle id="456" depart="684.00" route="r104"/>
+    <route id="r295" edges="-184 -59 53 166 193 352 383"/>
+    <vehicle id="457" depart="685.50" route="r295"/>
+    <route id="r296" edges="-405 415 -424"/>
+    <vehicle id="458" depart="687.00" route="r296"/>
+    <vehicle id="459" depart="688.50" route="r16"/>
+    <route id="r297" edges="-184 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="460" depart="690.00" route="r297"/>
+    <route id="r298" edges="-384 423 -391 387 424 -415 405"/>
+    <vehicle id="461" depart="691.50" route="r298"/>
+    <route id="r299" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 415"/>
+    <vehicle id="462" depart="693.00" route="r299"/>
+    <route id="r300" edges="193 340 -234 -49 -19 9 25 186 231 370 393 440"/>
+    <vehicle id="463" depart="694.50" route="r300"/>
+    <route id="r301" edges="-354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="464" depart="696.00" route="r301"/>
+    <route id="r302" edges="391 -423 -354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="465" depart="697.50" route="r302"/>
+    <vehicle id="466" depart="699.00" route="r117"/>
+    <vehicle id="467" depart="700.50" route="r28"/>
+    <route id="r303" edges="-383 -352 340 -234 -49 -19"/>
+    <vehicle id="468" depart="702.00" route="r303"/>
+    <vehicle id="469" depart="703.50" route="r77"/>
+    <route id="r304" edges="391 -423 -354 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out -370"/>
+    <vehicle id="470" depart="705.00" route="r304"/>
+    <route id="r305" edges="229 369 415 -424 -387 -360 -225 -166 -53 59 172 227 361"/>
+    <vehicle id="471" depart="706.50" route="r305"/>
+    <vehicle id="472" depart="708.00" route="r117"/>
+    <vehicle id="473" depart="709.50" route="r121"/>
+    <vehicle id="474" depart="711.00" route="r121"/>
+    <vehicle id="475" depart="712.50" route="r93"/>
+    <vehicle id="476" depart="714.00" route="r93"/>
+    <route id="r306" edges="38 53 166 225 360 391"/>
+    <vehicle id="477" depart="715.50" route="r306"/>
+    <route id="r307" edges="184 229 369 415 -424 -387 -360 354"/>
+    <vehicle id="478" depart="717.00" route="r307"/>
+    <route id="r308" edges="-383 -352 -193 -166 -53 59 172 227"/>
+    <vehicle id="479" depart="718.50" route="r308"/>
+    <route id="r309" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 -38 -3 9 25 186"/>
+    <vehicle id="480" depart="720.00" route="r309"/>
+    <vehicle id="481" depart="721.50" route="r235"/>
+    <vehicle id="482" depart="723.00" route="r95"/>
+    <vehicle id="483" depart="724.50" route="r152"/>
+    <vehicle id="484" depart="726.00" route="r46"/>
+    <route id="r310" edges="-352 -193 225 360 387 424 -415 407"/>
+    <vehicle id="485" depart="727.50" route="r310"/>
+    <vehicle id="486" depart="729.00" route="r143"/>
+    <route id="r311" edges="-3 9 25 186 233 372 417"/>
+    <vehicle id="487" depart="730.50" route="r311"/>
+    <route id="r312" edges="-3 9 25 186 231 370 393 440"/>
+    <vehicle id="488" depart="732.00" route="r312"/>
+    <route id="r313" edges="-360 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="489" depart="733.50" route="r313"/>
+    <route id="r314" edges="234 -189 225 360 391 426"/>
+    <vehicle id="490" depart="735.00" route="r314"/>
+    <vehicle id="491" depart="736.50" route="r174"/>
+    <route id="r315" edges="370 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184 229 369 407"/>
+    <vehicle id="492" depart="738.00" route="r315"/>
+    <route id="r316" edges="166 225 360 391 426"/>
+    <vehicle id="493" depart="739.50" route="r316"/>
+    <route id="r317" edges="-383 -352 -193 225 -339"/>
+    <vehicle id="494" depart="741.00" route="r317"/>
+    <route id="r318" edges="-381 -352 -193 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="495" depart="742.50" route="r318"/>
+    <vehicle id="496" depart="744.00" route="r282"/>
+    <route id="r319" edges="-430 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 184"/>
+    <vehicle id="497" depart="745.50" route="r319"/>
+    <vehicle id="498" depart="747.00" route="r53"/>
+    <vehicle id="499" depart="748.50" route="r22"/>
+    <route id="r320" edges="-415 -369 -229 -184 -59 53 166 225 360 391 426"/>
+    <vehicle id="500" depart="750.00" route="r320"/>
+    <vehicle id="501" depart="751.50" route="r206"/>
+    <vehicle id="502" depart="753.00" route="r85"/>
+    <vehicle id="503" depart="754.50" route="r198"/>
+    <route id="r321" edges="38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 440"/>
+    <vehicle id="504" depart="756.00" route="r321"/>
+    <route id="r322" edges="-407 415 -424 -387 -384 423"/>
+    <vehicle id="505" depart="757.50" route="r322"/>
+    <route id="r323" edges="-383 -352 -193 225 360 391"/>
+    <vehicle id="506" depart="759.00" route="r323"/>
+    <route id="r324" edges="7 -52 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="507" depart="760.50" route="r324"/>
+    <vehicle id="508" depart="762.00" route="r104"/>
+    <vehicle id="509" depart="763.50" route="r150"/>
+    <route id="r325" edges="172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 430"/>
+    <vehicle id="510" depart="765.00" route="r325"/>
+    <route id="r326" edges="191 339 -225 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 393 436"/>
+    <vehicle id="511" depart="766.50" route="r326"/>
+    <vehicle id="512" depart="768.00" route="r6"/>
+    <vehicle id="513" depart="769.50" route="r28"/>
+    <vehicle id="514" depart="771.00" route="r263"/>
+    <route id="r327" edges="-387 -360 -225 -166 -51 49 234"/>
+    <vehicle id="515" depart="772.50" route="r327"/>
+    <route id="r328" edges="49 234 -189 225 360 387 424 -415 407"/>
+    <vehicle id="516" depart="774.00" route="r328"/>
+    <vehicle id="517" depart="775.50" route="r296"/>
+    <vehicle id="518" depart="777.00" route="r313"/>
+    <vehicle id="519" depart="778.50" route="r168"/>
+    <route id="r329" edges="193 340 -234 -49 -19 3 38 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out 403 446"/>
+    <vehicle id="520" depart="780.00" route="r329"/>
+    <route id="r330" edges="-229 -184 -59 53 166 193 352 383"/>
+    <vehicle id="521" depart="781.50" route="r330"/>
+    <route id="r331" edges="-446 -403 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 191 338 418 -420"/>
+    <vehicle id="522" depart="783.00" route="r331"/>
+    <route id="r332" edges="-417 -372 -233 -186 -25 -9"/>
+    <vehicle id="523" depart="784.50" route="r332"/>
+    <vehicle id="524" depart="786.00" route="r326"/>
+    <vehicle id="525" depart="787.50" route="r78"/>
+    <route id="r333" edges="-440 -393 rbX_366_in rbX_ring_SE rbX_ring_EN rbX_226_out -227 -172 -59 53 166 225 354"/>
+    <vehicle id="526" depart="789.00" route="r333"/>
+    <vehicle id="527" depart="790.50" route="r112"/>
+    <vehicle id="528" depart="792.00" route="r235"/>
+    <vehicle id="529" depart="793.50" route="r189"/>
+    <route id="r334" edges="193 340 -189 225 360 387 424 -415 405"/>
+    <vehicle id="530" depart="795.00" route="r334"/>
+    <route id="r335" edges="49 234 -189 -166 -53 59 172 227 rbX_226_in rbX_ring_NW rbX_ring_WS rbX_366_out"/>
+    <vehicle id="531" depart="796.50" route="r335"/>
+    <vehicle id="532" depart="798.00" route="r112"/>
+    <vehicle id="533" depart="799.50" route="r249"/>
+</routes>

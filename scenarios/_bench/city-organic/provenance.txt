@@ -1,0 +1,73 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T04:31:38Z
+purpose=demo/benchmark scenario for Sim.Viz replay -- NOT a parity test, not wired into `dotnet test`
+seed=42
+begin=0 end=800 step-length=1
+
+# ---- 1. organic base network (netgenerate --rand) ------------------------------------------
+step1_netgenerate_base=netgenerate --rand --rand.iterations 45 --rand.min-distance 80 --rand.max-distance 250 --default.lanenumber 1 --rand.neighbor-dist2 5 --tls.guess --tls.guess.threshold 50 --no-turnarounds --seed 42 -o net_base.net.xml
+
+# ---- 2. hand-built single-lane priority roundabout, spliced into the organic net -----------
+# netgenerate --rand does not organically produce the short closed cycles that
+# `--roundabouts.guess` (netgenerate/netconvert) can detect -- tried on 10 seeds x several
+# --rand.connectivity settings, zero roundabouts guessed (see NOTES.md). So the roundabout is
+# hand-built instead, cloning the EXACT proven topology/priority scheme already parity-anchored
+# at scenarios/32-roundabout and scenarios/33-roundabout-solo (radius-20 single-lane ring,
+# ring-edge priority=10 > spoke-edge priority=1, so circulating traffic keeps right-of-way over
+# entering traffic via the engine's C4-iii junction arrival-time right-of-way logic).
+step2a_export_plain=netconvert -s net_base.net.xml -p organic --plain-output.lanes
+step2b_splice_script=python3 gen-splice-roundabout.py <workdir>
+# gen-splice-roundabout.py (committed alongside this file): parses organic.nod.xml/organic.edg.xml,
+# picks the longest interior bidirectional edge pair X<->Y in [90m,220m], removes those two edges,
+# and replaces them with a 4-node ring (X-side node RS: entry+exit for X; Y-side node RN:
+# entry+exit for Y; RE/RW: pure ring vertices for roundness) plus explicit
+# connections_final.con.xml cloning scenarios/32-roundabout's connection pattern. Chosen segment
+# this run: nodes 366<->226 (edges -367/367), length=217.6m.
+step2c_netconvert_rebuild=netconvert -n nodes_final.nod.xml -e edges_final.edg.xml -x connections_final.con.xml --no-turnarounds -o net.net.xml
+
+# ---- 3. demand: high-fringe-factor through-traffic, boundary to boundary -------------------
+step3_randomtrips=python3 $SUMO_HOME/tools/randomTrips.py -n net.net.xml -e 800 -p 1.5 --fringe-factor 20 --min-distance 400 --seed 42 -o trips.xml
+step4_duarouter=duarouter -n net.net.xml -r trips.xml -o rou.rou.xml --seed 42 --named-routes --ignore-errors
+
+tuned_insertion_period_s=1.5
+tuning_note=Little's-law-style manual sweep of period in {0.7,1.0,1.3,1.5,1.7,2.0} against a pilot
+  SUMO run (--summary-output) at end=900s; period<1.3 showed the gen-benchmark.sh
+  "collapse" signature (halting/running>0.5 AND meanSpeedRelative<0.2 by the run's end); period=1.5
+  settled to a stable plateau (running ~198..204 from t=780..840 in the 900s pilot) without that
+  signature -- selected as final. See NOTES.md for the full sweep table.
+
+# ---- SUMO reference measurement (this exact net+rou+config, end=800) -----------------------
+measured_peak_running=210
+measured_tail_mean_running=194.2
+measured_arrived=316
+measured_loaded=515
+measured_mean_trip_duration_s=229.78
+
+# ---- engine measurement (dotnet run --project src/Sim.Run) ---------------------------------
+engine_command=dotnet run --project src/Sim.Run -c Release -- scenarios/_bench/city-organic --fcd-out scenarios/_bench/city-organic/engine.fcd.xml
+engine_result=completed all 800 steps, 0 exceptions
+engine_peak_concurrent=182
+engine_tail_mean_concurrent=165.1
+
+# ---- viz -------------------------------------------------------------------------------------
+viz_command=dotnet run --project src/Sim.Viz -c Release -- scenarios/_bench/city-organic --fcd scenarios/_bench/city-organic/engine.fcd.xml
+viz_output=lanes=382 junctions=49 vehicles=514 steps=800 t=[0,799]
+
+# ---- network stats ---------------------------------------------------------------------------
+net_junctions_real=49 (31 priority [27 organic + 4 roundabout ring nodes], 9 dead_end, 9 traffic_light)
+net_edges_real=118 (112 organic + 8 roundabout [4 ring + 4 spoke] - 2 removed [spliced-over segment])
+net_bbox_m=1525.07 x 1303.76
+
+engine_capability_note=Single lane per edge only (--default.lanenumber 1), matching the same
+  known engine gap documented in scenarios/_bench/city-30/NOTES.md: multi-hop route-to-lane
+  resolution (NetworkModel.ResolveLaneSequence / Engine.TryStrategicLaneChange, C2-ii) is a
+  single-look-ahead scoped port, so a multi-lane organic net with ambiguous lane->connection
+  mappings across a multi-edge route reliably throws `InvalidDataException: No <connection>
+  found`. Not re-tested here since city-30's finding already establishes this; avoided at the
+  generation layer (-L 1), not by touching Sim.Core.
+
+# input file hashes (sha256):
+input=net.net.xml sha256=d9b5e4c3b9090bb3ba8efd15707579d2cd86af64451d7675fa5cf7459ee56bf1
+input=rou.rou.xml sha256=b19c030c460566efe1b8ee60e08b81405e4d597956c2989f2eb975135801c322
+input=config.sumocfg sha256=2b95994e8e78f4b93d831abc938f511c9040c90f4944fd5baef74e52fcfe4255
