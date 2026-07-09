@@ -1158,8 +1158,19 @@ public sealed class Engine : IEngine
     // vehicle's WillPass is ever read and trajectories are byte-identical (every committed scenario).
     private void ComputeWillPass(LaneNeighborQuery neighbors, double time)
     {
+        // C4-viii perf: WillPass is read only by JunctionYieldConstraint's crossing arm, which can only
+        // fire on a network that HAS junction links (internal lanes). On a junction-free net (a plain
+        // highway -- e.g. the Sim.Bench workload) no vehicle's WillPass is ever read, so skip the whole
+        // pre-pass. One dictionary-count check per step; the per-vehicle proximity gate
+        // (WillPassRelevant) handles the far-from-junction vehicles on nets that DO have junctions.
+        if (_network!.LinkByInternalLane.Count == 0)
+        {
+            return;
+        }
+
         // NUMERICAL_EPS_SPEED (MSVehicle.cpp:124): 0.1 * NUMERICAL_EPS * TS, TS == the step length.
         var willPassSpeedEps = 0.1 * KraussModel.NumericalEps * _config!.StepLength;
+        var dt = _config.StepLength;
 
         if (UseParallelPlan)
         {
@@ -1171,15 +1182,65 @@ public sealed class Engine : IEngine
                     return;
                 }
 
-                v.WillPass = ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+                v.WillPass = !WillPassRelevant(v, dt)
+                    || ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
             });
             return;
         }
 
         foreach (var v in ActiveVehicles())
         {
-            v.WillPass = ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+            v.WillPass = !WillPassRelevant(v, dt)
+                || ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
         }
+    }
+
+    // C4-viii perf: the pre-pass only needs an ACCURATE WillPass for a vehicle whose WillPass could
+    // actually be READ -- i.e. one that is a foe WITHIN reservation distance of a crossing conflict lane
+    // (JunctionYieldConstraint's `foeNotApproaching` gate already makes a farther foe non-blocking,
+    // regardless of WillPass). A foe's distance to any conflict lane is >= its distance to its NEXT
+    // upcoming internal lane, so a vehicle beyond its OWN reservation distance from its next internal
+    // lane can NEVER have WillPass read. For those, ComputeWillPass sets WillPass = true (the safe
+    // "will pass" value if it ever were read) and SKIPS the expensive full ComputeMoveIntent -- which is
+    // almost every vehicle on a long approach / highway. This is byte-identical for every vehicle whose
+    // WillPass matters (the unchanged Sim.Bench hash + green suite are the proof) and just recovers the
+    // pre-pass cost for the rest. Uses the SAME reservation formula (speed -> SPEED2DIST + brakeGap) the
+    // crossing arm's `foeReservationDist` uses.
+    private bool WillPassRelevant(VehicleRuntime v, double dt)
+    {
+        var lane = _network!.LanesByHandle[v.LaneHandle];
+
+        // On an internal lane (mid-junction) the on-junction foe path (AdaptToJunctionLeader) governs,
+        // not the approaching-foe gate; compute accurately (rare) to be safe.
+        if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+        {
+            return true;
+        }
+
+        var maxV = KraussModel.MaxNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        var reservationDist = KraussModel.Speed2Dist(maxV, dt)
+            + KraussModel.BrakeGap(maxV, v.VType.Decel, v.VType.Tau, dt);
+
+        // Walk the route pool forward, accumulating distance to the entry of the next INTERNAL
+        // (':'-edge) lane; bail as soon as the accumulated distance passes the reservation range.
+        var seen = lane.Length - v.Kinematics.Pos;
+        for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
+        {
+            if (seen > reservationDist)
+            {
+                return false;
+            }
+
+            var poolLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            if (poolLane.EdgeId.Length > 0 && poolLane.EdgeId[0] == ':')
+            {
+                return true; // next internal lane is within reservation range
+            }
+
+            seen += poolLane.Length;
+        }
+
+        return false;
     }
 
     // C11-i/C11-ii dispatch (TASKS.md): every constraint below computes ego's OWN car-following

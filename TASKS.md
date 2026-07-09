@@ -845,14 +845,19 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     vehicles stay permanently stuck, WITH it the grid flows (0 stuck, drains by t=605 == SUMO). Gauged
     by stuck-count/arrival (a gridlocked state is not a per-step FCD golden; exact @1e-3 is unreachable
     for a saturated -L2 grid where keep-right/lane-change/junction ordering diverge -- the established
-    gridlock-anchor convention). Parity-reviewer ACCEPT. **PERF (honest):** the pre-pass runs a second
-    ComputeMoveIntent per active vehicle per step (~doubles plan-phase work) -- Sim.Bench (highway-dense,
-    car-following-dominated) throughput drops ~28% single-thread (2056 -> 1472 steps/s) / ~37% parallel;
-    the determinism HASH is unchanged so no trajectory moved. Acceptable for the correctness-at-scale
-    goal, but FOLLOW-UP: gate the pre-pass to only compute WillPass for vehicles actually approaching a
-    junction crossing within reservation distance (a far highway vehicle's WillPass is never read --
-    the crossing arm's foeNotApproaching term already makes it +inf), which recovers ~all of the
-    highway cost while staying correct for the city case where willPass matters.
+    gridlock-anchor convention). Parity-reviewer ACCEPT.
+    **PERF -- optimized (proximity gate landed).** The pre-pass runs a second ComputeMoveIntent per
+    active vehicle, but WillPass is READ only by the crossing arm and only for a foe WITHIN reservation
+    distance of a conflict lane (`foeNotApproaching` already makes a farther foe non-blocking). So
+    `Engine.WillPassRelevant` skips the full compute for any vehicle beyond its own reservation distance
+    from its NEXT internal lane (WillPass=true, the safe never-read value), and ComputeWillPass skips the
+    WHOLE phase on a junction-free net (LinkByInternalLane empty -- the Sim.Bench highway workload).
+    Correct because a foe's distance to any conflict lane >= its distance to its next internal lane, so a
+    skipped vehicle's WillPass can never be read (byte-identical: Sim.Bench hash unchanged, suite green,
+    dense grid still ~2 stuck). Sim.Bench throughput is back to baseline within noise (vs the true
+    no-pre-pass baseline ~1667 single / ~1590 parallel steps/s; the pre-pass overhead was ~12%/32% before
+    the gate, ~4%/negligible after). The city case (where willPass matters) still pays for the
+    near-junction vehicles it needs.
   - **C4-vii. TODO (parity-track, exact @1e-3). Multi-lane junction passage -- vehicles deadlock at
     the stop line. THE TRUE GATE for multi-lane at scale** (C2-vi unblocked -L2 INSERTION; this
     unblocks -L2 FLOW). Briefing transcribed from `NEED-multilane-junction-passage.md` (on main,
