@@ -1000,6 +1000,47 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     behavior-identical. (5) parity-reviewer ACCEPT; faithful to `MSVehicle.cpp` (not a curve-fit).
     Fits the C-track after the merge/junction rungs; portable in-session (deterministic net-graph
     algorithm, SUMO golden as oracle -- no runtime DEBUG trace needed, unlike the timing rungs).
+  - **C2-vi. TODO (parity-track, exact @1e-3). Complete route->lane resolution for a general
+    `netgenerate -L 2` city -- the LAST multi-lane routing blocker.** C2-iii (multi-hop best-lanes)
+    and C2-v (intra-edge lane change) closed most of the multi-lane route->lane gap and their anchors
+    (scenarios 36, 37) pass, but a GENERAL `-L 2` grid still throws at insertion. Verified on
+    `main@7718953`. Briefing transcribed from `NEED-C2iii-followup-intraedge-lanechange.md` (refreshed
+    post-C2-v by the viz/benchmark track, now merged to main). This is the last blocker for the
+    scaled-city benchmark's MULTI-LANE rungs (single-lane `-L 1` already runs); also a real realism
+    gap (a general multi-lane route with a forced turn is currently unroutable though SUMO handles it).
+    **The throw (reproduced on current main):** `netgenerate --grid --grid.number=3 --grid.length=200
+    -L 2 --tls.guess --seed 42` + `randomTrips.py --fringe-factor 5 --seed 42` -> route
+    `C1B1 B1B2 B2C2` -> `InvalidDataException: No <connection> found from edge 'C1B1' lane 1 to edge
+    'B1B2'` at `NetworkModel.ResolveSequenceCore` (`NetworkModel.cs:~350`, via
+    `ResolveLaneSequenceHandlesWithArrival` -> `Engine.TryInsertOnLane`). Topology: the only onward
+    connection from `C1B1` to the route's next edge `B1B2` is `fromLane=0 toLane=0 dir=r` (lane 0
+    only); `C1B1` lane 1 connects only to `B1A1`/`B1B0`/`B1C1` (other edges), NEVER `B1B2`. The
+    vehicle is on lane 1 and is NOT redirected to lane 0, so `ResolveSequenceCore` finds zero
+    candidate connections and throws.
+    **Why C2-iii/C2-v don't cover it:** `ResolveSequenceCore` computes each edge's EXIT lane as
+    `arrivalLane + BestLaneOffset` but only when `offset != 0 && targetExists`. Here the arrival lane
+    (lane 1) has NO connection to the route's IMMEDIATE next edge at all, yet the redirect to the
+    connecting sibling (lane 0) is not happening -- likely `ComputeBestLanes` isn't giving lane 1 a
+    nonzero offset toward lane 0 for this geometry (SUSPECT: the backward pass treats "continues to
+    SOME next edge" as continuing -- `allowsContinuation` / `toLanes[i].Count > 0` keyed on ANY
+    connection -- rather than "continues to the ROUTE's next edge", so lane 1 looks like it continues
+    when it only continues off-route). First step: instrument `ComputeBestLanes`/`ResolveSequenceCore`
+    for route `C1B1 B1B2 B2C2` to confirm which (the offset value lane 1 gets, and whether
+    `BackwardPassEdge`'s `toLanes`/`allows` is filtering to the route's next edge -- it already takes
+    `nextEdgeId`, so check the forward-init `allows[i]`/`reachableNext` path).
+    **Invariant to enforce:** on EVERY edge, the resolved exit lane must have a `<connection>` to the
+    route's next edge; if the arrival lane doesn't, redirect to the sibling lane that does (a
+    strategic intra-edge change) -- exactly SUMO's per-edge `bestLaneOffset` (`MSVehicle::
+    updateBestLanes`/`LaneQ`, `MSVehicle.cpp:5744-6063`), the SAME port target as C2-iii/C2-v.
+    **Done-condition (standard isolate -> golden -> reverse-engineer -> port -> gate):** (1) the
+    general `-L 2` repro (and `scripts/gen-benchmark.sh` regenerated at `-L 2`) inserts + runs to
+    completion -- no `No <connection> found` for any route SUMO routes. (2) NEW anchor: a minimal
+    2-lane net where a vehicle's arrival/depart lane on an edge does NOT connect to its route's next
+    edge but a sibling does (DISTINCT from 36 = multi-hop best-lane and 37 = intra-edge change on a
+    lane that DID connect immediately); sigma=0, SUMO golden `--precision 6`, exact @1e-3 on
+    lane/pos/speed. (3) INERT: scenarios 36/37/18 + all committed stay green (currently 151);
+    `Sim.Bench` highway-dense determinism hash unchanged. (4) parity-reviewer ACCEPT, faithful to
+    `MSVehicle.cpp` (no curve-fit). Build the anchor + golden FIRST, then instrument + fix.
   - **C2-iv. DONE (ingest-robustness -- NOT a parity axis). `DemandParser` stock-output loading.**
     Both forms the benchmark used to work around at the generation layer now load directly
     (`RungC2ivIngestRobustnessTests`, 4 offline unit tests). (a) **Embedded routes:** a
