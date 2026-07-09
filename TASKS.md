@@ -816,6 +816,43 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     before a general `-L 2` city runs** -- C2-iii redirects the pool only at `routeEdges[0]`, so a
     vehicle forced onto the wrong lane of a MIDDLE edge still throws (verified on a plain
     `netgenerate -L 2` grid). Parity-reviewer ACCEPT.
+  - **C4-viii. DONE (parity-track). willPass pre-pass for multi-lane SATURATION -- the last gate for
+    multi-lane AT SCALE.** After C4-vii-c (route->lane fix) moderate-density -L2 runs clean, but a
+    SATURATED -L2 city still gridlocked (`NEED-multilane-density-willpass.md`; verified `main@f899f4e`:
+    a 6x6 -L2 tls.guess grid at ~126 concurrent left ~46 vehicles PERMANENTLY stuck at junction stop
+    lines while SUMO ran the identical net at 0 teleports and fully drained). This is the willPass
+    ordering bug originally scoped for C4-vii-c but correctly deferred there (moderate density was a
+    different, smaller bug). **MECHANISM:** the crossing-yield decision read a foe's raw START-OF-STEP
+    speed; a root blocker yields to a foe that is close AND moving (speed > 0) but is BRAKING TO A STOP
+    this step (it is itself yielding), so its planned vNext ~ 0 and SUMO's willPass for it is false --
+    SUMO does not yield to it. Density is the trigger (moderate is clean), the tell for a
+    start-of-step-speed ordering bug, not a static RoW error. **FIX (a new phase in the RoW core):**
+    `Engine.ComputeWillPass` -- a willPass PRE-PASS run on the frozen start-of-step snapshot BEFORE
+    PlanMovements (mirroring SUMO's MSLink::setApproaching populating myApproaching before opened() is
+    consulted) -- computes each vehicle's planned vNext-at-link (via ComputeMoveIntent(prePass:true),
+    side-effect-free: no LastActionTime/LevelOfService/RngState writes) WITHOUT the foe-willPass
+    refinement (one level of approximation, the setApproaching-before-opened() ordering) and caches
+    `VehicleRuntime.WillPass = vNext > NUMERICAL_EPS_SPEED`. JunctionYieldConstraint's crossing arm then
+    blocks ego only on a foe whose WillPass is true (MSLink::blockedByFoe's `!avi.willPass`
+    short-circuit). The load-bearing term is the PLANNED vNext, not start-of-step speed -- a braking foe
+    has speed > 0 this step, so the earlier stopped-foe (`speed<=eps`) proxy misses it. **RESULT:** the
+    dense repro drops ~46 -> ~2 stuck (== SUMO's ~0; the ~2 residual are symmetric mutual-yield corners,
+    the arrival-time-RoW class = scenario-44 bug C, out of willPass scope). INERT: full suite stays
+    **166 + 1 skip** green, moderate -L2 stays clean, `Sim.Bench` hash unchanged (`909605E965BFFE59`) --
+    the pre-pass is a no-op wherever no foe is braking-to-stop at a crossing (every committed scenario).
+    **ANCHOR:** `scenarios/_diag/willpass-saturation` (`WillPassSaturationDiagTests`) -- a small 3x3
+    -L2 TLS grid (412 fixed-route trips) tuned to the saturation point; WITHOUT the pre-pass ~50
+    vehicles stay permanently stuck, WITH it the grid flows (0 stuck, drains by t=605 == SUMO). Gauged
+    by stuck-count/arrival (a gridlocked state is not a per-step FCD golden; exact @1e-3 is unreachable
+    for a saturated -L2 grid where keep-right/lane-change/junction ordering diverge -- the established
+    gridlock-anchor convention). Parity-reviewer ACCEPT. **PERF (honest):** the pre-pass runs a second
+    ComputeMoveIntent per active vehicle per step (~doubles plan-phase work) -- Sim.Bench (highway-dense,
+    car-following-dominated) throughput drops ~28% single-thread (2056 -> 1472 steps/s) / ~37% parallel;
+    the determinism HASH is unchanged so no trajectory moved. Acceptable for the correctness-at-scale
+    goal, but FOLLOW-UP: gate the pre-pass to only compute WillPass for vehicles actually approaching a
+    junction crossing within reservation distance (a far highway vehicle's WillPass is never read --
+    the crossing arm's foeNotApproaching term already makes it +inf), which recovers ~all of the
+    highway cost while staying correct for the city case where willPass matters.
   - **C4-vii. TODO (parity-track, exact @1e-3). Multi-lane junction passage -- vehicles deadlock at
     the stop line. THE TRUE GATE for multi-lane at scale** (C2-vi unblocked -L2 INSERTION; this
     unblocks -L2 FLOW). Briefing transcribed from `NEED-multilane-junction-passage.md` (on main,

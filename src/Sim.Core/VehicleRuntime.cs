@@ -233,6 +233,23 @@ internal sealed class VehicleRuntime
     // field access happens at all and behavior is byte-identical.
     public double LastActionTime;
 
+    // C4-viii: SUMO's MSLink::ApproachingVehicleInformation::willPass -- "does this vehicle intend to
+    // ENTER its upcoming junction link THIS step". SUMO computes it as
+    // `setRequest = (vNext > NUMERICAL_EPS_SPEED && !abortRequestAfterMinor) || leavingCurrentIntersection`
+    // (MSVehicle.cpp:2732) and registers it via MSLink::setApproaching BEFORE any MSLink::opened()
+    // crossing-yield decision reads it (MSLink.cpp:935 short-circuits `if (!avi.willPass) return
+    // false`). The load-bearing fact is the PLANNED vNext, not the start-of-step speed: a foe that is
+    // moving at start-of-step but BRAKING TO A STOP this step (because it is itself yielding) has
+    // vNext ~ 0 and willPass=false, so it must NOT block ego -- which is what unwinds the dense-grid
+    // saturation gridlock. The engine has one PlanMovements pass, so this is cached once per step by a
+    // PRE-PASS (Engine.ComputeWillPass) from the frozen start-of-step snapshot, BEFORE PlanMovements,
+    // using each vehicle's planned vNext computed WITHOUT the foe-willPass refinement (one level of
+    // approximation, mirroring setApproaching-before-opened()), then read in JunctionYieldConstraint's
+    // approaching-foe arm. One bool per vehicle, zero-alloc (the KeepRightProbability/LastActionTime
+    // plan-phase-cache pattern). Default false. Inert wherever no foe is braking-to-stop at a crossing
+    // (every committed scenario) -- there, no vehicle's WillPass is ever read.
+    public bool WillPass;
+
     // B3: live reroute-around-blockage bookkeeping (DESIGN.md "Two futures" -- not a SUMO
     // field). BlockedByObstacleSeconds accumulates dt while a FUTURE edge of this vehicle's
     // remaining route is sitting under an active external obstacle; reset to 0 the moment no

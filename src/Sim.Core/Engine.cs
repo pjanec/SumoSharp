@@ -478,6 +478,11 @@ public sealed class Engine : IEngine
 
             var neighbors = _neighborQuery!;
             neighbors.Refill(ActiveVehicles());
+            // C4-viii: cache each vehicle's willPass (does it intend to ENTER its upcoming junction link
+            // this step) from the frozen snapshot BEFORE PlanMovements, so JunctionYieldConstraint's
+            // crossing arm can skip a foe that is itself braking-to-stop this step -- SUMO's
+            // setApproaching-before-opened() ordering. See ComputeWillPass's header.
+            ComputeWillPass(neighbors, time);
             PlanMovements(neighbors, time);
 
             // [SystemPhase.PostSimulation] Apply every vehicle's own MoveIntent, integrate
@@ -918,7 +923,14 @@ public sealed class Engine : IEngine
     // the front of v.Stops, never mutated here), the frozen `neighbors` snapshot, and the
     // immutable network/vType data -- no shared-state writes happen here; the resulting
     // StopTransition is handed back for ExecuteMoves to apply.
-    private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors, double time)
+    // C4-viii: `prePass` selects the willPass PRE-PASS mode (Engine.ComputeWillPass). It computes each
+    // vehicle's planned vNext WITHOUT the approaching-foe willPass refinement (JunctionYieldConstraint's
+    // crossing arm keeps its blanket yield, i.e. the pre-C4-viii behaviour) and must leave NO side
+    // effect on `v`: the LastActionTime record, the IDMM LevelOfService update, and the dawdle RngState
+    // advance are all suppressed/copied so the pre-pass is a pure read whose only observable output is
+    // its caller's `v.WillPass = ...` write. With prePass=false (the normal PlanMovements call) this is
+    // byte-identical to the pre-C4-viii method except the crossing arm now additionally reads foe.WillPass.
+    private MoveIntent ComputeMoveIntent(VehicleRuntime v, LaneNeighborQuery neighbors, double time, bool prePass = false)
     {
         // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
         var lane = _network!.LanesByHandle[v.LaneHandle];
@@ -957,7 +969,13 @@ public sealed class Engine : IEngine
 
             // Action step: re-plan below, and record it (this vehicle's own field only -- the same
             // per-ego plan-phase write pattern as RngState/LevelOfService, parallel-safe).
-            v.LastActionTime = time;
+            // C4-viii: the willPass pre-pass must not advance the action-step clock -- it only computes
+            // the vNext this step WOULD plan; the real PlanMovements call records LastActionTime. (With
+            // actionStepLength == dt this branch never runs anyway.)
+            if (!prePass)
+            {
+                v.LastActionTime = time;
+            }
         }
 
         var laneVehicleMaxSpeed = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
@@ -1032,7 +1050,7 @@ public sealed class Engine : IEngine
         // [StartTime, EndTime) active window at the SAME instant every other obstacle read this
         // step uses (ObstacleConstraint/TargetLaneBlockedByObstacle's own convention) -- nothing
         // about the pre-existing 9b-ii/iii SUMO-foe machinery reads `time` at all.
-        vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+        vPos = Math.Min(vPos, JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed, prePass));
 
         // C5 (keepClear / don't-block-the-box): MSVehicle::checkRewindLinkLanes' downstream
         // available-space accounting. A vehicle approaching a junction whose EXIT is jammed (a
@@ -1076,9 +1094,14 @@ public sealed class Engine : IEngine
         // C11-iv: IDMM shares this SAME base finalizeSpeed body too (MSCFModel_IDM.cpp:67-74's
         // `vNext = MSCFModel::finalizeSpeed(veh, vPos)` line is unconditional, myIDMM or not) --
         // IdmModel.FinalizeSpeed's call/body below is byte-identical for IDM/ACC/CACC/IDMM alike.
+        // C4-viii: in the willPass pre-pass the Krauss dawdle draw must NOT advance this vehicle's real
+        // RngState (it would desync the sigma>0 stream the real PlanMovements call then reads); advance
+        // a throwaway copy instead. Byte-identical for sigma==0 (no draw is taken) and non-Krauss models.
         var newSpeed = v.VType.CarFollowModel is "IDM" or "ACC" or "CACC" or "IDMM"
             ? IdmModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs)
-            : KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
+            : prePass
+                ? FinalizeKraussPrePass(v, vPos, vStop, laneVehicleMaxSpeed, dt, actionStepLengthSecs)
+                : KraussModel.FinalizeSpeed(v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref v.RngState);
 
         // C11-iv: MSCFModel_IDM.cpp:69-72's `if (myAdaptationFactor != 1.)` levelOfService update,
         // applied HERE (by the caller) right after `newSpeed` (== the vendored source's own
@@ -1087,7 +1110,9 @@ public sealed class Engine : IEngine
         // OWN field, the exact same pattern C1's RngState / C11-ii's AccControlMode / C11-iii's
         // CaccControlMode already establish as parallel-safe (Engine.UseParallelPlan's own
         // argument) -- never another vehicle's state, never a MoveIntent field.
-        if (v.VType.CarFollowModel == "IDMM")
+        // C4-viii: suppressed in the pre-pass -- it must leave levelOfService untouched so the real
+        // PlanMovements call performs the single authoritative update (inert for non-IDMM vTypes).
+        if (!prePass && v.VType.CarFollowModel == "IDMM")
         {
             v.LevelOfService = IdmmModel.UpdateLevelOfService(v.LevelOfService, newSpeed, laneVehicleMaxSpeed, dt);
         }
@@ -1098,6 +1123,63 @@ public sealed class Engine : IEngine
             LatOffset = 0.0,
             StopUpdate = stopUpdate,
         };
+    }
+
+    // C4-viii: the pre-pass Krauss finalizeSpeed -- identical to KraussModel.FinalizeSpeed but advances
+    // a COPY of this vehicle's dawdle RngState so the pre-pass leaves no side effect (the real
+    // PlanMovements call owns the authoritative advance). For sigma==0 no draw is taken and the copy is
+    // never mutated, so this is byte-identical to the direct call.
+    private static double FinalizeKraussPrePass(
+        VehicleRuntime v, double vPos, double vStop, double laneVehicleMaxSpeed, double dt, double actionStepLengthSecs)
+    {
+        var rngCopy = v.RngState;
+        return KraussModel.FinalizeSpeed(
+            v.Kinematics.Speed, vPos, vStop, laneVehicleMaxSpeed, v.VType, dt, actionStepLengthSecs, ref rngCopy);
+    }
+
+    // C4-viii: the willPass PRE-PASS (SUMO's MSVehicle::setApproaching, run during planMove BEFORE any
+    // MSLink::opened() yield check reads a foe's willPass). For every active vehicle it computes the
+    // plan-phase vNext WITHOUT the approaching-foe willPass refinement (ComputeMoveIntent(prePass:true)
+    // keeps JunctionYieldConstraint's crossing arm at its blanket yield) and caches
+    //   WillPass = (planned vNext > NUMERICAL_EPS_SPEED)
+    // -- SUMO's `setRequest = (v > NUMERICAL_EPS_SPEED && !abortRequestAfterMinor) ||
+    // leavingCurrentIntersection` (MSVehicle.cpp:2732), with the abortRequestAfterMinor visibility case
+    // folding in for free (a foe braking for its own minor link has vNext ~ 0 anyway) and
+    // leavingCurrentIntersection handled by the on-junction (AdaptToJunctionLeader) branch, not the
+    // approaching-foe branch this bool gates. NUMERICAL_EPS_SPEED = 0.1 * NUMERICAL_EPS * TS
+    // (MSVehicle.cpp:124) -- a "> 0" threshold.
+    //
+    // Ordering / plan-execute contract (DESIGN.md): runs on the SAME frozen start-of-step snapshot
+    // PlanMovements reads (called from Run() immediately before it, after the neighbour Refill), and
+    // writes ONLY each vehicle's own WillPass (ComputeMoveIntent(prePass:true) suppresses the
+    // LastActionTime/LevelOfService/RngState writes). No pre-pass iteration reads another vehicle's
+    // WillPass, so it is parallel-safe by PlanMovements' own argument; the subsequent PlanMovements
+    // reads a fully-populated cache. Inert-when-absent: with no braking-to-stop foe at a crossing, no
+    // vehicle's WillPass is ever read and trajectories are byte-identical (every committed scenario).
+    private void ComputeWillPass(LaneNeighborQuery neighbors, double time)
+    {
+        // NUMERICAL_EPS_SPEED (MSVehicle.cpp:124): 0.1 * NUMERICAL_EPS * TS, TS == the step length.
+        var willPassSpeedEps = 0.1 * KraussModel.NumericalEps * _config!.StepLength;
+
+        if (UseParallelPlan)
+        {
+            System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
+            {
+                var v = _vehicles[i];
+                if (!v.Inserted || v.Arrived)
+                {
+                    return;
+                }
+
+                v.WillPass = ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+            });
+            return;
+        }
+
+        foreach (var v in ActiveVehicles())
+        {
+            v.WillPass = ComputeMoveIntent(v, neighbors, time, prePass: true).NewSpeed > willPassSpeedEps;
+        }
     }
 
     // C11-i/C11-ii dispatch (TASKS.md): every constraint below computes ego's OWN car-following
@@ -1486,7 +1568,13 @@ public sealed class Engine : IEngine
     // check below -- see this method's foe-link loop) is the only change to this method's
     // pre-existing 9b-ii/iii signature/logic; every SUMO-foe code path above and below is
     // untouched.
-    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    // C4-viii: `prePass` is true only during the willPass PRE-PASS (ComputeWillPass). In that mode the
+    // approaching-foe crossing arm keeps its blanket yield (the pre-C4-viii behaviour) so the pre-pass
+    // computes each vehicle's vNext WITHOUT reading foes' as-yet-uncomputed WillPass -- the one level of
+    // approximation that breaks the yield circularity (SUMO's setApproaching runs before opened()). With
+    // prePass=false (the real PlanMovements call) the crossing arm additionally skips a foe whose
+    // WillPass is false, matching MSLink::blockedByFoe's `!avi.willPass` short-circuit.
+    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool prePass = false)
     {
         // Step 1: ego's own upcoming/current junction link -- the first internal lane in
         // the pool slice at or after LaneSeqIndex. A lane already passed is simply never found
@@ -1734,7 +1822,21 @@ public sealed class Engine : IEngine
                 // (the crossing vehicle) proceeds. Inert for every scenario without a downstream jam
                 // (KeepClearConstraint is +infinity there), so only scenario 38 is affected.
                 var foeWillNotPass = !egoOnInternal && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
-                thisConstraint = egoOnInternal || foeWillNotPass || foeNotApproaching
+
+                // C4-viii (the willPass gate -- the dense-grid saturation fix): `foe.WillPass` (cached by
+                // Engine.ComputeWillPass from the frozen start-of-step snapshot) is true iff the foe's
+                // PLANNED vNext this step carries it INTO its upcoming junction link -- SUMO's
+                // setRequest/willPass (MSVehicle.cpp:2732). A foe that is ITSELF yielding (moving at
+                // start-of-step but braking to a stop THIS step, vNext ~ 0) has WillPass=false and, per
+                // MSLink::blockedByFoe's `if (!avi.willPass) return false` (MSLink.cpp:935), does NOT
+                // block ego -- which unwinds the mutual brake-to-stop deadlock a saturated grid produces.
+                // The load-bearing term is the PLANNED vNext, not start-of-step speed: a braking foe has
+                // speed > 0 this step, so a raw-speed proxy misses it. Applied only in the real
+                // PlanMovements pass; the pre-pass keeps the blanket yield (prePass short-circuits this to
+                // false) so it can compute each vNext without the foe-willPass refinement -- the one
+                // level of approximation that breaks the circularity (setApproaching-before-opened()).
+                var foeYieldsThisStep = !prePass && !foe.WillPass;
+                thisConstraint = egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
