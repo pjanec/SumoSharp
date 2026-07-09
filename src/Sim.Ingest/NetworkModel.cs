@@ -290,7 +290,17 @@ public sealed record NetworkModel(
     // MSVehicle.cpp:5744-6063). For every route whose arrival lane already continues at every hop
     // (every pre-C2-v scenario), Arrival == Exit at every slot, so the resolved Exit sequence -- and
     // therefore the routing pool -- is byte-identical to before.
-    private List<(string Exit, string Arrival)> ResolveSequenceCore(IReadOnlyList<string> routeEdges, int departLaneIndex)
+    // C4-vii-c: `forceFirstExitToArrival` pins the FIRST edge's exit lane to the depart/arrival lane
+    // instead of steering toward bestLaneOffset. Used by ExecuteMoves' boundary re-resolution: a
+    // vehicle that reached a lane end on a lane that isn't the pool's resolved exit -- but that STILL
+    // connects onward -- is, by definition, leaving THIS edge via THAT lane's connection (it is at the
+    // boundary; no lane change is possible now). SUMO models exactly this: it follows whatever
+    // connection leaves the current lane rather than forcing the resolved exit (MSVehicle::
+    // updateBestLanes' bestLaneOffset is a HINT it lane-changes toward opportunistically, not a hard
+    // gate). Pinning exit == arrival makes the re-resolved pool start ON the vehicle's actual lane so
+    // the crossing advances via that lane's own connection. Only ever passed true for that one
+    // boundary case; the default (false) is byte-identical to every existing caller.
+    private List<(string Exit, string Arrival)> ResolveSequenceCore(IReadOnlyList<string> routeEdges, int departLaneIndex, bool forceFirstExitToArrival = false)
     {
         var result = new List<(string Exit, string Arrival)>();
         // The lane the vehicle physically occupies on the current edge (depart lane on edge 0, then
@@ -345,14 +355,19 @@ public sealed record NetworkModel(
                         $"No lane on edge '{edgeId}' has a <connection> to '{nextEdgeId}' (route unroutable).");
                 }
 
-                // The connecting lane nearest the bestLaneOffset target; on a tie, the lower index
-                // (SIMPLIFICATION, documented: no committed scenario has two equidistant connecting
-                // lanes with differing downstream quality -- when they do, a betterContinuation rank
-                // would be more faithful, but every anchor here has a unique nearest connecting lane).
-                exitIndex = connecting
-                    .OrderBy(l => Math.Abs(l - target))
-                    .ThenBy(l => l)
-                    .First();
+                // C4-vii-c: the boundary re-resolution pins the first edge's exit to the vehicle's
+                // actual lane (which the caller has already verified connects onward) -- see this
+                // method's `forceFirstExitToArrival` header. Otherwise choose the connecting lane
+                // nearest the bestLaneOffset target; on a tie, the lower index (SIMPLIFICATION,
+                // documented: no committed scenario has two equidistant connecting lanes with
+                // differing downstream quality -- when they do, a betterContinuation rank would be
+                // more faithful, but every anchor here has a unique nearest connecting lane).
+                exitIndex = forceFirstExitToArrival && i == 0
+                    ? arrivalIndex
+                    : connecting
+                        .OrderBy(l => Math.Abs(l - target))
+                        .ThenBy(l => l)
+                        .First();
             }
 
             var arrivalLane = edge.Lanes.First(l => l.Index == arrivalIndex);
@@ -435,9 +450,9 @@ public sealed record NetworkModel(
     // actual lane to Arrival[k] on entering a slot and the strategic lane change converges it onto
     // Pool[k] -- so for every route with no intra-edge change (Arrival == Pool everywhere) this is
     // byte-identical to ResolveLaneSequenceHandles.
-    public (int[] Pool, int[] Arrival) ResolveLaneSequenceHandlesWithArrival(IReadOnlyList<string> routeEdges, int departLaneIndex)
+    public (int[] Pool, int[] Arrival) ResolveLaneSequenceHandlesWithArrival(IReadOnlyList<string> routeEdges, int departLaneIndex, bool forceFirstExitToArrival = false)
     {
-        var sequence = ResolveSequenceCore(routeEdges, departLaneIndex);
+        var sequence = ResolveSequenceCore(routeEdges, departLaneIndex, forceFirstExitToArrival);
         var pool = new int[sequence.Count];
         var arrival = new int[sequence.Count];
         for (var i = 0; i < sequence.Count; i++)

@@ -39,7 +39,49 @@ and a `<random_number><seed value="42"/></random_number>`. `sigma="0"` on the vT
 
 ---
 
-## C4-vii-c — willPass PRE-PASS (the -L2 flow blocker; highest impact)
+## C4-vii-c — DONE, but the root cause was NOT willPass (route→lane over-constraint)
+
+**RESOLVED (this session), with a corrected diagnosis. Read this before trusting the willPass framing below.**
+Instrumenting the committed grid showed the gridlock is a **route→lane / boundary-convergence bug**,
+not the willPass signal:
+
+- **29 of the 38 stuck vehicles were clamped by the C2-ii convergence guard** (`Engine.cs` ExecuteMoves,
+  `v.LaneHandle != _laneSeqPool[slot]`): stranded at a lane end at speed 0 because their actual lane ≠
+  the pool's *resolved exit lane*, **even though that lane connects onward**. The pool over-constrains:
+  208 of the grid's 224 two-lane edges have BOTH lanes connecting to a common downstream edge (a
+  straight move leaves from either), yet the pool pins one exit lane (chasing a downstream
+  `bestLaneOffset` hint), so a vehicle on the other equally-valid connecting lane was frozen forever.
+- The other 9 stuck all transitively yielded to those clamp victims. **The willPass gate had zero
+  independent effect** — verified: gate on/off gave identical stuck counts on the grid, and a ~20-config
+  dense-`-L2` sweep never showed willPass reducing stuck. The original instrumentation that saw foes
+  "moving then braking to a stop this step" was watching a *moving vehicle hit the convergence clamp at a
+  lane end* (an execute-time hard stop), not a plan-time willPass yield.
+
+**FIX (committed):** `Engine.TryReResolveFromActualLane` + `NetworkModel.ResolveSequenceCore`'s
+`forceFirstExitToArrival`. When a vehicle reaches a lane end on a non-pool lane that still connects to
+the next route edge, re-resolve the remaining route from that lane (pinning the edge exit to it) and
+proceed — SUMO's "follow whatever connection leaves the current lane, lane-change toward bestLaneOffset
+opportunistically" (`MSVehicle::updateBestLanes`). Only ever reached from the boundary branch that used
+to clamp, so every committed golden is byte-identical; the diag grid drops from ~38 stuck to **0** (==
+SUMO), suite **162 + 1 skip** green, `Sim.Bench` hash unchanged (`909605E965BFFE59`). **ANCHOR:**
+`scenarios/46-convergence-lane` (`RungC4viiConvergenceLaneParityTests`) — a single vehicle that
+keep-rights onto a connecting non-pool lane; pre-fix strands it at the lane end, post-fix flows it
+(pos/speed exact vs SUMO; lane excluded — keep-right timing is a separate C4-vii-b gap).
+
+**The willPass port was IMPLEMENTED then REVERTED** (faithful to `MSLink::blockedByFoe`, but provably
+inert on the suite + grid, un-anchorable, and its pre-pass doubled plan-phase work). Revive it only when
+a genuine willPass scenario is isolated.
+
+**NEW follow-up exposed by this fix:** dense `-L2` grids now crash in `TryStrategicLaneChange →
+ComputeBestLanes` on an INTERNAL edge (a vehicle that used to clamp now proceeds onto a junction
+interior and, if it lands there, hits `ComputeBestLanes(route, ':...')`). A defensive guard was added
+(skip all lane-change decisions on internal lanes, mirroring commit `eac0a5b`'s keep-right guard), which
+covers the committed diag grid; the underlying strategic-LC-on-internal-edge path is a separate open bug
+for a denser scenario.
+
+---
+
+## (superseded) C4-vii-c — willPass PRE-PASS (original bootstrap framing; kept for history)
 
 ### Symptom & reproduction (committed, deterministic)
 `scenarios/_diag/c4vii-willpass-grid/` (6×6 -L2 priority grid, 75 trips). **SUMO: 0 of 75 stuck.

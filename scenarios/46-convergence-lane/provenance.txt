@@ -1,0 +1,47 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-09T11:30:55Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# C4-vii-c (route->lane over-constraint / convergence-clamp fix) parity anchor. Minimal, single-
+# vehicle, deterministic: a straight 2-lane corridor A->B->C->D (netconvert --no-turnarounds; all
+# lanes 13.89 m/s, each edge 300 m node-to-node). One vehicle v0 departs AB lane 1 from rest and
+# keep-rights onto AB lane 0 (Rechtsfahrgebot, empty road). sigma=0, speeddev=0, Euler, teleport off,
+# seed 42.
+#
+# THE BUG (baseline 8bd4beb): the route->lane pool resolves AB's exit lane to lane 1 (from v0's depart
+# lane), but AB lane 0 ALSO connects straight to BC. When v0 reaches the AB lane end on lane 0 (after
+# keep-right), the C2-ii boundary-convergence guard clamps it at AB_0 pos 300 speed 0 FOREVER because
+# its lane != the pool's exit lane -- even though lane 0 connects onward. This is the dominant cause
+# of the committed -L2 diag grid's gridlock (scenarios/_diag/c4vii-willpass-grid): 29 of 38 stuck
+# vehicles were this exact clamp on an equally-valid connecting lane (208 of its 224 two-lane edges
+# have both lanes connecting to a common downstream edge, so the pool's single-exit choice is
+# routinely ambiguous and strands vehicles).
+#
+# THE FIX (Engine.TryReResolveFromActualLane + NetworkModel.ResolveSequenceCore forceFirstExitToArrival):
+# when a vehicle reaches a lane end on a non-pool lane that STILL connects to the next route edge,
+# re-resolve the remaining route from that lane (pinning the edge exit to it) and proceed -- SUMO's
+# "follow whatever connection leaves the current lane, lane-change toward bestLaneOffset
+# opportunistically" (MSVehicle::updateBestLanes). Only ever reached from the boundary branch that
+# used to clamp, so every committed golden (vehicles reach boundaries on their pool lane) is
+# byte-identical; the -L2 diag grid drops from ~40 stuck to 0 (== SUMO), suite 162+1 green, Sim.Bench
+# hash unchanged (909605E965BFFE59).
+#
+# SUMO reference: v0 keep-rights AB_1->AB_0 (t=6), crosses AB_0->BC_0 (t=24) and BC_0->CD_0 (t=46),
+# in free-flow transit on CD at run end (t=59, pos 188.86). PARITY: pos/speed only (tolerance.json) --
+# match SUMO exactly (< 1e-12). "lane" excluded: v0's keep-right AB_1->AB_0 timing differs (SUMO t=6,
+# engine t=19), a pre-existing keep-right-fidelity gap (C4-vii-b) orthogonal to this fix; longitudinal
+# pos/speed are identical. The pre-fix engine strands v0 at AB_0 pos 300 (non-vacuous: ~100 m pos
+# divergence for the rest of the run).
+#
+# sha256 (all committed inputs + goldens):
+nodes.nod.xml=55548fcc05f25bb72b0836a53c543fdde26f24f624a802c2ff08e041225f6978
+edges.edg.xml=e7c9a7ad98201d0ad9a0dcb557d1891fcd0b441541eeeb957e8fd623bbe9d4cd
+net.net.xml=278bf3df51b4fd146694547e731ed48d4470a15459e12ee52e03d772d8014b57
+rou.rou.xml=dcbee8613be6a98ea8310a7e842c4253c27e6d4d740f971b4635960ef3ba2dce
+config.sumocfg=95d7b24ffb38b3cd2131c45c3c46124c0f2346e00bb45fb95785aebfba46b899
+golden.fcd.xml=7527e677b0b21fcec98744a217205ab6c8c16660fcd702709258a6068b5a8cdb
+golden.state.xml=307f19b82e52ff25483285d26d19060aef5fe13122b3bd24a60a315a25e2f73b
+golden.vtype.json=5e3673c439673b9091842824c2c153a62c30f64a181d032c0e588c89bcf00e1e
+tolerance.json=5d9a63c7b7264be241b28babe9d35bb2448c186e2abec8eecc227206bd95d678

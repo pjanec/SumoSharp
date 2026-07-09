@@ -2934,6 +2934,25 @@ public sealed class Engine : IEngine
                 // above already returned.)
                 if (v.LaneHandle != _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex])
                 {
+                    // C4-vii-c (route->lane over-constraint fix -- the -L2 grid flow blocker): the
+                    // vehicle reached this lane end on a lane that is NOT the pool's resolved exit for
+                    // this edge (its strategic lane change onto the pool lane never completed -- e.g.
+                    // that lane was jammed by cross traffic). The pool over-constrains: on a grid,
+                    // MULTIPLE lanes of an edge connect to the same next edge (a straight move leaves
+                    // from either lane), yet the pool pins ONE exit lane (chasing a downstream
+                    // bestLaneOffset hint), so a vehicle sitting on the OTHER, equally-valid connecting
+                    // lane was stranded at speed 0 forever -- the dominant cause of the committed diag
+                    // grid's gridlock (29 of 38 stuck). SUMO never strands it: it leaves via whatever
+                    // connection its actual lane has to the next route edge and keeps lane-changing
+                    // toward the hint opportunistically on later edges (MSVehicle::updateBestLanes'
+                    // bestLaneOffset is a hint, not a hard gate). So if THIS lane still connects onward,
+                    // re-resolve the remaining route from it and proceed; only clamp when the lane
+                    // genuinely does not connect (a true drop lane -- the original guard's purpose).
+                    if (TryReResolveFromActualLane(v, currentLane))
+                    {
+                        continue;
+                    }
+
                     v.Kinematics.Pos = currentLane.Length;
                     v.Kinematics.Speed = 0.0;
                     break;
@@ -2962,6 +2981,81 @@ public sealed class Engine : IEngine
         // DecideSpeedGainChanges (called next, in Run()) reads it via its own postMoveNeighbors
         // Refill / `!v.Inserted || v.Arrived` guard.
         _commandBuffer.Flush();
+    }
+
+    // C4-vii-c: re-resolve a vehicle's remaining route starting from the lane it is ACTUALLY on when
+    // it reaches a lane boundary NOT on the pool's resolved exit lane (its strategic lane change to
+    // that exit never completed). Returns true -- and splices a fresh pool/arrival slice into the
+    // shared pool, with LaneSeqIndex reset to this lane's slot -- when the actual lane connects to the
+    // next route edge (so the crossing can proceed via THAT lane's connection); returns false when it
+    // does not (a genuine drop lane -> the caller clamps at the lane end, the original guard's job).
+    // SUMO-faithful: a vehicle follows whatever connection leaves its current lane and lane-changes
+    // toward bestLaneOffset opportunistically, never stranding itself on an equally-valid connecting
+    // lane (see ResolveLaneSequenceHandlesWithArrival's `forceFirstExitToArrival`). Only ever reached
+    // from the boundary branch that used to unconditionally clamp -- so every scenario whose vehicles
+    // reach boundaries ON their pool lane (every committed golden) never calls this and is
+    // byte-identical. Direct v.LaneSeq* writes are safe: this is the execute phase, each vehicle
+    // mutates only its own state, and nothing later this step reads another vehicle's LaneSeq*.
+    private bool TryReResolveFromActualLane(VehicleRuntime v, Lane currentLane)
+    {
+        // The remaining NORMAL route edges from the current slot onward (skip internal ':'-edge
+        // lanes, which are junction interiors, not route edges).
+        var remaining = new List<string>();
+        string? lastEdge = null;
+        for (var k = v.LaneSeqIndex; k < v.LaneSeqLen; k++)
+        {
+            var lane = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]];
+            if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (lane.EdgeId != lastEdge)
+            {
+                remaining.Add(lane.EdgeId);
+                lastEdge = lane.EdgeId;
+            }
+        }
+
+        // The current slot is on currentLane's own edge; the last-edge arrival check upstream already
+        // returned for a route end, so a next edge must exist. Bail defensively otherwise.
+        if (remaining.Count < 2 || remaining[0] != currentLane.EdgeId)
+        {
+            return false;
+        }
+
+        // Genuine drop lane: the actual lane has no connection to the next route edge -> clamp.
+        if (!_network!.ConnectionsByFromLaneTo.ContainsKey((currentLane.EdgeId, currentLane.Index, remaining[1])))
+        {
+            return false;
+        }
+
+        // Re-resolve from the actual lane (pinning this edge's exit to it) and splice a fresh slice
+        // into the shared pool -- the old slice is abandoned, the pool only grows (the same
+        // discipline UpdateReroutes' ReplaceRoute uses). Guarded against an unroutable parallel path
+        // (ResolveSequenceCore throws if some downstream edge has no connecting lane): on failure,
+        // fall back to the clamp rather than crash.
+        int[] pool;
+        int[] arrival;
+        try
+        {
+            (pool, arrival) = _network.ResolveLaneSequenceHandlesWithArrival(remaining, currentLane.Index, forceFirstExitToArrival: true);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+
+        var start = _laneSeqPool.Count;
+        _laneSeqPool.AddRange(pool);
+        _laneSeqArrival.AddRange(arrival);
+        v.LaneSeqStart = start;
+        v.LaneSeqLen = pool.Length;
+        v.LaneSeqIndex = 0;
+        // The remaining route's lane assignment changed -> the keep-right stayOnBest memo may be
+        // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
+        v.KeepRightStayCacheLane = -1;
+        return true;
     }
 
     // Rung A2 (+ rung 8b, moved here -- see the CORRECTED-ORDERING note below): the two LC2013
@@ -3025,6 +3119,25 @@ public sealed class Engine : IEngine
             // new keep-right/strategic/speed-gain decision until the maneuver completes (SUMO holds
             // the change to completion). Inert when lanechange.duration 0 (LcTargetHandle stays -1).
             if (v.LcTargetHandle >= 0)
+            {
+                continue;
+            }
+
+            // C4-vii-c: no lane-change decision while inside a junction interior. SUMO's
+            // MSLaneChanger runs only on normal edges, never on an internal (`:`-prefixed) lane, so a
+            // vehicle mid-junction makes no keep-right / strategic / speed-gain decision. This is also
+            // load-bearing as a CRASH GUARD: TryStrategicLaneChange (and ApplyKeepRightDecision) call
+            // ComputeBestLanes(route, lane.EdgeId), which throws "edge not part of route" for an
+            // internal lane (its edge is never on the route). ApplyKeepRightDecision already guards
+            // this internally (commit eac0a5b); hoisting the check here additionally covers the
+            // strategic-LC path, which the convergence fix (TryReResolveFromActualLane) can now route
+            // a vehicle onto -- a vehicle that used to CLAMP at a lane end (never entering the
+            // junction) now proceeds onto the internal lane and, if it lands there at step end, would
+            // otherwise reach TryStrategicLaneChange -> ComputeBestLanes on that internal edge. Inert
+            // for every committed scenario: single-lane junction interiors have no left/right neighbor
+            // (keep-right/speed-gain already no-op) and no committed multi-edge route stops a vehicle
+            // mid-internal-lane to reach the strategic path, so the guard is never the deciding return.
+            if (_network!.LanesByHandle[v.LaneHandle].EdgeId is { Length: > 0 } egoEdge && egoEdge[0] == ':')
             {
                 continue;
             }

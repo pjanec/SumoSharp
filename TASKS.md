@@ -914,20 +914,36 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
         `getLinkCont()!=0` "leads somewhere" guard are not modelled -- the committed anchors sit
         unambiguously inside/outside the 200 m band). Note: this does NOT resolve scenarios/44 (still
         skip-gated for bugs a + c).
-      - **C4-vii-c (willPass gridlock, the ORIGINAL -L2 grid symptom).** Ego yields forever to a foe
-        that is itself stopped/yielding. **CORRECTED port target:** the willPass signal is NOT
-        `speed<=eps` -- it is VISIBILITY-DISTANCE based. A foe approaching its own MINOR link from
-        BEYOND that link's foe-visibility distance (4.5 m default) has `slowedDownForMinor` ->
-        `abortRequestAfterMinor` (`MSVehicle.cpp:2730`) -> `setRequest=false`, i.e. `willPass=false`, so
-        `MSLink::blockedByFoe` returns false (`MSLink.cpp:935`) and it does NOT block ego. So the gate
-        is: an approaching foe blocks ego only once the foe is WITHIN its own link's foe-visibility AND
-        still moving. A bare `speed<=eps` proxy (tried this session) is unfaithful AND insufficient --
-        REVERTED, not committed. Reproducing bug C deterministically needs a CYCLIC anchor (>=3 turning
-        foes forming a yield loop); the straight-priority 4-left anchor exercises a+b only (priority
-        breaks the straight-4-way symmetry so it never gridlocks).
-    Remaining sequence a -> c (b DONE above; each isolated, gated, parity-reviewed); c is the highest-
-    regression-risk piece (touches the RoW core underpinning ~30 scenarios). Anchor `44` is committed
-    and stays skip-gated until a + c also land.
+      - **C4-vii-c. DONE (parity-track). The -L2 grid FLOW blocker -- root cause was a route->lane
+        OVER-CONSTRAINT, NOT willPass.** Instrumenting the committed diag grid overturned the willPass
+        framing: **29 of 38 stuck vehicles were clamped by the C2-ii boundary-convergence guard**
+        (`Engine.cs` ExecuteMoves, `v.LaneHandle != _laneSeqPool[slot]`) -- stranded at a lane end at
+        speed 0 because their actual lane != the pool's resolved exit lane, EVEN THOUGH that lane
+        connects onward. The pool pins one exit lane (chasing a downstream `bestLaneOffset` hint), but
+        208 of the grid's 224 two-lane edges have BOTH lanes connecting to a common downstream edge, so
+        a vehicle on the other equally-valid connecting lane froze forever. The remaining 9 stuck all
+        transitively yielded to those clamp victims, so the willPass gate had ZERO independent effect
+        (gate on/off identical on the grid; a ~20-config dense-`-L2` sweep never showed willPass helping).
+        The original "foes moving then braking to a stop this step" instrumentation was watching a moving
+        vehicle hit the convergence clamp (execute-time hard stop), misread as a plan-time willPass yield.
+        **FIX:** `Engine.TryReResolveFromActualLane` + `NetworkModel.ResolveSequenceCore`'s
+        `forceFirstExitToArrival` -- a vehicle reaching a lane end on a non-pool lane that still connects
+        to the next route edge re-resolves the remaining route from that lane (pinning the edge exit to
+        it) and proceeds, matching `MSVehicle::updateBestLanes` (bestLaneOffset is a HINT it lane-changes
+        toward opportunistically, not a hard gate). Only reached from the boundary branch that used to
+        clamp -> every committed golden byte-identical; diag grid ~38 -> **0** stuck (== SUMO), suite
+        **162 + 1 skip** green, `Sim.Bench` hash unchanged (`909605E965BFFE59`). **ANCHOR:**
+        `scenarios/46-convergence-lane` (`RungC4viiConvergenceLaneParityTests`, single vehicle keep-rights
+        onto a connecting non-pool lane; pre-fix strands it at the lane end pos 300 speed 0, post-fix
+        flows it -- pos/speed EXACT vs SUMO, `lane` excluded because the keep-right AB_1->AB_0 timing is a
+        separate C4-vii-b fidelity gap). The willPass port was implemented then REVERTED (faithful but
+        provably inert + un-anchorable + doubled plan-phase cost). **NEW follow-up EXPOSED:** dense `-L2`
+        grids now crash in `TryStrategicLaneChange -> ComputeBestLanes` on an INTERNAL edge (vehicles that
+        used to clamp now proceed onto junction interiors); a defensive internal-lane guard was added
+        (covers the committed grid), but the underlying strategic-LC-on-internal-edge path is a separate
+        open bug for a denser scenario.
+    C4-vii-a (cont-internal-lane path) is the only remaining C4-vii strand; anchor `44` stays skip-gated
+    until it lands.
   - **C4-vi. DONE (parity-track, exact @1e-3). Priority-junction far-routed-foe false positive fixed.**
     The crossing approaching-foe arm of `JunctionYieldConstraint` (`Engine.cs`, the
     `foeInternalSeqIndex > foe.LaneSeqIndex` branch) now gates the yield by the foe's
