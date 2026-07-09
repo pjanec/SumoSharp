@@ -252,6 +252,67 @@ committed tight-roundabout stuck-count anchor (`_diag`, gauged by stuck ≤ smal
 
 ---
 
+## #2 Symmetric arrival-time RoW — the right-before-left conflict cycle (diagnosed + anchored, NOT fixed)
+
+**Status: precise diagnosis + isolated committed anchor, no fix landed (deliberate wall).** This is
+"bug C" from `TASKS.md` (the symmetric-4-way left-turn deadlock), isolated here to its cleanest form.
+The fix is a deterministic conflict-cycle RoW resolution — HIGH regression risk to the ~11 committed
+crossing scenarios and needs a SUMO `MSLink_DEBUG_OPENED` trace for exact parity — so it is left as its
+own rung, not landed in the autonomous run.
+
+### Isolated anchor (committed, skip-gated)
+`scenarios/_diag/sym-rbl-straight/` — one single-lane `right_before_left` crossroads, four STRAIGHT
+vehicles (`ns/sn/ew/we`), one per approach, all departing t=0 from rest 100 m out (perfectly
+symmetric). `--precision 6` golden + `provenance.txt` + `RungSymRblStraightDiagTests` (`[Fact(Skip=…)]`
+until this lands; suite stays green). Distinct from scenario 26 (asymmetric 2-veh right-before-left,
+one clear winner, already green).
+
+### Behaviour
+- **SUMO**: flows all four. The N-S axis (`ns`+`sn`, parallel, non-conflicting) crosses first (t=17..20),
+  then E-W (t=19..24). 0 stuck.
+- **Engine**: DEADLOCKS. All four drive onto the junction (t=17..19) and stop **mid-junction**, each
+  blocking the next around the ring; none exits. 4/4 permanently stuck.
+
+### Root cause
+The four straights form a directed right-before-left **4-cycle** (each yields to the movement on its
+right): `NC→CS`(link 1) → `WC→CE`(13) → `SC→CN`(9) → `EC→CW`(5) → `NC→CS`(1). No movement has priority
+over its own foe and all arrive together, so the C4-viii willPass pre-pass resolves `WillPass=false`
+for **all four** (each is braking-to-yield). In the real pass the crossing gate's
+`foeYieldsThisStep = !foe.WillPass` (Engine.cs:1899) is then TRUE for every ego — each thinks "my foe
+won't pass, so I needn't yield" — and all four proceed simultaneously → mutual mid-junction gridlock.
+(Before C4-viii this same case sat stuck at the *stop line* instead; the willPass gate converts a
+stop-line standoff into a mid-junction one. It is out of willPass scope by construction — a foe
+yielding to EGO and a foe yielding to a THIRD party both read `WillPass=false`, and the gate cannot
+tell them apart without settled per-vehicle ordering.)
+
+SUMO breaks the symmetry because willPass is computed **sequentially** per vehicle during `planMove`
+(`MSLink::setApproaching` runs before the `opened()` foe-checks): the lower-link-index axis (N-S, links
+0–3) registers its pass first, and the E-W vehicles read that *settled* `willPass=true` and stay
+stop-line-held.
+
+### Fix design (own rung — deterministic, order-independent, gated)
+The engine must NOT depend on thread/processing order (CLAUDE.md determinism), so port SUMO's sequential
+resolution as a **canonical** sweep, not a scheduling artifact:
+1. In `ComputeWillPass`, resolve conflicting movements in a **deterministic priority order** (junction
+   link index, then a stable vehicle key) so each vehicle sees the already-settled `WillPass` of
+   higher-priority conflicting vehicles — equivalent to selecting a maximal set of mutually
+   non-conflicting movements with the highest static priority (here the N-S axis) to pass while the
+   rest keep `WillPass=false`.
+2. The loser then keeps yielding in the real pass (its foe’s `WillPass=true` ⇒ `foeYieldsThisStep`
+   false ⇒ it holds at the stop line, not mid-junction).
+3. Faithful reference: `MSLink::blockedByFoe` (MSLink.cpp:919 — the `!avi.willPass` short-circuit, the
+   leader/follower/hard-conflict arrival-window branches, and the ALLWAY_STOP `waitingTime`/`arrivalTime`
+   tie-break at :938–945) + `setApproaching` ordering.
+
+**Gate HARD**: full committed suite byte-identical (the sequential sweep must not perturb any single-foe
+crossing scenario — those have a unique priority/arrival winner, so a canonical sweep should reproduce
+them), `Sim.Bench` hash unchanged (`909605E965BFFE59`), `RungSymRblStraightDiagTests` un-skipped and
+green (exact @1e-3 reachable for this 4-vehicle deterministic case once the tie-break matches SUMO),
+parity-reviewer ACCEPT. If the sweep moves ANY committed golden, revert — it means the tie-break
+diverges from SUMO’s and needs the trace.
+
+---
+
 ## Git state at handoff
 - `main` = `eac0a5b` (C4-vii-b + crash fix) — the shippable, testable state.
 - Branch `claude/handoff-docs-i5a9vm` = all of main + C4-vii-a part 1 (`1cb6c12`) + the diagnosis

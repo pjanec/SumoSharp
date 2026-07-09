@@ -1,0 +1,47 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+state_time=1
+fcd_precision=6
+# net built with: netconvert -n n.nod.xml -e e.edg.xml -o net.net.xml
+# vtype defaults: golden.vtype.json (libsumo/TraCI dump)
+
+DIAGNOSTIC ANCHOR (skip-gated) -- bug C: SYMMETRIC arrival-time RoW on an uncontrolled
+(right_before_left) junction. Distinct from scenario 26 (asymmetric 2-vehicle right-before-left,
+already green): here a directed CONFLICT CYCLE with no clear priority winner.
+
+SETUP: one single-lane right_before_left crossroads (node C), four STRAIGHT-through vehicles, one
+per approach (ns: NC->CS, sn: SC->CN, ew: EC->CW, we: WC->CE), ALL departing t=0 from 100 m out at
+rest -- perfectly symmetric, arriving together. sigma=0, Euler, actionStepLength=1, teleport off,
+seed 42.
+
+SUMO (golden): flows all four. The N-S axis (ns + sn, which are parallel and do NOT conflict) crosses
+FIRST -- enterJunction t=17, exitJunction t=20; then the E-W axis (ew + we) t=19..24. 0 stuck, 0
+teleports, all cleared.
+
+ENGINE (baseline, this commit): DEADLOCKS -- all four drive ONTO the junction (enterJunction
+t=17..19) and stop mid-junction, each blocking the next around the ring; none exits. 4/4 permanently
+stuck.
+
+ROOT CAUSE. The four straight movements form a directed right-before-left 4-cycle (each yields to the
+movement on its right): NC->CS (link 1) yields to WC->CE (13); WC->CE (13) yields to SC->CN (9);
+SC->CN (9) yields to EC->CW (5); EC->CW (5) yields to NC->CS (1). No movement has priority over its
+own foe, and all arrive together, so the willPass pre-pass resolves WillPass=false for ALL four
+(each is braking-to-yield). In the real PlanMovements pass the crossing gate's
+`foeYieldsThisStep = !foe.WillPass` is then TRUE for every ego (its foe "won't pass"), so ALL four
+proceed onto the junction simultaneously -> mutual mid-junction gridlock.
+
+SUMO breaks the symmetry because willPass is computed SEQUENTIALLY per vehicle during planMove
+(MSLink::setApproaching-before-opened()): the lower-link-index axis (N-S, links 0-3) registers its
+pass first, and the E-W vehicles read that settled willPass=true and stay stop-line-held. Replicating
+this in the engine faithfully requires a DETERMINISTIC (canonical, NOT thread-order) resolution of the
+conflict cycle -- effectively selecting a maximal set of mutually-non-conflicting movements with the
+highest static priority (the N-S axis here) to pass while the rest yield. That is a conflict-graph
+independent-set / arrival-time priority resolution, a new mechanism with HIGH regression risk to the
+~11 committed crossing scenarios (08/11/26/27/29/31/32/38/39/40 + 44), and needs a SUMO
+MSLink_DEBUG_OPENED trace to nail the exact per-step tie-break for @1e-3 parity. It is its own rung,
+NOT landed here. See C4-VII-REMAINING.md "#2 Symmetric arrival-time RoW" for the full fix design.
+
+This anchor is skip-gated (RungSymRblStraightDiagTests) until that rung lands; unskip it then and
+compare against golden.fcd.xml (exact @1e-3 is reachable for this 4-vehicle deterministic case once
+the tie-break matches SUMO's).

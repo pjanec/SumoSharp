@@ -947,6 +947,19 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
         symmetric-4-way arrival-time RoW (bug C -- a distinct port, NOT willPass: with all four
         arriving together, priority/willPass alone can't break the tie; SUMO uses arrival-time). Anchor
         `44` stays skip-gated until 2a-2c + B + C land.
+        **BUG C ISOLATED + DIAGNOSED (this session, NOT fixed).** Committed the cleanest isolated
+        repro `scenarios/_diag/sym-rbl-straight/` (one single-lane `right_before_left` cross, four
+        STRAIGHT vehicles arriving together; `--precision 6` golden + skip-gated
+        `RungSymRblStraightDiagTests`). The four straights form a directed right-before-left 4-CYCLE
+        (`NC→CS`→`WC→CE`→`SC→CN`→`EC→CW`→back); with no priority winner the C4-viii willPass pre-pass
+        sets `WillPass=false` for all four, so the crossing gate's `foeYieldsThisStep=!foe.WillPass`
+        lets ALL four enter the junction simultaneously → mutual mid-junction gridlock (SUMO flows the
+        N-S axis first, then E-W, via SEQUENTIAL setApproaching-before-opened ordering). Fix = a
+        DETERMINISTIC (canonical, not thread-order) conflict-cycle resolution in `ComputeWillPass`
+        (independent-set / link-index priority); HIGH regression risk to the ~11 committed crossing
+        scenarios, needs a `MSLink_DEBUG_OPENED` trace for @1e-3. Full fix design in
+        `C4-VII-REMAINING.md` "#2 Symmetric arrival-time RoW". Its own rung — deliberately not landed
+        in the autonomous run.
       - **C4-vii-b. DONE (parity-track, exact @1e-3). Keep-right over-accumulation + final-edge arrival
         strand.** Root-caused to TWO entangled bugs: (1) the narrow keep-right port
         (`ApplyKeepRightDecision`) accumulated the keep-right probability on a REQUIRED lane (it vetoed
