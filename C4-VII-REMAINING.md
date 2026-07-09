@@ -250,6 +250,27 @@ not only stopped ones; hold ego at the junction-entry stop line when cumulative 
 committed tight-roundabout stuck-count anchor (`_diag`, gauged by stuck ≤ small, same convention as
 `willpass-saturation`) and re-verify `34-keepclear` byte-identical. HIGH regression risk — its own rung.
 
+### ATTEMPTED + REVERTED (this session) — the exact remaining piece
+Confirmed from the vendored source that `checkRewindLinkLanes` is SKIPPED on marked roundabout edges
+(`MSVehicle.cpp:5026`, `!myLane->getEdge().isRoundabout()`) — so real (netconvert-marked) roundabouts
+flow via circulating-priority + entry-yield, which the engine already handles (viz `city-mixed-1k`
+single-lane rings ~2% stuck). The tight-ring repro is an UNMARKED priority ring (`roundabouts.guess`
+did not identify it), so `checkRewindLinkLanes` IS active there and is what SUMO uses to keep it flowing.
+`MSLane::getSpaceTillLastStanding` iterates front-first (same order as the engine's port — the port is
+faithful), so the gap is NOT an ordering bug. The missing piece is `checkRewindLinkLanes`'
+`last->myHaveToWaitOnNextLink` termination (`MSVehicle.cpp:5126`): a still-MOVING vehicle on the exit
+lane that is braking to a stop at ITS OWN next link counts as blocking, so ego is held back. The engine
+has no `myHaveToWaitOnNextLink` — it is per-vehicle planning state computed during the continuation walk.
+TRIED the frozen-snapshot proxy `!last.WillPass` inside `LaneSpaceTillLastStanding` (treat an
+about-to-stop vehicle as standing): it made the ring WORSE (69→76 stuck, dropped a vehicle) and was
+reverted. Reason: the front-first walk returns space to the FRONTMOST about-to-stop vehicle and does not
+subtract the moving vehicles BEHIND it (between the lane start and that vehicle) — the real overestimate
+— so flagging the front vehicle does not reduce the reported space. A correct fix needs the full
+`availableSpace` accumulation with a genuine `myHaveToWaitOnNextLink` (a second planning pass, or a
+per-vehicle has-to-wait flag threaded through the continuation) AND must stay byte-identical on
+`34-keepclear`/`38-keepclear-crosstraffic`. That is a deep architectural addition, deferred — its own
+rung. The other three autonomous items (#1 perf, #2 bug C, #4 cont-turn) all landed.
+
 ---
 
 ## #2 Symmetric arrival-time RoW — the right-before-left conflict cycle (FIXED, deterministic)
