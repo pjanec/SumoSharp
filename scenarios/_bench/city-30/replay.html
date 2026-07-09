@@ -132,6 +132,24 @@ const REPLAY_DATA = {"scenario":"city-30","network":{"lanes":[{"id":":A0_0_0","e
 (function () {
   "use strict";
 
+  // On-screen error surface: a black replay on a device we can't debug remotely is useless, so
+  // any uncaught error paints its message over the canvas instead of failing silently. If you
+  // still see a blank page, whatever text shows here is the actual fault.
+  window.addEventListener("error", function (e) {
+    var d = document.getElementById("vizError");
+    if (!d) {
+      d = document.createElement("div");
+      d.id = "vizError";
+      d.style.cssText =
+        "position:fixed;left:8px;right:8px;top:8px;z-index:9999;background:rgba(120,20,20,0.95);" +
+        "color:#fff;font:12px/1.4 monospace;padding:8px 10px;border-radius:8px;white-space:pre-wrap;";
+      document.body.appendChild(d);
+    }
+    d.textContent =
+      "viz error: " + (e.message || e.type || "unknown") +
+      (e.filename ? "\n@ " + e.filename + ":" + e.lineno + ":" + e.colno : "");
+  });
+
   var data = REPLAY_DATA;
 
   // ---------------------------------------------------------------------
@@ -764,6 +782,11 @@ const REPLAY_DATA = {"scenario":"city-30","network":{"lanes":[{"id":":A0_0_0","e
   // ---------------------------------------------------------------------
   var lastFrameMs = null;
   function frame(nowMs) {
+    // iOS Safari (and some mobile engines) can report the flex container's clientHeight as 0 at
+    // the end-of-body script, so the single init resizeCanvas() no-ops and never fits the camera.
+    // Retry every frame until the layout has a real size (firstFit stays true until a valid fit
+    // actually happens) -- cheap, and self-disabling once sized.
+    if (firstFit) resizeCanvas();
     if (lastFrameMs === null) lastFrameMs = nowMs;
     var realDelta = (nowMs - lastFrameMs) / 1000;
     lastFrameMs = nowMs;
