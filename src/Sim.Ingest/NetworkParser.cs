@@ -102,7 +102,11 @@ public static class NetworkParser
                 }
             }
 
-            var edge = new Edge(edgeId, from, to, lanes);
+            // R3 (rail bidi): netconvert marks a shared-track rail edge pair with `bidi="<other>"`
+            // on each edge. Parsed here (null when absent, i.e. every road edge) so the engine's
+            // rail insertion check can tell whether this edge's track is shared with an opposing one.
+            var bidi = edgeEl.Attribute("bidi")?.Value;
+            var edge = new Edge(edgeId, from, to, lanes, bidi);
             edges.Add(edge);
             edgesById[edgeId] = edge;
         }

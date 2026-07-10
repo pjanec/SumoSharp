@@ -41,7 +41,13 @@ public sealed record Edge(
     string Id,
     string From,
     string To,
-    IReadOnlyList<Lane> Lanes);
+    IReadOnlyList<Lane> Lanes,
+    // R3 (rail bidi): the id of the opposing edge that shares this edge's physical track, from the
+    // net.xml `<edge ... bidi="...">` attribute (netconvert emits it for reversed-geometry rail
+    // edge pairs). null for every non-bidi edge, so this is inert for all road scenarios. A lane on
+    // a bidi edge shares its track with the same-index lane on the bidi edge (single-lane rail track
+    // in scope; multi-lane bidi lane-pairing is not needed for the committed rail scenarios).
+    string? BidiEdgeId = null);
 
 // Ported from a net.xml top-level <connection>: from/to are edge ids (which may themselves be
 // internal edges, e.g. ":J_0" -> "JE" for the internal lane's own outgoing continuation --
@@ -239,6 +245,38 @@ public sealed record NetworkModel(
 
         connection = null!;
         return false;
+    }
+
+    // R3 (rail bidi): the id of the lane that shares this lane's physical track in the opposing
+    // direction, or null when the lane's edge is not bidi. A lane on a bidi edge shares its track
+    // with the SAME-index lane on the edge named by `BidiEdgeId` (single-lane rail track in scope).
+    // Returns null for every non-bidi (road) lane, so callers stay inert for road scenarios.
+    public string? TryGetBidiLaneId(string laneId)
+    {
+        if (!LanesById.TryGetValue(laneId, out var lane))
+        {
+            return null;
+        }
+
+        if (!EdgesById.TryGetValue(lane.EdgeId, out var edge) || edge.BidiEdgeId is null)
+        {
+            return null;
+        }
+
+        if (!EdgesById.TryGetValue(edge.BidiEdgeId, out var bidiEdge))
+        {
+            return null;
+        }
+
+        foreach (var bidiLane in bidiEdge.Lanes)
+        {
+            if (bidiLane.Index == lane.Index)
+            {
+                return bidiLane.Id;
+            }
+        }
+
+        return null;
     }
 
     // Rung 9a: resolves the ordered lane-id sequence a vehicle traverses along `routeEdges`,

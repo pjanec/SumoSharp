@@ -1,0 +1,580 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-10 02:05:23 by Eclipse SUMO sumo Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+
+    <output>
+        <precision value="6"/>
+        <fcd-output value="golden.fcd.xml"/>
+        <fcd-output.acceleration value="true"/>
+        <save-state.times value="1"/>
+        <save-state.files value="golden.state.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="180"/>
+        <step-length value="1"/>
+    </time>
+
+    <processing>
+        <step-method.ballistic value="false"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0"/>
+    </processing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<fcd-export xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/fcd_file.xsd">
+    <timestep time="0.000">
+        <vehicle id="trainAB" x="0.000000" y="0.000000" angle="90.000000" type="train" speed="0.000000" pos="0.000000" lane="AB_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="1.000">
+        <vehicle id="trainAB" x="0.250000" y="0.000000" angle="90.000000" type="train" speed="0.250000" pos="0.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="2.000">
+        <vehicle id="trainAB" x="0.750000" y="0.000000" angle="90.000000" type="train" speed="0.500000" pos="0.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="3.000">
+        <vehicle id="trainAB" x="1.500000" y="0.000000" angle="90.000000" type="train" speed="0.750000" pos="1.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="4.000">
+        <vehicle id="trainAB" x="2.500000" y="0.000000" angle="90.000000" type="train" speed="1.000000" pos="2.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="5.000">
+        <vehicle id="trainAB" x="3.750000" y="0.000000" angle="90.000000" type="train" speed="1.250000" pos="3.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="6.000">
+        <vehicle id="trainAB" x="5.250000" y="0.000000" angle="90.000000" type="train" speed="1.500000" pos="5.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="7.000">
+        <vehicle id="trainAB" x="7.000000" y="0.000000" angle="90.000000" type="train" speed="1.750000" pos="7.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="8.000">
+        <vehicle id="trainAB" x="9.000000" y="0.000000" angle="90.000000" type="train" speed="2.000000" pos="9.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="9.000">
+        <vehicle id="trainAB" x="11.250000" y="0.000000" angle="90.000000" type="train" speed="2.250000" pos="11.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="10.000">
+        <vehicle id="trainAB" x="13.750000" y="0.000000" angle="90.000000" type="train" speed="2.500000" pos="13.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="11.000">
+        <vehicle id="trainAB" x="16.500000" y="0.000000" angle="90.000000" type="train" speed="2.750000" pos="16.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="12.000">
+        <vehicle id="trainAB" x="19.500000" y="0.000000" angle="90.000000" type="train" speed="3.000000" pos="19.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="13.000">
+        <vehicle id="trainAB" x="22.750000" y="0.000000" angle="90.000000" type="train" speed="3.250000" pos="22.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="14.000">
+        <vehicle id="trainAB" x="26.250000" y="0.000000" angle="90.000000" type="train" speed="3.500000" pos="26.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="15.000">
+        <vehicle id="trainAB" x="30.000000" y="0.000000" angle="90.000000" type="train" speed="3.750000" pos="30.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="16.000">
+        <vehicle id="trainAB" x="34.000000" y="0.000000" angle="90.000000" type="train" speed="4.000000" pos="34.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="17.000">
+        <vehicle id="trainAB" x="38.250000" y="0.000000" angle="90.000000" type="train" speed="4.250000" pos="38.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="18.000">
+        <vehicle id="trainAB" x="42.750000" y="0.000000" angle="90.000000" type="train" speed="4.500000" pos="42.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="19.000">
+        <vehicle id="trainAB" x="47.500000" y="0.000000" angle="90.000000" type="train" speed="4.750000" pos="47.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="20.000">
+        <vehicle id="trainAB" x="52.500000" y="0.000000" angle="90.000000" type="train" speed="5.000000" pos="52.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="21.000">
+        <vehicle id="trainAB" x="57.750000" y="0.000000" angle="90.000000" type="train" speed="5.250000" pos="57.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="22.000">
+        <vehicle id="trainAB" x="63.250000" y="0.000000" angle="90.000000" type="train" speed="5.500000" pos="63.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="23.000">
+        <vehicle id="trainAB" x="69.000000" y="0.000000" angle="90.000000" type="train" speed="5.750000" pos="69.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="24.000">
+        <vehicle id="trainAB" x="75.000000" y="0.000000" angle="90.000000" type="train" speed="6.000000" pos="75.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="25.000">
+        <vehicle id="trainAB" x="81.250000" y="0.000000" angle="90.000000" type="train" speed="6.250000" pos="81.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="26.000">
+        <vehicle id="trainAB" x="87.750000" y="0.000000" angle="90.000000" type="train" speed="6.500000" pos="87.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="27.000">
+        <vehicle id="trainAB" x="94.500000" y="0.000000" angle="90.000000" type="train" speed="6.750000" pos="94.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="28.000">
+        <vehicle id="trainAB" x="101.500000" y="0.000000" angle="90.000000" type="train" speed="7.000000" pos="101.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="29.000">
+        <vehicle id="trainAB" x="108.750000" y="0.000000" angle="90.000000" type="train" speed="7.250000" pos="108.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="30.000">
+        <vehicle id="trainAB" x="116.250000" y="0.000000" angle="90.000000" type="train" speed="7.500000" pos="116.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="31.000">
+        <vehicle id="trainAB" x="124.000000" y="0.000000" angle="90.000000" type="train" speed="7.750000" pos="124.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="32.000">
+        <vehicle id="trainAB" x="132.000000" y="0.000000" angle="90.000000" type="train" speed="8.000000" pos="132.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="33.000">
+        <vehicle id="trainAB" x="140.250000" y="0.000000" angle="90.000000" type="train" speed="8.250000" pos="140.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="34.000">
+        <vehicle id="trainAB" x="148.750000" y="0.000000" angle="90.000000" type="train" speed="8.500000" pos="148.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="35.000">
+        <vehicle id="trainAB" x="157.500000" y="0.000000" angle="90.000000" type="train" speed="8.750000" pos="157.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="36.000">
+        <vehicle id="trainAB" x="166.500000" y="0.000000" angle="90.000000" type="train" speed="9.000000" pos="166.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="37.000">
+        <vehicle id="trainAB" x="175.750000" y="0.000000" angle="90.000000" type="train" speed="9.250000" pos="175.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="38.000">
+        <vehicle id="trainAB" x="185.250000" y="0.000000" angle="90.000000" type="train" speed="9.500000" pos="185.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="39.000">
+        <vehicle id="trainAB" x="195.000000" y="0.000000" angle="90.000000" type="train" speed="9.750000" pos="195.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="40.000">
+        <vehicle id="trainAB" x="205.000000" y="0.000000" angle="90.000000" type="train" speed="10.000000" pos="205.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="41.000">
+        <vehicle id="trainAB" x="215.250000" y="0.000000" angle="90.000000" type="train" speed="10.250000" pos="215.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="42.000">
+        <vehicle id="trainAB" x="225.750000" y="0.000000" angle="90.000000" type="train" speed="10.500000" pos="225.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="43.000">
+        <vehicle id="trainAB" x="236.500000" y="0.000000" angle="90.000000" type="train" speed="10.750000" pos="236.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="44.000">
+        <vehicle id="trainAB" x="247.500000" y="0.000000" angle="90.000000" type="train" speed="11.000000" pos="247.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="45.000">
+        <vehicle id="trainAB" x="258.750000" y="0.000000" angle="90.000000" type="train" speed="11.250000" pos="258.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="46.000">
+        <vehicle id="trainAB" x="270.250000" y="0.000000" angle="90.000000" type="train" speed="11.500000" pos="270.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="47.000">
+        <vehicle id="trainAB" x="282.000000" y="0.000000" angle="90.000000" type="train" speed="11.750000" pos="282.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="48.000">
+        <vehicle id="trainAB" x="294.000000" y="0.000000" angle="90.000000" type="train" speed="12.000000" pos="294.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="49.000">
+        <vehicle id="trainAB" x="306.250000" y="0.000000" angle="90.000000" type="train" speed="12.250000" pos="306.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="50.000">
+        <vehicle id="trainAB" x="318.750000" y="0.000000" angle="90.000000" type="train" speed="12.500000" pos="318.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="51.000">
+        <vehicle id="trainAB" x="331.500000" y="0.000000" angle="90.000000" type="train" speed="12.750000" pos="331.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="52.000">
+        <vehicle id="trainAB" x="344.500000" y="0.000000" angle="90.000000" type="train" speed="13.000000" pos="344.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="53.000">
+        <vehicle id="trainAB" x="357.750000" y="0.000000" angle="90.000000" type="train" speed="13.250000" pos="357.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="54.000">
+        <vehicle id="trainAB" x="371.250000" y="0.000000" angle="90.000000" type="train" speed="13.500000" pos="371.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="55.000">
+        <vehicle id="trainAB" x="385.000000" y="0.000000" angle="90.000000" type="train" speed="13.750000" pos="385.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="56.000">
+        <vehicle id="trainAB" x="399.000000" y="0.000000" angle="90.000000" type="train" speed="14.000000" pos="399.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="57.000">
+        <vehicle id="trainAB" x="413.250000" y="0.000000" angle="90.000000" type="train" speed="14.250000" pos="413.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="58.000">
+        <vehicle id="trainAB" x="427.750000" y="0.000000" angle="90.000000" type="train" speed="14.500000" pos="427.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="59.000">
+        <vehicle id="trainAB" x="442.500000" y="0.000000" angle="90.000000" type="train" speed="14.750000" pos="442.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="60.000">
+        <vehicle id="trainAB" x="457.500000" y="0.000000" angle="90.000000" type="train" speed="15.000000" pos="457.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="61.000">
+        <vehicle id="trainAB" x="472.750000" y="0.000000" angle="90.000000" type="train" speed="15.250000" pos="472.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="62.000">
+        <vehicle id="trainAB" x="488.250000" y="0.000000" angle="90.000000" type="train" speed="15.500000" pos="488.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="63.000">
+        <vehicle id="trainAB" x="504.000000" y="0.000000" angle="90.000000" type="train" speed="15.750000" pos="504.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="64.000">
+        <vehicle id="trainAB" x="520.000000" y="0.000000" angle="90.000000" type="train" speed="16.000000" pos="520.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="65.000">
+        <vehicle id="trainAB" x="536.250000" y="0.000000" angle="90.000000" type="train" speed="16.250000" pos="536.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="66.000">
+        <vehicle id="trainAB" x="552.750000" y="0.000000" angle="90.000000" type="train" speed="16.500000" pos="552.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="67.000">
+        <vehicle id="trainAB" x="569.500000" y="0.000000" angle="90.000000" type="train" speed="16.750000" pos="569.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="68.000">
+        <vehicle id="trainAB" x="586.500000" y="0.000000" angle="90.000000" type="train" speed="17.000000" pos="586.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="69.000">
+        <vehicle id="trainAB" x="603.750000" y="0.000000" angle="90.000000" type="train" speed="17.250000" pos="603.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="70.000">
+        <vehicle id="trainAB" x="621.250000" y="0.000000" angle="90.000000" type="train" speed="17.500000" pos="621.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="71.000">
+        <vehicle id="trainAB" x="639.000000" y="0.000000" angle="90.000000" type="train" speed="17.750000" pos="639.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="72.000">
+        <vehicle id="trainAB" x="657.000000" y="0.000000" angle="90.000000" type="train" speed="18.000000" pos="657.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="73.000">
+        <vehicle id="trainAB" x="675.250000" y="0.000000" angle="90.000000" type="train" speed="18.250000" pos="675.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="74.000">
+        <vehicle id="trainAB" x="693.750000" y="0.000000" angle="90.000000" type="train" speed="18.500000" pos="693.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="75.000">
+        <vehicle id="trainAB" x="712.500000" y="0.000000" angle="90.000000" type="train" speed="18.750000" pos="712.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="76.000">
+        <vehicle id="trainAB" x="731.500000" y="0.000000" angle="90.000000" type="train" speed="19.000000" pos="731.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="77.000">
+        <vehicle id="trainAB" x="750.750000" y="0.000000" angle="90.000000" type="train" speed="19.250000" pos="750.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="78.000">
+        <vehicle id="trainAB" x="770.250000" y="0.000000" angle="90.000000" type="train" speed="19.500000" pos="770.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="79.000">
+        <vehicle id="trainAB" x="790.000000" y="0.000000" angle="90.000000" type="train" speed="19.750000" pos="790.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="80.000">
+        <vehicle id="trainAB" x="810.000000" y="0.000000" angle="90.000000" type="train" speed="20.000000" pos="810.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="81.000">
+        <vehicle id="trainAB" x="830.250000" y="0.000000" angle="90.000000" type="train" speed="20.250000" pos="830.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="82.000">
+        <vehicle id="trainAB" x="850.750000" y="0.000000" angle="90.000000" type="train" speed="20.500000" pos="850.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="83.000">
+        <vehicle id="trainAB" x="871.500000" y="0.000000" angle="90.000000" type="train" speed="20.750000" pos="871.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="84.000">
+        <vehicle id="trainAB" x="892.500000" y="0.000000" angle="90.000000" type="train" speed="21.000000" pos="892.500000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="85.000">
+        <vehicle id="trainAB" x="913.750000" y="0.000000" angle="90.000000" type="train" speed="21.250000" pos="913.750000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="86.000">
+        <vehicle id="trainAB" x="935.250000" y="0.000000" angle="90.000000" type="train" speed="21.500000" pos="935.250000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="87.000">
+        <vehicle id="trainAB" x="957.000000" y="0.000000" angle="90.000000" type="train" speed="21.750000" pos="957.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="88.000">
+        <vehicle id="trainAB" x="979.000000" y="0.000000" angle="90.000000" type="train" speed="22.000000" pos="979.000000" lane="AB_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="89.000">
+        <vehicle id="trainBA" x="1000.000000" y="0.000000" angle="270.000000" type="train" speed="0.000000" pos="0.000000" lane="BA_0" slope="0.000000" acceleration="0.000000"/>
+    </timestep>
+    <timestep time="90.000">
+        <vehicle id="trainBA" x="999.750000" y="0.000000" angle="270.000000" type="train" speed="0.250000" pos="0.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="91.000">
+        <vehicle id="trainBA" x="999.250000" y="0.000000" angle="270.000000" type="train" speed="0.500000" pos="0.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="92.000">
+        <vehicle id="trainBA" x="998.500000" y="0.000000" angle="270.000000" type="train" speed="0.750000" pos="1.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="93.000">
+        <vehicle id="trainBA" x="997.500000" y="0.000000" angle="270.000000" type="train" speed="1.000000" pos="2.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="94.000">
+        <vehicle id="trainBA" x="996.250000" y="0.000000" angle="270.000000" type="train" speed="1.250000" pos="3.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="95.000">
+        <vehicle id="trainBA" x="994.750000" y="0.000000" angle="270.000000" type="train" speed="1.500000" pos="5.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="96.000">
+        <vehicle id="trainBA" x="993.000000" y="0.000000" angle="270.000000" type="train" speed="1.750000" pos="7.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="97.000">
+        <vehicle id="trainBA" x="991.000000" y="0.000000" angle="270.000000" type="train" speed="2.000000" pos="9.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="98.000">
+        <vehicle id="trainBA" x="988.750000" y="0.000000" angle="270.000000" type="train" speed="2.250000" pos="11.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="99.000">
+        <vehicle id="trainBA" x="986.250000" y="0.000000" angle="270.000000" type="train" speed="2.500000" pos="13.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="100.000">
+        <vehicle id="trainBA" x="983.500000" y="0.000000" angle="270.000000" type="train" speed="2.750000" pos="16.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="101.000">
+        <vehicle id="trainBA" x="980.500000" y="0.000000" angle="270.000000" type="train" speed="3.000000" pos="19.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="102.000">
+        <vehicle id="trainBA" x="977.250000" y="0.000000" angle="270.000000" type="train" speed="3.250000" pos="22.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="103.000">
+        <vehicle id="trainBA" x="973.750000" y="0.000000" angle="270.000000" type="train" speed="3.500000" pos="26.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="104.000">
+        <vehicle id="trainBA" x="970.000000" y="0.000000" angle="270.000000" type="train" speed="3.750000" pos="30.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="105.000">
+        <vehicle id="trainBA" x="966.000000" y="0.000000" angle="270.000000" type="train" speed="4.000000" pos="34.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="106.000">
+        <vehicle id="trainBA" x="961.750000" y="0.000000" angle="270.000000" type="train" speed="4.250000" pos="38.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="107.000">
+        <vehicle id="trainBA" x="957.250000" y="0.000000" angle="270.000000" type="train" speed="4.500000" pos="42.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="108.000">
+        <vehicle id="trainBA" x="952.500000" y="0.000000" angle="270.000000" type="train" speed="4.750000" pos="47.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="109.000">
+        <vehicle id="trainBA" x="947.500000" y="0.000000" angle="270.000000" type="train" speed="5.000000" pos="52.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="110.000">
+        <vehicle id="trainBA" x="942.250000" y="0.000000" angle="270.000000" type="train" speed="5.250000" pos="57.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="111.000">
+        <vehicle id="trainBA" x="936.750000" y="0.000000" angle="270.000000" type="train" speed="5.500000" pos="63.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="112.000">
+        <vehicle id="trainBA" x="931.000000" y="0.000000" angle="270.000000" type="train" speed="5.750000" pos="69.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="113.000">
+        <vehicle id="trainBA" x="925.000000" y="0.000000" angle="270.000000" type="train" speed="6.000000" pos="75.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="114.000">
+        <vehicle id="trainBA" x="918.750000" y="0.000000" angle="270.000000" type="train" speed="6.250000" pos="81.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="115.000">
+        <vehicle id="trainBA" x="912.250000" y="0.000000" angle="270.000000" type="train" speed="6.500000" pos="87.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="116.000">
+        <vehicle id="trainBA" x="905.500000" y="0.000000" angle="270.000000" type="train" speed="6.750000" pos="94.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="117.000">
+        <vehicle id="trainBA" x="898.500000" y="0.000000" angle="270.000000" type="train" speed="7.000000" pos="101.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="118.000">
+        <vehicle id="trainBA" x="891.250000" y="0.000000" angle="270.000000" type="train" speed="7.250000" pos="108.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="119.000">
+        <vehicle id="trainBA" x="883.750000" y="0.000000" angle="270.000000" type="train" speed="7.500000" pos="116.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="120.000">
+        <vehicle id="trainBA" x="876.000000" y="0.000000" angle="270.000000" type="train" speed="7.750000" pos="124.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="121.000">
+        <vehicle id="trainBA" x="868.000000" y="0.000000" angle="270.000000" type="train" speed="8.000000" pos="132.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="122.000">
+        <vehicle id="trainBA" x="859.750000" y="0.000000" angle="270.000000" type="train" speed="8.250000" pos="140.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="123.000">
+        <vehicle id="trainBA" x="851.250000" y="0.000000" angle="270.000000" type="train" speed="8.500000" pos="148.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="124.000">
+        <vehicle id="trainBA" x="842.500000" y="0.000000" angle="270.000000" type="train" speed="8.750000" pos="157.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="125.000">
+        <vehicle id="trainBA" x="833.500000" y="0.000000" angle="270.000000" type="train" speed="9.000000" pos="166.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="126.000">
+        <vehicle id="trainBA" x="824.250000" y="0.000000" angle="270.000000" type="train" speed="9.250000" pos="175.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="127.000">
+        <vehicle id="trainBA" x="814.750000" y="0.000000" angle="270.000000" type="train" speed="9.500000" pos="185.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="128.000">
+        <vehicle id="trainBA" x="805.000000" y="0.000000" angle="270.000000" type="train" speed="9.750000" pos="195.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="129.000">
+        <vehicle id="trainBA" x="795.000000" y="0.000000" angle="270.000000" type="train" speed="10.000000" pos="205.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="130.000">
+        <vehicle id="trainBA" x="784.750000" y="0.000000" angle="270.000000" type="train" speed="10.250000" pos="215.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="131.000">
+        <vehicle id="trainBA" x="774.250000" y="0.000000" angle="270.000000" type="train" speed="10.500000" pos="225.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="132.000">
+        <vehicle id="trainBA" x="763.500000" y="0.000000" angle="270.000000" type="train" speed="10.750000" pos="236.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="133.000">
+        <vehicle id="trainBA" x="752.500000" y="0.000000" angle="270.000000" type="train" speed="11.000000" pos="247.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="134.000">
+        <vehicle id="trainBA" x="741.250000" y="0.000000" angle="270.000000" type="train" speed="11.250000" pos="258.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="135.000">
+        <vehicle id="trainBA" x="729.750000" y="0.000000" angle="270.000000" type="train" speed="11.500000" pos="270.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="136.000">
+        <vehicle id="trainBA" x="718.000000" y="0.000000" angle="270.000000" type="train" speed="11.750000" pos="282.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="137.000">
+        <vehicle id="trainBA" x="706.000000" y="0.000000" angle="270.000000" type="train" speed="12.000000" pos="294.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="138.000">
+        <vehicle id="trainBA" x="693.750000" y="0.000000" angle="270.000000" type="train" speed="12.250000" pos="306.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="139.000">
+        <vehicle id="trainBA" x="681.250000" y="0.000000" angle="270.000000" type="train" speed="12.500000" pos="318.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="140.000">
+        <vehicle id="trainBA" x="668.500000" y="0.000000" angle="270.000000" type="train" speed="12.750000" pos="331.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="141.000">
+        <vehicle id="trainBA" x="655.500000" y="0.000000" angle="270.000000" type="train" speed="13.000000" pos="344.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="142.000">
+        <vehicle id="trainBA" x="642.250000" y="0.000000" angle="270.000000" type="train" speed="13.250000" pos="357.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="143.000">
+        <vehicle id="trainBA" x="628.750000" y="0.000000" angle="270.000000" type="train" speed="13.500000" pos="371.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="144.000">
+        <vehicle id="trainBA" x="615.000000" y="0.000000" angle="270.000000" type="train" speed="13.750000" pos="385.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="145.000">
+        <vehicle id="trainBA" x="601.000000" y="0.000000" angle="270.000000" type="train" speed="14.000000" pos="399.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="146.000">
+        <vehicle id="trainBA" x="586.750000" y="0.000000" angle="270.000000" type="train" speed="14.250000" pos="413.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="147.000">
+        <vehicle id="trainBA" x="572.250000" y="0.000000" angle="270.000000" type="train" speed="14.500000" pos="427.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="148.000">
+        <vehicle id="trainBA" x="557.500000" y="0.000000" angle="270.000000" type="train" speed="14.750000" pos="442.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="149.000">
+        <vehicle id="trainBA" x="542.500000" y="0.000000" angle="270.000000" type="train" speed="15.000000" pos="457.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="150.000">
+        <vehicle id="trainBA" x="527.250000" y="0.000000" angle="270.000000" type="train" speed="15.250000" pos="472.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="151.000">
+        <vehicle id="trainBA" x="511.750000" y="0.000000" angle="270.000000" type="train" speed="15.500000" pos="488.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="152.000">
+        <vehicle id="trainBA" x="496.000000" y="0.000000" angle="270.000000" type="train" speed="15.750000" pos="504.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="153.000">
+        <vehicle id="trainBA" x="480.000000" y="0.000000" angle="270.000000" type="train" speed="16.000000" pos="520.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="154.000">
+        <vehicle id="trainBA" x="463.750000" y="0.000000" angle="270.000000" type="train" speed="16.250000" pos="536.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="155.000">
+        <vehicle id="trainBA" x="447.250000" y="0.000000" angle="270.000000" type="train" speed="16.500000" pos="552.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="156.000">
+        <vehicle id="trainBA" x="430.500000" y="0.000000" angle="270.000000" type="train" speed="16.750000" pos="569.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="157.000">
+        <vehicle id="trainBA" x="413.500000" y="0.000000" angle="270.000000" type="train" speed="17.000000" pos="586.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="158.000">
+        <vehicle id="trainBA" x="396.250000" y="0.000000" angle="270.000000" type="train" speed="17.250000" pos="603.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="159.000">
+        <vehicle id="trainBA" x="378.750000" y="0.000000" angle="270.000000" type="train" speed="17.500000" pos="621.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="160.000">
+        <vehicle id="trainBA" x="361.000000" y="0.000000" angle="270.000000" type="train" speed="17.750000" pos="639.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="161.000">
+        <vehicle id="trainBA" x="343.000000" y="0.000000" angle="270.000000" type="train" speed="18.000000" pos="657.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="162.000">
+        <vehicle id="trainBA" x="324.750000" y="0.000000" angle="270.000000" type="train" speed="18.250000" pos="675.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="163.000">
+        <vehicle id="trainBA" x="306.250000" y="0.000000" angle="270.000000" type="train" speed="18.500000" pos="693.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="164.000">
+        <vehicle id="trainBA" x="287.500000" y="0.000000" angle="270.000000" type="train" speed="18.750000" pos="712.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="165.000">
+        <vehicle id="trainBA" x="268.500000" y="0.000000" angle="270.000000" type="train" speed="19.000000" pos="731.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="166.000">
+        <vehicle id="trainBA" x="249.250000" y="0.000000" angle="270.000000" type="train" speed="19.250000" pos="750.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="167.000">
+        <vehicle id="trainBA" x="229.750000" y="0.000000" angle="270.000000" type="train" speed="19.500000" pos="770.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="168.000">
+        <vehicle id="trainBA" x="210.000000" y="0.000000" angle="270.000000" type="train" speed="19.750000" pos="790.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="169.000">
+        <vehicle id="trainBA" x="190.000000" y="0.000000" angle="270.000000" type="train" speed="20.000000" pos="810.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="170.000">
+        <vehicle id="trainBA" x="169.750000" y="0.000000" angle="270.000000" type="train" speed="20.250000" pos="830.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="171.000">
+        <vehicle id="trainBA" x="149.250000" y="0.000000" angle="270.000000" type="train" speed="20.500000" pos="850.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="172.000">
+        <vehicle id="trainBA" x="128.500000" y="0.000000" angle="270.000000" type="train" speed="20.750000" pos="871.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="173.000">
+        <vehicle id="trainBA" x="107.500000" y="0.000000" angle="270.000000" type="train" speed="21.000000" pos="892.500000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="174.000">
+        <vehicle id="trainBA" x="86.250000" y="0.000000" angle="270.000000" type="train" speed="21.250000" pos="913.750000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="175.000">
+        <vehicle id="trainBA" x="64.750000" y="0.000000" angle="270.000000" type="train" speed="21.500000" pos="935.250000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="176.000">
+        <vehicle id="trainBA" x="43.000000" y="0.000000" angle="270.000000" type="train" speed="21.750000" pos="957.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="177.000">
+        <vehicle id="trainBA" x="21.000000" y="0.000000" angle="270.000000" type="train" speed="22.000000" pos="979.000000" lane="BA_0" slope="0.000000" acceleration="0.250000"/>
+    </timestep>
+    <timestep time="178.000"/>
+    <timestep time="179.000"/>
+</fcd-export>

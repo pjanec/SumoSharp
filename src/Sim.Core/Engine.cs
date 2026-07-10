@@ -620,6 +620,19 @@ public sealed class Engine : IEngine
     // false (queued for a later step).
     private bool TryInsertOnLane(VehicleRuntime v, string laneId)
     {
+        // R3 (rail bidi): MSLane::isInsertionSuccess (MSLane.cpp:843-846 for the departure lane,
+        // :999-1002 for each forward route lane up to the first rail signal) refuses to insert a
+        // rail vehicle while the bidi partner of a lane it will occupy carries a vehicle
+        // (getBidiLane()->getVehicleNumberWithPartials() > 0). This is SUMO's no-signal
+        // single-track deadlock avoidance: a train onto a shared track waits until the opposing
+        // train has cleared it. R3 has no rail signals, so the whole forward route is checked.
+        // Inert for road vehicles (rail-only) and non-bidi lanes (TryGetBidiLaneId returns null),
+        // so every road scenario's insertion is byte-identical.
+        if (RailBidiTrackOccupied(v))
+        {
+            return false;
+        }
+
         var insertPos = v.Def.DepartPos;
 
         // MSLane::getLastVehicleInformation / getLeader (same-lane branch): nearest already-
@@ -723,6 +736,44 @@ public sealed class Engine : IEngine
 
         v.Inserted = true;
         return true;
+    }
+
+    // R3 (rail bidi): true iff `v` is a rail vehicle AND the bidi partner of any lane on its planned
+    // route carries an active vehicle -- SUMO's no-signal single-track deadlock guard
+    // (MSLane::isInsertionSuccess, MSLane.cpp:843-846 + :999-1002). Walks the vehicle's whole
+    // forward lane sequence (R3 has no rail signals, so the firstRailSignal cut-off never triggers).
+    // Occupancy is "an active vehicle whose current lane IS the bidi partner"; the long-train
+    // partial-occupancy of a straddled downstream lane (getVehicleNumberWithPartials) is not needed
+    // by the committed single-shared-edge rail meet and is left for a scenario that exercises it.
+    // Returns false immediately for road vehicles and for a route with no bidi lane, so every road
+    // scenario's insertion path is byte-identical.
+    private bool RailBidiTrackOccupied(VehicleRuntime v)
+    {
+        if (!VTypeDefaults.IsRailway(v.VType))
+        {
+            return false;
+        }
+
+        var route = _demand!.RoutesById[v.Def.RouteId];
+        var (poolSeq, _) = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, v.Def.DepartLaneIndex);
+        foreach (var handle in poolSeq)
+        {
+            var bidiLaneId = _network.TryGetBidiLaneId(_network.LanesByHandle[handle].Id);
+            if (bidiLaneId is null)
+            {
+                continue;
+            }
+
+            foreach (var other in ActiveVehicles())
+            {
+                if (other.LaneId == bidiLaneId)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     // Cross-junction insertion helper: the rearmost (smallest-Pos) active vehicle on a lane handle,

@@ -173,6 +173,18 @@ public static class VTypeDefaults
     // overridable from rou.xml in our scope; it derives from the (possibly overridden) decel,
     // matching MSCFModel.cpp:61's getCFParam(SUMO_ATTR_APPARENTDECEL, myDecel) default-to-decel
     // fallback.
+    // sumo/src/utils/common/SUMOVehicleClass.cpp:497 isRailway(permissions): true iff the class is
+    // in SVC_RAIL_CLASSES (rail, rail_electric, rail_fast, rail_urban, tram, subway, cable_car) and
+    // not passenger. For a single-vClass vehicle this is just membership in that set. Used by the
+    // engine's R3 rail-bidi insertion check (rail vehicles don't insert onto a bidi track whose
+    // opposing lane is occupied). cable_car is out of the curated table's scope.
+    private static readonly HashSet<string> RailwayVClasses = new(StringComparer.Ordinal)
+    {
+        "rail", "rail_electric", "rail_fast", "rail_urban", "tram", "subway",
+    };
+
+    public static bool IsRailway(ResolvedVType vType) => RailwayVClasses.Contains(vType.VClass);
+
     public static ResolvedVType Resolve(VType vType)
     {
         // SUMOVehicleParserHelper.cpp:1658 getOpt<std::string>(SUMO_ATTR_VCLASS, ..., "") ->
