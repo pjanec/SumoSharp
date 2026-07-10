@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- ER4 behavioral-test fixture: a 2-lane 1000 m edge (e0_0 right / e0_1 left). A slow regular
+         car (car0, maxSpeed 6) and a blue-light EMERGENCY vehicle (ev, hasBluelight) both travel in
+         the RIGHT lane e0_0; the EV starts behind and catches up. car0 starts in the right lane so
+         ordinary keep-right/speed-gain never move it (keep-right is inert on the rightmost lane and
+         car0 has no leader), which makes the give-way lane change the ONLY thing that can move it
+         (a non-vacuous anchor). Give-way execution (multi-lane): once the EV is within the 25 m siren
+         range in car0's own lane, car0 vacates the lane by changing to e0_1, and the EV passes in
+         e0_0. The EV itself holds its lane (a bluelight EV makes no overtaking lane change; it relies
+         on others clearing). There is NO SUMO golden (SUMO forms its rescue lane via sublane lateral
+         alignment; we adapt it to a lane change). Behavioral property tests: car0 changes
+         e0_0 -> e0_1, the EV passes car0, and the two never collide (never share a lane at the same
+         position). -->
+    <vType id="car" vClass="passenger" sigma="0" maxSpeed="6"/>
+    <vType id="emg" vClass="emergency" sigma="0" maxSpeed="13.89" hasBluelight="true"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="car0" type="car" route="r0" depart="0" departPos="60" departSpeed="0" departLane="0"/>
+    <vehicle id="ev"   type="emg" route="r0" depart="0" departPos="0"  departSpeed="0" departLane="0"/>
+</routes>

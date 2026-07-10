@@ -1694,7 +1694,9 @@ public sealed class Engine : IEngine
         // LevelOfService/WillPass; consumed by the ER4/ER5 execution arms and exported for tests.
         if (!prePass)
         {
-            v.GiveWaySide = DetectGiveWaySide(v, lane, time);
+            var (side, evSameLane) = DetectGiveWay(v, lane, time);
+            v.GiveWaySide = side;
+            v.GiveWayEvSameLane = evSameLane;
         }
 
         return new MoveIntent
@@ -1729,20 +1731,29 @@ public sealed class Engine : IEngine
     // corridor down the middle on multi-lane roads, and pulls a lone vehicle to the right edge on a
     // single lane (the case SUMO's lane-based rescue cannot form at all -- ER5's enhancement).
     //
-    // Inert: returns 0 immediately when the scenario has no bluelight EV (_anyBluelight false), or
-    // when the vehicle IS itself a bluelight EV (an EV never gives way to another).
-    private int DetectGiveWaySide(VehicleRuntime v, Lane lane, double time)
+    // Inert: returns (0, false) immediately when the scenario has no bluelight EV (_anyBluelight
+    // false), or when the vehicle IS itself a bluelight EV (an EV never gives way to another).
+    // Also reports (ER4) whether the qualifying EV is in ego's OWN lane -- so the multi-lane
+    // execution arm vacates that lane rather than merely drifting to its edge.
+    private (int Side, bool EvSameLane) DetectGiveWay(VehicleRuntime v, Lane lane, double time)
     {
         if (!_anyBluelight || v.VType.HasBluelight)
         {
-            return 0;
+            return (0, false);
         }
 
         var egoFront = v.Kinematics.Pos;
         var reacting = false;
+        var evSameLane = false;
         foreach (var ev in ActiveVehicles())
         {
-            if (!ev.VType.HasBluelight || ev.EntityIndex == v.EntityIndex || ev.LaneId != v.LaneId && !SameEdge(ev.LaneId, lane.EdgeId))
+            if (!ev.VType.HasBluelight || ev.EntityIndex == v.EntityIndex)
+            {
+                continue;
+            }
+
+            var sameLane = ev.LaneId == v.LaneId;
+            if (!sameLane && !SameEdge(ev.LaneId, lane.EdgeId))
             {
                 continue;
             }
@@ -1753,24 +1764,69 @@ public sealed class Engine : IEngine
             if (behind >= 0.0 && behind <= GiveWayReactionDist)
             {
                 reacting = true;
-                break;
+                // OR across all qualifying EVs -> order-independent (a boolean "does any in-range
+                // EV share ego's lane"), so the result never depends on ActiveVehicles order.
+                evSameLane |= sameLane;
             }
         }
 
         if (!reacting)
         {
-            return 0;
+            return (0, false);
         }
 
         // SUMO's align-RIGHT-unless-leftmost rule (see method header).
         var isLeftmostOfMultiLane = lane.LeftNeighbor < 0 && lane.RightNeighbor >= 0;
-        return isLeftmostOfMultiLane ? +1 : -1;
+        return (isLeftmostOfMultiLane ? +1 : -1, evSameLane);
     }
 
     // Rung ER3: are two lane ids on the same edge? Compares the edge id a lane id embeds; used only
     // on the give-way path (so never on any parity hot path). A lane id is "<edgeId>_<index>".
     private bool SameEdge(string laneId, string edgeId)
         => _network!.LanesById.TryGetValue(laneId, out var l) && l.EdgeId == edgeId;
+
+    // Rung ER4 (give-way execution, multi-lane). When a blue-light EV is approaching in ego's OWN
+    // lane, ego changes to an adjacent lane to VACATE its lane for the EV, reusing the existing
+    // lane-change machinery: the same post-move neighbor snapshot, the same IsTargetLaneSafe gap
+    // veto, and the same CommitLaneChange command-buffer path the speed-gain/keep-right changes
+    // use. Direction preference follows the give-way side (-1 -> right first, +1 -> left first),
+    // falling back to the opposite side when the preferred side has no lane -- so a car pinned on
+    // the leftmost lane of a 2-lane road (GiveWaySide +1, no left neighbour) still vacates to the
+    // right. Returns true iff a change was committed. Does nothing (leaving ER5's within-lane drift
+    // to make room) when the EV is NOT in ego's lane, when there is no adjacent lane at all
+    // (single-lane road -> ER5), or when neither adjacent lane is gap-safe this step. Behavioral
+    // (no golden); reached only for a vehicle with GiveWaySide != 0, i.e. never in a scenario with
+    // no bluelight EV.
+    private bool TryGiveWayLaneChange(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double dt)
+    {
+        if (!v.GiveWayEvSameLane)
+        {
+            return false;
+        }
+
+        // Preferred vacate direction from the give-way side, then the opposite side as a fallback.
+        var firstHandle = v.GiveWaySide < 0 ? lane.RightNeighbor : lane.LeftNeighbor;
+        var secondHandle = v.GiveWaySide < 0 ? lane.LeftNeighbor : lane.RightNeighbor;
+
+        foreach (var targetHandle in stackalloc[] { firstHandle, secondHandle })
+        {
+            if (targetHandle < 0)
+            {
+                continue;
+            }
+
+            var target = _network!.LanesByHandle[targetHandle];
+            var neighLead = neighbors.GetNeighborLeader(v, targetHandle);
+            var neighFollow = neighbors.GetNeighborFollower(v, targetHandle);
+            if (IsTargetLaneSafe(v, neighLead, neighFollow, dt))
+            {
+                CommitLaneChange(v, targetHandle, target.Id);
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     // C4-viii: the pre-pass Krauss finalizeSpeed -- identical to KraussModel.FinalizeSpeed but advances
     // a COPY of this vehicle's dawdle RngState so the pre-pass leaves no side effect (the real
@@ -4460,6 +4516,31 @@ public sealed class Engine : IEngine
             // mid-internal-lane to reach the strategic path, so the guard is never the deciding return.
             if (_network!.LanesByHandle[v.LaneHandle].EdgeId is { Length: > 0 } egoEdge && egoEdge[0] == ':')
             {
+                continue;
+            }
+
+            // Rung ER4 (give-way execution): a blue-light EV drives straight and relies on OTHERS
+            // clearing the way -- it makes no ordinary overtaking/keep-right lane change of its own
+            // (which would otherwise let it speed-gain past the very traffic that is trying to
+            // vacate for it, defeating the rescue lane). Behavioral / opt-in: HasBluelight is set by
+            // no committed parity scenario, so this is inert everywhere give-way is absent.
+            if (v.VType.HasBluelight)
+            {
+                continue;
+            }
+
+            // Rung ER4 (give-way execution, multi-lane): a vehicle actively clearing the way for an
+            // approaching blue-light EV (GiveWaySide != 0, set this step by DetectGiveWay) takes
+            // PRIORITY over -- and SUPPRESSES -- the ordinary keep-right/strategic/speed-gain
+            // decisions, mirroring SUMO's MSDevice_Bluelight disabling an influenced vehicle's
+            // strategic lane-changing (MSDevice_Bluelight.cpp:256, LCA_STRATEGIC_PARAM=-1). When the
+            // EV is in ego's own lane and a safe adjacent lane exists, ego changes into it to VACATE
+            // its lane for the EV; otherwise it holds this lane (ER5's within-lane drift, computed in
+            // the plan phase, pulls it to the edge). Inert (returns immediately) for every vehicle
+            // with GiveWaySide == 0, i.e. every vehicle in every scenario with no bluelight EV.
+            if (v.GiveWaySide != 0)
+            {
+                TryGiveWayLaneChange(v, _network.LanesByHandle[v.LaneHandle], postMoveNeighbors, dt);
                 continue;
             }
 

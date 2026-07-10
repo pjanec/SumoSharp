@@ -274,4 +274,13 @@ internal sealed class VehicleRuntime
     // (Engine._anyBluelight short-circuits detection), so byte-identical-inert wherever give-way
     // does not trigger.
     public int GiveWaySide;
+
+    // Rung ER4 (give-way execution, multi-lane): true iff the approaching blue-light EV that
+    // triggered this vehicle's give-way intent is in this vehicle's OWN lane (so this vehicle
+    // should VACATE the lane by changing to an adjacent one, rather than merely drifting to the
+    // edge). Computed alongside GiveWaySide in the PLAN phase from the frozen start-of-step
+    // snapshot (Engine.DetectGiveWay), read by the ER4 lane-change arm (Engine.TryGiveWayLaneChange).
+    // Default false; left false whenever no EV shares this vehicle's lane, so inert wherever
+    // give-way does not trigger a lane change.
+    public bool GiveWayEvSameLane;
 }

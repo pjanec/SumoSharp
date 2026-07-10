@@ -366,8 +366,20 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
     `VehicleExportSnapshot.GiveWaySide` for the property test. `scenarios/53-giveway-single` fixture
     (no golden); `RungER3GiveWayDetectionTests` (reacts only in range, EV never self-reacts, no-EV
     inert). `dotnet test` = 194; bench hash 909605E965BFFE59 unchanged. parity-reviewer ACCEPT.
-  - **DEFERRED:** give-way EXECUTION (ER4 multi-lane, ER5 single-lane drift). "priority *road*"
-    right-of-way is rung 9b, not this.
+  - **ER4 DONE (give-way EXECUTION, multi-lane, BEHAVIORAL).** When a blue-light EV is approaching in
+    a vehicle's OWN lane (`GiveWayEvSameLane`, computed in the plan phase alongside `GiveWaySide`),
+    that vehicle changes to an adjacent lane to VACATE its lane for the EV, reusing the existing
+    lane-change machinery (post-move neighbor snapshot + `IsTargetLaneSafe` gap veto + `CommitLaneChange`
+    command buffer). Preferred direction from `GiveWaySide`, fallback opposite. A reacting vehicle's
+    give-way change SUPPRESSES its ordinary keep-right/strategic/speed-gain (SUMO's bluelight disables
+    strategic LC); a bluelight EV makes no overtaking change of its own (holds its lane, relies on
+    others clearing). Both branches gated on `HasBluelight`/`GiveWaySide`, so the LC phase is
+    byte-identical for every non-give-way scenario. `scenarios/54-giveway-multi` (2-lane, no golden):
+    car0 in the rightmost lane (keep-right/speed-gain inert -> non-vacuous) vacates to e0_1 as the EV
+    passes in e0_0. `RungER4GiveWayMultiLaneTests` (vacate + EV-passes + no-collision). `dotnet test`
+    = 199; bench hash 909605E965BFFE59 unchanged. parity-reviewer ACCEPT.
+  - **DEFERRED:** give-way EXECUTION ER5 (single-lane lateral drift). "priority *road*" right-of-way
+    is rung 9b, not this.
 
 ### Group B — beyond parity: live external-obstacle reactivity
 
