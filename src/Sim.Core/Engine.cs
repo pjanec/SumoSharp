@@ -1785,6 +1785,18 @@ public sealed class Engine : IEngine
     private bool SameEdge(string laneId, string edgeId)
         => _network!.LanesById.TryGetValue(laneId, out var l) && l.EdgeId == edgeId;
 
+    // Rung ER5: the lateral offset that pulls ego fully to the lane edge on its give-way side,
+    // leaving the maximum gap on the other side for the EV to pass. LatOffset convention is
+    // positive = LEFT of centre, so a side of -1 (clear right) targets the right edge (negative)
+    // and +1 (clear left) targets the left edge (positive). The magnitude places ego's OUTER edge
+    // on the lane boundary: |offset| = laneHalfWidth - egoHalfWidth (clamped at 0 for an ego wider
+    // than its lane, which then simply stays centred).
+    private static double GiveWayEdgeTarget(VehicleRuntime v, Lane lane)
+    {
+        var margin = Math.Max(0.0, lane.Width / 2.0 - v.VType.Width / 2.0);
+        return v.GiveWaySide < 0 ? -margin : margin;
+    }
+
     // Rung ER4 (give-way execution, multi-lane). When a blue-light EV is approaching in ego's OWN
     // lane, ego changes to an adjacent lane to VACATE its lane for the EV, reusing the existing
     // lane-change machinery: the same post-move neighbor snapshot, the same IsTargetLaneSafe gap
@@ -3751,6 +3763,20 @@ public sealed class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // Rung ER5 (give-way execution, single-lane fallback): two vehicles sharing one wide lane
+        // may PASS each other when their lateral footprints no longer overlap -- the same
+        // FootprintsOverlap test B6 uses for a dodged obstacle, applied to a same-lane leader. This
+        // is what lets a blue-light EV get past a give-way vehicle that has drifted to the lane edge
+        // (ER5), AND lets that drifted vehicle NOT slam on the brakes for the EV as it draws
+        // alongside. SELF-GATING and inert for every parity scenario: two lane-CENTRED vehicles
+        // (LatOffset 0, the only state any committed scenario ever has) always overlap, so this never
+        // fires unless a vehicle has genuinely drifted clear -- which only happens on the give-way /
+        // B6 lateral paths, neither of which any golden scenario exercises with a vehicle leader.
+        if (!FootprintsOverlap(leader.Kinematics.LatOffset, leader.VType.Width, ego.Kinematics.LatOffset, ego.VType.Width))
+        {
+            return double.PositiveInfinity;
+        }
+
         var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
         var gap = leaderBackPos - ego.VType.MinGap - ego.Kinematics.Pos;
 
@@ -3980,9 +4006,25 @@ public sealed class Engine : IEngine
         var curLat = v.Kinematics.LatOffset;
         var maxStep = SwerveMaxLateralSpeed * dt;
 
+        // Rung ER5 (give-way execution, single-lane fallback): when this vehicle is clearing the way
+        // for an approaching EV but has NO lane to change into -- a single lane (no left AND no right
+        // neighbour); the multi-lane case is handled by ER4's lane change -- reuse the B6 lateral
+        // drift to PULL TO THE LANE EDGE on the give-way side, making room for the EV within the lane
+        // (the case SUMO's lane-based rescue cannot form at all). When the intent clears (the EV has
+        // passed, GiveWaySide back to 0) it drifts back to centre. This is the ONLY lateral driver on
+        // a single lane, so it takes precedence over the external-obstacle evasion below (a single
+        // lane with both an active EV and an external obstacle is out of scope).
+        var singleLane = lane.LeftNeighbor < 0 && lane.RightNeighbor < 0;
+        if (singleLane && v.GiveWaySide != 0)
+        {
+            return DriftToward(curLat, GiveWayEdgeTarget(v, lane), maxStep);
+        }
+
         if (_obstacles.Count == 0)
         {
-            return curLat; // fast path: nothing to react to (curLat is already 0 in lane-centred mode)
+            // Recentre if a just-cleared give-way (or other) drift left us off-centre; otherwise the
+            // unchanged fast path (curLat is already 0 in lane-centred mode -> returns 0 exactly).
+            return curLat != 0.0 ? DriftToward(curLat, 0.0, maxStep) : curLat;
         }
 
         // Nearest dodgeable obstacle that is ahead-or-ALONGSIDE (its front is not yet behind ego's own

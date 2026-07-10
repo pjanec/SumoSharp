@@ -378,8 +378,20 @@ buffer absorb them); neither is a rewrite. Order within each group respects the 
     car0 in the rightmost lane (keep-right/speed-gain inert -> non-vacuous) vacates to e0_1 as the EV
     passes in e0_0. `RungER4GiveWayMultiLaneTests` (vacate + EV-passes + no-collision). `dotnet test`
     = 199; bench hash 909605E965BFFE59 unchanged. parity-reviewer ACCEPT.
-  - **DEFERRED:** give-way EXECUTION ER5 (single-lane lateral drift). "priority *road*" right-of-way
-    is rung 9b, not this.
+  - **ER5 DONE (give-way EXECUTION, single-lane lateral drift, BEHAVIORAL).** The fallback when no
+    lane change is possible: a vehicle with a give-way intent on a SINGLE lane (no left AND no right
+    neighbour) pulls to the lane edge via a lateral drift (reuses B6's `DriftToward` in
+    `ComputeLateralEvasion`; `GiveWayEdgeTarget` puts its outer edge on the lane boundary), then
+    recenters when the intent clears. A same-lane leader whose lateral footprint no longer overlaps
+    ego's imposes no car-following constraint (`!FootprintsOverlap` in `LeaderFollowSpeedConstraint`),
+    so the EV passes the drifted car within a wide lane AND the drifted car does not brake for the
+    passing EV. SELF-GATING / byte-identical: two lane-centred vehicles (LatOffset 0, the only state
+    any golden scenario has) always overlap, so the hot-path bypass never fires; the drift arm needs
+    `GiveWaySide != 0`. `scenarios/55-giveway-drift` (single 6 m lane, no golden): car0 drifts to the
+    edge, the EV passes centred (no overlap), car0 recenters. `RungER5GiveWayDriftTests` (drift +
+    EV-passes + no-collision + recenter + no hard-brake). `dotnet test` = 202; bench hash
+    909605E965BFFE59 unchanged. parity-reviewer ACCEPT. **A3 give-way arc COMPLETE.**
+    "priority *road*" right-of-way is rung 9b, not this.
 
 ### Group B — beyond parity: live external-obstacle reactivity
 
