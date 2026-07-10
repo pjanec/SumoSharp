@@ -9,9 +9,16 @@ namespace Sim.Ingest;
 // never feed back into the kinematic state.
 public static class LaneGeometry
 {
+    // `latOffset` (B6, default 0) shifts the returned point PERPENDICULAR to the lane direction --
+    // positive = LEFT of travel (the +90 deg / CCW normal of the segment direction, matching
+    // Kinematics.LatOffset's convention). Purely output-side (like the whole method): it moves the
+    // rendered x/y so a lateral swerve is visible, and never feeds back into kinematic state. With
+    // latOffset == 0 (every vehicle in lane-centred mode) the added terms are exactly 0, so this is
+    // byte-identical to the pre-B6 two-argument form.
     public static (double X, double Y, double AngleDeg) PositionAtOffset(
         IReadOnlyList<(double X, double Y)> shape,
-        double offset)
+        double offset,
+        double latOffset = 0.0)
     {
         if (shape.Count == 0)
         {
@@ -41,6 +48,14 @@ public static class LaneGeometry
                 var t = segmentLength > 0 ? Math.Clamp(remaining / segmentLength, 0.0, 1.0) : 0.0;
                 var x = x1 + dx * t;
                 var y = y1 + dy * t;
+                if (latOffset != 0.0 && segmentLength > 0)
+                {
+                    // Left-normal unit vector of the segment direction (dx,dy): rotate +90 deg CCW ->
+                    // (-dy, dx), normalized. Positive latOffset moves the point to the left of travel.
+                    x += latOffset * (-dy / segmentLength);
+                    y += latOffset * (dx / segmentLength);
+                }
+
                 var angleRad = Math.Atan2(dy, dx);
                 var naviDeg = NormalizeDegrees(90.0 - angleRad * 180.0 / Math.PI);
                 return (x, y, naviDeg);

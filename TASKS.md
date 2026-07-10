@@ -547,6 +547,30 @@ A3) remain the byte-for-byte correctness anchor (same discipline as rungs 8b/10/
     junction stops everyone." Full suite: 73 green (70 baseline + 3 new Facts), 0 failed. **B5 (all
     three sub-rungs — dynamic lane leader/follower, lane-change veto, junction foe) is now DONE.**
 
+- **B6. DONE. Emergency LATERAL EVASION (swerve around an external agent that jumped into the lane).**
+  Behavioural (no SUMO golden — the external-agent bar). `ExternalObstacle` gained `LatPos`/`Width` (a
+  lateral footprint; default `Width=0` == the pre-B6 FULL-LANE block, so every existing B1/B5 call is
+  byte-identical). `AddObstacle`/`AddMovingObstacle`/`UpdateObstacle` gained matching optional
+  `latPos`/`width` params (+ an `UpdateObstacle(id, frontPos, speed, latPos)` overload for a walking
+  ped). Three coupled pieces in `Engine.cs`: (1) `ObstacleConstraint` gained a lateral-overlap gate — a
+  finite-width agent only brakes ego while ego's CURRENT footprint overlaps it, so a car that has
+  swerved clear proceeds past instead of stopping; (2) `ComputeLateralEvasion` (called from
+  `ComputeMoveIntent`'s real-pass MoveIntent return, never the willPass pre-pass) picks a target
+  `LatOffset` that clears the agent — WITHIN the ego lane if it fits, else SPILLING into a safe adjacent
+  lane (`NeighborSpillSafe` reuses `IsTargetLaneSafe` against the neighbour's leader/follower), else
+  holds and lets ObstacleConstraint brake to a stop — and drifts toward it bounded by
+  `SwerveMaxLateralSpeed` (2.0 m/s); the threat test uses the CENTRED footprint so an in-progress swerve
+  is sticky (no oscillation) until the agent is fully behind, then recentres. Swerve engages ONLY when
+  braking alone cannot stop in time (the "sudden jump" case); a stoppable agent is still just braked
+  for. (3) `LaneGeometry.PositionAtOffset` gained an optional perpendicular `latOffset` so the swerve is
+  VISIBLE in the emitted x/y (0 for every lane-centred vehicle → byte-identical). INERT when no
+  dodgeable obstacle is present: whole committed suite byte-identical (173 passed / 1 skip), `Sim.Bench`
+  hash unchanged (`909605E965BFFE59`). Property tests `RungB6LateralEvasionTests` (swerve-within-lane +
+  pass, fills-lane → brake-to-stop centred, spill-into-adjacent-lane, Width=0 → stop-dead-as-B1), each
+  with an explicit no-collision assertion (lateral footprints disjoint whenever longitudinally
+  overlapping). NOT a SUMO-parity behaviour (SUMO's sublane model has no emergency ped-swerve); this is
+  the external-agent live-reactivity seam. Parity-reviewer ACCEPT.
+
 ### Group C — realism beyond the deterministic phase-1 core
 
 - **C1. Statistical parity / driver imperfection (`sigma>0`). THE determinism-ladder shift; do

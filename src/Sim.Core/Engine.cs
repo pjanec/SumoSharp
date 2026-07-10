@@ -198,21 +198,27 @@ public sealed class Engine : IEngine
     // needed since observers are not simulated entities).
     public void AddExportObserver(ISimExportObserver observer) => _exportObservers.Add(observer);
 
+    // B6: `latPos`/`width` (default 0/0 == the pre-B6 full-lane-block semantics) give the obstacle a
+    // lateral footprint so a car can SWERVE around it (see ExternalObstacle's header). latPos is the
+    // lane-center-relative lateral centre (positive = LEFT of travel), width its lateral extent.
     public void AddObstacle(string id, string laneId, double frontPos, double length,
-        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity)
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
+        double latPos = 0.0, double width = 0.0)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime);
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width);
     }
 
     // B5-i: MOVING obstacle add-or-replace, same keyed-by-id contract as AddObstacle. Speed/
     // MaxDecel are the only difference from AddObstacle's construction -- AdvanceObstacles (Input
     // phase) dead-reckons FrontPos by Speed*dt every step from here on, and ObstacleConstraint
     // feeds Speed/MaxDecel into KraussModel.FollowSpeed instead of the static predSpeed=0 case.
+    // B6: latPos/width as in AddObstacle (a walking pedestrian with a lateral footprint).
     public void AddMovingObstacle(string id, string laneId, double frontPos, double length,
         double speed, double maxDecel,
-        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity)
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
+        double latPos = 0.0, double width = 0.0)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel);
+        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width);
     }
 
     // B5-i: per-step position/velocity correction from the external owner of this obstacle.
@@ -224,6 +230,17 @@ public sealed class Engine : IEngine
         if (_obstacles.TryGetValue(id, out var obstacle))
         {
             _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed };
+        }
+    }
+
+    // B6: per-step correction that ALSO moves the lateral centre -- for a pedestrian walking (or
+    // lunging) laterally across the lane, the owner reports its new latPos each step. Same
+    // inert-when-absent contract; only FrontPos/Speed/LatPos move.
+    public void UpdateObstacle(string id, double frontPos, double speed, double latPos)
+    {
+        if (_obstacles.TryGetValue(id, out var obstacle))
+        {
+            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos };
         }
     }
 
@@ -962,7 +979,9 @@ public sealed class Engine : IEngine
                 return new MoveIntent
                 {
                     NewSpeed = Math.Max(0.0, v.Kinematics.Speed + v.Acceleration * dt),
-                    LatOffset = 0.0,
+                    // B6: hold the current lateral offset on a non-action (held) step rather than
+                    // snapping to centre (0 for every lane-centred vehicle -> byte-identical).
+                    LatOffset = v.Kinematics.LatOffset,
                     StopUpdate = null,
                 };
             }
@@ -1120,7 +1139,10 @@ public sealed class Engine : IEngine
         return new MoveIntent
         {
             NewSpeed = newSpeed,
-            LatOffset = 0.0,
+            // B6: emergency lateral evasion. Only in the real pass (the willPass pre-pass keeps 0 so it
+            // stays side-effect-free); ComputeLateralEvasion returns 0 for every vehicle with no
+            // dodgeable obstacle in range, so this is inert wherever no lateral obstacle is present.
+            LatOffset = prePass ? 0.0 : ComputeLateralEvasion(v, lane, neighbors, time, dt),
             StopUpdate = stopUpdate,
         };
     }
@@ -3119,6 +3141,16 @@ public sealed class Engine : IEngine
                 continue;
             }
 
+            // B6: a dodgeable (Width > 0) obstacle only blocks ego LONGITUDINALLY while ego's own
+            // lateral footprint still overlaps it. As the car swerves clear (LatOffset drifts away),
+            // the overlap ends and this obstacle stops being a leader -- so the car proceeds PAST it
+            // instead of braking to a stop. A full-lane obstacle (Width <= 0) always overlaps, so the
+            // pre-B6 "stop dead behind it" behaviour is unchanged.
+            if (!ObstacleOverlapsLaterally(obstacle, v.Kinematics.LatOffset, v.VType.Width))
+            {
+                continue;
+            }
+
             if (back < nearestBack)
             {
                 nearestBack = back;
@@ -3154,6 +3186,178 @@ public sealed class Engine : IEngine
             predIsCacc: false,
             levelOfService: v.LevelOfService,
             ballistic: _config!.Ballistic);
+    }
+
+    // B6 emergency lateral-evasion tuning. Not a SUMO-parity behaviour (SUMO's sublane model does
+    // not do emergency ped-swerves) -- this is the external-agent "live reactivity" seam (DESIGN.md),
+    // property-tested, inert when no dodgeable obstacle is present.
+    private const double SwerveMaxLateralSpeed = 2.0; // m/s, how fast the car can slide sideways
+    private const double SwerveLateralGap = 0.5;      // m clearance kept between the car edge and the ped edge
+
+    // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
+    // return the vehicle's new lateral offset this step -- a bounded drift toward a target that
+    // clears the obstacle (within ego's lane if it fits, otherwise spilling into a SAFE adjacent
+    // lane), or toward the lane centre when there is no threat. Returns ego's CURRENT offset (hold)
+    // when the obstacle cannot be cleared at all (too wide / neighbours unsafe), leaving
+    // ObstacleConstraint to brake to a stop behind it. Reads only the frozen snapshot + `_obstacles`;
+    // writes nothing (the caller stores the result in this vehicle's own MoveIntent). Called ONLY in
+    // the real plan pass (never the willPass pre-pass), so it never perturbs willPass.
+    private double ComputeLateralEvasion(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double time, double dt)
+    {
+        var curLat = v.Kinematics.LatOffset;
+        var maxStep = SwerveMaxLateralSpeed * dt;
+
+        if (_obstacles.Count == 0)
+        {
+            return curLat; // fast path: nothing to react to (curLat is already 0 in lane-centred mode)
+        }
+
+        // Nearest dodgeable obstacle that is ahead-or-ALONGSIDE (its front is not yet behind ego's own
+        // back) and that a LANE-CENTRED car would hit. Testing the CENTRED footprint (not ego's current
+        // offset) is what makes an in-progress swerve "sticky": once ego has slid aside, the obstacle it
+        // is passing still counts as a threat -- so it HOLDS the swerve until the obstacle is fully
+        // behind it, instead of recentring alongside the obstacle and oscillating.
+        ExternalObstacle? threat = null;
+        var threatBack = double.PositiveInfinity;
+        foreach (var o in _obstacles.Values)
+        {
+            if (o.Width <= 0.0 || o.StartTime > time || time >= o.EndTime || o.LaneId != v.LaneId)
+            {
+                continue;
+            }
+
+            if (o.FrontPos < v.Kinematics.Pos - v.VType.Length || !ObstacleOverlapsLaterally(o, 0.0, v.VType.Width))
+            {
+                continue; // fully behind ego, or a centred car would clear it anyway
+            }
+
+            var back = o.FrontPos - o.Length;
+            // Nearest by back-position; ties broken by Id (ordinal) so the selection is fully
+            // order-independent even with multiple overlapping obstacles (never a committed scenario,
+            // but keeps the external-agent path deterministic regardless of _obstacles enumeration).
+            if (back < threatBack || (back == threatBack && (threat is null || string.CompareOrdinal(o.Id, threat.Id) < 0)))
+            {
+                threatBack = back;
+                threat = o;
+            }
+        }
+
+        if (threat is null)
+        {
+            return DriftToward(curLat, 0.0, maxStep); // no threat -> recentre toward the lane centre
+        }
+
+        // Swerve ONLY when braking alone cannot stop before the obstacle (the "jumped out, can't stop
+        // in time" case). While the obstacle is still strictly AHEAD and ego is still lane-centred and
+        // CAN stop, just brake (ObstacleConstraint) and stay centred -- the pre-B6 stop-behind
+        // behaviour. Once ego has committed to a swerve (off-centre) or can no longer stop, it evades.
+        var stillAhead = threatBack >= v.Kinematics.Pos;
+        var gap = threatBack - v.VType.MinGap - v.Kinematics.Pos;
+        var brakeGap = KraussModel.BrakeGap(v.Kinematics.Speed, v.VType.Decel, headwayTime: 0.0, dt);
+        if (stillAhead && brakeGap <= gap && Math.Abs(curLat) < 1e-6)
+        {
+            return DriftToward(curLat, 0.0, maxStep);
+        }
+
+        var halfEgo = v.VType.Width / 2.0;
+        var halfLane = lane.Width / 2.0;
+        // Car-centre offsets that put ego's near edge SwerveLateralGap beyond the obstacle's edge, on
+        // the left (higher LatOffset) or right (lower) of it.
+        var targetLeft = (threat.LatPos + threat.Width / 2.0) + SwerveLateralGap + halfEgo;
+        var targetRight = (threat.LatPos - threat.Width / 2.0) - SwerveLateralGap - halfEgo;
+
+        const double eps = 1e-9;
+        var leftWithinLane = targetLeft + halfEgo <= halfLane + eps;
+        var rightWithinLane = targetRight - halfEgo >= -halfLane - eps;
+
+        double? chosen = null;
+        if (leftWithinLane)
+        {
+            chosen = Closer(chosen, targetLeft, curLat);
+        }
+
+        if (rightWithinLane)
+        {
+            chosen = Closer(chosen, targetRight, curLat);
+        }
+
+        if (chosen is null)
+        {
+            // No within-lane clearance -> spill into an adjacent lane on the side that clears the ped,
+            // but only if that neighbour lane exists and is gap-safe (reuses the lane-change safety
+            // check against the neighbour's leader/follower).
+            if (targetLeft + halfEgo > halfLane && lane.LeftNeighbor >= 0
+                && NeighborSpillSafe(v, lane.LeftNeighbor, neighbors, dt))
+            {
+                chosen = Closer(chosen, targetLeft, curLat);
+            }
+
+            if (targetRight - halfEgo < -halfLane && lane.RightNeighbor >= 0
+                && NeighborSpillSafe(v, lane.RightNeighbor, neighbors, dt))
+            {
+                chosen = Closer(chosen, targetRight, curLat);
+            }
+        }
+
+        if (chosen is null)
+        {
+            return curLat; // cannot dodge -> hold; ObstacleConstraint brakes to a stop behind it
+        }
+
+        return DriftToward(curLat, chosen.Value, maxStep);
+    }
+
+    // B6: does the obstacle's lateral footprint [LatPos +/- Width/2] overlap ego's [egoLat +/-
+    // egoWidth/2]? A Width <= 0 obstacle is the pre-B6 FULL-LANE block: always overlapping.
+    private static bool ObstacleOverlapsLaterally(ExternalObstacle obstacle, double egoLat, double egoWidth)
+    {
+        if (obstacle.Width <= 0.0)
+        {
+            return true;
+        }
+
+        var pedLo = obstacle.LatPos - obstacle.Width / 2.0;
+        var pedHi = obstacle.LatPos + obstacle.Width / 2.0;
+        var egoLo = egoLat - egoWidth / 2.0;
+        var egoHi = egoLat + egoWidth / 2.0;
+        return egoLo < pedHi && egoHi > pedLo;
+    }
+
+    // B6: move `cur` toward `target` by at most `maxStep` (the per-step lateral-speed cap).
+    private static double DriftToward(double cur, double target, double maxStep)
+    {
+        var delta = target - cur;
+        if (delta > maxStep)
+        {
+            delta = maxStep;
+        }
+        else if (delta < -maxStep)
+        {
+            delta = -maxStep;
+        }
+
+        return cur + delta;
+    }
+
+    // B6: of `current` and `candidate`, the one requiring the smaller steer from `reference`.
+    private static double? Closer(double? current, double candidate, double reference)
+    {
+        if (current is null)
+        {
+            return candidate;
+        }
+
+        return Math.Abs(candidate - reference) < Math.Abs(current.Value - reference) ? candidate : current;
+    }
+
+    // B6: is spilling into the given adjacent lane safe -- reuses the lane-change gap check against
+    // that neighbour lane's leader/follower (the same IsTargetLaneSafe the strategic/speed-gain
+    // changes use), so a swerve never cuts off a neighbour-lane vehicle.
+    private bool NeighborSpillSafe(VehicleRuntime ego, int neighborHandle, LaneNeighborQuery neighbors, double dt)
+    {
+        var neighLead = neighbors.GetNeighborLeader(ego, neighborHandle);
+        var neighFollow = neighbors.GetNeighborFollower(ego, neighborHandle);
+        return IsTargetLaneSafe(ego, neighLead, neighFollow, dt);
     }
 
     // Execute phase: apply each vehicle's own MoveIntent and integrate position.
@@ -4321,7 +4525,9 @@ public sealed class Engine : IEngine
         foreach (var v in ActiveVehicles())
         {
             var lane = _network!.LanesById[v.LaneId];
-            var (x, y, angle) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos);
+            // B6: render the lateral offset so a swerve is visible in x/y. LatOffset is 0 for every
+            // lane-centred vehicle, so this is byte-identical wherever no evasion is active.
+            var (x, y, angle) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
 
             var snapshot = new VehicleExportSnapshot(
                 entity: v.Entity,

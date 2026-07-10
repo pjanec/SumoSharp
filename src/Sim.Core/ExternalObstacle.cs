@@ -18,6 +18,18 @@ namespace Sim.Core;
 // conditional) -- for a static obstacle it is irrelevant (BrakeGap(0, ...) == 0 regardless), so
 // leaving it at its default here never changes B1 behavior. Both default to the static case
 // (Speed=0, MaxDecel=0) so every existing AddObstacle call site is unaffected.
+//
+// B6 (lateral evasion / swerve): LatPos and Width give the agent a LATERAL footprint within the
+// lane, so a car can swerve AROUND it instead of only stopping behind it (the "pedestrian jumps off
+// the sidewalk into the driving lane" case). LatPos is the agent's lateral CENTER, lane-center-
+// relative in metres, positive = LEFT of travel direction (matching Kinematics.LatOffset). Width is
+// its lateral EXTENT. The default Width = 0 preserves the pre-B6 semantics EXACTLY: an obstacle with
+// no lateral extent is treated as blocking the WHOLE lane width (ObstacleConstraint's lateral-overlap
+// gate returns true unconditionally), so every existing AddObstacle/AddMovingObstacle call site (which
+// never sets Width) still makes cars stop dead behind it, byte-identical. Only an obstacle with an
+// explicit Width > 0 is "dodgeable" -- a car whose own footprint can clear [LatPos - Width/2,
+// LatPos + Width/2] (within its lane, or by spilling into a safe adjacent lane) swerves past instead
+// of stopping.
 public sealed record ExternalObstacle(
     string Id,
     string LaneId,
@@ -26,4 +38,6 @@ public sealed record ExternalObstacle(
     double StartTime,
     double EndTime,
     double Speed = 0.0,
-    double MaxDecel = 0.0);
+    double MaxDecel = 0.0,
+    double LatPos = 0.0,
+    double Width = 0.0);
