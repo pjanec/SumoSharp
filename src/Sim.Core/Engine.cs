@@ -39,6 +39,20 @@ public sealed class Engine : IEngine
     // scenarios. See BuildRailSignalInfo for the conflict-set construction and its scope notes.
     private readonly Dictionary<(string EdgeId, int LaneIndex), string[]> _railSignalConflictLanes = new();
 
+    // R5 (rail crossing): rail_crossing junction info, ported from MSRailCrossing. A rail_crossing
+    // controls the ROAD links across the tracks (road vehicles yield to trains). For each such
+    // junction: the (edge,lane) keys of the controlled ROAD approach lanes, and the internal RAIL
+    // via-lane ids whose occupation by a train closes the crossing. All empty for any net with no
+    // rail_crossing junction, so the crossing constraint is a no-op (inert-when-absent) elsewhere.
+    private readonly Dictionary<(string EdgeId, int LaneIndex), string> _railCrossingRoadLane = new();
+    private readonly Dictionary<string, string[]> _railCrossingViaLanes = new();
+    // Per-crossing state machine (MSRailCrossing::updateCurrentPhase): myStep 0='G' 1='y' 2='r'
+    // 3='u', and the next-switch time. Reset at the top of every Run(). _railCrossingState is the
+    // current road-link state char each step reads.
+    private readonly Dictionary<string, int> _railCrossingStep = new();
+    private readonly Dictionary<string, double> _railCrossingNextSwitch = new();
+    private readonly Dictionary<string, char> _railCrossingState = new();
+
     // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), keyed by
     // VehicleRuntime.EntityIndex -- replaces the old per-vehicle `Queue<StopRuntime> Stops`
     // managed field. Populated once at LoadScenario, ONLY for vehicles that actually have stops
@@ -348,6 +362,10 @@ public sealed class Engine : IEngine
         // (cold path, per LoadScenario). Empty for any network without a rail_signal junction.
         BuildRailSignalInfo();
 
+        // R5 (rail crossing): precompute each rail_crossing junction's controlled road lanes and
+        // rail via-lanes once here. Empty for any network without a rail_crossing junction.
+        BuildRailCrossingInfo();
+
         _vehicles.Clear();
         // D3: side storage is keyed by EntityIndex (== _vehicles list index) -- clear it in
         // lockstep with _vehicles so a re-LoadScenario on the same Engine instance never leaves
@@ -456,6 +474,15 @@ public sealed class Engine : IEngine
             actuated.Reset();
         }
 
+        // R5 (rail crossing): reset every crossing's phase state machine so a re-Run() starts the
+        // timeline from scratch (green, next switch at Begin). No-op when there are no crossings.
+        foreach (var junctionId in _railCrossingViaLanes.Keys)
+        {
+            _railCrossingStep[junctionId] = 0;
+            _railCrossingNextSwitch[junctionId] = _config.Begin;
+            _railCrossingState[junctionId] = 'G';
+        }
+
         for (var step = 0; step < steps; step++)
         {
             var time = _config.Begin + step * dt;
@@ -503,6 +530,12 @@ public sealed class Engine : IEngine
             // every B1 obstacle) obstacles are untouched by this call, so this is a pure no-op
             // for every existing obstacle-free or static-obstacle scenario/test.
             AdvanceObstacles(time, dt);
+
+            // [SystemPhase.Input] R5: advance every rail_crossing's phase state machine from the
+            // FROZEN start-of-step train positions, BEFORE PlanMovements, so the road vehicle's Plan
+            // reads a settled crossing state this step (same discipline as the obstacle/TLS advances
+            // above). No-op for every net with no rail_crossing junction.
+            AdvanceRailCrossings(time);
 
             // [SystemPhase.Simulation] Plan/execute contract (DESIGN.md): plan reads
             // start-of-step state and writes only MoveIntent; execute applies all intents
@@ -981,6 +1014,213 @@ public sealed class Engine : IEngine
         return false;
     }
 
+    // R5 (rail crossing): default MSRailCrossing timing parameters (MSRailCrossing.cpp:57-64
+    // getParameter defaults). All in seconds (== SUMOTime steps at step-length 1). Not overridden
+    // by any committed scenario, so the parsed constants stand.
+    private const double RailCrossingYellowTime = 5.0;   // "yellow-time"
+    private const double RailCrossingOpeningTime = 3.0;  // "opening-time" (red-yellow while opening)
+    private const double RailCrossingOpeningDelay = 3.0; // "opening-delay"
+    private const double RailCrossingMinGreen = 5.0;     // "min-green"
+
+    // R5 (rail crossing): precompute each rail_crossing junction's controlled ROAD approach lanes
+    // and the internal RAIL via-lanes whose occupation closes the crossing. A rail_crossing's
+    // <connection>s carry tl="<junction id>": the road links have linkIndex >= 0 (controlled), the
+    // rail links have linkIndex < 0 (uncontrolled -- trains pass freely, but occupying the crossing
+    // closes it). Ported from MSRailCrossing::init's split of myLinks (road) vs myIncomingRailLinks.
+    private void BuildRailCrossingInfo()
+    {
+        _railCrossingRoadLane.Clear();
+        _railCrossingViaLanes.Clear();
+        _railCrossingStep.Clear();
+        _railCrossingNextSwitch.Clear();
+        _railCrossingState.Clear();
+        if (_network is null)
+        {
+            return;
+        }
+
+        foreach (var junction in _network.Junctions)
+        {
+            if (junction.Type != "rail_crossing")
+            {
+                continue;
+            }
+
+            var viaLanes = new List<string>();
+            foreach (var conn in _network.Connections)
+            {
+                if (conn.Tl != junction.Id)
+                {
+                    continue;
+                }
+
+                if (conn.LinkIndex is { } li && li >= 0)
+                {
+                    // Controlled road approach lane -- the car yields here.
+                    _railCrossingRoadLane[(conn.From, conn.FromLane)] = junction.Id;
+                }
+                else if (conn.Via is not null && !viaLanes.Contains(conn.Via))
+                {
+                    // Uncontrolled rail link through the crossing -- its via lane is what a train
+                    // occupies while physically on the crossing.
+                    viaLanes.Add(conn.Via);
+                }
+            }
+
+            _railCrossingViaLanes[junction.Id] = viaLanes.ToArray();
+            _railCrossingStep[junction.Id] = 0;
+            _railCrossingNextSwitch[junction.Id] = _config?.Begin ?? 0.0;
+            _railCrossingState[junction.Id] = 'G';
+        }
+    }
+
+    // R5 (rail crossing): advance every rail_crossing's phase state machine one step -- a scoped port
+    // of MSRailCrossing::updateCurrentPhase (MSRailCrossing.cpp:120). Runs once per step in the Input
+    // phase (before PlanMovements) off the FROZEN start-of-step train positions, so the road vehicle's
+    // Plan reads a settled crossing state (CLAUDE.md rule 2). The crossing closes while a train
+    // physically occupies a rail via-lane (getViaLane()->getVehicleNumberWithPartials() > 0, line 136),
+    // then runs the opening sequence (red -> red-yellow -> green) before reopening. SCOPED OUT
+    // (deferred, not exercised by the committed anchor scenarios/51-rail-crossing, whose road vehicle
+    // only reacts once the train is physically on the crossing): the approaching-train ARRIVAL-TIME
+    // prediction arm (avi.arrivalTime/leavingTime vs time-gap, lines 128-134) that pre-closes the
+    // crossing before the train arrives -- this port closes purely on physical occupancy. No-op for
+    // any net without a rail_crossing junction.
+    private void AdvanceRailCrossings(double time)
+    {
+        if (_railCrossingViaLanes.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var junctionId in _railCrossingViaLanes.Keys)
+        {
+            var occupied = false;
+            foreach (var viaLaneId in _railCrossingViaLanes[junctionId])
+            {
+                foreach (var other in ActiveVehicles())
+                {
+                    if (VehicleBodyOccupies(other, viaLaneId))
+                    {
+                        occupied = true;
+                        break;
+                    }
+                }
+
+                if (occupied)
+                {
+                    break;
+                }
+            }
+
+            // MSRailCrossing.cpp:136-139: while a train occupies the crossing, stayRedUntil is held
+            // DELTA_T + opening-delay ahead of now, i.e. wait = 1 + opening-delay; else wait = 0.
+            var wait = occupied ? 1.0 + RailCrossingOpeningDelay : 0.0;
+            var step = _railCrossingStep[junctionId];
+            var nextSwitch = _railCrossingNextSwitch[junctionId];
+
+            // The base TL logic only re-runs trySwitch (updateCurrentPhase) when the current phase's
+            // scheduled duration elapses; fixed-duration phases (yellow, opening) are not re-checked
+            // until they end. Model that with nextSwitch.
+            if (time >= nextSwitch)
+            {
+                switch (step)
+                {
+                    case 0: // 'G' green: stay open unless a train is (about to be) on the crossing
+                        if (wait == 0.0)
+                        {
+                            nextSwitch = time + 1.0;
+                        }
+                        else
+                        {
+                            step = 1;
+                            nextSwitch = time + RailCrossingYellowTime;
+                        }
+
+                        break;
+                    case 1: // 'y' yellow over -> red
+                        step = 2;
+                        nextSwitch = time + Math.Max(1.0, wait);
+                        break;
+                    case 2: // 'r' red: may we start opening?
+                        if (wait == 0.0)
+                        {
+                            step = 3;
+                            nextSwitch = time + RailCrossingOpeningTime;
+                        }
+                        else
+                        {
+                            nextSwitch = time + wait;
+                        }
+
+                        break;
+                    default: // 3: 'u' red-yellow (opening) over
+                        if (wait == 0.0)
+                        {
+                            step = 0;
+                            nextSwitch = time + RailCrossingMinGreen;
+                        }
+                        else
+                        {
+                            step = 2;
+                            nextSwitch = time + wait;
+                        }
+
+                        break;
+                }
+            }
+
+            _railCrossingStep[junctionId] = step;
+            _railCrossingNextSwitch[junctionId] = nextSwitch;
+            _railCrossingState[junctionId] = step switch { 0 => 'G', 1 => 'y', 2 => 'r', _ => 'u' };
+        }
+    }
+
+    // R5 (rail crossing): a road vehicle approaching a rail_crossing whose road link is not green
+    // brakes to the crossing's stop line (road vehicles yield to trains). The crossing's road-link
+    // state is 'G' (go) only when open; 'y'/'r'/'u' all mean stop-if-you-can, handled by the same
+    // stop-line brake a red light uses (RedLightConstraint's tail). +infinity (non-binding) when
+    // this lane is not a controlled crossing approach or the crossing is open. Inert for every net
+    // with no rail_crossing junction (_railCrossingRoadLane empty).
+    private double RailCrossingConstraint(
+        VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (_railCrossingRoadLane.Count == 0
+            || !_railCrossingRoadLane.TryGetValue((lane.EdgeId, lane.Index), out var junctionId))
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (_railCrossingState[junctionId] == 'G')
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Stop-line brake, identical to RedLightConstraint's / RailSignalConstraint's tail: stop at
+        // majorStopOffset = 1.0 m before the crossing, never emergency-braking past a comfortable stop.
+        var seen = lane.Length - v.Kinematics.Pos;
+        var stopDecel = v.VType.Decel;
+        var brakeDist = KraussModel.BrakeGap(v.Kinematics.Speed, stopDecel, headwayTime: 0.0, dt);
+        var canBrakeBeforeLaneEnd = seen >= brakeDist;
+        const double vehicleStopOffset = 0.0;
+        var canBrakeBeforeStopLine = seen - vehicleStopOffset >= brakeDist;
+        if (!canBrakeBeforeStopLine)
+        {
+            return double.PositiveInfinity;
+        }
+
+        const double majorStopOffset = 1.0;
+        const double positionEps = 0.1;
+        var laneStopOffset = majorStopOffset;
+        if (canBrakeBeforeLaneEnd)
+        {
+            laneStopOffset = Math.Min(laneStopOffset, seen - brakeDist);
+        }
+
+        laneStopOffset = Math.Max(positionEps, laneStopOffset);
+        var stopDist = Math.Max(0.0, seen - laneStopOffset);
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
     // Cross-junction insertion helper: the rearmost (smallest-Pos) active vehicle on a lane handle,
     // scanned directly from the engine's vehicle list (the neighbor query is not yet refilled when
     // InsertDepartingVehicles runs at the top of the step). Mirrors LaneNeighborQuery.GetRearmost.
@@ -1338,6 +1578,12 @@ public sealed class Engine : IEngine
         // signal or its conflict lanes are clear (green). Inert for every scenario with no
         // rail_signal junction (_railSignalConflictLanes empty). See RailSignalConstraint.
         vPos = Math.Min(vPos, RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+
+        // Rail crossing (rung R5): a road vehicle yields to a train at a level crossing -- brakes to
+        // the crossing's stop line while it is closed (not green). +infinity (non-binding) when this
+        // lane is not a controlled crossing approach or the crossing is open. Inert for every net
+        // with no rail_crossing junction (_railCrossingRoadLane empty). See RailCrossingConstraint.
+        vPos = Math.Min(vPos, RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
         // right-of-way gate (stop-line brake while a higher-priority foe still approaches) plus

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Level crossing (rung R5): a rail_crossing junction C where a slow road SC/CN crosses a
+         rail line WC/CE. A rail train arrives first and occupies the crossing; the road car,
+         approaching a crossing that is already closed (red) because the train is physically on
+         it, brakes to a stop about 1 m before the crossing and waits. Once the train clears and
+         the crossing's opening sequence (yellow-time / opening-time) completes, the road link
+         goes green and the car proceeds. Rail sigma default 0 gives determinism. -->
+    <vType id="train" vClass="rail" carFollowModel="Krauss"/>
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="rT" edges="WC CE"/>
+    <route id="rC" edges="SC CN"/>
+    <vehicle id="train0" type="train" route="rT" depart="0" departPos="680" departSpeed="20" departLane="0"/>
+    <vehicle id="car0"   type="car"   route="rC" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
