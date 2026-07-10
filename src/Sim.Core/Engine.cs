@@ -4211,6 +4211,12 @@ public sealed partial class Engine : IEngine
     private const double SwerveLateralGap = 0.5;         // m clearance kept between the car edge and the ped edge
     private const double SwervePredictionHorizon = 4.0;  // s cap on how far ahead a lunging agent's lateral motion is extrapolated
 
+    // Rung OV3 (opposite-direction overtake execution): how far ego spills toward the oncoming lane
+    // while overtaking -- one ego-width plus a clearance gap, positive (LEFT, toward the oncoming
+    // lane in right-hand traffic). This puts ego's near edge past a similar-width leader's far edge,
+    // so the same-lane !FootprintsOverlap leader bypass lets ego pass it.
+    private const double OvertakeSpillGap = 0.5;
+
     // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
     // return the vehicle's new lateral offset this step -- a bounded drift toward a target that
     // clears the obstacle (within ego's lane if it fits, otherwise spilling into a SAFE adjacent
@@ -4223,6 +4229,20 @@ public sealed partial class Engine : IEngine
     {
         var curLat = v.Kinematics.LatOffset;
         var maxStep = SwerveMaxLateralSpeed * dt;
+
+        // Rung OV3 (opposite-direction overtake execution): while committed to an overtake
+        // (OvertakeActive, set by DetectOvertake / OV2's gap acceptance), spill laterally toward the
+        // oncoming lane far enough to clear the leader's footprint, so the same-lane
+        // !FootprintsOverlap leader bypass (LeaderFollowSpeedConstraint) lets ego accelerate past it.
+        // When the intent clears -- ego has passed the leader (no longer held up) or the gap
+        // acceptance dropped it because a newly-close oncoming appeared -- OvertakeActive goes false
+        // and ego drifts back to its lane centre via the recenter path below. Takes precedence over
+        // give-way / obstacle drift: a vehicle mid-overtake is committed to this manoeuvre. Inert for
+        // every vehicle with OvertakeActive == false (i.e. every scenario with no lcOpposite vType).
+        if (v.OvertakeActive)
+        {
+            return DriftToward(curLat, v.VType.Width + OvertakeSpillGap, maxStep);
+        }
 
         // Rung ER5 (give-way execution, single-lane fallback): when this vehicle is clearing the way
         // for an approaching EV but has NO lane to change into -- a single lane (no left AND no right
