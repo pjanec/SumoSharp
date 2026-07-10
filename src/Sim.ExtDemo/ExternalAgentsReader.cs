@@ -54,8 +54,8 @@ public static class ExternalAgentsReader
                 EndTime: a.EndTime ?? double.PositiveInfinity,
                 Speed: a.Speed ?? 0.0,
                 MaxDecel: a.MaxDecel,
-                LatFrom: a.LatFrom ?? 0.0,
-                LatTo: a.LatTo ?? 0.0));
+                LatPos: a.LatPos ?? 0.0,
+                LatSpeed: a.LatSpeed ?? 0.0));
         }
 
         return agents;
@@ -79,7 +79,7 @@ public static class ExternalAgentsReader
         public double? EndTime { get; set; }
         public double? Speed { get; set; }
         public double? MaxDecel { get; set; }
-        public double? LatFrom { get; set; }
-        public double? LatTo { get; set; }
+        public double? LatPos { get; set; }
+        public double? LatSpeed { get; set; }
     }
 }

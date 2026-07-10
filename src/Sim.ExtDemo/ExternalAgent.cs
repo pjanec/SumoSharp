@@ -57,8 +57,8 @@ public sealed record ExternalAgentDef(
     double EndTime,
     double Speed,
     double? MaxDecel,
-    double LatFrom,
-    double LatTo)
+    double LatPos,
+    double LatSpeed)
 {
     public const double DefaultMaxDecel = 4.5;
 
@@ -80,18 +80,16 @@ public sealed record ExternalAgentDef(
     // formula. A pedestrian (Speed=0 at the engine) never moves along the lane.
     public double FrontPosAt(double time) => IsCar ? StartPos + Speed * time : StartPos;
 
-    // Linear lateral interpolation across the active window, clamped at the edges so a caller
-    // that evaluates slightly outside [startTime,endTime) (belt-and-suspenders; ActiveAt already
-    // guards real callers) still gets a sane value instead of extrapolating.
-    public double LatAt(double time)
+    // Lateral centre (m from lane centreline, +LEFT of travel -- the engine's B6 convention) at
+    // simulation time `time`, dead-reckoned from LatPos at LatSpeed exactly as
+    // Engine.AdvanceObstacles integrates LatPos += LatSpeed*dt each step while the obstacle is
+    // active. Before StartTime the agent sits at LatPos; from StartTime it advances. This is the
+    // SAME value the engine's ComputeLateralEvasion reads, so the drawn agent lines up with the
+    // footprint the cars actually react to.
+    public double LatPosAt(double time)
     {
-        if (EndTime <= StartTime)
-        {
-            return LatFrom;
-        }
-
-        var t = Math.Clamp((time - StartTime) / (EndTime - StartTime), 0.0, 1.0);
-        return LatFrom + (LatTo - LatFrom) * t;
+        var elapsed = Math.Max(0.0, time - (double.IsNegativeInfinity(StartTime) ? 0.0 : StartTime));
+        return LatPos + LatSpeed * elapsed;
     }
 
     // Combined-FCD / viz vehicle id: prefixed by kind so Sim.Viz's naming-convention resolution

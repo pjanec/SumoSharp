@@ -1,10 +1,11 @@
 {
-  "//": "Schema documented in src/Sim.ExtDemo/ExternalAgent.cs. Each agent is registered with the",
-  "//1": "engine as a longitudinal-only obstacle (AddObstacle for a pedestrian, AddMovingObstacle",
-  "//2": "for a car); latFrom/latTo are used ONLY by this demo's viz, never by the engine. ped1",
-  "//3": "crosses BOTH lanes (blockLaneIds) -- a real crossing pedestrian blocks the whole road,",
-  "//4": "not just the lane it is nominally registered on, else a SUMO car on the other lane",
-  "//5": "would just lane-change around a footprint the engine has no lateral field to see.",
+  "//": "Schema in src/Sim.ExtDemo/ExternalAgent.cs. Agents are registered with the engine via the",
+  "//1": "B6 obstacle API (AddObstacle / AddMovingObstacle) with a real LATERAL footprint",
+  "//2": "(latPos = lateral centre +LEFT of travel, width, latSpeed = lateral velocity). ped1 is a",
+  "//3": "FULL-ROAD crossing: width 0 = full-lane block (the car STOPS dead, does not swerve), and it",
+  "//4": "is registered on BOTH lanes (blockLaneIds) so a car on either lane stops. latPos/latSpeed",
+  "//5": "give it its lateral crossing motion (drawn at the engine-consistent position, and the same",
+  "//6": "value the engine dead-reckons). For the SWERVE behaviour instead, see ext-swerve-demo.",
   "agents": [
     {
       "id": "ped1",
@@ -13,12 +14,12 @@
       "blockLaneIds": ["e0_0"],
       "startPos": 150.0,
       "length": 0.6,
-      "width": 0.5,
+      "width": 0.0,
       "startTime": 8.0,
       "endTime": 16.0,
       "speed": 0.0,
-      "latFrom": -1.6,
-      "latTo": 4.8
+      "latPos": -1.6,
+      "latSpeed": 0.8
     },
     {
       "id": "slowcar1",
@@ -31,8 +32,8 @@
       "endTime": 1000.0,
       "speed": 3.0,
       "maxDecel": 4.5,
-      "latFrom": 0.0,
-      "latTo": 0.0
+      "latPos": 0.0,
+      "latSpeed": 0.0
     }
   ]
 }

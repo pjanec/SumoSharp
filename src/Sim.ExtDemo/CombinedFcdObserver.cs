@@ -59,20 +59,15 @@ public sealed class CombinedFcdObserver : ISimExportObserver, IDisposable
 
             var pos = agent.FrontPosAt(time);
             var lane = _network.LanesById[agent.LaneId];
-            var (cx, cy, angleDeg) = LaneGeometry.PositionAtOffset(lane.Shape, pos);
 
-            // Lateral offset is a PURE visualization overlay (briefing: "the external layer
-            // tracks each agent's lateral offset ITSELF ... uses it ONLY for the VISUALIZATION")
-            // -- the engine only ever saw (laneId, pos) via AddObstacle/AddMovingObstacle above.
-            // naviDegree convention (see LaneGeometry's own header): 0 deg = north (+Y),
-            // increasing clockwise, so forward = (sin(a), cos(a)); rotating that -90 degrees
-            // gives "to the right of travel" = (cos(a), -sin(a)), the positive-lat direction.
-            var lat = agent.LatAt(time);
-            var angleRad = angleDeg * Math.PI / 180.0;
-            var perpX = Math.Cos(angleRad);
-            var perpY = -Math.Sin(angleRad);
-            var x = cx + perpX * lat;
-            var y = cy + perpY * lat;
+            // B6: place the agent CENTRE in world space with the SAME lane->world transform the
+            // engine uses for its collision math (EXTERNAL-AGENTS-VIZ.md section 4):
+            // PositionAtOffset(shape, frontPos - length/2, latPos). The 3-arg overload shifts the
+            // centreline point perpendicular by latPos (+LEFT of travel, the B6 convention), so
+            // the drawn agent box lines up exactly with the footprint the cars react to.
+            var centreAlong = pos - agent.Length / 2.0;
+            var latPos = agent.LatPosAt(time);
+            var (x, y, angleDeg) = LaneGeometry.PositionAtOffset(lane.Shape, centreAlong, latPos);
             var speed = agent.IsCar ? agent.Speed : 0.0;
 
             WriteVehicleRow(agent.RenderId, x, y, angleDeg, agent.RenderType, speed, pos, agent.LaneId);

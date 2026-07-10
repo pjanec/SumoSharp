@@ -1,0 +1,5 @@
+scenario=ext-swerve-demo (external-agent LATERAL swerve demo, B6)
+net=copied from scenarios/_diag/wide-swerve (single 6 m lane e0_0, length 600, one car cruising at 13.89 m/s)
+external-agents.json: 1 pedestrian "lunger" -- jumps in 8 m ahead of the car at t=10 (frontPos 146.9),
+  width 1.2 (partial footprint), latPos 0, latSpeed 2.5 (lunges LEFT faster than the 2 m/s swerve).
+tool=dotnet run --project src/Sim.ExtDemo -- scenarios/_bench/ext-swerve-demo

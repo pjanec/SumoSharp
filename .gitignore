@@ -34,3 +34,6 @@ scenarios/_bench/city-mixed-1k/replay.html
 scenarios/_bench/ext-agents-demo/engine.fcd.xml
 scenarios/_bench/ext-agents-demo/replay.html
 scenarios/_bench/ext-agents-demo/playwright_screenshot.png
+scenarios/_bench/ext-swerve-demo/replay.html
+scenarios/_bench/ext-swerve-demo/combined.fcd.xml
+scenarios/_bench/ext-agents-demo/combined.fcd.xml

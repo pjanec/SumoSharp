@@ -1,0 +1,22 @@
+{
+  "//": "External-agent SWERVE demo (B6). Car cruises at 13.89 m/s on the 6 m lane e0_0 (centre y=-3.00).",
+  "//1": "A pedestrian jumps in 8 m ahead at t=10 (13.89*10+8 = 146.9 m), too close to stop, and LUNGES",
+  "//2": "left across the lane at 2.5 m/s (latSpeed). width 1.2 = a partial footprint, so the engine's",
+  "//3": "ComputeLateralEvasion makes the car SWERVE around it (dodging to the side the ped vacates)",
+  "//4": "rather than stop dead. latPos/latSpeed are the REAL B6 lateral fields the engine reacts to.",
+  "agents": [
+    {
+      "id": "lunger",
+      "kind": "pedestrian",
+      "laneId": "e0_0",
+      "startPos": 146.9,
+      "length": 0.5,
+      "width": 1.2,
+      "startTime": 10.0,
+      "endTime": 14.0,
+      "speed": 0.0,
+      "latPos": 0.0,
+      "latSpeed": 2.5
+    }
+  ]
+}

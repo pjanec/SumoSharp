@@ -96,16 +96,21 @@ internal static class Program
                 }
 
                 var engineObstacleId = agent.EngineLaneIds.Count > 1 ? $"{agent.Id}#{laneId}" : agent.Id;
+                // B6: latPos/width/latSpeed give the agent a LATERAL footprint the engine reacts
+                // to -- a car swerves within its lane around a partial-width agent, spills to the
+                // next lane if it fills this one, and dodges a lunging (latSpeed!=0) agent
+                // predictively. width=0 keeps the pre-B6 full-lane block (car stops dead).
                 if (agent.IsPedestrian)
                 {
-                    engine.AddObstacle(engineObstacleId, laneId, agent.StartPos, agent.Length, agent.StartTime, agent.EndTime);
+                    engine.AddObstacle(engineObstacleId, laneId, agent.StartPos, agent.Length,
+                        agent.StartTime, agent.EndTime, agent.LatPos, agent.Width, agent.LatSpeed);
                 }
                 else
                 {
                     engine.AddMovingObstacle(
                         engineObstacleId, laneId, agent.StartPos, agent.Length,
                         agent.Speed, agent.MaxDecel ?? ExternalAgentDef.DefaultMaxDecel,
-                        agent.StartTime, agent.EndTime);
+                        agent.StartTime, agent.EndTime, agent.LatPos, agent.Width, agent.LatSpeed);
                 }
             }
         }
