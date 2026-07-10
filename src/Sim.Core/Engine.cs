@@ -31,27 +31,33 @@ public sealed class Engine : IEngine
     private readonly List<int> _laneSeqArrival = new();
 
     // R4 (rail signal): for each lane whose outgoing connection is controlled by a rail_signal
-    // junction, the set of "conflict lane" ids that must be clear for the signal to show green --
+    // junction, the set of "conflict lane" HANDLES that must be clear for the signal to show green --
     // ported from MSRailSignal::DriveWay::conflictLaneOccupied (the driveway's forward block's bidi
-    // partners: the opposing lanes on the shared single track). Keyed by (edgeId, laneIndex) of the
-    // approaching (signal-guarded) lane. EMPTY for every scenario with no rail_signal junction, so
-    // the rail-signal constraint is a no-op (inert-when-absent) for all road/rail non-signal
-    // scenarios. See BuildRailSignalInfo for the conflict-set construction and its scope notes.
-    private readonly Dictionary<(string EdgeId, int LaneIndex), string[]> _railSignalConflictLanes = new();
+    // partners: the opposing lanes on the shared single track). This is a DENSE array indexed by the
+    // approaching (signal-guarded) lane's HANDLE (== its index into LanesByHandle): entry `h` is the
+    // conflict-handle set for lane handle `h`, or null when that lane has no rail signal. The whole
+    // array is null when the net has no rail_signal junction, so the hot-path check is a single null
+    // test (inert-when-absent) for all road/rail non-signal scenarios. Built cold in
+    // BuildRailSignalInfo; the per-step constraint only does int-indexed array reads + handle compares
+    // (no string hashing/comparison), matching the engine's dense-handle hot-path idiom.
+    private int[][]? _railSignalConflictLaneHandles;
 
     // R5 (rail crossing): rail_crossing junction info, ported from MSRailCrossing. A rail_crossing
-    // controls the ROAD links across the tracks (road vehicles yield to trains). For each such
-    // junction: the (edge,lane) keys of the controlled ROAD approach lanes, and the internal RAIL
-    // via-lane ids whose occupation by a train closes the crossing. All empty for any net with no
-    // rail_crossing junction, so the crossing constraint is a no-op (inert-when-absent) elsewhere.
-    private readonly Dictionary<(string EdgeId, int LaneIndex), string> _railCrossingRoadLane = new();
-    private readonly Dictionary<string, string[]> _railCrossingViaLanes = new();
-    // Per-crossing state machine (MSRailCrossing::updateCurrentPhase): myStep 0='G' 1='y' 2='r'
-    // 3='u', and the next-switch time. Reset at the top of every Run(). _railCrossingState is the
-    // current road-link state char each step reads.
-    private readonly Dictionary<string, int> _railCrossingStep = new();
-    private readonly Dictionary<string, double> _railCrossingNextSwitch = new();
-    private readonly Dictionary<string, char> _railCrossingState = new();
+    // controls the ROAD links across the tracks (road vehicles yield to trains). Each crossing gets a
+    // dense index (0..N-1). _railCrossingByRoadLaneHandle is indexed by ROAD lane HANDLE -> that
+    // lane's crossing index, or -1 (not a controlled approach); the whole array is null when the net
+    // has no rail_crossing junction. _railCrossingViaLaneHandles[c] is crossing c's internal RAIL
+    // via-lane HANDLES (a train there closes the crossing). All handle-based (int-indexed array reads
+    // + handle compares on the hot path); empty/null when absent, so the crossing paths are a no-op
+    // for every non-crossing net.
+    private int[]? _railCrossingByRoadLaneHandle;
+    private int[][] _railCrossingViaLaneHandles = Array.Empty<int[]>();
+    // Per-crossing (dense index) state machine (MSRailCrossing::updateCurrentPhase): myStep 0='G'
+    // 1='y' 2='r' 3='u', and the next-switch time. Reset at the top of every Run().
+    // _railCrossingState[c] is the current road-link state char crossing c's road vehicles read.
+    private int[] _railCrossingStep = Array.Empty<int>();
+    private double[] _railCrossingNextSwitch = Array.Empty<double>();
+    private char[] _railCrossingState = Array.Empty<char>();
 
     // D3: this vehicle's scheduled stops (Sim.Ingest.VehicleDef.Stops), keyed by
     // VehicleRuntime.EntityIndex -- replaces the old per-vehicle `Queue<StopRuntime> Stops`
@@ -492,11 +498,11 @@ public sealed class Engine : IEngine
 
         // R5 (rail crossing): reset every crossing's phase state machine so a re-Run() starts the
         // timeline from scratch (green, next switch at Begin). No-op when there are no crossings.
-        foreach (var junctionId in _railCrossingViaLanes.Keys)
+        for (var c = 0; c < _railCrossingViaLaneHandles.Length; c++)
         {
-            _railCrossingStep[junctionId] = 0;
-            _railCrossingNextSwitch[junctionId] = _config.Begin;
-            _railCrossingState[junctionId] = 'G';
+            _railCrossingStep[c] = 0;
+            _railCrossingNextSwitch[c] = _config.Begin;
+            _railCrossingState[c] = 'G';
         }
 
         for (var step = 0; step < steps; step++)
@@ -854,12 +860,13 @@ public sealed class Engine : IEngine
     // is unambiguous and each held train simply sees the shared block physically occupied).
     private void BuildRailSignalInfo()
     {
-        _railSignalConflictLanes.Clear();
+        _railSignalConflictLaneHandles = null;
         if (_network is null)
         {
             return;
         }
 
+        int[][]? byLaneHandle = null;
         foreach (var conn in _network.Connections)
         {
             // A rail signal's controlled connection carries tl="<junction id>" where that junction
@@ -875,7 +882,7 @@ public sealed class Engine : IEngine
             // Forward block: walk the route from the link's to-lane until the edge whose downstream
             // node is the NEXT rail signal (inclusive), collecting the lanes the train will occupy.
             // Single continuation per lane in scope; a 64-hop guard bounds any malformed loop.
-            var conflicts = new List<string>();
+            var conflicts = new List<int>();
             var curEdgeId = conn.To;
             var curLaneIndex = conn.ToLane;
             for (var hop = 0; hop < 64; hop++)
@@ -892,10 +899,15 @@ public sealed class Engine : IEngine
                 }
 
                 // The opposing lane on the shared track: a bidi partner of a block lane must be clear.
+                // Store its HANDLE (dense int) so the hot path compares handles, not strings.
                 var bidi = _network.TryGetBidiLaneId(blockLane.Id);
-                if (bidi is not null && !conflicts.Contains(bidi))
+                if (bidi is not null)
                 {
-                    conflicts.Add(bidi);
+                    var bidiHandle = _network.LaneHandleById[bidi];
+                    if (!conflicts.Contains(bidiHandle))
+                    {
+                        conflicts.Add(bidiHandle);
+                    }
                 }
 
                 // Stop the block at the next rail signal (its own driveway starts there).
@@ -917,9 +929,15 @@ public sealed class Engine : IEngine
 
             if (conflicts.Count > 0)
             {
-                _railSignalConflictLanes[(conn.From, conn.FromLane)] = conflicts.ToArray();
+                // Allocate the dense (per-lane-handle) array lazily, only for a net that has a rail
+                // signal -- so it stays null (and the hot-path guard a single null test) otherwise.
+                byLaneHandle ??= new int[_network.LanesByHandle.Count][];
+                var fromLaneHandle = _network.EdgesById[conn.From].Lanes.First(l => l.Index == conn.FromLane).Handle;
+                byLaneHandle[fromLaneHandle] = conflicts.ToArray();
             }
         }
+
+        _railSignalConflictLaneHandles = byLaneHandle;
     }
 
     // R4 (rail signal): the stop-line brake for a train approaching a RED rail signal. The signal on
@@ -931,20 +949,23 @@ public sealed class Engine : IEngine
     // a red traffic light uses (majorStopOffset = DIST_TO_STOPLINE_EXPECT_PRIORITY = 1.0 m before the
     // junction), via the identical stop-line math RedLightConstraint uses (MSVehicle.cpp:2641-2666,
     // 2734). Returns +infinity (non-binding) when there is no rail signal on this lane, or its
-    // conflict lanes are all clear (green). Inert-when-absent: _railSignalConflictLanes is empty for
-    // every scenario with no rail_signal junction, so the first lookup fails and this is a no-op Min
-    // term for all road/rail non-signal scenarios.
+    // conflict lanes are all clear (green). Inert-when-absent: _railSignalConflictLaneHandles is null
+    // for every scenario with no rail_signal junction, so the guard is a single null test and this is
+    // a no-op Min term for all road/rail non-signal scenarios.
     private double RailSignalConstraint(
         VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
-        if (_railSignalConflictLanes.Count == 0
-            || !_railSignalConflictLanes.TryGetValue((lane.EdgeId, lane.Index), out var conflictLanes))
+        // Dense array index by the ego lane's handle (== its LanesByHandle index) -- no string
+        // hashing/comparison. Null array (no rail signal in the net) or null entry (this lane is not
+        // signal-guarded) => non-binding.
+        var conflictLaneHandles = _railSignalConflictLaneHandles?[lane.Handle];
+        if (conflictLaneHandles is null)
         {
             return double.PositiveInfinity;
         }
 
         var red = false;
-        foreach (var conflictLaneId in conflictLanes)
+        foreach (var conflictLaneHandle in conflictLaneHandles)
         {
             foreach (var other in ActiveVehicles())
             {
@@ -953,7 +974,7 @@ public sealed class Engine : IEngine
                     continue;
                 }
 
-                if (VehicleBodyOccupies(other, conflictLaneId))
+                if (VehicleBodyOccupies(other, conflictLaneHandle))
                 {
                     red = true;
                     break;
@@ -998,13 +1019,15 @@ public sealed class Engine : IEngine
         return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
     }
 
-    // R4 (rail signal): does `other`'s physical body currently touch lane `laneId`? A train of length
-    // L occupies [Pos - L, Pos] along its route, spanning back through the lanes it just traversed --
-    // SUMO's getVehicleNumberWithPartials counts a vehicle on every lane its body overlaps. Walks the
-    // vehicle's arrival lane sequence backward from its current (front) lane, consuming L, and returns
-    // true if `laneId` is any lane the body reaches. This partial-occupancy span is what makes a
-    // rail signal stay RED until a long train's TAIL clears the shared block, not just its front.
-    private bool VehicleBodyOccupies(VehicleRuntime other, string laneId)
+    // R4 (rail signal): does `other`'s physical body currently touch lane HANDLE `laneHandle`? A train
+    // of length L occupies [Pos - L, Pos] along its route, spanning back through the lanes it just
+    // traversed -- SUMO's getVehicleNumberWithPartials counts a vehicle on every lane its body
+    // overlaps. Walks the vehicle's arrival lane sequence backward from its current (front) lane,
+    // consuming L, and returns true if `laneHandle` is any lane the body reaches. The arrival pool
+    // ALREADY stores lane HANDLES, so this compares handles directly (no LanesByHandle->Id string
+    // resolution). This partial-occupancy span is what makes a rail signal / crossing stay closed
+    // until a long train's TAIL clears the block, not just its front.
+    private bool VehicleBodyOccupies(VehicleRuntime other, int laneHandle)
     {
         var idx = other.LaneSeqIndex;
         var remaining = other.VType.Length;
@@ -1012,8 +1035,7 @@ public sealed class Engine : IEngine
         var availOnLane = other.Kinematics.Pos;
         while (idx >= 0 && remaining > 1e-9)
         {
-            var curLaneId = _network!.LanesByHandle[_laneSeqArrival[other.LaneSeqStart + idx]].Id;
-            if (curLaneId == laneId)
+            if (_laneSeqArrival[other.LaneSeqStart + idx] == laneHandle)
             {
                 return true;
             }
@@ -1023,7 +1045,7 @@ public sealed class Engine : IEngine
             if (idx >= 0)
             {
                 // A full previous lane's length of body may lie on it.
-                availOnLane = _network.LanesByHandle[_laneSeqArrival[other.LaneSeqStart + idx]].Length;
+                availOnLane = _network!.LanesByHandle[_laneSeqArrival[other.LaneSeqStart + idx]].Length;
             }
         }
 
@@ -1045,16 +1067,18 @@ public sealed class Engine : IEngine
     // closes it). Ported from MSRailCrossing::init's split of myLinks (road) vs myIncomingRailLinks.
     private void BuildRailCrossingInfo()
     {
-        _railCrossingRoadLane.Clear();
-        _railCrossingViaLanes.Clear();
-        _railCrossingStep.Clear();
-        _railCrossingNextSwitch.Clear();
-        _railCrossingState.Clear();
+        _railCrossingByRoadLaneHandle = null;
+        _railCrossingViaLaneHandles = Array.Empty<int[]>();
+        _railCrossingStep = Array.Empty<int>();
+        _railCrossingNextSwitch = Array.Empty<double>();
+        _railCrossingState = Array.Empty<char>();
         if (_network is null)
         {
             return;
         }
 
+        int[]? byRoadLaneHandle = null;
+        var viaLaneHandles = new List<int[]>();
         foreach (var junction in _network.Junctions)
         {
             if (junction.Type != "rail_crossing")
@@ -1062,7 +1086,8 @@ public sealed class Engine : IEngine
                 continue;
             }
 
-            var viaLanes = new List<string>();
+            var crossingIndex = viaLaneHandles.Count;
+            var viaHandles = new List<int>();
             foreach (var conn in _network.Connections)
             {
                 if (conn.Tl != junction.Id)
@@ -1072,22 +1097,51 @@ public sealed class Engine : IEngine
 
                 if (conn.LinkIndex is { } li && li >= 0)
                 {
-                    // Controlled road approach lane -- the car yields here.
-                    _railCrossingRoadLane[(conn.From, conn.FromLane)] = junction.Id;
+                    // Controlled road approach lane -- the car yields here. Map its HANDLE to this
+                    // crossing's dense index (dense int-indexed array; -1 elsewhere).
+                    byRoadLaneHandle ??= NewFilledArray(_network.LanesByHandle.Count, -1);
+                    var roadLaneHandle = _network.EdgesById[conn.From].Lanes.First(l => l.Index == conn.FromLane).Handle;
+                    byRoadLaneHandle[roadLaneHandle] = crossingIndex;
                 }
-                else if (conn.Via is not null && !viaLanes.Contains(conn.Via))
+                else if (conn.Via is not null)
                 {
-                    // Uncontrolled rail link through the crossing -- its via lane is what a train
-                    // occupies while physically on the crossing.
-                    viaLanes.Add(conn.Via);
+                    // Uncontrolled rail link through the crossing -- its via lane HANDLE is what a
+                    // train occupies while physically on the crossing.
+                    var viaHandle = _network.LaneHandleById[conn.Via];
+                    if (!viaHandles.Contains(viaHandle))
+                    {
+                        viaHandles.Add(viaHandle);
+                    }
                 }
             }
 
-            _railCrossingViaLanes[junction.Id] = viaLanes.ToArray();
-            _railCrossingStep[junction.Id] = 0;
-            _railCrossingNextSwitch[junction.Id] = _config?.Begin ?? 0.0;
-            _railCrossingState[junction.Id] = 'G';
+            viaLaneHandles.Add(viaHandles.ToArray());
         }
+
+        if (viaLaneHandles.Count > 0)
+        {
+            _railCrossingByRoadLaneHandle = byRoadLaneHandle;
+            _railCrossingViaLaneHandles = viaLaneHandles.ToArray();
+            _railCrossingStep = new int[viaLaneHandles.Count];
+            _railCrossingNextSwitch = new double[viaLaneHandles.Count];
+            _railCrossingState = new char[viaLaneHandles.Count];
+            var begin = _config?.Begin ?? 0.0;
+            for (var c = 0; c < viaLaneHandles.Count; c++)
+            {
+                _railCrossingStep[c] = 0;
+                _railCrossingNextSwitch[c] = begin;
+                _railCrossingState[c] = 'G';
+            }
+        }
+    }
+
+    // Small cold-path helper: a new int[] of `length` filled with `value` (used to init the
+    // road-lane -> crossing-index map to -1, i.e. "not a crossing approach").
+    private static int[] NewFilledArray(int length, int value)
+    {
+        var a = new int[length];
+        Array.Fill(a, value);
+        return a;
     }
 
     // R5 (rail crossing): advance every rail_crossing's phase state machine one step -- a scoped port
@@ -1103,19 +1157,19 @@ public sealed class Engine : IEngine
     // any net without a rail_crossing junction.
     private void AdvanceRailCrossings(double time)
     {
-        if (_railCrossingViaLanes.Count == 0)
+        if (_railCrossingViaLaneHandles.Length == 0)
         {
             return;
         }
 
-        foreach (var junctionId in _railCrossingViaLanes.Keys)
+        for (var crossing = 0; crossing < _railCrossingViaLaneHandles.Length; crossing++)
         {
             var occupied = false;
-            foreach (var viaLaneId in _railCrossingViaLanes[junctionId])
+            foreach (var viaLaneHandle in _railCrossingViaLaneHandles[crossing])
             {
                 foreach (var other in ActiveVehicles())
                 {
-                    if (VehicleBodyOccupies(other, viaLaneId))
+                    if (VehicleBodyOccupies(other, viaLaneHandle))
                     {
                         occupied = true;
                         break;
@@ -1131,8 +1185,8 @@ public sealed class Engine : IEngine
             // MSRailCrossing.cpp:136-139: while a train occupies the crossing, stayRedUntil is held
             // DELTA_T + opening-delay ahead of now, i.e. wait = 1 + opening-delay; else wait = 0.
             var wait = occupied ? 1.0 + RailCrossingOpeningDelay : 0.0;
-            var step = _railCrossingStep[junctionId];
-            var nextSwitch = _railCrossingNextSwitch[junctionId];
+            var step = _railCrossingStep[crossing];
+            var nextSwitch = _railCrossingNextSwitch[crossing];
 
             // The base TL logic only re-runs trySwitch (updateCurrentPhase) when the current phase's
             // scheduled duration elapses; fixed-duration phases (yellow, opening) are not re-checked
@@ -1185,9 +1239,9 @@ public sealed class Engine : IEngine
                 }
             }
 
-            _railCrossingStep[junctionId] = step;
-            _railCrossingNextSwitch[junctionId] = nextSwitch;
-            _railCrossingState[junctionId] = step switch { 0 => 'G', 1 => 'y', 2 => 'r', _ => 'u' };
+            _railCrossingStep[crossing] = step;
+            _railCrossingNextSwitch[crossing] = nextSwitch;
+            _railCrossingState[crossing] = step switch { 0 => 'G', 1 => 'y', 2 => 'r', _ => 'u' };
         }
     }
 
@@ -1196,17 +1250,19 @@ public sealed class Engine : IEngine
     // state is 'G' (go) only when open; 'y'/'r'/'u' all mean stop-if-you-can, handled by the same
     // stop-line brake a red light uses (RedLightConstraint's tail). +infinity (non-binding) when
     // this lane is not a controlled crossing approach or the crossing is open. Inert for every net
-    // with no rail_crossing junction (_railCrossingRoadLane empty).
+    // with no rail_crossing junction (_railCrossingByRoadLaneHandle null).
     private double RailCrossingConstraint(
         VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
-        if (_railCrossingRoadLane.Count == 0
-            || !_railCrossingRoadLane.TryGetValue((lane.EdgeId, lane.Index), out var junctionId))
+        // Dense array index by the ego lane's handle -> its crossing index (-1 = not a controlled
+        // approach). Null array (no crossing in the net) => non-binding. No string lookup.
+        var crossing = _railCrossingByRoadLaneHandle?[lane.Handle] ?? -1;
+        if (crossing < 0)
         {
             return double.PositiveInfinity;
         }
 
-        if (_railCrossingState[junctionId] == 'G')
+        if (_railCrossingState[crossing] == 'G')
         {
             return double.PositiveInfinity;
         }
@@ -1592,13 +1648,13 @@ public sealed class Engine : IEngine
         // whose forward block's opposing (bidi) lane is occupied by another train brakes to a stop at
         // the signal until that block clears. +infinity (non-binding) when this lane has no rail
         // signal or its conflict lanes are clear (green). Inert for every scenario with no
-        // rail_signal junction (_railSignalConflictLanes empty). See RailSignalConstraint.
+        // rail_signal junction (_railSignalConflictLaneHandles null). See RailSignalConstraint.
         vPos = Math.Min(vPos, RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Rail crossing (rung R5): a road vehicle yields to a train at a level crossing -- brakes to
         // the crossing's stop line while it is closed (not green). +infinity (non-binding) when this
         // lane is not a controlled crossing approach or the crossing is open. Inert for every net
-        // with no rail_crossing junction (_railCrossingRoadLane empty). See RailCrossingConstraint.
+        // with no rail_crossing junction (_railCrossingByRoadLaneHandle null). See RailCrossingConstraint.
         vPos = Math.Min(vPos, RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
