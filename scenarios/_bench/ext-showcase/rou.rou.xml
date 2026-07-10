@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- ext-showcase: several external-agent B1/B5/B6 reactions in ONE combined replay (see
+         NOTES.md). All vehicles sigma=0, deterministic. Route "major" (WJ,JE, 2 lanes) hosts
+         four SUMO cars, staged SEQUENTIALLY (each solo on the approach, well after the previous
+         one has cleared it) against its own external agent (stop/swerve/spill/follow); this
+         sidesteps the engine's own keep-right lane-changer merging one free-flowing car onto
+         another free-flowing car's exact lane position when BOTH are simultaneously unconstrained
+         on a 2-lane edge (observed in calibration: two sigma=0 cars with identical departure
+         profiles reach identical pos the instant one keep-right-merges into the other's lane;
+         not a scenario this showcase needs to exercise, so it is simply avoided by staggering).
+         route "minor" (SJ,JN, 1 lane) hosts vMinor, which yields at junction J to an external
+         agent placed on the major through movement's internal lane :J_1_0 (B5-iii); it runs on a
+         separate edge so it never interacts with the major-road cars. -->
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="major" edges="WJ JE"/>
+    <route id="minor" edges="SJ JN"/>
+
+    <vehicle id="car_stop" type="car" route="major" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="car_swerve" type="car" route="major" depart="35" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="car_spill" type="car" route="major" depart="70" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="car_follow" type="car" route="major" depart="105" departPos="0" departSpeed="0" departLane="0"/>
+
+    <!-- Junction-yield car: minor route, must yield to the external agent on :J_1_0. -->
+    <vehicle id="vMinor" type="car" route="minor" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

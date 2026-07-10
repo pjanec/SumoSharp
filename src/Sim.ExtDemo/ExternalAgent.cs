@@ -74,11 +74,28 @@ public sealed record ExternalAgentDef(
 
     public bool ActiveAt(double time) => StartTime <= time && time < EndTime;
 
-    // Front position at simulation time `time` -- byte-identical to Engine.AdvanceObstacles'
-    // own dead-reckoning (FrontPos += Speed*dt every step from t=0), verified against
-    // RungB5MovingObstacleTests.ObstacleBackAtExact's same `initialFrontPos + speed*time`
-    // formula. A pedestrian (Speed=0 at the engine) never moves along the lane.
-    public double FrontPosAt(double time) => IsCar ? StartPos + Speed * time : StartPos;
+    // Front position at simulation time `time` -- byte-identical to Engine.AdvanceObstacles' own
+    // dead-reckoning: the obstacle sits at StartPos until StartTime, then advances FrontPos +=
+    // Speed*dt each step while active (Engine.cs AdvanceObstacles' `obstacle.StartTime >= time`
+    // guard), verified against RungB5MovingObstacleTests.ObstacleBackAtExact's same
+    // `initialFrontPos + speed*time` formula for the StartTime<=0 (always-active) case. For a
+    // moving obstacle with StartTime > 0 (e.g. a car that "jumps in" partway through the run, the
+    // same clean-appearance contract EXTERNAL-AGENTS-VIZ.md documents for pedestrians), dead-
+    // reckoning must start from StartTime, not from t=0, or this render-only helper would show the
+    // agent having already been rolling the whole time -- a visible teleport the instant it
+    // activates, out of sync with what the engine actually reacted to. Mirrors LatPosAt's own
+    // elapsed-since-StartTime clamp below. A pedestrian (Speed=0 at the engine) never moves along
+    // the lane regardless.
+    public double FrontPosAt(double time)
+    {
+        if (!IsCar)
+        {
+            return StartPos;
+        }
+
+        var elapsed = Math.Max(0.0, time - (double.IsNegativeInfinity(StartTime) ? 0.0 : StartTime));
+        return StartPos + Speed * elapsed;
+    }
 
     // Lateral centre (m from lane centreline, +LEFT of travel -- the engine's B6 convention) at
     // simulation time `time`, dead-reckoned from LatPos at LatSpeed exactly as

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <!-- Rotated 90 deg from a horizontal-major-road layout (x,y transpose of the original design)
+         so the major road WJ to JE runs VERTICALLY and the minor road SJ to JN runs horizontally:
+         a tall/narrow net.net.xml fits a portrait phone viewport (Sim.Viz's camera fits the
+         SMALLER of width/height ratio; a 1000x400 landscape net collapses to a thin strip on a
+         390x844 canvas, whereas this ~400x1000 portrait net fills it). Lane lengths, the request
+         matrix, and every calibrated `pos` (arc-length along a lane) are UNCHANGED by this
+         rotation; only world x/y (and which world axis is "lateral" for a given lane) differ. -->
+    <node id="W" x="200.0" y="-600.0" type="dead_end"/>
+    <node id="J" x="200.0" y="200.0" type="priority"/>
+    <node id="E" x="200.0" y="400.0" type="dead_end"/>
+    <node id="S" x="0.0" y="200.0" type="dead_end"/>
+    <node id="N" x="400.0" y="200.0" type="dead_end"/>
+</nodes>

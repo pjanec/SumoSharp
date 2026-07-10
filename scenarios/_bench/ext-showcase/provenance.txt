@@ -1,0 +1,47 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-10T01:42:02Z
+command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+# No golden.fcd.xml here: this is a Sim.ExtDemo VISUAL-TEST fixture (external, non-SUMO agents
+#   injected via the B1/B5/B6 obstacle API), not a parity scenario -- there is no SUMO run that
+#   includes the external agents to diff against (same "no golden" status as
+#   scenarios/14-external-obstacle, scenarios/_bench/ext-agents-demo, scenarios/_bench/
+#   ext-swerve-demo).
+# net: hand-authored net (nodes.nod.xml/edges.edg.xml -> net.net.xml via netconvert,
+#   --no-turnarounds, --junctions.corner-detail 0). A priority junction J with a 2-lane major
+#   road WJ->JE (hosts the stop/swerve/spill/follow demos) and a 1-lane minor road SJ->JN (hosts
+#   the junction-yield demo). Laid out with the major road running VERTICALLY and the minor road
+#   HORIZONTALLY (a 90-degree transpose of the natural "major road = horizontal" layout) so the
+#   net's ~400x1000m portrait aspect ratio fills a phone's portrait viewport under Sim.Viz's
+#   fit-to-view camera (which fits the SMALLER of width/height ratio -- a landscape net collapses
+#   to a thin strip on a portrait canvas). See NOTES.md for full behavior-by-behavior details.
+# rou: five SUMO passenger cars (sigma=0). Four on the major route (WJ,JE), staged SEQUENTIALLY
+#   (solo on the 2-lane approach each time) against their own external agent; one (vMinor) on the
+#   minor route (SJ,JN), yielding at junction J to an external agent on the major through
+#   movement's internal lane. See rou.rou.xml's own header comment and NOTES.md.
+# external-agents.json: schema documented in src/Sim.ExtDemo/ExternalAgent.cs. Five agents (one
+#   per behavior): ped_stop (B1 full-lane block -> stop), ped_swerve (B6 partial, too-close ->
+#   within-lane swerve), ped_spill (B6 lane-filling, too-close -> spill to adjacent lane),
+#   slowcar1 (B5-i moving external car -> follow), crossingAgent (B5-iii internal-lane occupant
+#   -> junction yield). All positions calibrated against each car's own free-flow baseline (a
+#   throwaway --agents-less Sim.ExtDemo pass), mirroring RungB6LateralEvasionTests' own
+#   calPos+8m calibration idiom -- see external-agents.json's own per-agent comments and NOTES.md
+#   for the full numeric derivation and FCD verification.
+# vtype defaults: default passenger vClass (VTypeDefaults.RawDefaultsByVClass["passenger"]), no
+#   overrides beyond sigma="0".
+# src/Sim.ExtDemo/ExternalAgent.cs: FrontPosAt (the render-only helper CombinedFcdObserver uses to
+#   draw a MOVING external car) was fixed to dead-reckon from StartTime (matching LatPosAt's
+#   existing elapsed-since-StartTime clamp and Engine.AdvanceObstacles' actual physics), instead
+#   of unconditionally from t=0 -- the old formula only happened to match the engine for the
+#   StartTime<=0 case every prior demo used (e.g. ext-agents-demo's slowcar1, startTime=0.0); this
+#   showcase's slowcar1 (startTime=100.0) needs a car that visibly "jumps in" partway through the
+#   run, which exposed the bug (a rendered teleport the instant the obstacle activated). Purely an
+#   additive fix to a demo-tool render helper -- Sim.Core and every existing external-agent
+#   fixture with StartTime<=0 are byte-identical (elapsed = time - 0 = time, unchanged).
+# input file hashes (sha256):
+input=net.net.xml sha256=e4237f83c0ed16981c443595fc37505905407b4a0740c979fe935dda93ed9b0e
+input=rou.rou.xml sha256=b1e28f4b5f100b38f91e2a224a5b4de9eb7a13b6bfed84aa3669626c5291480e
+input=config.sumocfg sha256=67c5bb9e3dbf9c2cef28230b33141ae562c4c29272ae272d433eabaffb3ec6d4
+input=external-agents.json sha256=1ccfd29561ffc60c6c41359d0932f053fd7cbc8a05f031ad2605778c9365bf6a
+input=nodes.nod.xml sha256=2eec48132711782ecfb2cb960d9cb0073c7b01a005df9ebade35b1062551f8a4
+input=edges.edg.xml sha256=59c41f0d4d3a06a1ba0b487c93ccf28e5a9f1d0af8265074836b3e47fd58d7ec

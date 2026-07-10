@@ -37,3 +37,7 @@ scenarios/_bench/ext-agents-demo/playwright_screenshot.png
 scenarios/_bench/ext-swerve-demo/replay.html
 scenarios/_bench/ext-swerve-demo/combined.fcd.xml
 scenarios/_bench/ext-agents-demo/combined.fcd.xml
+scenarios/_bench/ext-showcase/engine.fcd.xml
+scenarios/_bench/ext-showcase/replay.html
+scenarios/_bench/ext-showcase/combined.fcd.xml
+scenarios/_bench/ext-showcase/playwright_screenshot.png
