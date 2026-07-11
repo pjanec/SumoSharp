@@ -155,6 +155,55 @@ native interop / huge-pages / NUMA — none of which apply here.
 | `GC.AllocateArray(pinned)` for SoA columns | Marginal extra | Yes | Low | Only if profiling shows column GC pauses |
 | Native/unmanaged pool (`NativeMemory`) | No real gain for unmanaged-struct data | Yes, but manual mgmt | High (UAF/leaks) | Skip unless native interop later |
 
+## RESULTS — implemented Layers 0–1 (measured, 4 cores, this VM)
+
+Landed on `main` (perf commits), each parity-gated: full suite **227 passed / 1 skipped** and the
+`Sim.Bench` determinism hash **`909605E965BFFE59` unchanged** (single AND parallel) after every step.
+
+| Change | What | Highway (378) result |
+|---|---|---|
+| **L0a** | `TrajectoryPoint` heap record -> `readonly record struct`; `TrajectorySet` = `List<struct>` append + LAZY sorted index (built off the hot path) | single 2048 -> 3072 steps/s (**1.5x**); GC gen1 3 -> 1 |
+| **L0b** | memoize `ComputeBestLanes` (pure fn of route+edge) in a `ConcurrentDictionary`, state-passing `GetOrAdd` (alloc-free hits, thread-safe) | alloc/veh-step 774 -> 348 B (**-55%**); parallel flips from 0.80x (loss) to **1.22x** (win) |
+| **L1** | size-gated AUTO-parallel: `UseParallelPlan` is an explicit override, else auto when `_vehicles.Count >= 256` (tiny parity scenarios + the test loop stay serial; large city auto-parallelizes) | keeps per-index `Parallel.For` |
+
+City scale (`city-3000`, 756 concurrent): parallel **~2.4x** over single, byte-identical (hashPar ==
+hashA). A CHUNKED range partitioner was tried for L1 and REVERTED: it regressed city from ~2.4x to
+~1.0x because `_vehicles` is sparsely active (7632 total, ~756 active), so static contiguous chunks
+load-imbalance — per-index `Parallel.For`'s work-stealing handles the sparse case, and its overhead is
+negligible post-L0. Highway (378, near the parallel break-even) is noisy at ~0.95–1.7x/run; the
+auto-gate keeps it and everything below 256 serial anyway. Net: parallel is now DEFAULT at scale and a
+clean ~2.4x win at city, with correctness proven byte-identical.
+
+### Corrected finding — the DOMINANT city allocator is INSERTION, not best-lanes
+
+The original roadmap guessed the `744 B -> 9.3 KB/veh-step` city jump was `ComputeBestLanes` LINQ.
+**Per-phase allocation probing (city-mixed-1k, single-thread) disproved that:** L0b's best-lanes memo
+helped highway a lot but barely moved city, because city vehicles have UNIQUE embedded routes so the
+memo never shares. The real per-step allocation split (MiB over 60 steps):
+
+```
+insert=73.6  execute=20.6  postlc=8.3  plan=7.6  willpass=4.3  emit=1.2  reroute=0  refill=0
+```
+
+`InsertDepartingVehicles` (73.6 MiB, ~47% of all alloc) dominates. It resolves each vehicle's route
+to a lane sequence ONCE at depart via `NetworkModel.ResolveSequenceCore`, which is LINQ-dense
+(`.First(pred)`/`.Where().Select().ToList()`/`.OrderBy().First()` per route edge) AND calls the
+UN-memoized internal `ComputeBestLanes` per edge. On unique routes every call is a cache miss, so
+memoization cannot help — this needs a **buffer-pooling rewrite** of `ResolveSequenceCore` +
+`ComputeBestLanes` (loops over reused scratch, `LaneContinuation` as a struct written into a pooled
+span), which is parity-critical (drives every downstream lane decision) and therefore deferred as its
+own careful rung. It is a per-vehicle-ONCE cost (dominates SHORT sims; the per-step allocators below
+dominate LONG sims), and it is SERIAL (Input phase), so reducing it also unblocks parallel scaling.
+
+Remaining per-step allocators to clean up (each helps every step forever, lower risk than insertion):
+- `CrossJunctionLeaderConstraint` — `new List<int>` + a `h => neighbors.GetRearmost(ego, h)` CLOSURE
+  per vehicle per step. Fix: pass a `ReadOnlySpan<int>` over the (plan-phase-stable) `_laneSeqPool`
+  slice, and a generic struct callback (`where T : struct`) instead of the closure -> zero alloc.
+- `LaneSpaceTillLastStanding` (KeepClear) — `new List<VehicleRuntime>` per call; reuse a thread-local
+  scratch buffer.
+- `InsertDepartingVehicles` per-step LINQ — `candidates.OrderBy(...)` (-> stable in-place `Sort`) and
+  `edge.Lanes.First(l => l.Index == ...)` closure (-> manual loop). Parity-safe, quick.
+
 ## Cumulative estimate (4 cores, ~1k+ concurrent, vs today's single-thread)
 
 | Layer | Local win | Cumulative | Risk | Effort |

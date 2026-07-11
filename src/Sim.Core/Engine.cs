@@ -258,7 +258,29 @@ public sealed partial class Engine : IEngine
     // accumulator, no lock, no cross-entity write. That is exactly why plain per-index iteration
     // over `_vehicles` (rather than the ActiveVehicleQuery `foreach`, which is not itself
     // partitionable) is race-free here.
-    public bool UseParallelPlan { get; set; } = false;
+    // Perf (PERF-ROADMAP.md Layer 1): explicit override for the parallel plan phase. `null` (the
+    // default) = AUTO: parallelize a step iff the scenario has at least ParallelPlanThreshold
+    // vehicles (so tiny parity scenarios and small demos stay serial -- no Parallel.ForEach overhead
+    // and a deterministic-timed test loop -- while large city runs parallelize automatically). Set
+    // true/false to FORCE (Sim.Bench sets it explicitly for its single-vs-parallel comparison). The
+    // getter reports the forced value (false when unset) for back-compat.
+    private bool? _forceParallelPlan;
+    public bool UseParallelPlan
+    {
+        get => _forceParallelPlan ?? false;
+        set => _forceParallelPlan = value;
+    }
+
+    // Below this vehicle count a step's plan phase runs serially -- the Parallel.ForEach partition/
+    // task overhead is not worth amortizing, and it keeps every committed parity scenario (all far
+    // smaller) on the serial path. Post-L0 measurement: parallel already wins from ~150 concurrent
+    // vehicles up, so this is a conservative floor. Gated on _vehicles.Count (total demand present),
+    // a cheap O(1) proxy for "big scenario".
+    private const int ParallelPlanThreshold = 256;
+
+    // The per-step decision: an explicit force wins; otherwise auto by scenario size.
+    private bool ShouldParallelizePlan()
+        => _forceParallelPlan ?? (_vehicles.Count >= ParallelPlanThreshold);
 
     // C1-i (TASKS.md "Statistical parity / driver imperfection"): the global seed for every
     // vehicle's per-entity dawdle RNG (Sim.Core.VehicleRng). Each vehicle's RngState is seeded
@@ -1687,8 +1709,14 @@ public sealed partial class Engine : IEngine
         // race-free argument. Indexes over the backing list (not the ActiveVehicleQuery
         // `foreach`) so Parallel.For can partition it; the "inserted, not arrived" guard is
         // re-checked inline per index, matching ActiveVehicleQuery.Enumerator's own predicate.
-        if (UseParallelPlan)
+        if (ShouldParallelizePlan())
         {
+            // L1: per-INDEX Parallel.For. A chunked range partitioner was tried and REVERTED -- it
+            // regressed the city case badly (2.99x -> ~1.0x) because most of _vehicles are not-yet-
+            // departed/arrived (a sparse-active list), so static contiguous chunks load-imbalance;
+            // per-index work-stealing balances the sparse case (its higher overhead is worth it, and
+            // is now negligible next to the plan work post-L0). Each iteration writes only its own
+            // v.Intent (race-free, see UseParallelPlan's header); byte-identical to serial.
             System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
             {
                 var v = _vehicles[i];
@@ -2402,8 +2430,10 @@ public sealed partial class Engine : IEngine
         var willPassSpeedEps = 0.1 * KraussModel.NumericalEps * _config!.StepLength;
         var dt = _config.StepLength;
 
-        if (UseParallelPlan)
+        if (ShouldParallelizePlan())
         {
+            // L1: per-index Parallel.For, matching PlanMovements (see there for why chunking was
+            // reverted). Each iteration writes only its own v.WillPass (race-free); byte-identical.
             System.Threading.Tasks.Parallel.For(0, _vehicles.Count, i =>
             {
                 var v = _vehicles[i];
