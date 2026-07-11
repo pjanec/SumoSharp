@@ -1,0 +1,17 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+parity_mode=statistical (ensemble/aggregate — see TASKS.md Group-E T1)
+ensemble_size=50
+ensemble_seeds=1..50 (SUMO --seed)
+command_per_seed=sumo -c config.sumocfg --seed <N> --fcd-output golden.ensemble/seed<NN>.fcd.xml --precision 6 --no-step-log true
+fcd_precision=6
+compared_statistic=insertion_count (number of DISTINCT vehicle ids that appear in the FCD =
+  number of vehicles the probability flow actually inserted; a vehicle appears in the FCD from its
+  insertion step onward, so distinct-id count == insertions even for cars that do not complete the
+  500 m edge before end=60). Verified equal to the extended-run (--end 300) tripinfo trip count.
+# T1: a single <flow probability="0.15"> over [0,60) on a 500 m single lane (net/rou/config here).
+#   Insertion is gated by entry-lane occupancy (departPos=0, departSpeed=0), so realized insertions
+#   are a Bernoulli-hit stream thinned by the same Krauss insertion gap check SUMO uses. Our per-flow
+#   RNG (SplitMix64) is deliberately NOT SUMO's flow RNG, so a specific run's insertion TIMES do not
+#   match; the parity bar is the ensemble insertion-COUNT distribution (mean/std), exactly the C1/C7
+#   statistical bar. Golden ensemble mean=8.68 std=2.36 over seeds 1..50.

@@ -1,0 +1,7 @@
+{
+  "parityMode": "statistical",
+  "comparedAttributes": ["insertionCount"],
+  "statistical": {
+    "insertionCount": { "mean": 1.5, "std": 1.0 }
+  }
+}
