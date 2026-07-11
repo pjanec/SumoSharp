@@ -75,6 +75,8 @@ internal static class Program
         var fast = false;
         var fastGate = false;
         var spatial = false;
+        var region = false;
+        var regionGrid = 4;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
         string? aggregateTolerancePath = null;
@@ -143,6 +145,13 @@ internal static class Program
                     // identical; a locality experiment). Off by default.
                     spatial = true;
                     break;
+                case "--region":
+                    // Domain decomposition: opt into region-parallel plan/willPass (byte-identical).
+                    region = true;
+                    break;
+                case "--region-grid" when i + 1 < args.Length:
+                    regionGrid = int.Parse(args[++i], CultureInfo.InvariantCulture);
+                    break;
                 case "--fast-gate":
                     // Run the deterministic AND the fast engine on this scenario and assert fast mode
                     // is BEHAVIORALLY sound: 0 gridlock, aggregate parity vs the deterministic run
@@ -197,6 +206,8 @@ internal static class Program
         engine.ParallelExport = parallelExport; // opt-in parallel Export (off = faster on target box)
         engine.FastMode = fast; // opt-in fast mode (off = deterministic/byte-identical path)
         engine.SpatialPlan = spatial; // opt-in spatial plan probe (off = default; byte-identical when on)
+        engine.RegionGrid = regionGrid; // spatial region grid G (regions = G*G); set BEFORE LoadScenario
+        engine.RegionPlan = region; // opt-in region-parallel plan/willPass (byte-identical when on)
 
         engine.LoadScenario(net, rou, cfg);
 

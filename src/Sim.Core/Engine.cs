@@ -273,6 +273,92 @@ public sealed partial class Engine : IEngine
     private int[] _leaderSlotByPacked = System.Array.Empty<int>();
     private int _packedCount;
 
+    // Perf (domain decomposition -- DOMAIN-DECOMP.md): opt-in SPATIAL partitioning of the parallel
+    // plan/willPass. Instead of a per-vehicle Parallel.For (each worker gets an EntityIndex-order,
+    // spatially-INCOHERENT slice whose leaders scatter across the whole ~1.6 MB vehicle set -> DRAM
+    // traffic), group active vehicles into spatial REGIONS (a G x G grid over the network bounding
+    // box) and run one task per region. A region's ~N/G^2 vehicles + their (mostly in-region) leaders
+    // form a small working set that stays in L2, cutting the memory traffic that caps scaling at ~3x.
+    // BYTE-IDENTICAL: the plan writes only each ego's own MoveIntent (order-independent) and reads the
+    // frozen start-of-step neighbour snapshot -- partitioning the WORK changes nothing about the
+    // result. Off by default. `RegionGrid` = G (regions = G^2); set before LoadScenario.
+    public bool RegionPlan;
+    public int RegionGrid = 4;
+    private int[] _laneRegion = System.Array.Empty<int>();
+    private int _regionCount;
+    private List<int>[] _regionActive = System.Array.Empty<List<int>>();
+
+    // Assign every lane to a spatial region (G x G grid tile over the network's lane-centroid bounding
+    // box), once per LoadScenario. A vehicle's region is its current lane's region. Cheap, cold path.
+    private void ComputeLaneRegions()
+    {
+        var laneCount = _network!.LanesByHandle.Count;
+        _laneRegion = new int[laneCount];
+        var cx = new double[laneCount];
+        var cy = new double[laneCount];
+        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+        for (var h = 0; h < laneCount; h++)
+        {
+            var shape = _network.LanesByHandle[h].Shape;
+            double sx = 0, sy = 0;
+            if (shape.Count > 0)
+            {
+                foreach (var p in shape)
+                {
+                    sx += p.X;
+                    sy += p.Y;
+                }
+
+                sx /= shape.Count;
+                sy /= shape.Count;
+            }
+
+            cx[h] = sx;
+            cy[h] = sy;
+            if (sx < minX) minX = sx;
+            if (sx > maxX) maxX = sx;
+            if (sy < minY) minY = sy;
+            if (sy > maxY) maxY = sy;
+        }
+
+        var g = Math.Max(1, RegionGrid);
+        _regionCount = g * g;
+        var wx = Math.Max(1e-9, (maxX - minX) / g);
+        var wy = Math.Max(1e-9, (maxY - minY) / g);
+        for (var h = 0; h < laneCount; h++)
+        {
+            var tx = Math.Min(g - 1, Math.Max(0, (int)((cx[h] - minX) / wx)));
+            var ty = Math.Min(g - 1, Math.Max(0, (int)((cy[h] - minY) / wy)));
+            _laneRegion[h] = (ty * g) + tx;
+        }
+
+        _regionActive = new List<int>[_regionCount];
+        for (var r = 0; r < _regionCount; r++)
+        {
+            _regionActive[r] = new List<int>();
+        }
+    }
+
+    // Group active (Inserted && !Arrived) vehicle indices by their current lane's spatial region.
+    // Rebuilt once per step (serial O(N) scan) before the region-parallel plan/willPass consume it.
+    private void BuildRegionActive()
+    {
+        for (var r = 0; r < _regionCount; r++)
+        {
+            _regionActive[r].Clear();
+        }
+
+        var vehicles = _vehicles;
+        for (var i = 0; i < vehicles.Count; i++)
+        {
+            var v = vehicles[i];
+            if (v.Inserted && !v.Arrived)
+            {
+                _regionActive[_laneRegion[v.LaneHandle]].Add(i);
+            }
+        }
+    }
+
     // Perf (SPATIAL-OPT probe): opt-in for the spatial plan path (iterate `_packed` in (lane,pos)
     // order, same-lane leader read from the adjacent packed slot). OFF by default -> deterministic
     // path (hash 909605E965BFFE59) untouched. Byte-identical when on (the packed leader is the same
@@ -700,6 +786,10 @@ public sealed partial class Engine : IEngine
         // handle space -- cold path (once per LoadScenario call), never per step.
         _neighborQuery = new LaneNeighborQuery(_network.LanesByHandle.Count);
 
+        // Domain decomposition: assign lanes to spatial regions for the region-parallel plan (opt-in
+        // RegionPlan). Cold path, once per load; inert unless RegionPlan is set.
+        ComputeLaneRegions();
+
         // Perf (super-linear fix): size the per-step foe-approach index to the dense handle space and
         // mark internal ('':''-prefixed) lanes once -- BuildFoeApproachIndex only records those, since
         // FindFoeVehicle is only ever queried with a junction-interior lane handle.
@@ -1054,6 +1144,15 @@ public sealed partial class Engine : IEngine
                     var pPk = PhaseStart();
                     BuildPacked(neighbors);
                     PhaseEnd("packed", pPk);
+                }
+
+                // Domain decomposition: group active vehicles by spatial region for the
+                // region-parallel plan/willPass (opt-in RegionPlan). Serial O(N), before the phases.
+                if (RegionPlan)
+                {
+                    var pRg = PhaseStart();
+                    BuildRegionActive();
+                    PhaseEnd("region", pRg);
                 }
             }
 
@@ -2086,6 +2185,29 @@ public sealed partial class Engine : IEngine
                 return;
             }
 
+            // Domain decomposition: one task per spatial REGION (dynamic scheduling balances uneven
+            // region occupancy). Each task processes only its region's vehicles, so a worker's working
+            // set (its vehicles + their mostly-in-region leaders) stays small/L2-resident. Byte-
+            // identical (per-ego-only writes, order-independent). See RegionPlan's header.
+            if (RegionPlan)
+            {
+                System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
+                {
+                    var list = _regionActive[r];
+                    for (var idx = 0; idx < list.Count; idx++)
+                    {
+                        var v = vehicles[list[idx]];
+                        if (v.ReuseIntent)
+                        {
+                            continue;
+                        }
+
+                        v.Intent = ComputeMoveIntent(v, neighbors, time);
+                    }
+                });
+                return;
+            }
+
             System.Threading.Tasks.Parallel.For(0, active.Count, _parallelOptions, k =>
             {
                 var v = vehicles[active[k]];
@@ -2828,6 +2950,24 @@ public sealed partial class Engine : IEngine
             // basis; PrePlanVehicle keeps its own Inserted/Arrived guard for the serial path).
             var active = _activeIndices;
             var vehicles = _vehicles;
+
+            // Domain decomposition: region-parallel willPass (same spatial working-set benefit as the
+            // plan; see RegionPlan's header). Byte-identical -- PrePlanVehicle writes only each ego's
+            // own fields, order-independent (ResolveRightBeforeLeftCycles below is the serial barrier).
+            if (RegionPlan)
+            {
+                System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
+                {
+                    var list = _regionActive[r];
+                    for (var idx = 0; idx < list.Count; idx++)
+                    {
+                        PrePlanVehicle(vehicles[list[idx]], neighbors, time, dt, willPassSpeedEps, eligible);
+                    }
+                });
+                ResolveRightBeforeLeftCycles(dt);
+                return;
+            }
+
             System.Threading.Tasks.Parallel.For(0, active.Count, _parallelOptions, k =>
             {
                 PrePlanVehicle(vehicles[active[k]], neighbors, time, dt, willPassSpeedEps, eligible);
