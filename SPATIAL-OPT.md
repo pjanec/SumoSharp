@@ -24,6 +24,15 @@ and measured @8t (interleaved, same build, flag toggle):
   lanes. There is no cheap shortcut — to build a (lane,pos)-sorted array you must read the data in
   some order, and it's random either way (bucket order ≠ EntityIndex order ≠ heap order).
 
+**Sort-cost measurement (persistent-store viability):** adding a full `Array.Sort` of the CONTIGUOUS
+`_packed` to `BuildPacked` cost only **~115 ms** (packed went 305 → ~420 ms). So a persistent store's
+per-step build ≈ contiguous copy (~cheap, sequential) + sort (~115 ms) ≈ **~150 ms**, vs the current
+**305 ms scattered gather** — roughly half. Projected full outcome (build −155 ms, plan −239 ms, and
+willPass ~−280 ms if extended): **~370 ms wall ≈ ~6%** (3.06× → ~3.27× SUMO). Real, but modest — the
+first genuine wall-mover, though NOT 4× on its own. (An INCREMENTAL re-sort could be even cheaper than
+the full 115 ms sort, since same-lane pos-order is stable — no in-lane passing — so only structural
+movers are out of order; that would push the build below ~150 ms.)
+
 **Verdict:** the sequential-leader mechanism works, but a **rebuild-from-scratch gather each step**
 cannot win — it re-pays the exact bandwidth it saves. **A real win requires a PERSISTENT
 spatially-ordered hot store**: keep `_packed` (or equivalent) sorted by (lane, pos) *across* steps and
