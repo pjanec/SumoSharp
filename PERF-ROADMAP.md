@@ -1,5 +1,12 @@
 # PERF-ROADMAP.md — SIMD & parallelization roadmap
 
+> **📄 Reference documentation — superseded for the on-target work.** The Layer-0/1 allocation &
+> parallelization items in this roadmap have **landed** (byte-identical, parity-gated). The actual
+> on-target (16-core/24-thread Windows) measurement, results, and the definitive experiments log —
+> including which further ideas were tried and **regressed** (per-field SoA, parallel foeIndex, …) —
+> now live in **`PERF-HANDOVER.md`**; read that first for the current perf picture. This file is the
+> original plan, kept for context.
+
 **Read `CLAUDE.md`, `DESIGN.md` first.** This is a design + measurement record for the README's
 in-scope-not-done "SIMD and parallelization" item. It is a PLAN, not an implementation — no engine
 code is changed by this doc. When optimization work starts, it must obey the parity iron law: the

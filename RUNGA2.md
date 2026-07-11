@@ -1,5 +1,9 @@
 # RUNGA2.md — Cold-start briefing for A2 (overtaking / speed-gain lane change)
 
+> **📄 Reference documentation — not an active task list.** A2 (speed-gain / overtaking lane change)
+> has **landed** (engine port DONE, see the "Status update" section below). This file is kept as the
+> design & decision record for that rung. For work that is still open, see `TASKS.md`.
+
 Self-contained plan for **A2: speed-gain (overtaking) lane change** — the LC2013 branch rung 8b
 (keep-right) did NOT port. Read `CLAUDE.md`, `DESIGN.md`, `TASKS.md` (Group A / A2), and the rung-8b
 notes (`ComputeKeepRightDecision` in `src/Sim.Core/Engine.cs`) first. Mirrors `RUNG9B.md`'s role.

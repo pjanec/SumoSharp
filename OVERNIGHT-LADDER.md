@@ -1,5 +1,10 @@
 # OVERNIGHT-LADDER.md — sorted autonomous work queue (flow insertion, warm-start, overtaking)
 
+> **📄 Reference documentation — historical work queue, not active.** The items this queue drove
+> (probabilistic flow F2a/F2b, warm-start, overtaking) have **landed** (see the LANDED markers
+> below). It is kept as the record of that arc's plan and outcomes; anything still open lives in
+> `TASKS.md`.
+
 Three features, decomposed into independently-landable rungs and **sorted to maximise unattended
 runtime**: everything fully unblocked / offline-validatable / low-risk is front-loaded; the
 network-dependent and statistical pieces sit at the very end so a stall there banks everything

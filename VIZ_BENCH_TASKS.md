@@ -1,5 +1,9 @@
 # VIZ_BENCH_TASKS.md — Work queue for `Sim.Viz` + the scaled-city benchmark
 
+> **📄 Reference documentation — historical work queue, not active.** The `Sim.Viz` + scaled-city
+> benchmark track this queue drove has **landed** (see `VIZ_BENCH_ACHIEVEMENTS.md` for what shipped).
+> Kept as the design & decision record; anything still open lives in `TASKS.md`.
+
 A separate task tracker for the two utility tracks described in `VIZ_SPEC.md` and
 `BENCHMARK_SPEC.md`. Same discipline as `TASKS.md`: each task is a **self-contained
 briefing** naming its inputs (source files, target files, command, numeric done-condition)

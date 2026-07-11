@@ -1,5 +1,10 @@
 # RUNG9B.md — Cold-start briefing for priority-junction yielding
 
+> **📄 Reference documentation — not an active task list.** Priority-junction yielding has landed
+> (the engine runs junction scenarios green, e.g. city-3000 with 0 stuck). This file is kept as the
+> design & decision record / cold-start briefing for that rung; the "what remains" sections below are
+> historical (the state going into the rung). For what is still open, see `TASKS.md`.
+
 This is a self-contained plan for **rung 9b: unsignalized priority right-of-way (junction
 yielding)** — the one deliberately-deferred rung. Read this fully, then `CLAUDE.md`, `DESIGN.md`,
 and `TASKS.md` (rung 9 entry) before acting. It exists so a fresh session can pick 9b up cold

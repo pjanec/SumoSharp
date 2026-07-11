@@ -1,5 +1,10 @@
 # OV-REMAINING.md — opposite-direction overtaking: landed + deferred
 
+> **📄 Reference documentation — not an active task list.** The opposite-direction overtaking arc
+> (OV1–OV3) has **landed** on `main` and is green. This file is the design & decision record of what
+> landed and what was deliberately deferred (with the diagnosis). Anything still open is tracked in
+> `TASKS.md`.
+
 The opposite-direction overtaking arc (OV1–OV3) is landed on `main` and green. This records what
 is done, what was deliberately deferred (with the diagnosis), and the design for the rest — so a
 follow-up session can resume without re-deriving it. Same discipline as `C4-VII-REMAINING.md`.

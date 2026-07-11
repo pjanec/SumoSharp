@@ -1,5 +1,10 @@
 # C4-vii remaining work — bootstrap for the next session
 
+> **📄 Reference documentation — not an active task list.** The C4-vii work this file bootstrapped
+> has **landed** (C4-vii-b/c committed, parity-reviewer ACCEPTED; see "What is already DONE" below).
+> It is kept as the design & decision record, including the one deliberately-deferred piece (the
+> keepClear speed-limit addition) documented here. For work that is still open, see `TASKS.md`.
+
 **Read `CLAUDE.md`, `DESIGN.md`, and the `C4-vii` block in `TASKS.md` first.** This doc is the
 self-contained handoff for the two *unfinished* C4-vii sub-bugs. Both turned out to be **structural
 right-of-way (RoW) core ports**, each roughly a full rung with high regression risk — not gate fixes.
