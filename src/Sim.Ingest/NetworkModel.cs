@@ -345,6 +345,12 @@ public sealed record NetworkModel(
         // each hop's incoming connection toLane).
         var arrivalIndex = departLaneIndex;
 
+        // L0c (PERF-ROADMAP.md): compute every edge's route-wide LaneQ in ONE backward pass up front,
+        // rather than re-running the whole backward pass inside the loop for each edge and each hop
+        // (the former O(N^2) ComputeBestLanes calls, each allocating per-edge collections). Lookups
+        // below are byte-identical to ComputeBestLanes(routeEdges, edgeId) -- see ComputeAllBestLanes.
+        var bestByEdge = ComputeAllBestLanes(routeEdges);
+
         for (var i = 0; i < routeEdges.Count; i++)
         {
             var edgeId = routeEdges[i];
@@ -376,7 +382,7 @@ public sealed record NetworkModel(
             else
             {
                 var nextEdgeId = routeEdges[i + 1];
-                var best = ComputeBestLanes(routeEdges, edgeId);
+                var best = bestByEdge[edgeId];
                 var offset = best.First(q => q.LaneIndex == arrivalIndex).BestLaneOffset;
                 var target = arrivalIndex + offset;
 
@@ -441,7 +447,7 @@ public sealed record NetworkModel(
                 // ToLane with the best route-wide continuation (SUMO's bestConnectedNext /
                 // betterContinuation: longest Length, then least |offset|, then lowest index), so the
                 // resolved lane sequence matches updateBestLanes' bestContinuations.
-                var toBest = ComputeBestLanes(routeEdges, toEdgeId);
+                var toBest = bestByEdge[toEdgeId];
                 var toByIndex = toBest.ToDictionary(q => q.LaneIndex);
                 connection = candidates
                     .OrderByDescending(c => toByIndex[c.ToLane].Length)
@@ -612,6 +618,59 @@ public sealed record NetworkModel(
         }
 
         return nextQ;
+    }
+
+    // L0c (PERF-ROADMAP.md): the route-wide form of ComputeBestLanes -- ONE backward pass from the
+    // last route edge down to the first, CAPTURING every edge's LaneQ instead of discarding the
+    // intermediates. ResolveSequenceCore formerly called ComputeBestLanes once per edge (for the
+    // exit-lane offset) AND once per multi-connection hop (for the ToLane ranking); every one of
+    // those calls re-ran the whole backward pass, so a route of N edges cost O(N^2) BackwardPassEdge
+    // invocations at insertion -- and each BackwardPassEdge allocates a fistful of per-edge
+    // collections. This runs the pass ONCE (O(N)) and lets ResolveSequenceCore look each edge's
+    // LaneQ up by id.
+    //
+    // BYTE-IDENTICAL to ComputeBestLanes: for an edge id `e`, ComputeBestLanes(routeEdges, e) threads
+    // the base LaneQ through BackwardPassEdge from lastIndex-1 down to the FIRST index at which `e`
+    // appears and returns that. This single pass threads the exact same nextQ through the exact same
+    // BackwardPassEdge calls in the same order, so `all[firstIndexOf(e)]` equals what
+    // ComputeBestLanes(routeEdges, e) returns. The dictionary keeps the FIRST occurrence per id,
+    // preserving ComputeBestLanes' first-match `edgeIndex` semantics for a route that repeats an edge.
+    private Dictionary<string, IReadOnlyList<LaneContinuation>> ComputeAllBestLanes(IReadOnlyList<string> routeEdges)
+    {
+        // An empty route has no edges to resolve; return an empty map so ResolveSequenceCore's loop
+        // simply doesn't run (byte-identical to the pre-L0c behavior, which never entered the loop).
+        // Not reached by any vehicle -- a real route always has >=1 edge -- but keeps the degenerate
+        // case from indexing routeEdges[-1].
+        if (routeEdges.Count == 0)
+        {
+            return new Dictionary<string, IReadOnlyList<LaneContinuation>>();
+        }
+
+        var lastIndex = routeEdges.Count - 1;
+        var all = new IReadOnlyList<LaneContinuation>[routeEdges.Count];
+
+        var nextQ = EdgesById[routeEdges[lastIndex]].Lanes
+            .OrderBy(l => l.Index)
+            .Select(l => new LaneContinuation(l.Index, AllowsContinuation: true, BestLaneOffset: 0, l.Length))
+            .ToList();
+        all[lastIndex] = nextQ;
+
+        for (var e = lastIndex - 1; e >= 0; e--)
+        {
+            nextQ = BackwardPassEdge(routeEdges[e], routeEdges[e + 1], nextQ);
+            all[e] = nextQ;
+        }
+
+        var byEdge = new Dictionary<string, IReadOnlyList<LaneContinuation>>();
+        for (var i = 0; i < routeEdges.Count; i++)
+        {
+            if (!byEdge.ContainsKey(routeEdges[i]))
+            {
+                byEdge[routeEdges[i]] = all[i];
+            }
+        }
+
+        return byEdge;
     }
 
     // C2-iii: one backward step of MSVehicle::updateBestLanes -- compute edge `edgeId`'s route-wide

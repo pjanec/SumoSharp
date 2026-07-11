@@ -165,6 +165,7 @@ Landed on `main` (perf commits), each parity-gated: full suite **227 passed / 1 
 | **L0a** | `TrajectoryPoint` heap record -> `readonly record struct`; `TrajectorySet` = `List<struct>` append + LAZY sorted index (built off the hot path) | single 2048 -> 3072 steps/s (**1.5x**); GC gen1 3 -> 1 |
 | **L0b** | memoize `ComputeBestLanes` (pure fn of route+edge) in a `ConcurrentDictionary`, state-passing `GetOrAdd` (alloc-free hits, thread-safe) | alloc/veh-step 774 -> 348 B (**-55%**); parallel flips from 0.80x (loss) to **1.22x** (win) |
 | **L1** | size-gated AUTO-parallel: `UseParallelPlan` is an explicit override, else auto when `_vehicles.Count >= 256` (tiny parity scenarios + the test loop stay serial; large city auto-parallelizes) | keeps per-index `Parallel.For` |
+| **L0c** | `ResolveSequenceCore` (per-vehicle-at-insertion) called `ComputeBestLanes` per edge AND per hop, each re-running the whole route-end backward pass -> O(N²) `BackwardPassEdge` calls (each ~10 collection allocs). New `ComputeAllBestLanes` captures EVERY edge's LaneQ from ONE backward pass (O(N)); byte-identical (same threading, first-occurrence dict). | city-mixed-1k total engine alloc 3780 -> 1842 MiB (**-51%**) |
 
 City scale (`city-3000`, 756 concurrent): parallel **~2.4x** over single, byte-identical (hashPar ==
 hashA). A CHUNKED range partitioner was tried for L1 and REVERTED: it regressed city from ~2.4x to
@@ -189,11 +190,14 @@ insert=73.6  execute=20.6  postlc=8.3  plan=7.6  willpass=4.3  emit=1.2  reroute
 to a lane sequence ONCE at depart via `NetworkModel.ResolveSequenceCore`, which is LINQ-dense
 (`.First(pred)`/`.Where().Select().ToList()`/`.OrderBy().First()` per route edge) AND calls the
 UN-memoized internal `ComputeBestLanes` per edge. On unique routes every call is a cache miss, so
-memoization cannot help — this needs a **buffer-pooling rewrite** of `ResolveSequenceCore` +
-`ComputeBestLanes` (loops over reused scratch, `LaneContinuation` as a struct written into a pooled
-span), which is parity-critical (drives every downstream lane decision) and therefore deferred as its
-own careful rung. It is a per-vehicle-ONCE cost (dominates SHORT sims; the per-step allocators below
-dominate LONG sims), and it is SERIAL (Input phase), so reducing it also unblocks parallel scaling.
+memoization cannot help. **DONE (L0c):** the real fix was ALGORITHMIC, not buffer-pooling — the
+dominant cost was `ResolveSequenceCore` calling `ComputeBestLanes` per edge AND per hop, each
+re-running the whole route-end backward pass (O(N²) `BackwardPassEdge` calls, each allocating ~10
+collections). `ComputeAllBestLanes` captures every edge's LaneQ from ONE backward pass (O(N)),
+byte-identical (hash `909605E965BFFE59` unchanged, 227 tests green), cutting city-mixed-1k total
+engine allocation −51% (3780 -> 1842 MiB). It is a per-vehicle-ONCE cost (dominates SHORT sims; the
+per-step allocators below dominate LONG sims), and it is SERIAL (Input phase), so reducing it also
+unblocks parallel scaling.
 
 Remaining per-step allocators to clean up (each helps every step forever, lower risk than insertion):
 - `CrossJunctionLeaderConstraint` — `new List<int>` + a `h => neighbors.GetRearmost(ego, h)` CLOSURE
