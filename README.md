@@ -65,8 +65,10 @@ Decisions run in SUMO's post-move `changeLanes` phase order.
 - ✅ **Keep-right** (Rechtsfahrgebot accumulator)
 - ✅ **Speed-gain / overtaking** (with target-lane safety veto)
 - ✅ **Continuous lane change over time** (`lanechange.duration > 0` — label timing spread across steps)
-- ⏸ Not yet: cooperative LC, physical **lateral position** / sublane model (`MSLCM_SL2015`),
-  opposite-direction driving — see *Not simulated*.
+- ✅ **Opposite-direction overtaking** (`lcOpposite` — spill into the oncoming `bidi` lane past a slow
+  leader, closing-speed gap acceptance, cooperative oncoming shift) — see *Extras* below.
+- ⏸ Not yet: cooperative LC, physical **lateral position** / sublane model (`MSLCM_SL2015`) — see
+  *Not simulated*.
 
 ### Junctions & right-of-way
 
@@ -106,6 +108,12 @@ snapshot** (order-independent, no arrival-time race).
   validated against `duarouter`
 - ✅ **Per-entity seeded RNG** (SplitMix64, hashed from entity id) — thread-order-independent, never
   `System.Random`
+- ✅ **Demand insertion** — `<flow>` (period / vehsPerHour / number) expanded deterministically at
+  ingest (exact parity), and `<flow probability=>` inserted per step by a **per-flow seeded** RNG
+  (deterministic & reproducible; statistical parity with SUMO — see *Not simulated → \[net\] tail*)
+- ✅ **Warm-start snapshot** — `WarmUp(steps)` deterministically pre-populates a live, already-running
+  network in memory; `SaveSnapshot` / `LoadSnapshot` round-trips **all** vehicles (incl. trains) plus
+  the engine state machines, so a run can start from a live-traffic snapshot (in-memory or from file)
 
 ---
 
@@ -118,10 +126,15 @@ schedules) · mesoscopic model · **TraCI** runtime control · GUI internals.
 
 **Deferred within scope** (characterized, intentionally not built yet):
 cooperative lane changes · the full **sublane / lateral model** (`MSLCM_SL2015`, continuous lateral
-position, hexagonal footprints, spatial hash, SIMD — this is "phase 2") · opposite-direction
-overtaking · U-turns · probabilistic/flow demand insertion · station dwell / train reversal ·
-advanced actuated-TLS features (switching rules, TraCI overrides, jam logic). See `TASKS.md` and
-`DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
+position, hexagonal footprints, spatial hash, SIMD — this is "phase 2") · U-turns · station dwell /
+train reversal · advanced actuated-TLS features (switching rules, TraCI overrides, jam logic). See
+`TASKS.md` and `DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
+
+**\[net\] tail** (implemented offline, awaiting a network-side golden — see `TAIL-NETWORK-REMAINING.md`):
+the probabilistic-`<flow>` arrival stream and the warm-start snapshot are validated engine-vs-engine
+(determinism, arrival-rate band, round-trip); a SUMO **ensemble** golden for the flow's arrival
+distribution and a SUMO `--save-state` cross-check of the snapshot are the remaining network-only
+parity steps.
 
 ---
 
@@ -172,6 +185,33 @@ frozen snapshot and forms its own "clear the way" intent.
   keep-right/strategic LC), or on a single lane **drift to the edge and let the EV pass by** (a leader
   whose footprint no longer overlaps imposes no car-following constraint), then recenter. Behavioral
   parity (SUMO's own give-way is stochastic sublane alignment).
+
+### Opposite-direction overtaking (`lcOpposite`, adapted)
+
+A fast car held up behind a slow leader on a two-way (`bidi`) road overtakes **through the oncoming
+lane**, reusing the give-way lateral primitives. Behavioral (no golden), gated on `lcOpposite` so
+every other scenario is byte-identical.
+
+- **Detect → gap-accept → execute:** form the intent when held up with the oncoming lane clear, then
+  a **closing-speed gap acceptance** commits only if the pass can finish before the head-on arrives
+  (`requiredClear = (egoSpeed + oncomingSpeed)·overtakeTime + safety`); ego **spills** into the
+  oncoming lane, passes the leader (the same *footprint-no-longer-overlaps* leader bypass as give-way),
+  and **recenters** once past or if the gap acceptance drops — collision-free including a tested
+  adversarial *abort-mid-spill*.
+- **Cooperative oncoming shift:** an oncoming driver that sees a spilled overtaker closing head-on
+  **pulls to its own outer edge** to widen the corridor, then recenters — the mirror of the give-way
+  drift.
+- Deferred (diagnosed in `OV-REMAINING.md`): a cross-lane hard-brake backstop, return-gap enforcement,
+  and a coupled OV2/OV4 decision enabling a true reduced-clearance side-by-side pass.
+
+### Demand insertion & warm-start snapshots
+
+- **Flow demand:** `<flow>` (period/vehsPerHour/number, exact parity) and probabilistic
+  `<flow probability=>` (per-flow seeded RNG, deterministic & reproducible).
+- **Warm-start:** `WarmUp(steps)` deterministically precomputes a populated, already-driving network;
+  `SaveSnapshot`/`LoadSnapshot` persists the whole live state — every vehicle (cars **and** trains)
+  plus the engine's rail-crossing/clock machines — so a simulation can begin from a live-traffic
+  snapshot rather than an empty map.
 
 ### Rail
 

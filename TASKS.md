@@ -2276,3 +2276,59 @@ move managed state out) → **D4** (zero-alloc hot path) → **D5** (entity life
 dependency is added (D7/D9 are the drop-in seams the owner wires to `Fdp.Core` later). D2/D3 are the
 load-bearing enablers; D4 is the biggest measurable alloc win; D8 proves the parallel payoff. Every
 rung keeps the tests byte-identical — the refactor changes representation and speed, never behavior.
+
+---
+
+## Group E — live-traffic features (opposite-overtake + flow demand + warm-start)
+
+Three user-requested live-traffic features, all landed on `main` and green, all **inert-when-absent**
+(gated on a master switch so every deterministic parity scenario stays byte-identical / bench hash
+`909605E965BFFE59` unchanged). Each is Group-B-style (behavioral/property tests, no golden-FCD) except
+where a network golden is called out. Full per-rung diagnosis lives in the referenced markdowns.
+
+### Landed (each parity-reviewer ACCEPT)
+
+- **Opposite-direction overtaking (OV1–OV4)** — gated on `_anyLcOpposite` (`lcOpposite` vType flag);
+  scenario `scenarios/57-overtake-opposite/` (hand-written two-way `bidi` net, no golden).
+  - **OV1** detection (held up behind a slow leader, oncoming bidi lane clear ahead →
+    `VehicleRuntime.OvertakeActive`), **OV2** closing-speed gap acceptance (refuse if the head-on
+    closes before the pass could finish), **OV3** execution (lateral spill via B6 `DriftToward` + the
+    ER5 `!FootprintsOverlap` leader bypass, then recenter), **OV3b** adversarial abort-mid-spill safety
+    test, **OV4** cooperative oncoming shift (an oncoming driver seeing a spilled overtaker pulls to
+    its own outer edge — mirror of the ER3/ER5 give-way drift). Tests
+    `RungOV1..OV4*Tests`. **Diagnosis + deferred items: `OV-REMAINING.md`.**
+- **Probabilistic / flow demand insertion (F1, F2a, F2b)** — gated inert (no `<flow>` / no
+  `probability=` → zero work).
+  - **F1** deterministic `<flow>` expansion at ingest (period / vehsPerHour / number; exact-parity,
+    offline; scenario `scenarios/56-flow-equiv/`). **F2a** runtime `<flow probability=>` insertion via
+    a per-flow seeded `VehicleRng` (SplitMix64, never `System.Random`) — deterministic and
+    reproducible. **F2b** captures the per-flow RNG state + arrival counter + runtime-generated
+    vehicles in the file snapshot so save→load→continue is point-for-point identical. Tests
+    `RungF1FlowEquivalenceTests`, `RungF2*Tests`.
+- **Warm-start snapshot (W1, W2)** — `WarmUp(steps)` deterministically pre-populates a live network
+  in memory; `SaveSnapshot`/`LoadSnapshot` round-trips ALL vehicles including trains (rail developed
+  in a separate session, on `main`) plus the engine-level rail-crossing / clock state. Guards throw
+  `NotSupportedException` for the not-yet-captured cases (stops, reroute, actuated TLS). Tests
+  `RungW1WarmUpTests`, `RungW2SnapshotTests`.
+
+### Remaining (deferred, with diagnosis in the markdowns — do these next)
+
+- **[overtake] OV deferred — see `OV-REMAINING.md`.** Three coupled items, none offline-vacuous alone:
+  **D1** the cross-lane hard-brake backstop (prototyped, REVERTED — never binds under conservative
+  OV2, so it has no non-vacuous test until OV2 can commit optimistically); **D2** the OV3 return-gap
+  enforcement bug (the return recenters the instant ego nudges ahead of the passed leader, without a
+  safe re-entry gap — needs a small per-ego "remember the passed leader until the gap is safe" state);
+  **D3** the coupled OV2/OV4 decision that would enable a genuine reduced-clearance side-by-side pass
+  (OV2 must account for the oncoming's cooperative shift; re-add D1 together with this, as D1 would
+  then bind). Each needs a fixture that forces the currently-vacuous path to bind.
+- **[net] Network-only tail — see `TAIL-NETWORK-REMAINING.md`.** Needs the network-enabled
+  golden-regen loop (SUMO install), so NOT offline-landable: **T1** F2 SUMO-stream *statistical*
+  parity (author a `probability=` scenario, run a SUMO ensemble, commit the arrival-count / headway
+  distribution golden + a statistical `parityMode`, assert our per-flow stream falls in band — like
+  the C1 `sigma>0` track; NOT a point-for-point FCD diff, since our per-flow RNG is deliberately not
+  SUMO's); **T2** W3 SUMO `--save-state` cross-check (diff our `SaveSnapshot` against SUMO's native
+  saved state at time `t` on the physically-modeled fields, within the scenario's trajectory
+  tolerance — optional hardening on top of the already-proven in-engine round-trip determinism).
+
+**Suggested Group-E order (done this session, in order):** F1 → W1 → W2 → OV1 → OV2 → OV3 → OV3b →
+OV4 → F2a → F2b. Remaining: OV D1–D3 (offline, needs binding fixtures) then the [net] tail (T1/T2).
