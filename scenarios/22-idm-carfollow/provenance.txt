@@ -10,3 +10,7 @@ fcd_precision=6
 #   gap. sigma=0, Euler, actionStepLength=1.
 # IDM params (MSCFModel_IDM.cpp:38-44): delta=4, iterations=MAX2(1,int(TS/stepping(0.25)+0.5))=4,
 #   twoSqrtAccelDecel=2*sqrt(accel*decel)=2*sqrt(2.6*4.5)=6.8410, tau(headway)=1, adaptationFactor=1.
+
+# T2 (W3 snapshot cross-check) mid-run state:
+state_mid_command=sumo -c config.sumocfg --save-state.times 30 --save-state.files golden.state.mid.xml --precision 6 --no-step-log true
+state_mid_time=30 (compared against engine.Run(29).SaveSnapshot; SUMO saves the state ENTERING step 30)

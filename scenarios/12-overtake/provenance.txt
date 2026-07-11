@@ -12,3 +12,7 @@ fcd_precision=6
 input=net.net.xml sha256=6a926d8c92d39c6cde786992cc6d53a3cbf2c6fd9fce7075936a352dcf57556a
 input=rou.rou.xml sha256=3dc93471315b5859b509864e4f62593abaf0f8714e55745c840da1f8b8f656aa
 input=config.sumocfg sha256=f682c935f89e1b731d6c527366b13229b0ef95ff25ce4bea69aa41c9fe88abc9
+
+# T2 (W3 snapshot cross-check) mid-run state:
+state_mid_command=sumo -c config.sumocfg --save-state.times 15 --save-state.files golden.state.mid.xml --precision 6 --no-step-log true
+state_mid_time=15 (compared against engine.Run(14).SaveSnapshot; SUMO saves the state ENTERING step 15)
