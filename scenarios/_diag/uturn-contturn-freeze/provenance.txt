@@ -1,0 +1,10 @@
+sumo_version=1.20.0
+scenario=uturn-contturn-freeze (cont-turn U-turn merge freeze anchor)
+net_command=netgenerate --grid --grid.number=4 --grid.length=500 -L 1 --tls.guess --seed 42
+demand=hand-written: veh 0 U-turns A0A1->A1A0 (cont-turn via :A1_8_0 -> :A1_11_0); a period-6 flow on
+       A2A1->A1A0 provides the sameTarget MERGE foe that ego yields to at junction A1.
+golden=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.acceleration --precision 6
+purpose=Pin the cont-turn merge distance bug: SameTargetMergeConstraint measured distToMerge from the
+        1 m intermediate INTERNAL lane (:A1_8_0) via approachLane.Length-pos instead of the true
+        distance to the junction, so a U-turn vehicle froze hundreds of metres before its turn. SUMO
+        flows veh 0 through the U-turn (onto A1A0); pre-fix the engine strands it on A0A1.

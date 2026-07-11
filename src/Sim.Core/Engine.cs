@@ -3237,6 +3237,24 @@ public sealed partial class Engine : IEngine
             : null;
         var egoOnInternal = v.LaneId == egoInternalLaneId;
 
+        // C4-vii-a (cont-turn) fix, extended to the MERGE arm: the true distance from ego's front to
+        // its junction-link internal lane (egoInternalLaneId). For an ORDINARY turn `approachLane` is
+        // the normal lane immediately before that internal lane and ego is on it, so this reduces to
+        // `approachLane.Length - pos` (the loop body never runs -- byte-identical for every committed
+        // merge scenario). For a CONT turn (a U-turn / turn split across TWO internal lanes, e.g.
+        // I10I11 -> :I11_11_0 -> :I11_19_0 -> I11I10) `approachLane` is the intermediate INTERNAL lane
+        // (:I11_11_0, ~1 m) while `pos` is on the normal lane far upstream, so `approachLane.Length -
+        // pos` is negative garbage -- which made SameTargetMergeConstraint fire a spurious hard stop
+        // hundreds of metres early and FREEZE the vehicle (the dominant city-3000 gridlock seed: ~47%
+        // of that demand is U-turn routes). Walking the pool from ego's current lane to the link's
+        // internal lane gives the real distance. The cautious-approach block below already does this
+        // for its own `seen`; this hoists the same computation so the merge arm can share it.
+        var egoDistToEntry = _network.LanesByHandle[v.LaneHandle].Length - v.Kinematics.Pos;
+        for (var i = v.LaneSeqIndex + 1; i < egoLinkSeqIndex; i++)
+        {
+            egoDistToEntry += _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]].Length;
+        }
+
         // C4-ii: an all-way-stop junction uses a DISTINCT right-of-way rule from priority/RBL
         // junctions -- every approach must fully STOP first, then proceed in arrival order (longest
         // waiter first) -- so it takes its own arm and skips the priority-junction cautious-approach
@@ -3358,7 +3376,7 @@ public sealed partial class Engine : IEngine
                 constraint = Math.Min(
                     constraint,
                     SameTargetMergeConstraint(
-                        v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane,
+                        v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
                         j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed));
                 continue;
             }
@@ -3852,7 +3870,7 @@ public sealed partial class Engine : IEngine
     // anchor; 29 stays a geometry-refinement anchor until that term is ported.
     private double SameTargetMergeConstraint(
         VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
-        bool egoOnInternal, Lane? approachLane, int foeLinkIndex, ActiveVehicleQuery allVehicles,
+        bool egoOnInternal, Lane? approachLane, double egoDistToEntry, int foeLinkIndex, ActiveVehicleQuery allVehicles,
         double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         if (approachLane is null && !egoOnInternal)
@@ -3863,7 +3881,7 @@ public sealed partial class Engine : IEngine
         // GATE: on the approach lane and still beyond foe-visibility of the entry -> the cautious
         // approach governs; the merge is non-binding (MSVehicle.cpp:3478 MAX2 relaxation).
         const double visibilityDistance = 4.5;
-        if (!egoOnInternal && (approachLane!.Length - ego.Kinematics.Pos) > visibilityDistance)
+        if (!egoOnInternal && egoDistToEntry > visibilityDistance)
         {
             return double.PositiveInfinity;
         }
@@ -3890,7 +3908,7 @@ public sealed partial class Engine : IEngine
         var egoInternalLane = _network!.LanesById[egoInternalLaneId];
         var distToMerge = egoOnInternal
             ? egoInternalLane.Length - ego.Kinematics.Pos
-            : (approachLane!.Length - ego.Kinematics.Pos) + egoInternalLane.Length;
+            : egoDistToEntry + egoInternalLane.Length;
 
         // PHASE 1: foe still on its merging internal lane.
         var foeInternalLaneId = junction.IntLanes[foeLinkIndex];
@@ -3914,7 +3932,7 @@ public sealed partial class Engine : IEngine
         {
             var foeInternalLaneAppr = _network.LanesByHandle[foeInternalLaneHandle];
             var egoInternalLaneAppr = _network.LanesById[egoInternalLaneId];
-            var egoSeen = approachLane!.Length - ego.Kinematics.Pos;
+            var egoSeen = egoDistToEntry;
             var foeSeen = SeenToInternalLaneEntry(foeMerging, foeInternalLaneHandle);
 
             // Approach-reservation range (MSVehicle::setApproaching only registers a vehicle at links
@@ -3952,7 +3970,7 @@ public sealed partial class Engine : IEngine
             {
                 return StopSpeedFor(
                     ego.VType, ego.Kinematics.Speed,
-                    approachLane.Length - ego.Kinematics.Pos - PositionEps,
+                    egoDistToEntry - PositionEps,
                     laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
             }
         }
