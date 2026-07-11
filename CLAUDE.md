@@ -35,6 +35,17 @@ archive mirror through `apt` instead. Never rely on the SDK being pre-committed 
 pre-existing in the offline test loop — a fresh session gets it from the setup script, not
 from the repo.
 
+**This environment is NOT network-limited, and SUMO is available.** SUMO 1.20.0 (matching
+`SUMO_VERSION`) is typically pre-installed at `/usr/local/bin/sumo` (with `netconvert` /
+`duarouter` / `sumo-gui` alongside); check with `sumo --version`, and if it is ever missing you
+may install it (e.g. `apt-get install -y sumo` or the pinned build) — the egress proxy does not
+block it. This unlocks the **golden-regeneration** loop and, just as importantly, **direct
+engine-vs-SUMO diagnosis** (run SUMO on the same net+demand, diff trajectories / tripinfo /
+summary to localize a parity gap). This does NOT change the iron rule below: the **offline test
+loop (`dotnet test`) still must never invoke SUMO** — it runs only against committed goldens, and
+must pass on a fresh VM with no SUMO present. SUMO is for regenerating/authoring goldens and for
+investigation, never a `dotnet test` dependency.
+
 ## The committed-vs-ephemeral split (memorize this)
 
 **Committed (the project — survives VM death):**
