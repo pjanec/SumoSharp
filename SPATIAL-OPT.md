@@ -1,7 +1,8 @@
 # SPATIAL-OPT.md — design for spatial (cache-local) parallelization of the plan phase
 
-**Status: PROBE BUILT + MEASURED (§8). Mechanism VALIDATED; naive version net-neutral on wall; the
-real win needs a persistent store (below).** This is the one lever left to attack the hot-path
+**Status: PROBE BUILT + MEASURED (§8); mechanism VALIDATED; naive rebuild net-neutral. A concrete
+STAGED BUILD PLAN for the persistent-store fix is now in §11 — execute it on an IDLE box (it is a
+wall-clock verdict; loaded timing is worthless).** This is the one lever left to attack the hot-path
 memory-bandwidth wall (see `PERF-HANDOVER.md` — the ON-TARGET SESSION LOG). Read `PERF-HANDOVER.md`
 first — this assumes its diagnosis and its list of what already failed.
 
@@ -267,3 +268,102 @@ cross-lane / junction foe lookups via segment offsets.
 the wall still doesn't improve @8t in interleaved paired A/B, byte-identical), then the random-access
 wall is unbeatable in this architecture for byte-identical work, and the remaining option is an
 opt-in fast-mode (validated by `--fast-gate`), not a bandwidth fix.
+
+## 11. EXECUTABLE BUILD PLAN — segmented persistent HotVeh store (designed 2026-07; build on an IDLE box)
+
+This is the concrete, staged plan to execute §10, chosen and sequenced so **every stage is
+byte-identical and independently measurable**, with a hard kill gate after the cheapest stage that
+can prove-or-kill the core hypothesis. It supersedes §10's looser "(a)/(b)/(c)" with exact seams.
+Written after the Session-2 wins (region infra + region-parallel `speedGain`); it reuses that
+infrastructure. **Do not start on a loaded box** — the entire verdict is a wall-clock comparison, and
+loaded/thermal-throttled timing is worthless here (Session-2 saw wall swing 5.0→7.4 s under load).
+
+### 11.0 The decision that makes it work: SEGMENTED, not flat-with-re-sort
+
+Within ONE lane, car-following forbids passing → **the relative order of two vehicles on the same lane
+is invariant while both stay on it** (only their Pos *values* change, never their order). So a per-lane
+segment kept in pos order **never needs an intra-lane re-sort** — the thing that made the flat array
+churn-expensive (§0 "incremental-re-sort floor"). Order changes are ONLY structural and all cheap
+except one:
+- **Boundary cross** (advance to next edge's lane): enters the next lane at Pos≈0 = the segment REAR →
+  **O(1) append**. This is the frequent mover (~400/step on city-3000).
+- **Arrival**: removed from the segment FRONT (max Pos) → O(1).
+- **Insertion (depart)**: enters at depart Pos (≈rear on an empty/short approach) → ~O(1) append.
+- **Lane change** (lateral: keep-right/speed-gain/strategic): enters the ADJACENT lane at its CURRENT
+  Pos = possibly the MIDDLE of the target segment → **O(log n) find + O(shift) insert**. This is the
+  only non-O(1) mover, and it is the MINORITY (lane changes ≪ boundary crosses). Its shift cost is the
+  churn the kill gate must clear.
+
+### 11.1 Data structures (replace `BuildPacked`'s gather; keep `HotVeh`, `_packed`, the packed leader read)
+
+```
+// Persistent, EntityIndex-addressable hot store (the write-through target). AoS, spatially ordered.
+HotVeh[] _hot;                 // one slot per live vehicle, arbitrary slot id (NOT EntityIndex)
+int[]    _slotByEntity;        // EntityIndex -> slot in _hot (and in the segment arrays), -1 if none
+// Per-lane segment membership, pos-ascending, order-STABLE (no intra-lane re-sort):
+int[][]  _laneSeg;             // _laneSeg[h] = slot ids on lane h, ascending Pos (rear=0 .. front=last)
+int[]    _laneSegLen;          // live length of each _laneSeg[h] (arrays over-allocated, reused)
+int[]    _entityBySlot;        // slot -> EntityIndex (to write MoveIntent back + reach cold fields)
+```
+
+`_packed` (already present) becomes the per-step **concatenation** of the live segments in lane-handle
+order — an **O(N) sequential copy** (no gather, no sort), producing exactly the (lane,pos) array the
+existing `SpatialPlan` branch + `_leaderSlotByPacked` already consume. `_leaderSlotByPacked[i]` is
+trivial after concat: the leader of a segment-interior slot is `i+1`; the front slot of each segment
+has no same-lane leader (−1). So the O(N²)-ish leader scan in today's `BuildPacked` also disappears.
+
+### 11.2 Stages (each ends green on all three gates: 229 tests, hash `909605E965BFFE59`, city-3000 default-vs-`--region`/`--spatial` trip-SHA + aggregate PASS + 0 stuck)
+
+**Stage A — write-through store, EntityIndex-keyed, NO ordering yet (proves the write-through; zero
+perf change expected).** Add `_hot` + `_slotByEntity` sized at load. Write `_hot[slot]` at the two
+points that already own new state: **insertion** (`CreateRuntime`/`TryInsertOnLane`) and the **end of
+`ExecuteMoveVehicle`** (right where it commits `v.Kinematics`). Mark arrival = free the slot at command
+flush. Do NOT touch the plan yet. Verify byte-identical + that `_hot[_slotByEntity[e]]` mirrors the
+object for every active e (assert in a debug pass). This is pure groundwork — commit as a return point.
+
+**Stage B — build `_packed` by CONCAT of segments instead of the gather (the kill-gate stage).** Add
+`_laneSeg`/`_laneSegLen` maintained incrementally by the command buffer (append on insert/boundary-
+cross to rear; pos-insert on lane change; remove on arrival — see 11.0). Replace `BuildPacked`'s body
+with: concat live segments → `_packed`, set `_leaderSlotByPacked[i]=i+1` within a segment, −1 at each
+segment front. Keep the `SpatialPlan` plan branch as-is (it already reads `_packed` + the leader slot).
+**Measure interleaved @8t: the `packed` phase (was 305 ms gather) must drop to the concat+maintenance
+cost.** THIS is the prove-or-kill: if `packed` doesn't fall well below 305 ms **and** wall improves
+byte-identically, KILL (the segment maintenance churn ate the gather saving — the wall is unbeatable
+byte-identically, fall back to fast-mode). If it wins, continue.
+
+**Stage C — point `willPass` at the packed same-lane leader too.** `willPass` (the bigger phase, ~1500
+ms) calls the same leader constraint; give its `ComputeWillPass`/`PrePlanVehicle` path the
+`packedEgoSlot` treatment (it already iterates region/active order — thread the slot through as the
+plan branch does). Another ~11% of ~1500 ms if the mechanism holds. Measure; keep gates green.
+
+**Stage D — parallelize the plan/willPass over CONTIGUOUS `_packed` chunks** (not regions): each thread
+streams a contiguous slice → sequential leader reads → the memory subsystem serves prefetched reads
+that should scale past the ~3× wall. This is the payoff stage — measure the **1→8t scaling** of plan
+(does it clear the ~3.4× ceiling?). Byte-identity holds because the plan writes only each ego's own
+`MoveIntent` (order-independent), exactly as the region path already relies on.
+
+### 11.3 Seam risks to design carefully (each has bitten a prior attempt)
+
+- **Slot↔EntityIndex indirection.** Every existing EntityIndex-keyed site (snapshot restore, command
+  buffer, side tables, `_foeApproach*`) stays EntityIndex-keyed; ONLY `_hot`/segments are slot-keyed,
+  bridged by `_slotByEntity`/`_entityBySlot`. Do not leak slot ids elsewhere. Snapshot save/restore
+  (RungF2b tests) must rebuild `_hot` from the restored objects — the SoA attempt broke exactly here.
+- **The write-through must be the LAST write to `v.Kinematics` each step**, or `_hot` goes stale.
+  `ExecuteMoveVehicle` is the single commit point (region-parallel already; `_hot[slot]` write is to a
+  disjoint slot per vehicle → race-free). Lane-change's `v.Kinematics` is unchanged (only LaneId), so
+  the segment MOVE (not a Pos rewrite) is the only lane-change action on `_hot`.
+- **Concat order must be deterministic** (lane-handle ascending, segment order within lane) so `_packed`
+  is identical run-to-run — it is, by construction (no thread writes the concat; it's a serial O(N)
+  copy, or a parallel copy with precomputed per-lane offsets).
+- **`packedEgoSlot` for cross-lane/junction foes stays on the neighbour query** (§4c) — unchanged; only
+  the same-lane leader moves to the segment. willPass's junction-foe reads stay random (accepted).
+
+### 11.4 Kill criteria (unchanged in spirit, sharpened)
+
+Kill at **Stage B** if `packed` (concat+maintenance) is not decisively below the 305 ms gather with a
+byte-identical wall improvement @8t interleaved. Kill at **Stage D** if plan's 1→8t scaling does not
+clear the current ~3.4× ceiling by a margin beating the ~8% noise floor. Either kill ⇒ the byte-
+identical bandwidth wall is confirmed unbeatable on this object-graph layout; the only 4× path left is
+aggressive opt-in fast-mode (validated by `--fast-gate`) — a parity-bar change, not a bandwidth fix.
+Expected upside if it survives: §0's projection is ~6–13% wall (plan+willPass), i.e. ~3.7× → **~3.9–4.1×**
+— the first credible shot at 4× byte-identical, but genuinely uncertain until Stage B is measured.
