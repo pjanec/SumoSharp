@@ -9,7 +9,7 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
   - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
-    (**250** at the start of the packaging work → **253** after the B13 multi-target guard test).
+    (**250** at the start of the packaging work → **268** after this session's B13–B17 tests).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
