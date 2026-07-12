@@ -117,6 +117,21 @@ public sealed partial class Engine : IEngine
     // migrate to handles (the string->handle cache then lives host-side).
     private readonly Dictionary<string, ObstacleHandle> _obstacleHandleById = new(StringComparer.Ordinal);
 
+    // SUMOSHARP-API.md §9: MUTABLE vType/route registries so demand is not fixed to the loaded rou.xml.
+    // Seeded from _demand at each load; runtime DefineVType / SpawnVehicle add to them. Every engine
+    // lookup that used to read the immutable `_demand.VTypesById`/`RoutesById` reads these instead --
+    // seeded identically, so the loaded-scenario path stays byte-identical. `_vTypeIds` gives each vType
+    // a stable VTypeHandle index; the counters name auto-generated runtime routes/vehicles.
+    private readonly Dictionary<string, VType> _vTypesById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Route> _routesById = new(StringComparer.Ordinal);
+    private readonly List<string> _vTypeIds = new();
+    private int _runtimeRouteCounter;
+    private int _runtimeVehicleCounter;
+
+    // SUMO's built-in default vehicle type id -- auto-registered at load so SpawnVehicle works without a
+    // prior DefineVType. Harmless for loaded scenarios (no vehicle references it unless spawned).
+    private const string DefaultVTypeId = "DEFAULT_VEHTYPE";
+
     // W1 (warm-start): number of steps advanced so far on the current timeline (via Run or WarmUp),
     // reset to 0 by LoadScenario. Advance resets the timeline state machines and starts the clock at
     // _config.Begin only while this is 0, so WarmUp(W) followed by Run(N) is one continuous run
@@ -832,6 +847,69 @@ public sealed partial class Engine : IEngine
         _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
         _demand = DemandParser.Parse(rouXmlPath);
         _config = ScenarioConfigParser.Parse(sumocfgPath);
+        InitializeLoaded();
+    }
+
+    // SUMOSHARP-API.md §9: load a network WITHOUT any demand -- the "start empty and spawn everything at
+    // runtime" entry point (games, digital-twins). Optional sumocfg supplies the timeline/flags; absent,
+    // a deterministic default is synthesized (Euler, teleport off, step 1s, sigma-neutral). The host then
+    // DefineVType()s and SpawnVehicle()s. Equivalent to LoadScenario with an empty rou.xml.
+    public void LoadNetwork(string netXmlPath, string? sumocfgPath = null)
+    {
+        _network = NetworkParser.Parse(netXmlPath);
+        _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
+        _demand = EmptyDemand();
+        _config = sumocfgPath is null ? DefaultNetworkConfig() : ScenarioConfigParser.Parse(sumocfgPath);
+        InitializeLoaded();
+    }
+
+    private static DemandModel EmptyDemand() => new(
+        Array.Empty<VType>(),
+        new Dictionary<string, VType>(StringComparer.Ordinal),
+        Array.Empty<Route>(),
+        new Dictionary<string, Route>(StringComparer.Ordinal),
+        Array.Empty<VehicleDef>());
+
+    // Deterministic default for a demand-less network load: Begin 0, effectively-open End, 1s Euler steps,
+    // teleport off, actionStepLength == stepLength (fusion-eligible), speeddev 0, seed matching Engine.Seed.
+    private static ScenarioConfig DefaultNetworkConfig() =>
+        new(Begin: 0.0, End: 1e9, StepLength: 1.0, Ballistic: false, TimeToTeleport: -1.0,
+            ActionStepLength: 0.0, SpeedDev: 0.0, Seed: 42, LaneChangeDuration: 0.0);
+
+    // (Re)seed the mutable vType/route registries from the just-loaded demand, plus SUMO's built-in
+    // default vType. Cleared first so a re-load on the same Engine never inherits the prior scenario.
+    private void SeedRegistries()
+    {
+        _vTypesById.Clear();
+        _routesById.Clear();
+        _vTypeIds.Clear();
+        _runtimeRouteCounter = 0;
+        _runtimeVehicleCounter = 0;
+
+        foreach (var vt in _demand!.VTypes)
+        {
+            _vTypesById[vt.Id] = vt;
+            _vTypeIds.Add(vt.Id);
+        }
+
+        // A default passenger vType so SpawnVehicle works without an explicit DefineVType. Only added if
+        // the scenario did not already define one under that id.
+        if (!_vTypesById.ContainsKey(DefaultVTypeId))
+        {
+            _vTypesById[DefaultVTypeId] = new VType(DefaultVTypeId, VClass: "passenger", Sigma: null);
+            _vTypeIds.Add(DefaultVTypeId);
+        }
+
+        foreach (var rt in _demand.Routes)
+        {
+            _routesById[rt.Id] = rt;
+        }
+    }
+
+    // Shared load initialization for LoadScenario / LoadNetwork. Everything from here down was formerly
+    // inline in LoadScenario; _network/_demand/_config are already assigned by the caller.
+    private void InitializeLoaded()
+    {
 
         // B3: the cached router is built from the network being replaced above -- invalidate it
         // here so UpdateReroutes lazily rebuilds against the NEW network the next time it is
@@ -903,6 +981,12 @@ public sealed partial class Engine : IEngine
         _anyIdmm = false;
         _actionStepFusionOk = _config.ActionStepLength <= 0.0
             || Math.Abs(_config.ActionStepLength - _config.StepLength) < 1e-12;
+
+        // Seed the mutable vType/route registries from this scenario's demand (+ a default vType) BEFORE
+        // CreateRuntime, which resolves each vehicle's vType/route through them. Identical contents to the
+        // former direct _demand reads, so the loaded-scenario path is byte-identical.
+        SeedRegistries();
+
         foreach (var def in _demand.Vehicles)
         {
             CreateRuntime(def);
@@ -937,7 +1021,7 @@ public sealed partial class Engine : IEngine
     // speedFactor seeding off its EntityIndex, same stop side-table, same master-switch updates).
     private void CreateRuntime(VehicleDef def)
     {
-        var rawVType = _demand!.VTypesById[def.TypeId];
+        var rawVType = _vTypesById[def.TypeId];
         // vType defaults resolver (CLAUDE.md rule 6: match vType/init first): only vClass
         // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
         // everything else is a resolved SUMO vClass default (VTypeDefaults.Resolve).
@@ -1143,6 +1227,214 @@ public sealed partial class Engine : IEngine
         {
             _vehicleGeneration[i] = 1;  // live generation starts at 1 so a default VehicleHandle never resolves
         }
+    }
+
+    // ----- Runtime demand: vType definition, spawn, reroute, despawn (SUMOSHARP-API.md §9) -----
+
+    // Register (or replace) a vehicle type at runtime. Resolves through the SAME VTypeDefaults pipeline as
+    // loaded vTypes. `id` is optional (auto-generated when omitted). Requires a loaded network.
+    public VTypeHandle DefineVType(VTypeParams p, string? id = null)
+    {
+        if (_network is null)
+        {
+            throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before DefineVType.");
+        }
+
+        var typeId = id ?? $"__vtype{_vTypeIds.Count}";
+        var raw = new VType(
+            typeId, VClass: p.VClass, Sigma: p.Sigma, MaxSpeed: p.MaxSpeed, Accel: p.Accel, Decel: p.Decel,
+            Tau: p.Tau, MinGap: p.MinGap, Length: p.Length, EmergencyDecel: p.EmergencyDecel,
+            SpeedFactor: p.SpeedFactor, HasBluelight: p.HasBluelight, LcOpposite: p.LcOpposite,
+            CarFollowModel: p.CarFollowModel);
+
+        var existing = _vTypeIds.IndexOf(typeId);
+        _vTypesById[typeId] = raw;
+        if (existing >= 0)
+        {
+            return new VTypeHandle(existing);
+        }
+
+        _vTypeIds.Add(typeId);
+        return new VTypeHandle(_vTypeIds.Count - 1);
+    }
+
+    // The auto-registered SUMO default passenger type (available after any load).
+    public VTypeHandle DefaultVType => new(_vTypeIds.IndexOf(DefaultVTypeId));
+
+    public bool TryGetVType(string id, out VTypeHandle handle)
+    {
+        var idx = _vTypeIds.IndexOf(id);
+        handle = new VTypeHandle(idx);
+        return idx >= 0;
+    }
+
+    // Spawn a vehicle at runtime on an explicit edge-id route. Returns a VehicleHandle immediately in the
+    // Pending state; SUMO-parity queued insertion (InsertDepartingVehicles) places it on the road at the
+    // next Step() when a safe gap exists at `departPos`. Poll GetLifecycle for Pending -> Active.
+    public VehicleHandle SpawnVehicle(VTypeHandle type, IReadOnlyList<string> routeEdges,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+    {
+        if (_network is null || _config is null)
+        {
+            throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before SpawnVehicle.");
+        }
+
+        if (!type.IsValid || type.Index >= _vTypeIds.Count)
+        {
+            throw new ArgumentException("invalid VTypeHandle (call DefineVType or use DefaultVType).", nameof(type));
+        }
+
+        if (routeEdges is null || routeEdges.Count == 0)
+        {
+            throw new ArgumentException("route must contain at least one edge.", nameof(routeEdges));
+        }
+
+        var routeId = $"__route{_runtimeRouteCounter++}";
+        _routesById[routeId] = new Route(routeId, new List<string>(routeEdges));
+
+        var def = new VehicleDef(
+            Id: $"__veh{_runtimeVehicleCounter++}",
+            TypeId: _vTypeIds[type.Index],
+            RouteId: routeId,
+            Depart: CurrentTime,
+            DepartPos: departPos,
+            DepartSpeed: departSpeed,
+            DepartLaneIndex: departLane);
+
+        var entityIndex = _vehicles.Count;
+        CreateRuntime(def);
+        EnsureVehicleGenerationCapacity(_vehicles.Count);
+        return new VehicleHandle((uint)entityIndex, _vehicleGeneration[entityIndex]);
+    }
+
+    // Spawn a vehicle routed from `fromEdge` to `toEdge` via the engine's shortest-path router. Throws if
+    // no route exists (mirrors SUMO refusing an unroutable vehicle).
+    public VehicleHandle SpawnVehicle(VTypeHandle type, string fromEdge, string toEdge,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0)
+    {
+        var edges = Router().Route(fromEdge, toEdge)
+            ?? throw new InvalidOperationException($"no route from edge '{fromEdge}' to '{toEdge}'.");
+        return SpawnVehicle(type, edges, departPos, departSpeed, departLane);
+    }
+
+    // Lifecycle of a spawned/loaded vehicle (Pending/Active/Arrived), or Unknown for a stale handle.
+    public VehicleLifecycle GetLifecycle(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx < 0 || idx >= _vehicles.Count || idx >= _vehicleGeneration.Length
+            || _vehicleGeneration[idx] != handle.Generation)
+        {
+            return VehicleLifecycle.Unknown;
+        }
+
+        var v = _vehicles[idx];
+        if (v.Arrived)
+        {
+            return VehicleLifecycle.Arrived;
+        }
+
+        return v.Inserted ? VehicleLifecycle.Active : VehicleLifecycle.Pending;
+    }
+
+    // Remove a vehicle from the simulation (Active or still-Pending). Marks it arrived so it drops out of
+    // every active scan, and bumps its generation so the handle goes stale. No-op (false) on a stale handle
+    // or an already-arrived vehicle. The slot is not recycled (EntityIndex stays stable).
+    public bool Despawn(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx < 0 || idx >= _vehicles.Count || idx >= _vehicleGeneration.Length
+            || _vehicleGeneration[idx] != handle.Generation)
+        {
+            return false;
+        }
+
+        var v = _vehicles[idx];
+        if (v.Arrived)
+        {
+            return false;
+        }
+
+        v.Inserted = true;   // so InsertDepartingVehicles never (re)considers a despawned-while-Pending vehicle
+        v.Arrived = true;    // drops it from ActiveVehicles / the read snapshot
+        _vehicleGeneration[idx] = unchecked((ushort)(_vehicleGeneration[idx] + 1));
+        return true;
+    }
+
+    // Re-route an ACTIVE vehicle to a new destination edge, keeping it physically where it is. Returns false
+    // if the handle is stale/not active, or no route exists from the vehicle's current edge (e.g. it is
+    // mid-junction on an internal lane -- retry next step).
+    public bool SetDestination(VehicleHandle handle, string toEdge)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+        var edges = Router().Route(currentEdge, toEdge);
+        if (edges is null)
+        {
+            return false;
+        }
+
+        RerouteActive(v, edges);
+        return true;
+    }
+
+    // Re-route an ACTIVE vehicle to its EXISTING destination while avoiding `avoidEdges`. Returns false as
+    // for SetDestination, or if no alternate route exists.
+    public bool Reroute(VehicleHandle handle, IReadOnlyList<string> avoidEdges)
+    {
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+        var destEdge = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + v.LaneSeqLen - 1]].EdgeId;
+        var avoid = new HashSet<string>(avoidEdges, StringComparer.Ordinal);
+        var edges = Router().Route(currentEdge, destEdge, avoid);
+        if (edges is null)
+        {
+            return false;
+        }
+
+        RerouteActive(v, edges);
+        return true;
+    }
+
+    private NetworkRouter Router() => _router ??= new NetworkRouter(_network!);
+
+    private bool TryResolveActive(VehicleHandle handle, out VehicleRuntime v)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicles.Count && idx < _vehicleGeneration.Length
+            && _vehicleGeneration[idx] == handle.Generation)
+        {
+            v = _vehicles[idx];
+            if (v.Inserted && !v.Arrived)
+            {
+                return true;
+            }
+        }
+
+        v = null!;
+        return false;
+    }
+
+    // Apply a new remaining route to an active vehicle -- mirrors UpdateReroutes' reassignment exactly:
+    // newEdges[0] is the vehicle's current edge, so it stays physically where it is (Kinematics untouched),
+    // re-pointed at the freshly resolved lane sequence from here on. Applied immediately via the command
+    // buffer (this runs between steps, so the buffer is empty and Flush takes effect at once).
+    private void RerouteActive(VehicleRuntime v, IReadOnlyList<string> newEdges)
+    {
+        var laneIndex = _network!.LanesByHandle[v.LaneHandle].Index;
+        var (newPoolSeq, newArrivalSeq) = _network.ResolveLaneSequenceHandlesWithArrival(newEdges, laneIndex);
+        var newLaneSeqStart = _laneSeqPool.Count;
+        _laneSeqPool.AddRange(newPoolSeq);
+        _laneSeqArrival.AddRange(newArrivalSeq);
+        _commandBuffer.ReplaceRoute(v, newLaneSeqStart, newPoolSeq.Length);
+        _commandBuffer.Flush();
     }
 
     // Shared driver for Run/WarmUp. `trajectory==null` => warm-up (the per-step Export is skipped).
@@ -1454,7 +1746,7 @@ public sealed partial class Engine : IEngine
         var results = new (int[] Pool, int[] Arrival)[keyList.Count];
         System.Threading.Tasks.Parallel.For(0, keyList.Count, i =>
         {
-            var edges = _demand!.RoutesById[keyList[i].RouteId].Edges;
+            var edges = _routesById[keyList[i].RouteId].Edges;
             results[i] = _network!.ResolveLaneSequenceHandlesWithArrival(edges, keyList[i].DepartLane);
         });
 
@@ -1504,7 +1796,7 @@ public sealed partial class Engine : IEngine
         blockedLanes.Clear();
         foreach (var v in candidates)
         {
-            var route = _demand!.RoutesById[v.Def.RouteId];
+            var route = _routesById[v.Def.RouteId];
             var edge = _network!.EdgesById[route.Edges[0]];
 
             // L0d: manual lane-by-index scan instead of `edge.Lanes.First(l => l.Index == ...)`, whose
@@ -1589,7 +1881,7 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         // The departure lane is `laneHandle` (resolved by the caller as the edge's lane whose Index
         // == DepartLaneIndex). LanesByHandle[laneHandle] is that exact lane (dense array index, no
         // per-candidate `edge.Lanes.First(...)` predicate-closure alloc), byte-identical to the old
@@ -1684,7 +1976,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         var (poolSeq, _) = _network!.ResolveLaneSequenceHandlesWithArrival(route.Edges, v.Def.DepartLaneIndex);
         foreach (var handle in poolSeq)
         {
@@ -6487,7 +6779,7 @@ public sealed partial class Engine : IEngine
 
     private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         if (route.Edges.Count <= 1)
         {
             return false;
@@ -6645,7 +6937,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _demand!.RoutesById[v.Def.RouteId];
+        var route = _routesById[v.Def.RouteId];
         var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, lane.EdgeId);
 
         LaneContinuation? curr = null;

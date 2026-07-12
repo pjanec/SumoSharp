@@ -10,14 +10,18 @@ the car-following / lane-change / junction math, or the internal vehicle SoA**, 
 cannot move any scenario out of its committed `tolerance.json`. The parity suite stays the
 correctness anchor throughout (`CLAUDE.md` rule 3).
 
-Status: **design agreed; Phase-1 obstacle store + stepped read surface LANDED on this branch** (the
-rest pending). Implemented and verified (full parity suite green, 236 tests, determinism anchor
+Status: **design agreed; most of Phase 1 LANDED on this branch** (async runner + string-API removal
+pending). Implemented and verified (full parity suite green, 241 tests, determinism anchor
 `909605E965BFFE59` unchanged single + parallel — so every addition is byte-identical where the new
 paths are unused):
 - the handle-based struct-of-arrays **obstacle store** (§4.3–4.4);
 - the host-facing **stepped read surface** (§5): `Step()`/`Step(int)`, the columnar SoA spans
   (`VehicleHandles`/`PosX`/`PosY`/`PosZ`/`Angle`/`Speed`/`LaneHandles`/`Pos`/`PosLat`), and
-  `TryGetVehicle` — a projection published each `Step()`, off the `Run()`/parity path (zero overhead there).
+  `TryGetVehicle` — a projection published each `Step()`, off the `Run()`/parity path (zero overhead there);
+- **runtime demand** (§9): `LoadNetwork`, `DefineVType`/`VTypeParams`/`VTypeHandle`, `SpawnVehicle`
+  (edge-list and from→to overloads) with SUMO-parity **queued insertion**, `GetLifecycle`, `Despawn`,
+  `SetDestination`, `Reroute` — all over mutable vType/route registries seeded identically from the
+  loaded demand.
 
 **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
 obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
@@ -342,6 +346,16 @@ void Despawn(VehicleHandle v);                             // structural → com
   **Document the coupling (§15 B2):** `LanelessRvo` currently takes effect **only when
   `LateralResolution > 0`** (nested under the sublane gate to keep phase-1 byte-identical). The facade
   must state this dependency; it may later be promoted to an independent continuous-lateral mode.
+
+**STATUS: landed.** `LoadNetwork(net[, cfg])`, `DefineVType(VTypeParams) → VTypeHandle` (+ `DefaultVType`/
+`TryGetVType`), `SpawnVehicle(...)` (edge-list and from→to), `GetLifecycle`, `Despawn`, `SetDestination`,
+`Reroute` are implemented on `Engine`, backed by mutable `_vTypesById`/`_routesById` registries seeded
+from `_demand` at load. Notes on this branch: edges are addressed by **SUMO edge-id string** (the router
+and edge model are string-keyed — a dense `GetEdge(string)→int` is a possible later refinement, not
+required); `VTypeParams` omits the **sublane** lateral attributes (`maxSpeedLat`/`latAlignment`/`minGapLat`)
+until the laneless-branch merge that adds them to `VType`; `SetDestination`/`Reroute` operate on **active**
+vehicles (a pending vehicle is respawned with the intended route); the despawn slot is **not** recycled yet
+(EntityIndex stays stable), and the lifecycle **event buffer** (§10) is deferred — poll `GetLifecycle` for now.
 
 ### Insertion semantics — SUMO-parity queued insertion (decided)
 
