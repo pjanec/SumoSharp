@@ -28,7 +28,7 @@ only to regenerate goldens (rare, human-triggered).
 ```bash
 # build + run the full parity suite (offline, no SUMO, no network)
 dotnet build
-dotnet test          # 227 passed, 1 skipped
+dotnet test          # 229 passed, 1 skipped
 
 # run the engine on a scenario and dump a SUMO-schema FCD trajectory
 dotnet run --project src/Sim.Run -- scenarios/11-priority-junction
@@ -154,11 +154,14 @@ behavioral deviations permitted are those ECS parallelism structurally forces �
   allocation-free (route-wide best-lanes in **one** backward pass instead of O(N²), `ReadOnlySpan` +
   by-value struct callbacks, pooled / `[ThreadStatic]` scratch). Total engine allocation at city scale
   fell **−69 % (city-mixed-1k: 3.78 → 1.16 GiB over a 700-step run)**, all byte-identical.
-- **Parallel by default at scale & deterministic** — the plan *and* export phases read only frozen
-  start-of-step state and write only their own vehicle's intent/frame, so they are race-free by
-  construction; they **auto-parallelize above 256 concurrent vehicles** (tiny parity scenarios stay
-  serial) for a **~2.2× city-scale speedup** (`city-3000`: ~36 s true-serial → 16.4 s on 4 cores),
-  and single-threaded and parallel runs produce a byte-identical determinism hash (`909605E965BFFE59`).
+- **Parallel by default at scale & deterministic** — the plan, export *and* post-move phases read only
+  frozen start-of-step state and write only their own vehicle's intent/frame (structural changes go
+  through the deferred command buffer), so they are race-free by construction; they **auto-parallelize
+  above 256 concurrent vehicles** (tiny parity scenarios stay serial), and an opt-in **spatial
+  domain-decomposition path** (`--region`, disjoint per-region lanes) pushes the hot-path tick to
+  **3.57× single-threaded SUMO at 8 cores / 3.07× at 4 cores** on `city-3000` (see *Scale* below).
+  Single-threaded and parallel runs produce a **byte-identical** determinism hash (`909605E965BFFE59`)
+  — a faster *identical* answer, not an approximation.
 - **FastDataPlane-shaped** — int-handle identity, value-type components, immutable network blueprints,
   phased systems and an `IWorld`/`ICommandBuffer` seam make the engine droppable into an external ECS
   later *without* adding a dependency now. "The gap is representation, not architecture."
@@ -236,28 +239,41 @@ crossings, bidirectional single-track, traction model) — see *What is simulate
 
 ### Scale
 
-Struct-of-arrays + zero-alloc hot path targets large scenarios. The scaling ladder
+Struct-of-arrays + a zero-alloc hot path target large scenarios. The scaling ladder
 (`scenarios/_bench/SCALING.md`) exercises the engine against SUMO up to **~15,000 peak concurrent**
-vehicles. `city-3000` (7,632 vehicles, 1,200 steps, ~4,300 concurrent) runs in **~16 s on a 4-core
-VM** vs single-threaded **SUMO's ~35 s** on the identical net — **~2.15× faster** and matching SUMO's
-outcome (see below). The perf work closed a ~39× gap (it was ~28 min before the O(N²) junction/keepClear
-scans were profiled and indexed away), and killing the saturation gridlock removed the remaining
-slowdown.
+vehicles.
 
-**Scaling & the SUMO baseline.** With the plan passes fused, the engine's **true single-threaded**
-path (`--serial`, no `Parallel.For`) runs `city-3000` in **~36 s — at parity with single-threaded
-SUMO's ~35 s** (it was ~54 s before the fusion). On the same multi-core hardware the engine then wins
-by parallelizing, and it scales: **26.4 s → 16.4 s** on 2 → 4 cores (CPU-affinity-capped; an Amdahl
-serial fraction of ~16 %, so the many-core ceiling is ~5× SUMO). Two byte-identical
-optimizations drive the latest gains: the **Export phase now runs in parallel** (per-vehicle geometry
-into a reusable index-keyed buffer; the comparator/determinism hash are (vehicle, time)-keyed so
-emission order is irrelevant), and the **willPass pre-pass is fused into `PlanMovements`** — the engine
-used to run *two* full plan passes over every near-junction vehicle (a pre-pass to compute each
-vehicle's junction-entry intent, then the real plan), architectural overhead SUMO avoids by running
-`setApproaching` inline. The fused pass caches the pre-pass intent and reuses it wherever it is provably
-identical (gated so any special-feature scenario — sigma>0, IDMM, bluelight, opposite-overtake,
-obstacles, action-step skipping — falls back to the exact two-pass path). Both keep all 227 committed
-goldens byte-identical and the `Sim.Bench` determinism hash unchanged (single == parallel).
+**Hot-path speed vs single-threaded SUMO — byte-identical.** On the target box (16-core / 24-thread,
+Windows 11), `city-3000` (7,632 vehicles, 1,200 steps, ~4,300 concurrent) runs its **simulation tick**
+against single-threaded **SUMO 1.20.0's 17.19 s** on the identical net. The spatial region-parallel
+path (`--region`) scales cleanly at low core counts and saturates the memory subsystem around 8 threads
+(the plan/junction phases are bandwidth-bound on random neighbour access):
+
+| Cores | `city-3000` sim tick | vs 1-thread SUMO (17.19 s) |
+|---|---|---|
+| 1 | 14.32 s | 1.24× |
+| 2 |  8.20 s | 2.10× |
+| 4 |  5.61 s | **3.07×** |
+| 8 |  4.81 s | **3.57×** |
+
+**4 cores already captures most of the win** (3.07×); 8 cores adds the last ~16 %, and beyond 8 threads
+hyper-threading oversubscription regresses. Every point is **byte-identical** to the committed goldens
+(single == parallel determinism hash `909605E965BFFE59`) — a faster *identical* answer, not an
+approximation. The single-thread **1.24×** is the data-oriented engine being leaner than SUMO per tick;
+the rest is the region-parallel scaling on top.
+
+**How it got here.** The perf work first closed a ~39× gap (it was ~28 min before the O(N²) junction/
+keepClear scans were profiled and indexed away, and a cont-turn U-turn distance bug that seeded a
+gridlock cascade was fixed — see below). Plan-pass fusion then brought the **true single-threaded**
+path (`--serial`) to ~parity with single-threaded SUMO. On top of that, a spatial **domain
+decomposition** (`--region`: the network is partitioned into a grid of regions owning disjoint lanes,
+one task per region, free vehicle handoff between regions) plus a series of byte-identical hot-path
+wins — parallel export, insert route pre-resolution, handle-array emit, and region-parallel
+plan / willPass / execute / neighbour-refill / speed-gain — built the curve above. Each is gated so any
+special-feature scenario falls back to the exact serial path, and all keep the committed goldens and the
+`Sim.Bench` determinism hash unchanged (single == parallel). The full optimization ledger — including
+the memory-bandwidth wall that caps byte-identical scaling near ~3× on the dominant phases, and the
+blind alleys — is in **`PERF-HANDOVER.md`** and **`SPATIAL-OPT.md`**.
 
 **Engine vs real SUMO on the same scenario.** `Sim.BenchCity` compares an engine run against a
 committed SUMO 1.20.0 reference (`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance`) on
@@ -379,7 +395,7 @@ queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`RAIL-SUPPORT.md
 ## Status
 
 The car-following, lane-change, junction/right-of-way, traffic-light, rail, emergency-vehicle and
-external-agent subsystems are implemented and parity-tested (**227 passing scenarios/checks**). Known
+external-agent subsystems are implemented and parity-tested (**229 passing scenarios/checks**). Known
 open item: box-blocking on *pathological* tight unmarked single-lane rings under saturation (diagnosed,
 deferred — normal roundabouts flow fine). Phase 2 (the laneless/sublane heterogeneous model) is
 designed-for but not built.
