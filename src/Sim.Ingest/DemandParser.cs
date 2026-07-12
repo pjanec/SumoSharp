@@ -146,7 +146,9 @@ public static class DemandParser
                 DepartPos: ParseNullableDouble(vehicleEl, "departPos") ?? 0.0,
                 DepartSpeed: ParseNullableDouble(vehicleEl, "departSpeed") ?? 0.0,
                 DepartLaneIndex: ParseNullableInt(vehicleEl, "departLane") ?? 0,
-                Stops: stops));
+                Stops: stops,
+                // Phase 2 (sublane): SUMO's departPosLat vehicle attribute. Absent -> centre.
+                DepartPosLat: vehicleEl.Attribute("departPosLat")?.Value));
         }
 
         // F1 (deterministic flow demand): a <flow> is a template that expands to many <vehicle>s

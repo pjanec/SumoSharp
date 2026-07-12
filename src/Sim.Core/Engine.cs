@@ -1485,7 +1485,9 @@ public sealed partial class Engine : IEngine
             // actual insertion speed in this branch.
             Pos = v.Def.DepartPos,
             Speed = v.Def.DepartSpeed,
-            LatOffset = 0.0,
+            // Phase 2 (P2.2): departPosLat initial lateral placement -- 0 for every phase-1 vehicle
+            // (lane-centred, gated on _sublane), so byte-identical.
+            LatOffset = InitialLatOffset(v, lane),
         };
 
         // Rung 9a: resolve the FULL lane sequence for this vehicle's route (spanning internal/
@@ -5383,8 +5385,53 @@ public sealed partial class Engine : IEngine
             _ => 0.0,
         };
 
+        // MSLCM_SL2015.cpp:1924: the preferred-alignment drift is applied only when it is larger
+        // than NUMERICAL_EPS * actionStepLengthSecs -- SUMO ignores sub-epsilon lateral corrections.
+        // This is why a vehicle placed by departPosLat at exactly the lane edge (±(halfLane -
+        // width/2), REAL width) does NOT then creep the extra 0.0005 to the alignment target
+        // (halfLane - (width+EPS)/2): the 0.0005 correction is below the threshold and skipped.
+        var latDist = target - curLat;
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+        if (Math.Abs(latDist) <= KraussModel.NumericalEps * actionStepLengthSecs)
+        {
+            return curLat;
+        }
+
         var maxStep = v.VType.MaxSpeedLat * dt;
         return DriftToward(curLat, target, maxStep);
+    }
+
+    // Phase 2 (sublane, P2.2): SUMO's departPosLat initial lateral placement. Returns the vehicle's
+    // starting lateral offset (posLat) on its depart lane. Only non-zero when the sublane model is
+    // active (_sublane == lateral-resolution > 0); every phase-1 vehicle stays lane-centred (0), so
+    // insertion is byte-identical. "left"/"right" put the vehicle's outer edge on the lane border
+    // using the REAL vehicle width (±(halfLaneWidth - width/2)) -- SUMO places at ±1.5 on a 4.8 m lane
+    // with a 1.8 m car, NOT the width+EPS the alignment target uses; a numeric value is an absolute
+    // offset (m, +left). "center"/absent -> 0. Other symbolic values (random/free/...) are out of
+    // scope for this rung.
+    private double InitialLatOffset(VehicleRuntime v, Lane lane)
+    {
+        if (!_sublane)
+        {
+            return 0.0;
+        }
+
+        var departPosLat = v.Def.DepartPosLat;
+        if (string.IsNullOrEmpty(departPosLat) || departPosLat == "center")
+        {
+            return 0.0;
+        }
+
+        var edge = lane.Width * 0.5 - v.VType.Width * 0.5;
+        return departPosLat switch
+        {
+            "left" => edge,
+            "right" => -edge,
+            _ when double.TryParse(departPosLat, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numeric) => numeric,
+            _ => throw new NotSupportedException(
+                $"departPosLat=\"{departPosLat}\" (vehicle '{v.Def.Id}') is not supported; only " +
+                "\"center\"/\"left\"/\"right\"/a numeric offset are in scope for the sublane rungs."),
+        };
     }
 
     // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
