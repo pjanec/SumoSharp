@@ -36,6 +36,10 @@ public sealed class SimHost : IDisposable
         NetworkJson = BuildNetworkJson();
 
         _runner = new SimulationRunner(_engine);
+        // Reuse snapshot backing arrays across ticks (SUMOSHARP-API.md §7) -- the per-frame render read is
+        // then allocation-free in steady state. The published snapshot stays valid well beyond the brief
+        // window BuildFrameJson holds it (capacity-1 ticks at 30 Hz), so the cross-thread read is safe.
+        _runner.EnableSnapshotPool(capacity: 3);
         _runner.Start(targetHz: 30.0);
 
         // Keep traffic flowing by spawning routable trips at runtime (demonstrates SpawnVehicle).

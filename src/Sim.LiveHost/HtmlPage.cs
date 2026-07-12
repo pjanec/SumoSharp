@@ -35,8 +35,54 @@ internal static class HtmlPage
 (function(){
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const stat = document.getElementById('stat');
-  let net = null, frame = { vehicles: [], obstacles: [], time: 0 };
+  let net = null;
   const cam = { scale: 1, ox: 0, oy: 0 };
+
+  // Client-side entity interpolation (the browser analog of SimulationRunner's two-frame interpolation
+  // hook, SUMOSHARP-API.md §7). Frames arrive at ~20 fps; requestAnimationFrame draws at ~60 fps. We
+  // buffer recent frames and, each rAF, render at a fixed delay in the past (RENDER_DELAY_MS), lerping
+  // each vehicle by id between the two buffered frames that bracket that render time -> smooth motion
+  // instead of stepping at the arrival rate. The delay is the standard latency-for-smoothness trade.
+  const RENDER_DELAY_MS = 110;
+  const buf = [];        // recent frames, oldest..newest, each stamped with _recv = arrival time
+  const BUF_MAX = 16;
+
+  function pushFrame(m){
+    m._recv = performance.now();
+    buf.push(m);
+    if(buf.length > BUF_MAX) buf.shift();
+  }
+
+  function lerp(a, b, t){ return a + (b - a) * t; }
+
+  // The vehicle set to draw at wall-time `renderT`: interpolated between the two bracketing frames, matched
+  // by id. Vehicles present in only one side are drawn at their known position (just appeared / leaving).
+  function sampleVehicles(renderT){
+    if(buf.length === 0) return { vehicles: [], obstacles: [], time: 0 };
+    const newest = buf[buf.length - 1];
+    if(buf.length === 1 || renderT >= newest._recv){
+      return { vehicles: newest.vehicles, obstacles: newest.obstacles, time: newest.time };
+    }
+
+    // find the pair (lo, hi) with lo._recv <= renderT <= hi._recv (else clamp to the oldest pair)
+    let lo = buf[0], hi = buf[1];
+    for(let i = 0; i < buf.length - 1; i++){
+      if(buf[i]._recv <= renderT && renderT <= buf[i+1]._recv){ lo = buf[i]; hi = buf[i+1]; break; }
+    }
+    const span = hi._recv - lo._recv;
+    const a = span > 0 ? Math.max(0, Math.min(1, (renderT - lo._recv) / span)) : 1;
+
+    const prevById = new Map();
+    for(const v of lo.vehicles) prevById.set(v.id, v);
+
+    const out = [];
+    for(const v of hi.vehicles){
+      const p = prevById.get(v.id);
+      if(p){ out.push({ x: lerp(p.x, v.x, a), y: lerp(p.y, v.y, a), s: lerp(p.s, v.s, a) }); }
+      else { out.push({ x: v.x, y: v.y, s: v.s }); }
+    }
+    return { vehicles: out, obstacles: hi.obstacles, time: hi.time };
+  }
 
   function resize(){ cv.width = innerWidth; cv.height = innerHeight; if(net) draw(); }
   addEventListener('resize', resize);
@@ -60,6 +106,8 @@ internal static class HtmlPage
   function draw(){
     ctx.fillStyle = '#0e1116'; ctx.fillRect(0,0,cv.width,cv.height);
     if(!net){ return; }
+
+    const frame = sampleVehicles(performance.now() - RENDER_DELAY_MS);
 
     // roads
     for(const lane of net.lanes){
@@ -88,7 +136,7 @@ internal static class HtmlPage
       ctx.moveTo(s[0]+k,s[1]-k); ctx.lineTo(s[0]-k,s[1]+k); ctx.stroke();
     }
 
-    stat.textContent = frame.vehicles.length + ' vehicles · t=' + frame.time + 's';
+    stat.textContent = frame.vehicles.length + ' vehicles · t=' + frame.time + 's · interpolated';
   }
 
   // --- interaction ---
@@ -124,7 +172,7 @@ internal static class HtmlPage
     ws.onmessage = ev => {
       const m = JSON.parse(ev.data);
       if(m.type === 'network'){ net = m; fit(m.bounds); resize(); }
-      else if(m.type === 'frame'){ frame = m; }
+      else if(m.type === 'frame'){ pushFrame(m); }
     };
     ws.onclose = () => { stat.textContent = 'disconnected — retrying…'; setTimeout(connect, 1000); };
   }

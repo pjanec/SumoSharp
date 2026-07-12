@@ -496,6 +496,13 @@ then the published snapshot at ~20 fps; the browser (inline canvas renderer) con
 coordinates and the server projects it to the nearest lane + pos (`TryProjectToLane`) and injects a
 full-lane obstacle via the runner's dispatcher. Verified end-to-end (network + live frames + a
 click→obstacle round-trip over a real WebSocket). `dotnet run --project src/Sim.LiveHost`, open :5055.
+**Updated this session:** the runner now uses the opt-in **snapshot pool** (allocation-free per-frame read
+in steady state), and the browser renderer now does **client-side entity interpolation** (the browser
+analog of the §7 interpolation hook — a small render-delay frame buffer, lerping each vehicle by id between
+the two buffered frames that bracket the render clock) so playback is smooth at 60 fps rAF despite the
+~20 fps frame stream. Verified end to end after the multi-target/runner changes with a headless-Chromium
+(Playwright) smoke: page serves, WebSocket streams live frames, no JS errors, and a canvas click still
+injects an obstacle the cars react to.
 - **Keep the offline `replay.html`** (FCD → self-contained HTML) for docs and golden inspection.
 - **Later:** a Unity/Godot sample (gated on the netstandard2.1 multi-target, §3).
 

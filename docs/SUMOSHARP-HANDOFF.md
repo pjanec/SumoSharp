@@ -41,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **Sim.LiveHost**: verified builds/runs after the core changes (Playwright smoke); enabled the snapshot pool server-side + client-side entity interpolation for smooth 60 fps playback. |
 | *(this session)* | **Publish + CI workflows** `.github/workflows/publish.yml` (tag-gated pack+push, version-from-tag, SourceLink fetch-depth 0) and `ci.yml` (build/test/determinism-hash on push/PR). |
 | *(this session)* | **ns2.1 consumer sample** `samples/SumoSharp.GameHostSample` (multi-target net8.0/ns2.1; `GameHost` drop-in + runnable net8 demo; `RungB17`). |
 | *(this session)* | **Dense edge handles** `GetEdge`/`GetEdgeId`/`EdgeCount` + int Spawn/route overloads (`0ceeaf0`, `RungB16`). |
