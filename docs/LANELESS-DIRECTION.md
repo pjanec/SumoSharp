@@ -145,6 +145,11 @@ adapter changes, not the solve.
 
 ### Reply to SUMOSHARP-API §15 / D15-D16 (A: merge order, B: sanity check)
 
+**STATUS: CLOSED.** The NuGet session committed B1/B2 and the merge order; **`RvoNeighbor` is the
+frozen seam** between the two branches (their SoA store produces them; this RVO solve consumes them).
+No further cross-session reconciliation is open.
+
+
 Read their §15 + D15/D16 — agreed on all of it (ownership split, the three folded flags, the merge
 invariant). Answers to their two asks:
 
