@@ -39,8 +39,8 @@ public class RungRvoLateralPocTests
 
         var traj = engine.Run(40);
 
-        double peakLat = 0.0;
-        double lastV1Lat = 0.0, lastV1Pos = 0.0, lastV0Pos = 0.0, lastV1Speed = 0.0;
+        double peakLat = 0.0, peakV0Lat = 0.0;
+        double lastV1Lat = 0.0, lastV1Pos = 0.0, lastV0Pos = 0.0, lastV1Speed = 0.0, lastV0Lat = 0.0;
         var sawBoth = false;
 
         for (var t = 0; t <= 39; t++)
@@ -61,6 +61,8 @@ public class RungRvoLateralPocTests
             {
                 sawBoth = true;
                 lastV0Pos = v0.Pos;
+                lastV0Lat = v0.PosLat;
+                peakV0Lat = Math.Max(peakV0Lat, Math.Abs(v0.PosLat));
 
                 // Footprints (pos is the FRONT): longitudinal [pos-length, pos]; lateral [posLat ± half].
                 var longOverlap = v0.Pos - VehLength < v1.Pos && v1.Pos - VehLength < v0.Pos;
@@ -76,6 +78,14 @@ public class RungRvoLateralPocTests
         }
 
         Assert.True(sawBoth, "expected both vehicles present together at some step");
+        // (2b) RECIPROCITY (Stage 2 vs the one-sided PoC): the overtaken leader SHARES the manoeuvre
+        // -- it reciprocally nudges aside as the faster follower passes, then recentres. The magnitude
+        // is geometry-dependent (on this wide lane the fast overtaker does most of the lateral work, so
+        // the leader's reciprocal share is modest -- the emergent analog of SUMO's own small keepLatGap
+        // wiggle); the KEY property is that it is nonzero, i.e. BOTH vehicles move (the one-sided PoC
+        // left the leader at exactly 0).
+        Assert.True(peakV0Lat > 0.05, $"leader did not reciprocally nudge (peak |posLat| = {peakV0Lat:F3}); Stage 2 should move BOTH vehicles, not just the overtaker");
+        Assert.True(Math.Abs(lastV0Lat) < 0.2, $"leader did not recentre (ended at posLat {lastV0Lat:F3})");
         // (2) overtake completed: fast follower ended ahead of the slow leader, at free-flow.
         Assert.True(lastV1Pos > lastV0Pos, $"follower did not pass leader (v1 {lastV1Pos:F1} <= v0 {lastV0Pos:F1})");
         Assert.True(lastV1Speed > 13.0, $"follower did not reach free-flow (ended at {lastV1Speed:F2}, would be ~5 if blocked)");

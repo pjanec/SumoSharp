@@ -90,8 +90,15 @@ lane-following regime should emerge as RVO reducing to car-following when latera
 2. **Full ORCA over the spatial hash:** replace the lite lateral push with proper ORCA half-plane
    velocity selection (lateral + longitudinal) over the fixed-radius near-neighbor query (Seam 1's
    phase-2 form). Reciprocal (agents share avoidance). Parallel over `_packed` chunks.
-3. **External-agent unification:** route navmesh/RVO agents through the same ORCA solve as vehicles;
-   the B-group obstacle surface becomes "another footprint agent." Validate the interop behaviorally.
+3. **External-agent unification:** route navmesh/RVO agents through the same ORCA solve as vehicles.
+   **API note (owner):** the current external-obstacle surface (`ExternalObstacle`, string-`Id`-keyed
+   dictionary in `EXTERNAL-AGENTS-VIZ.md`) will be **replaced** — it does not scale (string ids, per-
+   obstacle record, dictionary lookup). The unification targets a **scalable int-indexed footprint-
+   agent store** (array/SoA, entity-handle keyed, spatial-hash indexed, high agent counts). So the RVO
+   layer is deliberately built on a **neutral value-typed footprint-neighbour abstraction**
+   (`RvoNeighbor`: pos/length/latOffset/halfWidth/speed — no strings, no dictionary), populated from
+   `VehicleRuntime` today and from the new agent store later. Do **not** couple the RVO solve to the
+   current `ExternalObstacle` API.
 4. **Statistical SUMO cross-check:** on a mixed/heterogeneous scenario, compare aggregate flow +
    lateral distribution to a SUMO sublane run within `parityMode="statistical"` tolerance — the
    SUMO-grounding without byte-chasing.

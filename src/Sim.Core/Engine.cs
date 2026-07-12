@@ -5414,82 +5414,135 @@ public sealed partial class Engine : IEngine
         return DriftToward(curLat, target, maxStep);
     }
 
-    // Laneless direction PoC (docs/LANELESS-DIRECTION.md): the continuous footprint / velocity-
-    // obstacle (RVO-lite) lateral driver. Opt-in (Engine.LanelessRvo); replaces the SUMO-faithful
-    // ComputeSublaneLateral drift when set. Returns ego's new absolute posLat this step: a bounded
-    // (maxSpeedLat) lateral drift toward a target that CLEARS a slower same-lane leader by minGapLat
-    // -- so the existing !FootprintsOverlap same-lane leader bypass (LeaderFollowSpeedConstraint) then
-    // lets ego accelerate past it, and once the leader is behind ego recentres. This is an EMERGENT
-    // overtake from local avoidance -- no persistent state machine, no golden -- validated
-    // behaviourally (no-overlap, overtake-completes, recentres). SUMO's lateral PHYSICS are the
-    // reference (minGapLat clearance, maxSpeedLat bound); the exact posLat/timing are our own.
+    // Laneless direction (docs/LANELESS-DIRECTION.md), Stage 2: the RECIPROCAL, MULTI-NEIGHBOUR
+    // continuous footprint / velocity-obstacle lateral driver. Opt-in (Engine.LanelessRvo); replaces
+    // the SUMO-faithful ComputeSublaneLateral drift when set. Returns ego's new absolute posLat this
+    // step. Each step ego is pushed away from every laterally-overlapping near-neighbour (same-lane
+    // leader AND follower) by HALF the lateral deficit needed to reach `minGapLat` clearance
+    // (reciprocal ORCA-style: the neighbour, running the same solve, takes the other half -> mutual
+    // separation, no oscillation, no persistent state); when nothing couples it, ego drifts back to
+    // centre. All motion is bounded by maxSpeedLat. Because clearing a slower leader by minGapLat
+    // makes their footprints disjoint, the existing !FootprintsOverlap same-lane leader bypass
+    // (LeaderFollowSpeedConstraint) then lets ego accelerate past -> an EMERGENT overtake in which
+    // BOTH vehicles share the lateral move (unlike the Stage-1 one-sided PoC).
     //
-    // Parallel-safe: reads only ego's own frozen state + the frozen neighbour query, writes nothing
-    // (caller stores the result in ego's own MoveIntent). One-sided avoidance (ego does all the
-    // moving); reciprocal ORCA sharing + external-obstacle unification + a fixed-radius near-neighbour
-    // query over the spatial hash are the follow-on stages in LANELESS-DIRECTION.md. External
-    // obstacles are NOT yet folded in here (the RVO path replaces the B6 evasion path); a scenario
-    // mixing RVO vehicles and external agents is a stage-3 concern.
+    // SUMO's lateral PHYSICS are the reference (minGapLat clearance, maxSpeedLat bound); the exact
+    // posLat/timing are our own, validated BEHAVIOURALLY (no-overlap, overtake-completes, recentres,
+    // reciprocity) not byte-exact. Parallel-safe: reads only ego's own frozen state + the frozen
+    // neighbour query, writes nothing (caller stores the result in ego's own MoveIntent).
+    //
+    // Neighbours are consumed as neutral value-typed `RvoNeighbor`s (no strings, no dictionary) built
+    // from VehicleRuntime today; the Stage-3 scalable int-indexed agent store (replacing the current
+    // ExternalObstacle string API -- see LANELESS-DIRECTION.md) will feed the SAME list, unifying
+    // external navmesh/RVO agents into this solve without touching it. Full 2D reciprocal ORCA over a
+    // fixed-radius spatial-hash query is the further Stage-2/2b work; this is the 1D-lateral reduction
+    // (longitudinal stays the validated Krauss car-following).
+    private readonly struct RvoNeighbor
+    {
+        public readonly double Pos;         // longitudinal front position (lane-relative)
+        public readonly double Length;
+        public readonly double LatOffset;   // lateral centre (+left)
+        public readonly double HalfWidth;
+        public readonly double Speed;
+
+        public RvoNeighbor(double pos, double length, double latOffset, double halfWidth, double speed)
+        {
+            Pos = pos; Length = length; LatOffset = latOffset; HalfWidth = halfWidth; Speed = speed;
+        }
+
+        public static RvoNeighbor FromVehicle(VehicleRuntime n) => new(
+            n.Kinematics.Pos, n.VType.Length, n.Kinematics.LatOffset, n.VType.Width * 0.5, n.Kinematics.Speed);
+    }
+
     private double ComputeRvoLateral(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double dt)
     {
         var curLat = v.Kinematics.LatOffset;
         var eps = KraussModel.NumericalEps;
-        var halfVeh = v.VType.Width * 0.5;
-        var maxOffset = lane.Width * 0.5 - halfVeh;    // reachable lateral extent (real width)
+        var egoHalf = v.VType.Width * 0.5;
+        var maxOffset = lane.Width * 0.5 - egoHalf;    // reachable lateral extent (real width)
         var maxStep = v.VType.MaxSpeedLat * dt;
         var egoDesired = v.VType.MaxSpeed * v.SpeedFactor;
 
+        var egoPos = v.Kinematics.Pos;
+        var egoLen = v.VType.Length;
+        var minGapLat = v.VType.MinGapLat;
+        double push = 0.0;
+        var coupled = false;
+
+        // A relevant near-neighbour COUPLES ego (holds its lateral line, suppressing recenter) and
+        // contributes a reciprocal separation push if their footprints are within minGapLat. Coupling
+        // is by LONGITUDINAL proximity (not lateral overlap): once ego has cleared a leader it must
+        // HOLD its cleared line until it is fully past (else it would recenter straight back into it) --
+        // and because reciprocity moves the leader too, a lateral-overlap coupling test would wrongly
+        // release mid-pass.
+        //
+        // Leader (ahead): a SLOWER leader within a ~3 s reaction horizon (so ego starts the manoeuvre
+        // in time but ignores far-ahead traffic).
         var leader = neighbors.GetLeader(v);
-        // "Held up" = a slower same-lane leader whose footprint overlaps a CENTRED ego (the B6 sticky
-        // test: use ego-centred, not ego's current offset, so an in-progress pass stays committed and
-        // does not oscillate/cut back until the leader is fully behind -> GetLeader returns null).
-        var heldUp = leader is not null
-            && leader.Kinematics.Speed < egoDesired - eps
-            && FootprintsOverlap(leader.Kinematics.LatOffset, leader.VType.Width, 0.0, v.VType.Width);
-
-        double target;
-        if (heldUp)
+        if (leader is not null && leader.Kinematics.Speed < egoDesired - eps)
         {
-            var leaderLat = leader!.Kinematics.LatOffset;
-            var requiredSep = halfVeh + leader.VType.Width * 0.5 + v.VType.MinGapLat;
-            var targetRight = leaderLat - requiredSep;   // clear to the right (negative)
-            var targetLeft = leaderLat + requiredSep;    // clear to the left (positive)
-            var rightFeasible = targetRight >= -maxOffset;
-            var leftFeasible = targetLeft <= maxOffset;
+            var n = RvoNeighbor.FromVehicle(leader);
+            var gapAhead = n.Pos - n.Length - egoPos;               // bumper-to-bumper
+            if (gapAhead < v.Kinematics.Speed * 3.0 + v.VType.MinGap)
+            {
+                coupled = true;
+                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps);
+            }
+        }
 
-            if (curLat < -eps && rightFeasible)
+        // Same-lane follower (behind/alongside): while it is longitudinally within a car-length of
+        // overlapping ego, reciprocally nudge away from it -- this is what makes an OVERTAKEN vehicle
+        // SHARE the manoeuvre (the emergent, behavioural analog of SUMO's keepLatGap leader wiggle).
+        var follower = neighbors.GetNeighborFollower(v, v.LaneHandle);
+        if (follower is not null)
+        {
+            var n = RvoNeighbor.FromVehicle(follower);
+            var gapBehind = egoPos - egoLen - n.Pos;                // ego back to follower front
+            if (gapBehind < egoLen)
             {
-                target = targetRight;                    // sticky: already committed right
+                coupled = true;
+                push += SeparationPush(curLat, n, egoHalf, minGapLat, maxOffset, eps);
             }
-            else if (curLat > eps && leftFeasible)
-            {
-                target = targetLeft;                     // sticky: already committed left
-            }
-            else if (rightFeasible)
-            {
-                target = targetRight;                    // default keep-right
-            }
-            else if (leftFeasible)
-            {
-                target = targetLeft;
-            }
-            else
-            {
-                // Lane too narrow to clear the leader -> hold centre and let car-following brake
-                // behind it (the FootprintsOverlap leader still binds). Behaviourally reproduces the
-                // "too narrow -> no overtake" case (cf. scenario 62) without any lateral motion.
-                target = curLat;
-            }
+        }
 
-            target = Math.Max(-maxOffset, Math.Min(maxOffset, target));
+        // Recentre only when nothing couples ego (all relevant neighbours cleared / gone). While
+        // coupled but already separated, push is 0 and ego HOLDS its line (no recenter-into-neighbour).
+        if (!coupled)
+        {
+            push = -curLat;
+        }
+
+        var step = Math.Max(-maxStep, Math.Min(maxStep, push));
+        return Math.Max(-maxOffset, Math.Min(maxOffset, curLat + step));
+    }
+
+    // Reciprocal 1D lateral separation from one neighbour. Returns the signed lateral push (toward
+    // ego's side, away from the neighbour) needed this step: HALF the deficit to reach minGapLat
+    // clearance (the neighbour, running the same solve, takes the other half). 0 when already clear.
+    private static double SeparationPush(
+        double curLat, RvoNeighbor n, double egoHalf, double minGapLat, double maxOffset, double eps)
+    {
+        var sep = egoHalf + n.HalfWidth + minGapLat;    // desired centre-to-centre lateral separation
+        var d = curLat - n.LatOffset;                   // signed: ego relative to neighbour
+        var ad = Math.Abs(d);
+        if (ad >= sep - eps)
+        {
+            return 0.0;                                 // already separated enough
+        }
+        // direction away from the neighbour; on exact alignment pick the side with more lane room
+        // (keep-right on a tie: curLat==0 -> roomRight==roomLeft -> right).
+        int dir;
+        if (ad > eps)
+        {
+            dir = d >= 0 ? 1 : -1;
         }
         else
         {
-            // No slower leader ahead (none, or fully passed, or already fast enough) -> recentre.
-            target = 0.0;
+            var roomRight = curLat + maxOffset;
+            var roomLeft = maxOffset - curLat;
+            dir = roomRight >= roomLeft ? -1 : 1;
         }
-
-        return DriftToward(curLat, target, maxStep);
+        return dir * (sep - ad) * 0.5;                  // reciprocal half-share
     }
 
     // Phase 2 (sublane, P2.2): SUMO's departPosLat initial lateral placement. Returns the vehicle's
