@@ -412,9 +412,13 @@ void Despawn(VehicleHandle v);                             // structural → com
 **STATUS: landed.** `LoadNetwork(net[, cfg])`, `DefineVType(VTypeParams) → VTypeHandle` (+ `DefaultVType`/
 `TryGetVType`), `SpawnVehicle(...)` (edge-list and from→to), `GetLifecycle`, `Despawn`, `SetDestination`,
 `Reroute` are implemented on `Engine`, backed by mutable `_vTypesById`/`_routesById` registries seeded
-from `_demand` at load. Notes on this branch: edges are addressed by **SUMO edge-id string** (the router
-and edge model are string-keyed — a dense `GetEdge(string)→int` is a possible later refinement, not
-required); `VTypeParams` omits the **sublane** lateral attributes (`maxSpeedLat`/`latAlignment`/`minGapLat`)
+from `_demand` at load. Notes on this branch: **dense edge handles have landed** — `GetEdge(string)→int`
+(+ `GetEdgeId(int)`, `EdgeCount`) resolve an edge id to its stable dense handle (its index in the network's
+deterministic `Edges` list), and int-handle overloads of `SpawnVehicle` (route-list and from→to),
+`SetDestination`, and `Reroute` let a host hold ints instead of edge-id strings (mirroring `GetLane` for
+lanes). They are a pure translation facade over the still-string-keyed router/edge model — behavior-identical
+to the string overloads (proven by `RungB16EdgeHandleTests` trajectory-equivalence) and inert on the parity
+path. `VTypeParams` omits the **sublane** lateral attributes (`maxSpeedLat`/`latAlignment`/`minGapLat`)
 until the laneless-branch merge that adds them to `VType`; `SetDestination`/`Reroute` operate on **active**
 vehicles (a pending vehicle is respawned with the intended route); the despawn slot is **not** recycled yet
 (EntityIndex stays stable), and the lifecycle **event buffer** (§10) is deferred — poll `GetLifecycle` for now.

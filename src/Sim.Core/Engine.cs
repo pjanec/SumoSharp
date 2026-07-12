@@ -709,6 +709,85 @@ public sealed partial class Engine : IEngine
         (_network ?? throw new InvalidOperationException("LoadScenario must be called before GetLane."))
             .LaneHandleById[laneId];
 
+    // ----- Dense edge handles (SUMOSHARP-API.md §9) -----
+    // The router and edge model are string-keyed; these give a host a stable int "edge handle" it can
+    // resolve ONCE at setup and pass to the int-based Spawn/route overloads, so its per-frame code holds
+    // ints, not strings (matching GetLane's role for lanes). A handle is the edge's index in the network's
+    // deterministic `Edges` list; the map is built lazily and rebuilt if a different network is loaded.
+    private NetworkModel? _edgeMapFor;
+    private Dictionary<string, int>? _edgeHandleById;
+    private string[]? _edgeIdByHandle;
+
+    private void EnsureEdgeMap()
+    {
+        var net = _network ?? throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before GetEdge.");
+        if (ReferenceEquals(_edgeMapFor, net) && _edgeHandleById is not null)
+        {
+            return;
+        }
+
+        var byId = new Dictionary<string, int>(net.Edges.Count, StringComparer.Ordinal);
+        var byHandle = new string[net.Edges.Count];
+        for (var i = 0; i < net.Edges.Count; i++)
+        {
+            var id = net.Edges[i].Id;
+            byId[id] = i;      // last-wins on the (not-expected) duplicate id; Edges is 1:1 with EdgesById
+            byHandle[i] = id;
+        }
+
+        _edgeHandleById = byId;
+        _edgeIdByHandle = byHandle;
+        _edgeMapFor = net;
+    }
+
+    // Number of edges (== the valid edge-handle range [0, EdgeCount)).
+    public int EdgeCount
+    {
+        get { EnsureEdgeMap(); return _edgeIdByHandle!.Length; }
+    }
+
+    // Resolve an edge's string id to its dense int handle ONCE at setup. Throws for an unknown id.
+    public int GetEdge(string edgeId)
+    {
+        EnsureEdgeMap();
+        if (!_edgeHandleById!.TryGetValue(edgeId, out var handle))
+        {
+            throw new ArgumentException($"unknown edge id '{edgeId}'.", nameof(edgeId));
+        }
+
+        return handle;
+    }
+
+    // Reverse: the string id for a dense edge handle (for logging / interop with the string-keyed APIs).
+    public string GetEdgeId(int edgeHandle)
+    {
+        EnsureEdgeMap();
+        if (edgeHandle < 0 || edgeHandle >= _edgeIdByHandle!.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(edgeHandle), edgeHandle, "edge handle out of range.");
+        }
+
+        return _edgeIdByHandle[edgeHandle];
+    }
+
+    private string[] EdgeHandlesToIds(ReadOnlySpan<int> edgeHandles)
+    {
+        EnsureEdgeMap();
+        var ids = new string[edgeHandles.Length];
+        for (var i = 0; i < edgeHandles.Length; i++)
+        {
+            var h = edgeHandles[i];
+            if (h < 0 || h >= _edgeIdByHandle!.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(edgeHandles), h, "edge handle out of range.");
+            }
+
+            ids[i] = _edgeIdByHandle[h];
+        }
+
+        return ids;
+    }
+
     // ----- Handle-based obstacle API (SUMOSHARP-API.md §4.4, the primary/shipped surface) -----
     // Zero-allocation: Add returns a generational ObstacleHandle; Update/Remove write columns by index.
     // `laneHandle` comes from GetLane(laneId). D17: avoidanceClass is the reserved RVO reciprocity class,
@@ -1329,6 +1408,16 @@ public sealed partial class Engine : IEngine
         return SpawnVehicle(type, edges, departPos, departSpeed, departLane);
     }
 
+    // Dense-edge-handle overloads (SUMOSHARP-API.md §9): identical semantics to the string overloads,
+    // taking the int handles from GetEdge so a host's per-frame code never touches edge-id strings.
+    public VehicleHandle SpawnVehicle(VTypeHandle type, ReadOnlySpan<int> routeEdges,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0) =>
+        SpawnVehicle(type, EdgeHandlesToIds(routeEdges), departPos, departSpeed, departLane);
+
+    public VehicleHandle SpawnVehicle(VTypeHandle type, int fromEdge, int toEdge,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0) =>
+        SpawnVehicle(type, GetEdgeId(fromEdge), GetEdgeId(toEdge), departPos, departSpeed, departLane);
+
     // Lifecycle of a spawned/loaded vehicle (Pending/Active/Arrived), or Unknown for a stale handle.
     public VehicleLifecycle GetLifecycle(VehicleHandle handle)
     {
@@ -1392,6 +1481,13 @@ public sealed partial class Engine : IEngine
         RerouteActive(v, edges);
         return true;
     }
+
+    // Dense-edge-handle overloads (SUMOSHARP-API.md §9) of the destination/reroute API.
+    public bool SetDestination(VehicleHandle handle, int toEdge) =>
+        SetDestination(handle, GetEdgeId(toEdge));
+
+    public bool Reroute(VehicleHandle handle, ReadOnlySpan<int> avoidEdges) =>
+        Reroute(handle, EdgeHandlesToIds(avoidEdges));
 
     // Re-route an ACTIVE vehicle to its EXISTING destination while avoiding `avoidEdges`. Returns false as
     // for SetDestination, or if no alternate route exists.

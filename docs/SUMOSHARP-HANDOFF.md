@@ -41,7 +41,9 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
-| *(this session)* | **`netstandard2.1` multi-target** on `Sim.Core` + `Sim.Ingest` (Unity/Godot reach): polyfills (`src/Shared/NetstandardPolyfills.cs`), `System.Memory` on ns2.1, 4 net8-only sites guarded/rewritten, `RungB13` guard test. Gate unchanged (`909605E965BFFE59`; 253/1/0). |
+| `3ac73c1` | **Async runner — snapshot pool (opt-in):** `EnableSnapshotPool(cap=3)` reuses backing arrays across Ticks (`RungB15`). Default off; contract unchanged when off. |
+| `ce37400` | **Async runner — two-frame interpolation hook:** `PreviousSnapshot`, `InterpolationAlpha`, `TryInterpolateVehicle` → `InterpolatedVehicle` (`RungB14`). |
+| `1a2d685` | **`netstandard2.1` multi-target** on `Sim.Core` + `Sim.Ingest` (Unity/Godot reach): polyfills (`src/Shared/NetstandardPolyfills.cs`), `System.Memory` on ns2.1, 4 net8-only sites guarded/rewritten, `RungB13` guard test. Gate unchanged (`909605E965BFFE59`; 253/1/0). |
 | `958b5ad` | **Phase 2** browser-live demo (`src/Sim.LiveHost/`) |
 | `e818cc6` | **Phase 0** NuGet packaging (`SumoSharp.Core` + `SumoSharp.Ingest`) |
 | `e3756be` | Removed the transitional **string obstacle API**; handle-only + all callers migrated |
@@ -89,9 +91,8 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
    Still open: a small Unity/Godot **sample** consuming the ns2.1 package (Phase 3).
 2. **Publish CI** to nuget.org (a GitHub Actions workflow: pack + push `.nupkg`/`.snupkg`, gated on a
    tag). Pin `RepositoryUrl`/commit for SourceLink (see gotcha below).
-3. **Async runner refinements (§7):** the two-frame **interpolation hook** (publish last two snapshots +
-   timestamps for smooth render-over-slow-sim) and a **snapshot pool** (today `SimulationSnapshot.Capture`
-   allocates per Tick).
+3. ~~**Async runner refinements (§7):** two-frame **interpolation hook** + **snapshot pool**~~ — **DONE**
+   (commits `ce37400`, `3ac73c1`; see API §7). Both additive/async-only; pool is opt-in.
 4. **`GetEdge(string) → int`** dense edge handles (§9) — routes/spawn are currently edge-id *strings*
    (setup-time only; the router is string-keyed). Optional.
 5. **Vehicle-slot recycling** on `Despawn` (§9) — slots are not reused yet (EntityIndex only grows).
