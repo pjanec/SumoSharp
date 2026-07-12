@@ -5924,17 +5924,63 @@ public sealed partial class Engine : IEngine
         // already fully completed by the time this Refill overwrites it (see LaneNeighborQuery's
         // header comment).
         var postMoveNeighbors = _neighborQuery!;
-        postMoveNeighbors.Refill(ActiveVehicles());
 
-        // D6: the Query() analog -- see ActiveVehicles()'s own comment.
-        foreach (var v in ActiveVehicles())
+        // Domain decomposition: region-parallel the WHOLE post-move phase. Each vehicle's speed-gain/
+        // keep-right decision reads ONLY the frozen postMoveNeighbors snapshot + immutable network +
+        // the ConcurrentDictionary best-lanes cache, and writes ONLY its own fields + the order-
+        // independent, thread-safe command buffer (see DecideSpeedGainForVehicle) -- so both the
+        // neighbour refill (each region owns disjoint lanes) and the decision loop parallelize
+        // byte-identically. The active set + lanes here are the POST-move ones (execute already
+        // applied moves/arrivals), so the region grouping is rebuilt from current lanes, distinct from
+        // the pre-move grouping built at the top of the step.
+        if (RegionPlan && ShouldParallelizePlan())
+        {
+            BuildActiveIndices();
+            BuildRegionActive();
+            System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
+                postMoveNeighbors.RefillRegion(_regionActive[r], _vehicles, _regionLanes[r]));
+
+            var act = _activeIndices;
+            System.Threading.Tasks.Parallel.For(0, act.Count, _parallelOptions, ai =>
+                DecideSpeedGainForVehicle(_vehicles[act[ai]], postMoveNeighbors, time, dt, actionStepLengthSecs));
+        }
+        else
+        {
+            postMoveNeighbors.Refill(ActiveVehicles());
+
+            // D6: the Query() analog -- see ActiveVehicles()'s own comment.
+            foreach (var v in ActiveVehicles())
+            {
+                DecideSpeedGainForVehicle(v, postMoveNeighbors, time, dt, actionStepLengthSecs);
+            }
+        }
+
+        // D5: apply every ChangeLane recorded above, in record order, at this method's end -- the SAME
+        // point v.LaneId/LaneHandle took effect at before this rung (DecideSpeedGainChanges is the LAST
+        // phase in Run()'s per-step loop). Safe under the parallel record above: each command targets a
+        // distinct vehicle and Flush applies them order-independently (see CommandBuffer's header).
+        _commandBuffer.Flush();
+    }
+
+    // One vehicle's post-move keep-right / strategic / speed-gain lane-change decision, extracted from
+    // DecideSpeedGainChanges so the decision loop can run concurrently. Reads only the frozen
+    // `postMoveNeighbors` snapshot (refilled once, before the loop) + the immutable network + the
+    // ConcurrentDictionary best-lanes cache; writes only `v`'s own fields (SpeedGainProbability, and an
+    // inline keep-right LaneId swap that only v's own decision re-reads) and the thread-safe command
+    // buffer. No cross-vehicle live read and no shared non-concurrent write, so running this
+    // concurrently over distinct vehicles is byte-identical to the serial foreach it replaced.
+    private void DecideSpeedGainForVehicle(VehicleRuntime v, LaneNeighborQuery postMoveNeighbors, double time, double dt, double actionStepLengthSecs)
+    {
+        const double relGainNormalizationMinSpeed = 10.0; // MSLCM_LC2013.cpp RELGAIN_NORMALIZATION_MIN_SPEED
+        const double changeProbThresholdLeft = 0.2; // ctor: (0.2/mySpeedGainParam), default mySpeedGainParam=1
+
         {
             // C10-i: a vehicle mid continuous-maneuver is committed to that change -- it makes no
             // new keep-right/strategic/speed-gain decision until the maneuver completes (SUMO holds
             // the change to completion). Inert when lanechange.duration 0 (LcTargetHandle stays -1).
             if (v.LcTargetHandle >= 0)
             {
-                continue;
+                return;
             }
 
             // C4-vii-c: no lane-change decision while inside a junction interior. SUMO's
@@ -5953,7 +5999,7 @@ public sealed partial class Engine : IEngine
             // mid-internal-lane to reach the strategic path, so the guard is never the deciding return.
             if (_network!.LanesByHandle[v.LaneHandle].EdgeId is { Length: > 0 } egoEdge && egoEdge[0] == ':')
             {
-                continue;
+                return;
             }
 
             // Rung ER4 (give-way execution): a blue-light EV drives straight and relies on OTHERS
@@ -5963,7 +6009,7 @@ public sealed partial class Engine : IEngine
             // no committed parity scenario, so this is inert everywhere give-way is absent.
             if (v.VType.HasBluelight)
             {
-                continue;
+                return;
             }
 
             // Rung ER4 (give-way execution, multi-lane): a vehicle actively clearing the way for an
@@ -5978,7 +6024,7 @@ public sealed partial class Engine : IEngine
             if (v.GiveWaySide != 0)
             {
                 TryGiveWayLaneChange(v, _network.LanesByHandle[v.LaneHandle], postMoveNeighbors, dt);
-                continue;
+                return;
             }
 
             // Keep-right (rung 8b) evaluated FIRST, against this iteration's starting lane; may
@@ -6000,7 +6046,7 @@ public sealed partial class Engine : IEngine
             // argument.
             if (TryStrategicLaneChange(v, lane, postMoveNeighbors, time, dt, actionStepLengthSecs))
             {
-                continue;
+                return;
             }
 
             // Left neighbor = same edge, index+1 (no neighbor on the leftmost lane) -- this
@@ -6011,7 +6057,7 @@ public sealed partial class Engine : IEngine
             // instead of a per-step `edge.Lanes.FirstOrDefault(...)` LINQ scan/closure.
             if (lane.LeftNeighbor < 0)
             {
-                continue;
+                return;
             }
 
             var leftLane = _network.LanesByHandle[lane.LeftNeighbor];
@@ -6119,13 +6165,6 @@ public sealed partial class Engine : IEngine
                 CommitLaneChange(v, targetLaneHandle, targetLaneId);
             }
         }
-
-        // D5: apply every ChangeLane recorded above, in record order, at this method's end --
-        // the SAME point v.LaneId/LaneHandle took effect at before this rung (DecideSpeedGain-
-        // Changes is the LAST phase in Run()'s per-step loop, so this flush lands exactly where
-        // the inline writes used to, before EmitTrajectory reads LaneId at the top of next
-        // step's iteration).
-        _commandBuffer.Flush();
     }
 
     // MSLCM_LC2013's keep-right sub-block ONLY (see CLAUDE.md briefing's scope note): strategic/
