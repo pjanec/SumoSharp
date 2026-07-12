@@ -108,11 +108,17 @@ and is declared per scenario in `tolerance.json` via its parity mode. Never intr
 
 ## Subagents
 
-Use the definitions in `.claude/agents/`. Orchestration keeps the expensive model on
-planning and final-gate parity review; routine porting and test-running go to cheaper
-models. Because a subagent starts from near-zero context, every delegation must name: the
-exact `/sumo/` source file to read, the target C# file(s), the scenario, the command to
-run, and the numeric done-condition. Nothing crosses the boundary except the prompt.
+Use the definitions in `.claude/agents/`. **Model routing (to conserve the expensive
+model's budget): Opus orchestrates and owns judgment — planning and final-gate parity
+review — while Sonnet does the volume work (routine porting, test-running).** Default to
+delegating any large or mechanical task that does not require Opus-level reasoning to a
+Sonnet subagent; keep Opus on decomposition, ambiguity resolution, and the accept/reject
+gate. This is already wired in the agent definitions: `algorithm-porter` (sonnet) and
+`harness-runner` (sonnet) do the porting and the `dotnet test` loop; `parity-reviewer`
+(opus) is the final gate. Because a subagent starts from near-zero context, every
+delegation must name: the exact `/sumo/` source file to read, the target C# file(s), the
+scenario, the command to run, and the numeric done-condition. Nothing crosses the boundary
+except the prompt.
 
 ## Reporting a parity failure
 
