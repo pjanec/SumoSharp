@@ -1,0 +1,12 @@
+sumo_version=1.20.0
+generated_utc=2026-07-12T00:00:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+net_command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+fcd_precision=6
+# CORE-1 keepLatGap ISOLATION ANCHOR (exact @1e-3 on pos/speed/posLat). lateral-resolution=0.8,
+# one 7.2 m lane. Slow leader v0 PINNED to the left edge (posLat +2.7). Fast follower v1 CENTERED,
+# free-flows to 13.89 and passes v0 (disjoint footprints -> no braking, no speed-gain change), but
+# nudges to posLat -0.301500 while alongside v0 and returns to 0 -- the ONLY lateral motion is
+# MSLCM_SL2015::keepLatGap maintaining minGapLat (default 0.6) from v0. Isolates keepLatGap +
+# updateGaps from the speed-gain decision and the expected-speed release. Byte-exact keepLatGap here
+# is the leader-wiggle piece that P2.4 (scenario 63) needs.
