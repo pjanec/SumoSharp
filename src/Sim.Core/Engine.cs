@@ -1079,6 +1079,23 @@ public sealed partial class Engine : IEngine
             // every duration-0 scenario (no vehicle is ever mid-maneuver).
             AdvanceLaneChanges();
 
+            // Perf (dense active list) + domain decomposition: compact active-vehicle indices and
+            // (opt-in) group them by spatial region ONCE per step, right after all lane mutations
+            // settle (insertion + AdvanceLaneChanges) and BEFORE emit -- so emit, the neighbour
+            // refill, and the plan phases all share one grouping. The active set + current lanes are
+            // frozen from here through PlanMovements (nothing between here and plan moves a vehicle;
+            // arrival is applied later, in ExecuteMoves).
+            if (ShouldParallelizePlan())
+            {
+                BuildActiveIndices();
+                if (RegionPlan)
+                {
+                    var pRg = PhaseStart();
+                    BuildRegionActive();
+                    PhaseEnd("region", pRg);
+                }
+            }
+
             // [SystemPhase.Export] Export of the previous frame. This emits the SETTLED state
             // produced by the PRIOR step's PostSimulation phase (plus any vehicle just inserted
             // above) -- it must stay at the TOP of the loop, BEFORE this step's
@@ -1142,21 +1159,6 @@ public sealed partial class Engine : IEngine
             }
 
             var neighbors = _neighborQuery!;
-
-            // Perf (dense active list) + domain decomposition: compact the active-vehicle indices and
-            // (opt-in) group them by spatial region BEFORE the neighbour refill, so the refill itself
-            // can run region-parallel (each region refills its own disjoint lanes). Active set is
-            // frozen from here through PlanMovements (arrival is applied later, in ExecuteMoves).
-            if (ShouldParallelizePlan())
-            {
-                BuildActiveIndices();
-                if (RegionPlan)
-                {
-                    var pRg = PhaseStart();
-                    BuildRegionActive();
-                    PhaseEnd("region", pRg);
-                }
-            }
 
             var pRefill = PhaseStart();
             if (RegionPlan && ShouldParallelizePlan())
@@ -6774,14 +6776,65 @@ public sealed partial class Engine : IEngine
             _exportObservers[i].OnFrameBegin(time);
         }
 
+        // Domain decomposition: region-parallel emit. Each region computes ITS active vehicles'
+        // frames (per-vehicle geometry, no neighbour access) into the shared _emitScratch, indexed by
+        // EntityIndex -- so region tasks touch disjoint slots (race-free), iterate only ACTIVE
+        // vehicles (via the region grouping built just before emit), and the serial append walks
+        // _activeIndices (ascending EntityIndex) so the emitted XML byte-order is IDENTICAL to the
+        // serial ActiveVehicles() path. Faster than the flat ParallelExport-over-all-vehicles below
+        // (that dispatches over every slot incl. inactive, with a scattered per-index read); this
+        // dispatches over regions and skips inactive entirely. No-observer gate as below.
+        if (RegionPlan && _exportObservers.Count == 0 && ShouldParallelizePlan())
+        {
+            if (_emitScratch.Length < _vehicles.Count)
+            {
+                _emitScratch = new TrajectoryPoint?[_vehicles.Count];
+            }
+
+            var scratchR = _emitScratch;
+            System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
+            {
+                var list = _regionActive[r];
+                for (var idx = 0; idx < list.Count; idx++)
+                {
+                    var vi = list[idx];
+                    var v = _vehicles[vi];
+                    var laneR = _network!.LanesById[v.LaneId];
+                    var (xr, yr, angler) = LaneGeometry.PositionAtOffset(laneR.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+                    scratchR[vi] = new TrajectoryPoint(
+                        VehicleId: v.Def.Id,
+                        Time: time,
+                        Lane: v.LaneId,
+                        Pos: v.Kinematics.Pos,
+                        Speed: v.Kinematics.Speed,
+                        X: xr,
+                        Y: yr,
+                        Angle: angler,
+                        Acceleration: null);
+                }
+            });
+
+            // Append in ascending EntityIndex order (== ActiveVehicles() order) -> byte-identical XML.
+            // Only active indices are visited, and every active vehicle's slot was written above.
+            for (var k = 0; k < _activeIndices.Count; k++)
+            {
+                if (scratchR[_activeIndices[k]] is { } point)
+                {
+                    trajectory.Add(point);
+                }
+            }
+
+            return;
+        }
+
         // Perf (Export-phase parallelism): on a large scenario with NO registered export observer,
         // compute each vehicle's frame concurrently into _emitScratch, then append serially. The
         // determinism/parity test loop and the city benchmark (--fcd-out "") both satisfy the
         // no-observer gate; the FCD-writer observer path falls through to the serial branch below so
         // its file-emission order is preserved exactly. Race-free (index i writes only slot i) and
-        // byte-identical (TrajectorySet's query surface is by-(vehicle,time), emission-order
-        // independent -- see _emitScratch's header). Size-gated by ShouldParallelizePlan so every
-        // small parity scenario stays on the serial path.
+        // byte-identical (the append below is in EntityIndex order -- identical to the serial
+        // ActiveVehicles() order -- so even the emitted XML byte-order matches). Size-gated by
+        // ShouldParallelizePlan so every small parity scenario stays on the serial path.
         if (ParallelExport && _exportObservers.Count == 0 && ShouldParallelizePlan())
         {
             if (_emitScratch.Length < _vehicles.Count)
