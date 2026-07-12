@@ -103,11 +103,19 @@ public sealed partial class Engine : IEngine
     private readonly Dictionary<int, HashSet<string>> _avoidedByEntity = new();
 
     // B1: external-obstacle store (DESIGN.md "Two futures" -- live-reactivity input surface, not
-    // a SUMO concept). Keyed by id so AddObstacle can add-or-replace. Deliberately NOT cleared by
-    // LoadScenario (tests inject obstacles after loading, before Run) and empty by default, which
-    // is exactly the inert-when-absent guard: with no entries, ObstacleConstraint below is a
-    // trivial +infinity no-op and every parity scenario's constraints list is unaffected.
-    private readonly Dictionary<string, ExternalObstacle> _obstacles = new();
+    // a SUMO concept). SUMOSHARP-API.md §4.3: a handle-keyed struct-of-arrays (ObstacleStore), replacing
+    // the former `Dictionary<string, ExternalObstacle>` so per-step corrections are zero-allocation.
+    // Deliberately NOT cleared by LoadScenario (tests inject obstacles after loading, before Run) and
+    // empty by default, which is exactly the inert-when-absent guard: with no entries, ObstacleConstraint
+    // below is a trivial +infinity no-op and every parity scenario's constraints list is unaffected.
+    private readonly ObstacleStore _obstacles = new();
+
+    // Transitional string-id -> handle map (SUMOSHARP-API.md §4.4): backs the string-keyed AddObstacle/
+    // UpdateObstacle/RemoveObstacle overloads that the existing callers and the B1/B5/B6 parity tests
+    // use, so their behaviour is byte-identical while the handle-based API becomes the primary surface.
+    // Touched only on the string setup path, never the handle hot path; slated for removal once callers
+    // migrate to handles (the string->handle cache then lives host-side).
+    private readonly Dictionary<string, ObstacleHandle> _obstacleHandleById = new(StringComparer.Ordinal);
 
     // W1 (warm-start): number of steps advanced so far on the current timeline (via Run or WarmUp),
     // reset to 0 by LoadScenario. Advance resets the timeline state machines and starts the clock at
@@ -687,114 +695,136 @@ public sealed partial class Engine : IEngine
     // needed since observers are not simulated entities).
     public void AddExportObserver(ISimExportObserver observer) => _exportObservers.Add(observer);
 
-    // B6: `latPos`/`width` (default 0/0 == the pre-B6 full-lane-block semantics) give the obstacle a
-    // lateral footprint so a car can SWERVE around it (see ExternalObstacle's header). latPos is the
-    // lane-center-relative lateral centre (positive = LEFT of travel), width its lateral extent.
+    // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
+    // per-step obstacle path never touches a string. Requires a loaded scenario.
+    public int GetLane(string laneId) =>
+        (_network ?? throw new InvalidOperationException("LoadScenario must be called before GetLane."))
+            .LaneHandleById[laneId];
+
+    // ----- Handle-based obstacle API (SUMOSHARP-API.md §4.4, the primary/shipped surface) -----
+    // Zero-allocation: Add returns a generational ObstacleHandle; Update/Remove write columns by index.
+    // `laneHandle` comes from GetLane(laneId). D17: avoidanceClass is the reserved RVO reciprocity class,
+    // inert for the lane-based engine (default OneSided). B6: latPos/width (default 0/0 == pre-B6
+    // full-lane block) give the obstacle a lateral footprint so a car can SWERVE around it.
+    public ObstacleHandle AddObstacle(int laneHandle, double frontPos, double length,
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0,
+        AvoidanceClass avoidanceClass = AvoidanceClass.OneSided)
+        => AddCore(string.Empty, laneHandle, frontPos, length, startTime, endTime,
+                   0.0, 0.0, latPos, width, latSpeed, avoidanceClass);
+
+    // B5-i: MOVING obstacle -- AdvanceObstacles (Input phase) dead-reckons FrontPos by Speed*dt every
+    // step, and ObstacleConstraint feeds Speed/MaxDecel into KraussModel.FollowSpeed.
+    public ObstacleHandle AddMovingObstacle(int laneHandle, double frontPos, double length,
+        double speed, double maxDecel,
+        double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
+        double latPos = 0.0, double width = 0.0, double latSpeed = 0.0,
+        AvoidanceClass avoidanceClass = AvoidanceClass.OneSided)
+        => AddCore(string.Empty, laneHandle, frontPos, length, startTime, endTime,
+                   speed, maxDecel, latPos, width, latSpeed, avoidanceClass);
+
+    // Per-step corrections from the external owner. Inert-when-absent: a stale/removed handle is a no-op.
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed) =>
+        _obstacles.Update(handle, frontPos, speed);
+
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed, double latPos) =>
+        _obstacles.Update(handle, frontPos, speed, latPos);
+
+    public void UpdateObstacle(ObstacleHandle handle, double frontPos, double speed, double latPos, double latSpeed) =>
+        _obstacles.Update(handle, frontPos, speed, latPos, latSpeed);
+
+    public void RemoveObstacle(ObstacleHandle handle) => _obstacles.Remove(handle);
+
+    // Resolve the lane handle -> LaneId string (which the string-filtering consumers -- ObstacleConstraint,
+    // the reroute/junction/follower scans -- still match on) and store. `id` is used only by
+    // ComputeLateralEvasion's deterministic tie-break (empty for handle-based adds; no committed scenario
+    // relies on tie-breaking among handle-based obstacles).
+    private ObstacleHandle AddCore(string id, int laneHandle, double frontPos, double length,
+        double startTime, double endTime, double speed, double maxDecel,
+        double latPos, double width, double latSpeed, AvoidanceClass avoidanceClass)
+    {
+        var laneId = (_network ?? throw new InvalidOperationException("LoadScenario must be called before AddObstacle."))
+            .LanesByHandle[laneHandle].Id;
+        return _obstacles.Add(id, laneHandle, laneId, frontPos, length, startTime, endTime,
+                              speed, maxDecel, latPos, width, latSpeed, avoidanceClass);
+    }
+
+    // ----- Transitional string-keyed obstacle API (SUMOSHARP-API.md §4.4) -----
+    // Add-or-replace by id, backed by the handle store + _obstacleHandleById map. Byte-identical to the
+    // pre-store string API, so the B1/B5/B6 parity tests and Sim.ExtDemo are unchanged. Slated for removal
+    // once callers migrate to handles.
     public void AddObstacle(string id, string laneId, double frontPos, double length,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
         double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
-    {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width, latSpeed);
-    }
+        => AddOrReplaceById(id, laneId, frontPos, length, startTime, endTime, 0.0, 0.0, latPos, width, latSpeed);
 
-    // B5-i: MOVING obstacle add-or-replace, same keyed-by-id contract as AddObstacle. Speed/
-    // MaxDecel are the only difference from AddObstacle's construction -- AdvanceObstacles (Input
-    // phase) dead-reckons FrontPos by Speed*dt every step from here on, and ObstacleConstraint
-    // feeds Speed/MaxDecel into KraussModel.FollowSpeed instead of the static predSpeed=0 case.
-    // B6: latPos/width as in AddObstacle (a walking pedestrian with a lateral footprint).
     public void AddMovingObstacle(string id, string laneId, double frontPos, double length,
         double speed, double maxDecel,
         double startTime = double.NegativeInfinity, double endTime = double.PositiveInfinity,
         double latPos = 0.0, double width = 0.0, double latSpeed = 0.0)
+        => AddOrReplaceById(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width, latSpeed);
+
+    private void AddOrReplaceById(string id, string laneId, double frontPos, double length,
+        double startTime, double endTime, double speed, double maxDecel,
+        double latPos, double width, double latSpeed)
     {
-        _obstacles[id] = new ExternalObstacle(id, laneId, frontPos, length, startTime, endTime, speed, maxDecel, latPos, width, latSpeed);
+        // Add-or-replace by id: drop any prior obstacle under this id (remove+add gives a fresh slot with
+        // identical state -- iteration order is immaterial to every consumer, see ObstacleStore's header).
+        if (_obstacleHandleById.TryGetValue(id, out var existing))
+        {
+            _obstacles.Remove(existing);
+        }
+
+        _obstacleHandleById[id] = AddCore(id, GetLane(laneId), frontPos, length, startTime, endTime,
+            speed, maxDecel, latPos, width, latSpeed, AvoidanceClass.OneSided);
     }
 
-    // B5-i: per-step position/velocity correction from the external owner of this obstacle.
-    // Inert-when-absent (no-op if `id` was never added/was removed) -- mirrors RemoveObstacle's
-    // TryGetValue-free `Remove` idiom, just for an update instead of a delete. `record with`
-    // preserves LaneId/Length/StartTime/EndTime/MaxDecel unchanged; only FrontPos/Speed move.
     public void UpdateObstacle(string id, double frontPos, double speed)
     {
-        if (_obstacles.TryGetValue(id, out var obstacle))
+        if (_obstacleHandleById.TryGetValue(id, out var handle))
         {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed };
+            _obstacles.Update(handle, frontPos, speed);
         }
     }
 
-    // B6: per-step correction that ALSO moves the lateral centre -- for a pedestrian walking (or
-    // lunging) laterally across the lane, the owner reports its new latPos each step. Same
-    // inert-when-absent contract; only FrontPos/Speed/LatPos move.
     public void UpdateObstacle(string id, double frontPos, double speed, double latPos)
     {
-        if (_obstacles.TryGetValue(id, out var obstacle))
+        if (_obstacleHandleById.TryGetValue(id, out var handle))
         {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos };
+            _obstacles.Update(handle, frontPos, speed, latPos);
         }
     }
 
-    // B6-lat: full correction including the lateral VELOCITY, so the evasion can predict a lunging
-    // pedestrian's future position between owner corrections.
     public void UpdateObstacle(string id, double frontPos, double speed, double latPos, double latSpeed)
     {
-        if (_obstacles.TryGetValue(id, out var obstacle))
+        if (_obstacleHandleById.TryGetValue(id, out var handle))
         {
-            _obstacles[id] = obstacle with { FrontPos = frontPos, Speed = speed, LatPos = latPos, LatSpeed = latSpeed };
+            _obstacles.Update(handle, frontPos, speed, latPos, latSpeed);
         }
     }
 
-    public void RemoveObstacle(string id) => _obstacles.Remove(id);
-
-    public void ClearObstacles() => _obstacles.Clear();
-
-    // B5-i: dead-reckon every MOVING obstacle (Speed != 0) forward by Speed*dt, once per step, in
-    // the Input phase BEFORE PlanMovements/the neighbor-query Refill -- so the Plan phase reads a
-    // FROZEN obstacle position for this step, exactly like every other piece of start-of-step
-    // state (CLAUDE.md rule 2: plan reads start-of-step state only). This is linear extrapolation
-    // of an externally-supplied velocity (navmesh/RVO agent, live detection), NOT a SUMO
-    // car-following/motion model -- the external owner is expected to call UpdateObstacle with a
-    // fresh reading whenever it has one; dead-reckoning just fills the gap between updates.
-    // Speed==0 obstacles are skipped entirely (no record replacement), which is exactly why a
-    // static (B1) obstacle's FrontPos never changes here and the rest of the step tree sees a
-    // byte-identical world to before this rung.
-    private readonly List<string> _obstacleIdScratch = new();
-
-    private void AdvanceObstacles(double time, double dt)
+    public void RemoveObstacle(string id)
     {
-        if (_obstacles.Count == 0)
+        if (_obstacleHandleById.TryGetValue(id, out var handle))
         {
-            return;
-        }
-
-        // Snapshot the ids first, into a reused scratch list (no per-step allocation): replacing
-        // an existing key's VALUE via the indexer below is fine mid-loop, but Dictionary still
-        // disallows enumerating _obstacles.Values/Keys directly while any entry's value changes,
-        // so we iterate a stable id copy instead.
-        _obstacleIdScratch.Clear();
-        _obstacleIdScratch.AddRange(_obstacles.Keys);
-
-        foreach (var id in _obstacleIdScratch)
-        {
-            var obstacle = _obstacles[id];
-            if ((obstacle.Speed == 0.0 && obstacle.LatSpeed == 0.0)
-                || obstacle.StartTime >= time || time >= obstacle.EndTime)
-            {
-                // Only dead-reckon while the agent is ACTIVE and PAST its appearance step: at/before its
-                // StartTime it must stay at its added position (it just appeared there this step), and
-                // after EndTime it is gone. For a -inf..+inf window (every pre-B6 moving obstacle,
-                // StartTime == -inf) `StartTime >= time` is always false, so this is byte-identical there.
-                continue;
-            }
-
-            // B6-lat: dead-reckon the lateral centre too (a lunging pedestrian), same contract as the
-            // longitudinal FrontPos dead-reckoning. LatSpeed == 0 leaves LatPos unchanged.
-            _obstacles[id] = obstacle with
-            {
-                FrontPos = obstacle.FrontPos + obstacle.Speed * dt,
-                LatPos = obstacle.LatPos + obstacle.LatSpeed * dt,
-            };
+            _obstacles.Remove(handle);
+            _obstacleHandleById.Remove(id);
         }
     }
+
+    public void ClearObstacles()
+    {
+        _obstacles.Clear();
+        _obstacleHandleById.Clear();
+    }
+
+    // B5-i: dead-reckon every MOVING obstacle forward by Speed*dt (and B6-lat LatPos by LatSpeed*dt),
+    // once per step, in the Input phase BEFORE PlanMovements/the neighbor-query Refill -- so the Plan
+    // phase reads a FROZEN obstacle position for this step, exactly like every other piece of
+    // start-of-step state (CLAUDE.md rule 2). The dead-reckoning logic now lives in ObstacleStore.Advance
+    // (iterating the dense active list, writing columns in place -- no id-scratch snapshot needed since
+    // an array has no enumerate-during-mutation hazard). Byte-identical to the pre-store version.
+    private void AdvanceObstacles(double time, double dt) => _obstacles.Advance(time, dt);
 
     public void LoadScenario(string netXmlPath, string rouXmlPath, string sumocfgPath)
     {
@@ -5295,6 +5325,8 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // ExternalObstacle is now a value type; capture the resolved leader once (stack copy).
+        var near = nearest.Value;
         var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
 
         // C11-iii: an ExternalObstacle has no CarFollowModel of its own (it is not a SUMO
@@ -5305,8 +5337,8 @@ public sealed partial class Engine : IEngine
             v.VType,
             egoSpeed: v.Kinematics.Speed,
             gap: gap,
-            predSpeed: nearest.Speed,
-            predMaxDecel: nearest.Speed != 0.0 ? nearest.MaxDecel : v.VType.Decel,
+            predSpeed: near.Speed,
+            predMaxDecel: near.Speed != 0.0 ? near.MaxDecel : v.VType.Decel,
             laneVehicleMaxSpeed: laneVehicleMaxSpeed,
             dt: _config!.StepLength,
             time: time,
@@ -5426,7 +5458,7 @@ public sealed partial class Engine : IEngine
             // Nearest by back-position; ties broken by Id (ordinal) so the selection is fully
             // order-independent even with multiple overlapping obstacles (never a committed scenario,
             // but keeps the external-agent path deterministic regardless of _obstacles enumeration).
-            if (back < threatBack || (back == threatBack && (threat is null || string.CompareOrdinal(o.Id, threat.Id) < 0)))
+            if (back < threatBack || (back == threatBack && (threat is null || string.CompareOrdinal(o.Id, threat.Value.Id) < 0)))
             {
                 threatBack = back;
                 threat = o;
@@ -5438,6 +5470,9 @@ public sealed partial class Engine : IEngine
         {
             return DriftToward(curLat, 0.0, maxStep); // no threat -> recentre toward the lane centre
         }
+
+        // ExternalObstacle is now a value type; capture the resolved threat once (stack copy).
+        var th = threat.Value;
 
         // Swerve ONLY when braking alone cannot stop before the obstacle (the "jumped out, can't stop
         // in time" case). While the obstacle is still strictly AHEAD and ego is still lane-centred and
@@ -5457,8 +5492,8 @@ public sealed partial class Engine : IEngine
         // edge, on the left (higher LatOffset) or right (lower). Using the predicted centre means the
         // car dodges to the side the agent is VACATING: a ped lunging left pushes both targets left, so
         // the right-side target becomes the smaller (and within-lane / safe) steer.
-        var targetLeft = (threatPredLat + threat.Width / 2.0) + SwerveLateralGap + halfEgo;
-        var targetRight = (threatPredLat - threat.Width / 2.0) - SwerveLateralGap - halfEgo;
+        var targetLeft = (threatPredLat + th.Width / 2.0) + SwerveLateralGap + halfEgo;
+        var targetRight = (threatPredLat - th.Width / 2.0) - SwerveLateralGap - halfEgo;
 
         const double eps = 1e-9;
         // Each side is feasible if it clears the agent WITHIN the ego lane, OR by spilling into an
@@ -5474,8 +5509,8 @@ public sealed partial class Engine : IEngine
             // Both sides work: dodge to the side the agent is VACATING -- opposite its lateral velocity
             // -- so the car steers behind the agent's motion rather than into its path. A laterally
             // static agent (LatSpeed == 0) has no vacating side, so take the smaller steer from centre.
-            chosen = threat.LatSpeed > 0.0 ? targetRight       // agent moving LEFT  -> pass on its right
-                : threat.LatSpeed < 0.0 ? targetLeft           // agent moving RIGHT -> pass on its left
+            chosen = th.LatSpeed > 0.0 ? targetRight       // agent moving LEFT  -> pass on its right
+                : th.LatSpeed < 0.0 ? targetLeft           // agent moving RIGHT -> pass on its left
                 : Math.Abs(targetLeft - curLat) <= Math.Abs(targetRight - curLat) ? targetLeft : targetRight;
         }
         else if (leftFeasible)

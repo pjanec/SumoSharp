@@ -37,7 +37,21 @@ namespace Sim.Core;
 // evasion PREDICTS where the agent will be by the time the car reaches it -- so the car can react to a
 // lunge faster than its own swerve speed (SwerveMaxLateralSpeed) by dodging to the side the agent is
 // vacating. Default 0 == a laterally-static agent: byte-identical to the pre-B6-lat behaviour.
-public sealed record ExternalObstacle(
+//
+// VALUE TYPE (SUMOSHARP-API.md §4.2 / D5): this was a `sealed record` (a heap class) stored in a
+// `Dictionary<string, ExternalObstacle>` and rewritten via `record with` on every per-step
+// UpdateObstacle -- one heap allocation + one string-hash lookup per obstacle per step. It is now a
+// `readonly record struct`: the backing store is a struct-of-arrays keyed by ObstacleHandle
+// (ObstacleStore), and this struct is only ever MATERIALISED by value from the store's columns when a
+// consumer iterates (`foreach (var o in _obstacles.Values)`), so a read is a stack copy (doubles + two
+// string references + a byte) and an update is an in-place column write -- zero heap allocation on both
+// paths. Every field the lane-based engine reads (FrontPos/LaneId/Speed/Width/Id/...) is unchanged, so
+// the car-following / evasion / junction consumers are byte-identical. Id stays because
+// ComputeLateralEvasion uses it as a deterministic tie-break among overlapping obstacles.
+//
+// B1-RVO (D17): AvoidanceClass is the reserved reciprocity-class byte the future RVO layer consumes
+// (see AvoidanceClass.cs). Default OneSided is inert for the lane-based engine.
+public readonly record struct ExternalObstacle(
     string Id,
     string LaneId,
     double FrontPos,
@@ -48,4 +62,5 @@ public sealed record ExternalObstacle(
     double MaxDecel = 0.0,
     double LatPos = 0.0,
     double Width = 0.0,
-    double LatSpeed = 0.0);
+    double LatSpeed = 0.0,
+    AvoidanceClass AvoidanceClass = AvoidanceClass.OneSided);

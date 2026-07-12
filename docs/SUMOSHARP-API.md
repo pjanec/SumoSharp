@@ -10,9 +10,12 @@ the car-following / lane-change / junction math, or the internal vehicle SoA**, 
 cannot move any scenario out of its committed `tolerance.json`. The parity suite stays the
 correctness anchor throughout (`CLAUDE.md` rule 3).
 
-Status: **design agreed, implementation pending** (developed on a parallel branch). Nothing here
-is shipped yet. **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15
-for the shared obstacle-store ownership split and the lateral-state API requirements folded in.
+Status: **design agreed; Phase-1 obstacle store LANDED on this branch** (the rest pending). The
+handle-based struct-of-arrays obstacle store (§4.3–4.4) is implemented and verified — full parity
+suite green (233 tests) and the determinism anchor `909605E965BFFE59` unchanged (single + parallel),
+so the redesign is byte-identical where obstacles are absent and behaviour-identical (B1/B5/B6) where
+present. **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the
+shared obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
 
 ---
 
@@ -494,6 +497,13 @@ this as its "scalable int-indexed footprint-agent store." Its **lateral columns 
   `ComputeRvoLateral`). **This session's SoA store lands first; then that one loop retargets** onto it
   (builds `RvoNeighbor` from the SoA columns instead of the record). Until then Stage 3 stays on the
   current `_obstacles` — gated/byte-identical, so it blocks nothing.
+- **STATUS: the store has landed** (`src/Sim.Core/ObstacleStore.cs`, `ObstacleHandle.cs`,
+  `AvoidanceClass.cs`; `ExternalObstacle` is now a `readonly record struct`). It carries every column the
+  Stage-3 adapter needs — `laneHandle/frontPos/length/latPos/width/speed/startTime/endTime` — plus the
+  reserved `avoidanceClass` byte (B1/D17). The engine still materialises an `ExternalObstacle` value per
+  active slot via `_obstacles.Values` (zero-alloc struct enumerator), so the RVO adapter can read the
+  same struct today and switch to raw columns later with no behavioural change. `RvoNeighbor` remains the
+  sole seam.
 
 ### Merge mechanics
 Both branches make **additive** edits to 8 shared files: `Engine.cs`, `VehicleExportSnapshot.cs`,
