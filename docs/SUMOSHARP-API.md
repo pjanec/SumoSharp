@@ -10,12 +10,17 @@ the car-following / lane-change / junction math, or the internal vehicle SoA**, 
 cannot move any scenario out of its committed `tolerance.json`. The parity suite stays the
 correctness anchor throughout (`CLAUDE.md` rule 3).
 
-Status: **design agreed; Phase-1 obstacle store LANDED on this branch** (the rest pending). The
-handle-based struct-of-arrays obstacle store (§4.3–4.4) is implemented and verified — full parity
-suite green (233 tests) and the determinism anchor `909605E965BFFE59` unchanged (single + parallel),
-so the redesign is byte-identical where obstacles are absent and behaviour-identical (B1/B5/B6) where
-present. **Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the
-shared obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
+Status: **design agreed; Phase-1 obstacle store + stepped read surface LANDED on this branch** (the
+rest pending). Implemented and verified (full parity suite green, 236 tests, determinism anchor
+`909605E965BFFE59` unchanged single + parallel — so every addition is byte-identical where the new
+paths are unused):
+- the handle-based struct-of-arrays **obstacle store** (§4.3–4.4);
+- the host-facing **stepped read surface** (§5): `Step()`/`Step(int)`, the columnar SoA spans
+  (`VehicleHandles`/`PosX`/`PosY`/`PosZ`/`Angle`/`Speed`/`LaneHandles`/`Pos`/`PosLat`), and
+  `TryGetVehicle` — a projection published each `Step()`, off the `Run()`/parity path (zero overhead there).
+
+**Coordinated with `docs/LANELESS-DIRECTION.md`** (the laneless/RVO branch) — see §15 for the shared
+obstacle-store ownership split, the lateral-state API requirements folded in, and the merge order.
 
 ---
 
@@ -191,6 +196,11 @@ ReadOnlySpan<double> PosLat { get; }            // lane-relative lateral offset;
 
 bool TryGetVehicle(VehicleHandle h, out VehicleState state);   // random access; readonly struct, no alloc
 ```
+
+**STATUS: landed** (`src/Sim.Core/VehicleHandle.cs`, `VehicleState.cs`, `VehicleReadBuffer.cs`; the
+`Step()`/spans/`TryGetVehicle` surface on `Engine`). `PosLat` is exposed today (from `Kinematics.LatOffset`);
+`LatSpeed` is deferred to the laneless-branch merge (it owns `Kinematics.LatSpeed`). `PosZ` ships as an
+all-zero column until geometry-3D lands. The columns are populated only by `Step()`, never by `Run()`.
 
 - **`PosLat` is first-class (coordinated with the laneless branch).** The sublane/laneless axis makes
   lateral state load-bearing — that branch already added `VehicleExportSnapshot.PosLat`,

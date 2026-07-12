@@ -1042,6 +1042,109 @@ public sealed partial class Engine : IEngine
     // body, Export phase skipped).
     public void WarmUp(int steps) => Advance(null, steps);
 
+    // ----- Host-facing stepped read surface (SUMOSHARP-API.md §5, D6) -----
+    // Per-step published projection of the live vehicles: a struct-of-arrays a host (game render loop,
+    // training obs read, digital-twin) polls between steps. Empty until the first Step(); the spans are
+    // valid until the NEXT Step() (they alias reused buffers). Populating them is a NEW path that Run()
+    // deliberately does NOT take, so the parity/determinism suite is byte-identical and pays zero overhead.
+
+    private readonly VehicleReadBuffer _readBuffer = new();
+
+    // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
+    // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
+    // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
+    private ushort[] _vehicleGeneration = Array.Empty<ushort>();
+
+    // Advance one simulation step (or `steps`) WITHOUT accumulating a TrajectorySet, then publish the read
+    // snapshot -- the host loop primitive: `while (running) { engine.Step(); render(engine); }`. Reuses the
+    // exact same per-step driver as Run/WarmUp (Advance), so the simulation is identical; the only addition
+    // is the post-step read projection. For a game wanting a fresh snapshot every frame, call Step() singly.
+    public void Step() => Step(1);
+
+    public void Step(int steps)
+    {
+        Advance(null, steps);
+        PublishReadState();
+    }
+
+    // Number of active vehicles in the current published snapshot (the span length).
+    public int VehicleCount => _readBuffer.Count;
+
+    // Steps advanced on the current timeline, and the current simulation clock (seconds).
+    public int StepCount => _elapsedSteps;
+
+    public double CurrentTime => _config is null ? 0.0 : _config.Begin + _elapsedSteps * _config.StepLength;
+
+    // Columnar read spans -- structure-of-arrays, valid until the next Step(). Render-facing geometry is
+    // float; parity-exact lane-relative values are double (D7). PosZ is present from day one (0 on 2-D
+    // nets, real when geometry-3D lands, SUMOSHARP-API.md §6). Same index across every span == same vehicle.
+    public ReadOnlySpan<VehicleHandle> VehicleHandles => _readBuffer.Handles.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosX => _readBuffer.PosX.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosY => _readBuffer.PosY.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> PosZ => _readBuffer.PosZ.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> Angle => _readBuffer.Angle.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> Speed => _readBuffer.SpeedF.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<int> LaneHandles => _readBuffer.LaneHandle.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<double> PosLat => _readBuffer.PosLat.AsSpan(0, _readBuffer.Count);
+
+    // Random access by handle (array-of-structures view). Inert-when-absent: false on a stale generation
+    // or a vehicle not active in the current snapshot.
+    public bool TryGetVehicle(VehicleHandle handle, out VehicleState state)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicleGeneration.Length && _vehicleGeneration[idx] == handle.Generation
+            && _readBuffer.TryGetSlot(idx, out var slot))
+        {
+            state = new VehicleState(
+                handle, _readBuffer.EntityIndex[slot], _readBuffer.VehicleId[slot], _readBuffer.VehicleType[slot],
+                _readBuffer.LaneHandle[slot], _readBuffer.LaneId[slot],
+                _readBuffer.Pos[slot], _readBuffer.SpeedD[slot], _readBuffer.PosLat[slot],
+                _readBuffer.PosX[slot], _readBuffer.PosY[slot], _readBuffer.PosZ[slot], _readBuffer.Angle[slot]);
+            return true;
+        }
+
+        state = default;
+        return false;
+    }
+
+    // Fill the read buffer from the current active vehicles, projecting each to (x, y, angle) with the SAME
+    // LaneGeometry.PositionAtOffset call EmitTrajectory uses -- so the read columns match the FCD geometry
+    // exactly. Reads only committed post-step state; mutates nothing in the simulation.
+    private void PublishReadState()
+    {
+        EnsureVehicleGenerationCapacity(_vehicles.Count);
+        _readBuffer.BeginFrame(_vehicles.Count);
+
+        foreach (var v in ActiveVehicles())
+        {
+            var lane = _lanesByHandle[v.LaneHandle];
+            var (x, y, angle) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+            var handle = new VehicleHandle((uint)v.EntityIndex, _vehicleGeneration[v.EntityIndex]);
+
+            // Z is 0 on today's 2-D nets; becomes the interpolated lane elevation when geometry-3D lands.
+            _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
+                v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Kinematics.LatOffset,
+                (float)x, (float)y, 0.0f, (float)angle);
+        }
+    }
+
+    private void EnsureVehicleGenerationCapacity(int needed)
+    {
+        if (_vehicleGeneration.Length >= needed)
+        {
+            return;
+        }
+
+        var old = _vehicleGeneration.Length;
+        var newCap = Math.Max(needed, old == 0 ? 16 : old * 2);
+        Array.Resize(ref _vehicleGeneration, newCap);
+        for (var i = old; i < newCap; i++)
+        {
+            _vehicleGeneration[i] = 1;  // live generation starts at 1 so a default VehicleHandle never resolves
+        }
+    }
+
     // Shared driver for Run/WarmUp. `trajectory==null` => warm-up (the per-step Export is skipped).
     // Resets the timeline state machines only on a fresh start so a warm-up + run is one continuous
     // timeline; for a fresh engine (_elapsedSteps==0, the case every existing Run() call is) this is
