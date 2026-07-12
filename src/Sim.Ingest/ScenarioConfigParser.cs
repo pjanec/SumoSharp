@@ -35,7 +35,9 @@ public static class ScenarioConfigParser
             SpeedDev: ParseDouble(processingEl, "default.speeddev", 0.1),
             Seed: ParseInt(randomEl, "seed", 42),
             // C10-i: SUMO's <processing><lanechange.duration> (default 0 = instant snap).
-            LaneChangeDuration: ParseDouble(processingEl, "lanechange.duration", 0.0));
+            LaneChangeDuration: ParseDouble(processingEl, "lanechange.duration", 0.0),
+            // Phase 2: SUMO's <processing><lateral-resolution> (default 0 = sublane model OFF).
+            LateralResolution: ParseDouble(processingEl, "lateral-resolution", 0.0));
     }
 
     private static double ParseDouble(XElement? parent, string name, double defaultValue)
