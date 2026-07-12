@@ -15,12 +15,16 @@ this file assumes them.
 > main event" was tried in full and it **regresses**. §2–§6 are the original (pre-measurement) plan,
 > kept for context; where they disagree with this log, the log is right (it was measured on-target).
 >
-> **The one-paragraph summary:** the engine is **~3× single-threaded SUMO on the hot-path tick @8
-> cores** (3.06× measured) with 3 byte-identical wins banked and an opt-in fast-mode + behavioral
-> gate shipped. The bottleneck is **memory bandwidth from random neighbor access** in the plan phase.
-> The **≥4× goal is not reached**, and every data-layout and serial-tail lever tried this session to
-> close the gap either did nothing or regressed — for reasons now understood (below). The only
-> untried paths are spatial memory reordering or an aggressive lossy fast-mode; both are research.
+> **The one-paragraph summary:** the engine is **~3.5× single-threaded SUMO on the hot-path tick @8
+> cores** (region path @8t grid-32 ≈ 4.82 s cool vs SUMO 17.19 s = **3.57×**) with byte-identical wins
+> banked (the region foundation + two new ones — insert-prewarm and emit-handle-array — see the
+> Session-2 addendum) and an opt-in fast-mode + behavioral gate shipped. The bottleneck is **memory
+> bandwidth from random neighbor access** in the plan/willPass phases (62% of the tick, capped at ~3×
+> scaling). The **≥4× goal is not reached byte-identically** and is now understood to be structurally
+> out of reach on this object-graph memory layout: every data-layout and serial-tail lever tried
+> either did nothing or regressed (below). Crossing 4× needs either spatial memory reordering (attacks
+> the wall directly; research) or an aggressive opt-in fast-mode serial-tail parallelization (caps
+> ~3.9×, trades byte-identity for --fast-gate behavioral parity).
 
 ### Current state (measured)
 
@@ -105,6 +109,35 @@ order** (the lane-change-arbitration order-sensitivity DESIGN.md warns about) �
 byte-identically; `foeIndex` regressed on locks (#7); `refill`-sort and `execute`-integration are
 individually tiny/independent (dispatch overhead ≈ work). Even a best-case fast-mode parallelization
 of the tractable serial work maths to only **~3.3–3.5×**.
+
+### Session-2 addendum — region foundation + two new byte-identical wins (~3.06× → ~3.57×)
+
+A later session built the **domain-decomposition region path** (`--region`, see `DOMAIN-DECOMP.md`)
+and banked two more byte-identical wins on top. All hold the three gates (229 tests, hash
+`909605E965BFFE59`, city-3000 default-vs-`--region` trip-SHA match + aggregate PASS + 0 stuck).
+
+- **WIN — insert route-sequence prewarm** (`perf(insert)`, commit `11fc90b`). `TryInsertOnLane`
+  re-resolved each vehicle's lane sequence (`ResolveLaneSequenceHandlesWithArrival`, a **pure**
+  function of `(route.Edges, DepartLaneIndex)` + immutable network) at insertion time, serially, in
+  the hot path. Pre-resolve **every distinct `(RouteId, DepartLaneIndex)` in parallel at load** into a
+  cache; insertion becomes a dict lookup. **insert 734 → 206 ms (−72%)**, ~9% wall. Distinct from the
+  older #3 (int-handle filter) — this moves the whole resolution off the hot path.
+- **WIN — emit by lane-handle array, not `LaneId` string hash** (`perf(emit)`, commit `fd7bf4b`).
+  `EmitTrajectory` did `LanesById[v.LaneId]` (string hash + dict probe) per vehicle per frame.
+  Materialize `_network.LanesByHandle` into a dense `Lane[]` once at load, index by `v.LaneHandle`
+  (kept in lockstep with `LaneId`). **serial emit 525 → 380 ms (−28%)**, applies to default and region.
+- **REGRESS (re-confirmed #7) — region-parallel emit** (commit `59037e1`, then removed in `fd7bf4b`).
+  A region-parallel emit into `_emitScratch` (EntityIndex-ordered append → byte-identical) beat serial
+  emit *only while the string hash was still there* (481 vs 525 ms). Once the handle-array removed the
+  hash, serial emit (380 ms) **beats** the parallel dispatch (472 ms) — so it was removed. Lesson: once
+  a per-vehicle phase is memory-light, `Parallel.For` dispatch overhead dominates (same shape as #1).
+- **REGRESS (re-confirmed #7, twice) — byte-identical parallel `foeIndex`, no-int-array variant.**
+  Retried with `v.EntityIndex` as the ordering key + only `Array.Clear` (dropping the O(laneCount)
+  int-array reset), striped locks (256). **Still regressed: 762 ms vs 377 ms serial.** Confirms #7's
+  root cause is the **per-touch lock overhead itself** (~25 ns × millions of internal-lane touches ≈
+  the entire serial cost), not the reset. The phase's work-per-touch is too fine-grained to survive
+  ANY synchronization. **Do not retry a locked foeIndex** — only a lock-free partition-merge could
+  help, and the ceiling (~6% of tick) does not justify it.
 
 ### Shipped enabler: opt-in fast-mode + automated behavioral gate
 
