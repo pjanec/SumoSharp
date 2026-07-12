@@ -93,9 +93,15 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
    tag). Pin `RepositoryUrl`/commit for SourceLink (see gotcha below).
 3. ~~**Async runner refinements (§7):** two-frame **interpolation hook** + **snapshot pool**~~ — **DONE**
    (commits `ce37400`, `3ac73c1`; see API §7). Both additive/async-only; pool is opt-in.
-4. **`GetEdge(string) → int`** dense edge handles (§9) — routes/spawn are currently edge-id *strings*
-   (setup-time only; the router is string-keyed). Optional.
+4. ~~**`GetEdge(string) → int`** dense edge handles (§9)~~ — **DONE** (commit `0ceeaf0`; API §9).
 5. **Vehicle-slot recycling** on `Despawn` (§9) — slots are not reused yet (EntityIndex only grows).
+   **Deliberately deferred this session (not a blocker).** In-place slot reuse is coupled to a lot of
+   `EntityIndex`-keyed state that must all be reset atomically without perturbing the *shared* append path
+   the goldens use: `CreateRuntime` seeds `RngState`/`SpeedFactor`/`Entity` off `EntityIndex`; the lifecycle
+   event-diff (`_prevLifecycle[idx]`) and the `_stopsByEntity`/`_avoidedByEntity` side tables are all
+   index-keyed. Correct recycling is a focused, well-tested change to the vehicle-creation + lifecycle-diff
+   code — worth doing deliberately, not bundled with lower-risk work. Until then `_vehicles` grows on each
+   `SpawnVehicle` (fine for bounded/most runs; a concern only for very-long-lived spawn/despawn-heavy hosts).
 6. **Lifecycle events**: `InsertionFailed`/`Teleported` are defined but not emitted (no insertion
    timeout; teleport off). Wire if/when those engine behaviors exist.
 7. **`VTypeParams` sublane fields** (`maxSpeedLat`/`latAlignment`/`minGapLat`) — added at the laneless
