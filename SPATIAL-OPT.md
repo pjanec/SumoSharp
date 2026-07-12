@@ -358,6 +358,34 @@ that should scale past the ~3× wall. This is the payoff stage — measure the *
 - **`packedEgoSlot` for cross-lane/junction foes stays on the neighbour query** (§4c) — unchanged; only
   the same-lane leader moves to the segment. willPass's junction-foe reads stay random (accepted).
 
+### 11.3.5 MEASURED (2026-07, flat-store prototype built + reverted) — read before building the segmented store
+
+The flat variant of Stage A+B was built end-to-end and measured on an idle box (city-3000 @8t),
+then reverted (dead-end as committed code, but the numbers are decisive):
+- **The write-through is correct and byte-identical.** `_hot` written at insertion + end of
+  ExecuteMoveVehicle + keep-right + continuous-LC + the deferred ChangeLane (via a CommandBuffer
+  `OnLaneChanged` hook) mirrors the object's frozen start-of-step state exactly: default-vs-`--spatial`
+  trip-SHA matched, 229 tests + hash held. So the write-through machinery is a SOLVED problem — the
+  segmented store reuses it (just retargeted from an EntityIndex-keyed `_hot` to the segment slots).
+- **Reading the compact `_hot` IS cheaper than the scattered gather: copy-only `packed` = 248 ms vs
+  the 305 ms object gather** (sort skipped, diagnostic). Confirms the core premise — a compact,
+  ~L2-resident store lowers the read cost ~19%.
+- **But the flat store MUST sort each step, and the sort re-pays everything: full two-pass primitive
+  sort (pos `Array.Sort(double,int)` + stable counting-sort by lane) `packed` = 558 ms** (an IComparer
+  `Array.Sort<HotVeh>` was worse, 517 ms — struct + virtual dispatch). So flat build 558 ≫ gather 305,
+  and even the sort-free copy (248 ms) ≈ the plan's own saving (239 ms) → **the flat store is at best
+  net-neutral on the plan phase, exactly as §0 predicted.** Do NOT rebuild the flat store.
+
+**What this means for the segmented store (the ONLY remaining path):** its build = **concat of
+pre-ordered segments (sequential, NO sort)** + maintenance. The concat must come in **well below the
+248 ms copy-from-`_hot`** (it should: sequential segment reads/writes, not the gapped semi-random
+`_hot[active[i]]` copy) for the plan-phase net to clear zero, and then willPass must ALSO be extended
+for a real wall win. The decisive unknown is now **concat + segment-maintenance cost**, not the read
+cost (settled: compact wins) nor the write-through (settled: works). With ~6000 lanes and ~4000 active
+vehicles, segments are TINY (avg <1 veh/lane), so middle-removal shifts on a lane change are cheap, but
+the concat pays a per-lane overhead over ~6000 mostly-empty lanes — that overhead vs the sequential-copy
+saving is the thing to measure first (a concat-only micro-prototype, before wiring the full lifecycle).
+
 ### 11.4 Kill criteria (unchanged in spirit, sharpened)
 
 Kill at **Stage B** if `packed` (concat+maintenance) is not decisively below the 305 ms gather with a
