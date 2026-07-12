@@ -114,9 +114,17 @@ lane-following regime should emerge as RVO reducing to car-following when latera
    (`RvoNeighbor`: pos/length/latOffset/halfWidth/speed — no strings, no dictionary), populated from
    `VehicleRuntime` today and from the new agent store later. Do **not** couple the RVO solve to the
    current `ExternalObstacle` API.
-4. **Statistical SUMO cross-check:** on a mixed/heterogeneous scenario, compare aggregate flow +
-   lateral distribution to a SUMO sublane run within `parityMode="statistical"` tolerance — the
-   SUMO-grounding without byte-chasing.
+4. **Statistical SUMO cross-check (DONE).** On a mixed/heterogeneous scenario
+   (`scenarios/65-mixed-sublane`: 8 interleaved fast + slow vehicles on one 7.2 m sublane lane,
+   `lateral-resolution=0.8`, `sigma=0`, run to t=120) compare **aggregate** flow + lateral
+   distribution to a real SUMO sublane run — the SUMO-grounding without byte-chasing.
+   `RungRvoStatisticalCrossCheckTests` runs OUR laneless RVO model on the same inputs and asserts
+   distribution-level aggregates (mean speed + posLat std over all vehicle-steps) are SUMO-comparable
+   (mean speed within 20 %, lateral spread within ~2×), **not** per-step positions. Measured: SUMO
+   `meanSpeed=8.8350, posLatStd=0.5288`; RVO `meanSpeed=8.8648` (**0.34 %** rel err), `posLatStd=0.4457`
+   (**84 %** of SUMO's lateral spread). The golden is committed as an aggregate reference only (no
+   `tolerance.json` / exact compare); byte-identity holds — `LanelessRvo` is off for every parity
+   golden and the determinism hash is unchanged.
 
 ## Coordination with SUMOSHARP-API (the NuGet packaging branch)
 
