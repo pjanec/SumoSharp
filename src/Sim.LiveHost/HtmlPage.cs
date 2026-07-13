@@ -46,7 +46,9 @@ internal static class HtmlPage
   // consecutive frames so this works at any server rate.
   let frameVehicles = [];   // latest frame's [{id,ln,nx,p,pl,s,a}]
   let frameObstacles = [];
+  let frameTl = [];         // [{ln, st}] traffic-light state per controlled lane
   let frameTime = 0;        // sim time (s) of the latest frame's sample
+  const CAR_LEN = 5.0, CAR_W = 1.8;  // demo vehicles are the default passenger vType
   let frameRecvWall = 0;    // performance.now()/1000 when it arrived
   let simRate = 1;          // measured sim-seconds per wall-second (smoothed)
   let lastStep = -1;        // dedupe: the server re-sends the latest snapshot faster than the sim ticks
@@ -61,8 +63,20 @@ internal static class HtmlPage
     }
     frameVehicles = m.vehicles || [];
     frameObstacles = m.obstacles || [];
+    frameTl = m.tl || [];
     frameTime = m.time;
     frameRecvWall = nowWall;
+  }
+
+  // SUMO signal char -> colour.
+  function tlColor(st){
+    switch(st){
+      case 'G': case 'g': return '#3fb950';   // green (protected / permissive)
+      case 'y': case 'Y': return '#e3b341';   // yellow
+      case 'r': return '#f85149';             // red
+      case 'o': case 'O': case 'u': return '#e3b341'; // off/blink-ish -> amber
+      default: return '#8b949e';
+    }
   }
 
   // Port of Sim.Ingest.LaneGeometry.PositionAtOffset: point + navi-degree tangent at arc `offset` along a
@@ -121,30 +135,51 @@ internal static class HtmlPage
     ctx.fillStyle = '#0e1116'; ctx.fillRect(0,0,cv.width,cv.height);
     if(!net){ return; }
 
-    // roads
-    for(const lane of net.lanes){
-      const p = lane.pts; if(p.length < 4) continue;
-      ctx.beginPath();
-      let a = w2s(p[0],p[1]); ctx.moveTo(a[0],a[1]);
-      for(let i=2;i<p.length;i+=2){ const q = w2s(p[i],p[i+1]); ctx.lineTo(q[0],q[1]); }
-      ctx.strokeStyle = lane.internalLane ? '#20262e' : '#39424e';
-      ctx.lineWidth = Math.max(1, lane.w*cam.scale);
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+    // roads: a dark casing under a lighter lane fill, each drawn as a polyline stroked to the lane width.
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for(let pass = 0; pass < 2; pass++){
+      for(const lane of net.lanes){
+        const p = lane.pts; if(p.length < 4) continue;
+        ctx.beginPath();
+        let a = w2s(p[0],p[1]); ctx.moveTo(a[0],a[1]);
+        for(let i=2;i<p.length;i+=2){ const q = w2s(p[i],p[i+1]); ctx.lineTo(q[0],q[1]); }
+        const wpx = Math.max(1.5, lane.w*cam.scale);
+        if(pass === 0){ ctx.strokeStyle = '#0a0c10'; ctx.lineWidth = wpx + 2.5; }        // casing
+        else { ctx.strokeStyle = lane.internalLane ? '#2a3038' : '#454e5a'; ctx.lineWidth = wpx; } // surface
+        ctx.stroke();
+      }
+    }
+
+    // traffic-light signals: a coloured dot at the end (stop line) of each controlled approach lane.
+    for(const t of frameTl){
+      const lane = net.lanes[t.ln]; if(!lane || lane.pts.length < 2) continue;
+      const px = lane.pts[lane.pts.length-2], py = lane.pts[lane.pts.length-1];
+      const s = w2s(px, py), rad = Math.max(2.5, 0.9*cam.scale);
+      ctx.beginPath(); ctx.arc(s[0], s[1], rad, 0, 6.2832);
+      ctx.fillStyle = tlColor(t.st); ctx.fill();
+      ctx.strokeStyle = '#0a0c10'; ctx.lineWidth = 1; ctx.stroke();
     }
 
     // vehicles: dead-reckoned from the latest sparse frame to *now* (clamp dt so a server stall can't run
-    // the extrapolation away).
+    // the extrapolation away), drawn as oriented rectangles (front at the pose point, extending back).
     let dt = simRate * (performance.now()/1000 - frameRecvWall);
     if(!(dt >= 0)) dt = 0;
     if(dt > 2.0) dt = 2.0;
-    const r = Math.max(2.2, 2.4*cam.scale);
+    const L = Math.max(3, CAR_LEN*cam.scale), W = Math.max(2, CAR_W*cam.scale);
     let drawn = 0;
     for(const v of frameVehicles){
       const pose = resolvePose(v, dt);
       if(!pose) continue;
       const s = w2s(pose.x, pose.y);
-      ctx.beginPath(); ctx.arc(s[0], s[1], r, 0, 6.2832);
-      ctx.fillStyle = speedColor(v.s); ctx.fill();
+      // navi deg (0=N, cw) -> world dir (sin,cos) -> screen dir (x, -y flip) -> screen angle.
+      const nr = pose.deg * Math.PI/180;
+      const sa = Math.atan2(-Math.cos(nr), Math.sin(nr));
+      ctx.save();
+      ctx.translate(s[0], s[1]); ctx.rotate(sa);
+      ctx.fillStyle = speedColor(v.s);
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.rect(-L, -W/2, L, W); ctx.fill(); ctx.stroke();
+      ctx.restore();
       drawn++;
     }
 

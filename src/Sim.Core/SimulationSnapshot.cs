@@ -33,6 +33,12 @@ public sealed class SimulationSnapshot
     public SimEvent[] Events { get; init; } = Array.Empty<SimEvent>();
     public int EventCount { get; init; }
 
+    // §5.2 traffic-light state: controlled approach lane handles + their current signal chars (byte, e.g.
+    // 'G'/'g'/'y'/'r'), aligned index-for-index over [0, TlCount). For rendering junction signals.
+    public int[] TlLaneHandle { get; init; } = Array.Empty<int>();
+    public byte[] TlState { get; init; } = Array.Empty<byte>();
+    public int TlCount { get; init; }
+
     public static readonly SimulationSnapshot Empty = new();
 
     // Copy the engine's current read spans + events into a fresh immutable snapshot. Called on the engine
@@ -62,6 +68,9 @@ public sealed class SimulationSnapshot
             LaneId = engine.LaneIds.ToArray(),
             Events = engine.Events.ToArray(),
             EventCount = engine.Events.Length,
+            TlLaneHandle = engine.TlLaneHandles.ToArray(),
+            TlState = engine.TlStates.ToArray(),
+            TlCount = engine.TlStates.Length,
         };
         return snap;
     }

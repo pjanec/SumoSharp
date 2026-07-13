@@ -978,6 +978,10 @@ public sealed partial class Engine : IEngine
         // rail via-lanes once here. Empty for any network without a rail_crossing junction.
         BuildRailCrossingInfo();
 
+        // SUMOSHARP-DEADRECKONING.md §5.2: precompute the set of TL-controlled lanes (cold), so the
+        // Step()-only read projection can publish each one's current signal colour for rendering.
+        BuildTlControlledLanes();
+
         _vehicles.Clear();
         // D3: side storage is keyed by EntityIndex (== _vehicles list index) -- clear it in
         // lockstep with _vehicles so a re-LoadScenario on the same Engine instance never leaves
@@ -1213,6 +1217,14 @@ public sealed partial class Engine : IEngine
     private int[] _renderUpBuf = new int[8];
     private int[] _renderPreBuf = new int[8];
 
+    // SUMOSHARP-DEADRECKONING.md §5.2: the static set of TL-controlled approach lanes and their current
+    // signal-state chars (refreshed each Step in PublishReadState) -- so a renderer can show junction
+    // signals (we don't otherwise publish TL state). Step()-only projection; inert for the parity path.
+    // Empty for a net with no static/actuated road TL.
+    private (int LaneHandle, string TlId, int LinkIndex)[] _tlControlledLanes = Array.Empty<(int, string, int)>();
+    private int[] _tlLaneHandles = Array.Empty<int>();
+    private byte[] _tlStates = Array.Empty<byte>();
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -1257,6 +1269,10 @@ public sealed partial class Engine : IEngine
     // DR lookahead: the next lane handle on each vehicle's route (-1 if none). Lets a dead-reckoning
     // client walk past the current lane's end during extrapolation (SUMOSHARP-DEADRECKONING.md §5.1/§6).
     public ReadOnlySpan<int> NextLaneHandles => _readBuffer.NextLane.AsSpan(0, _readBuffer.Count);
+    // §5.2: TL-controlled approach lanes (static) and their current signal-state chars (refreshed each
+    // Step), aligned index-for-index. For rendering junction signals; empty when the net has no road TL.
+    public ReadOnlySpan<int> TlLaneHandles => _tlLaneHandles.AsSpan();
+    public ReadOnlySpan<byte> TlStates => _tlStates.AsSpan();
     public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
     // Longitudinal acceleration (m/s^2), parity-exact double -- the getAcceleration() analog. The key
     // ingredient for renderer-side dead reckoning (SUMOSHARP-API.md §5.1): pos' = pos + v*dt + 0.5*a*dt^2.
@@ -1334,6 +1350,13 @@ public sealed partial class Engine : IEngine
         }
 
         DetectLifecycleEvents();
+
+        // §5.2: refresh the controlled-lane signal chars at the current clock (post-step display state).
+        for (var i = 0; i < _tlControlledLanes.Length; i++)
+        {
+            var (_, tl, li) = _tlControlledLanes[i];
+            _tlStates[i] = (byte)TlLinkStateChar(tl, li, CurrentTime);
+        }
     }
 
     // SUMOSHARP-DEADRECKONING.md §6.3: the chord / off-tracking render pose for a vehicle at its CURRENT
@@ -1365,6 +1388,46 @@ public sealed partial class Engine : IEngine
 
         return PoseResolver.Resolve(
             _laneSource, state, _renderUpBuf.AsSpan(0, upLen), _renderPreBuf.AsSpan(0, preLen), 0.0, RenderMode);
+    }
+
+    // §5.2: enumerate the road-TL-controlled approach lanes once (cold, per LoadScenario). Rail-signal
+    // links (tl set but no <tlLogic>) are excluded -- their state is computed elsewhere.
+    private void BuildTlControlledLanes()
+    {
+        var list = new List<(int, string, int)>();
+        foreach (var lane in _network!.LanesByHandle)
+        {
+            if (lane.Id.StartsWith(':'))
+            {
+                continue; // internal lanes are not TL approach lanes
+            }
+
+            if (_network.TryGetTlControlledConnection(lane.EdgeId, lane.Index, out var conn)
+                && conn.Tl is { } tl && _network.TlLogicsById.ContainsKey(tl)
+                && conn.LinkIndex is { } li && li >= 0)
+            {
+                list.Add((lane.Handle, tl, li));
+            }
+        }
+
+        _tlControlledLanes = list.ToArray();
+        _tlLaneHandles = new int[_tlControlledLanes.Length];
+        for (var i = 0; i < _tlControlledLanes.Length; i++)
+        {
+            _tlLaneHandles[i] = _tlControlledLanes[i].LaneHandle;
+        }
+
+        _tlStates = new byte[_tlControlledLanes.Length];
+    }
+
+    // Current signal char (G/g/y/r/...) for a controlled link at `evalTime`. Mirrors RedLightConstraint's
+    // actuated/static split (kept separate so the frozen parity path is untouched).
+    private char TlLinkStateChar(string tlId, int linkIndex, double evalTime)
+    {
+        var tlLogic = _network!.TlLogicsById[tlId];
+        return tlLogic.IsActuated && _actuatedLogics.TryGetValue(tlId, out var actuated)
+            ? actuated.CurrentState[linkIndex]
+            : TrafficLightState.GetLinkState(tlLogic, linkIndex, evalTime);
     }
 
     // §10: diff each vehicle's lifecycle against the previous published frame and record Departed

@@ -338,6 +338,8 @@ public sealed class SimulationRunner : IDisposable
         private string[] _vehicleType = Array.Empty<string>();
         private string[] _laneId = Array.Empty<string>();
         private SimEvent[] _events = Array.Empty<SimEvent>();
+        private int[] _tlLane = Array.Empty<int>();
+        private byte[] _tlState = Array.Empty<byte>();
 
         public SimulationSnapshot Fill(Engine engine)
         {
@@ -361,6 +363,10 @@ public sealed class SimulationRunner : IDisposable
             var events = engine.Events;
             Copy(events, ref _events, events.Length);
 
+            var tl = engine.TlStates;
+            Copy(engine.TlLaneHandles, ref _tlLane, tl.Length);
+            Copy(tl, ref _tlState, tl.Length);
+
             return new SimulationSnapshot
             {
                 Count = n,
@@ -383,6 +389,9 @@ public sealed class SimulationRunner : IDisposable
                 LaneId = _laneId,
                 Events = _events,
                 EventCount = events.Length,
+                TlLaneHandle = _tlLane,
+                TlState = _tlState,
+                TlCount = tl.Length,
             };
         }
 

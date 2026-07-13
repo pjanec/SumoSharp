@@ -82,9 +82,17 @@ public sealed class SimHost : IDisposable
             obstacles = _obstacles.Select(o => (object)new { x = Math.Round(o.X, 2), y = Math.Round(o.Y, 2) }).ToArray();
         }
 
+        // Traffic-light state (SUMOSHARP-DEADRECKONING.md §5.2): the current signal char per controlled
+        // approach lane, so the renderer can draw junction signals. `ln` = lane handle, `st` = signal char.
+        var tl = new List<object>(snap.TlCount);
+        for (var i = 0; i < snap.TlCount; i++)
+        {
+            tl.Add(new { ln = snap.TlLaneHandle[i], st = ((char)snap.TlState[i]).ToString() });
+        }
+
         // `time` is the sim clock (seconds); the client measures the sim rate from consecutive frames and
         // extrapolates each vehicle by (renderSimTime - time).
-        return JsonSerializer.Serialize(new { type = "frame", time = Math.Round(snap.Time, 3), step = snap.StepCount, vehicles, obstacles });
+        return JsonSerializer.Serialize(new { type = "frame", time = Math.Round(snap.Time, 3), step = snap.StepCount, vehicles, obstacles, tl });
     }
 
     // A canvas click (already converted to WORLD coordinates by the browser) -> project to the nearest

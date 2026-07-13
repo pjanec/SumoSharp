@@ -164,6 +164,17 @@ thread serializes the latest snapshot without ever locking the engine. The **sna
 landed) keeps this allocation-free in steady state. The DR layer adds the packet columns (`accel`,
 `drModel`, `latSpeed`, upcoming-path) to the snapshot; no new blocking is introduced.
 
+### 5.2 Traffic-light state (for rendering)
+
+A renderer needs junction **signal state**, which the base kinematic packet doesn't carry. Exposed as a
+small Step-only projection: `Engine.TlLaneHandles` (the static set of road-TL-controlled approach lanes) +
+`Engine.TlStates` (each one's current signal char — `G`/`g`/`y`/`r`/… — refreshed each `Step`), aligned
+index-for-index; mirrored on `SimulationSnapshot` (`TlLaneHandle`/`TlState`/`TlCount`). Built cold per
+`LoadScenario` (rail-signal links excluded), computed via the same actuated/static split the junction logic
+uses. Empty when the net has no road TL. Parity-inert (Step-only; the determinism hash is unchanged).
+**STATUS: landed** (`RungB23`); `Sim.LiveHost` publishes it as `tl:[{ln,st}]` and the viewer draws a
+colour-coded dot at each controlled lane's stop line.
+
 ## 6. The pose-resolver (portable, shared by local render, network client, and realism mode)
 
 A single pure function turns lane-relative state + `dt` into a world pose. It is `netstandard2.1`-clean and
