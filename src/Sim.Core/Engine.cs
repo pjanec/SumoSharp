@@ -1329,6 +1329,10 @@ public sealed partial class Engine : IEngine
         EnsureVehicleGenerationCapacity(_vehicles.Count);
         _readBuffer.BeginFrame(_vehicles.Count);
 
+        // Reused across vehicles (CA2014: never stackalloc inside the loop -- it would accumulate the
+        // whole frame's stack and overflow at high vehicle counts).
+        Span<int> laneWindow = stackalloc int[VehicleReadBuffer.LaneWindowSize];
+
         foreach (var v in ActiveVehicles())
         {
             var lane = _lanesByHandle[v.LaneHandle];
@@ -1361,7 +1365,6 @@ public sealed partial class Engine : IEngine
                 : -1;
 
             // Multi-lane window [prev2, prev1, current, next1, next2, next3] for multi-boundary DR walks.
-            Span<int> laneWindow = stackalloc int[VehicleReadBuffer.LaneWindowSize];
             for (var k = 0; k < VehicleReadBuffer.LaneWindowSize; k++)
             {
                 var seqIdx = v.LaneSeqIndex + (k - VehicleReadBuffer.LaneWindowBack);
