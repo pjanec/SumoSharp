@@ -168,6 +168,29 @@ the spawn-overlap that gentle NH acceleration would otherwise cause.
   constant (≤ ~8 vertices). This is for *localized zones* (dozens–hundreds of agents), not a
   city-wide 10k crowd — that remains the lane engine's job (§1).
 
+## 5a. Junction deadlock — coordination is still open (honest negative finding)
+
+The greedy reciprocal solve is **memoryless**: a vehicle in a standoff keeps re-attempting the
+same goal-ward maneuver, so at the flowing density the junction drains but the **occasional
+pair deadlocks and stays stuck** (measured: one vehicle stuck ~67 s in a 400-step clip while
+~31 others cleared). Real drivers resolve this by negotiating — edging aside, one giving way.
+
+A naive local un-stick was **tried and rejected** (measured, not shipped): an impatience timer
+that, past a threshold, steered a stuck vehicle laterally toward open space (a "probe") and
+granted it a small creep that bypassed the avoidance clamp so it could nose into the gap. It
+did break the specific deadlock (stuck-time ~67 s → ~30 s), **but it made the whole junction
+worse** — throughput fell (≈31 → ≈17–23 cleared) and footprints clipped (worst overlap
+0.4 m → 1.8 m), because once a few vehicles nose/probe they ripple conflicts through the box,
+and a vehicle creeping along its *current heading* moves unsafely relative to the *desired*
+direction ORCA reasoned about. Raising the trigger threshold (4–6 s) did not recover it. So the
+knob was removed rather than shipped half-working.
+
+The real fix is **explicit coordination**, a proper next feature: priority-based pairwise
+yielding (the lower-priority vehicle in a detected standoff actively makes room for the higher
+one, rather than the stuck one forcing in) or junction slot/reservation arbitration. That is a
+deliberate design effort with its own validation, not a local tweak — noted here so the current
+flowing-but-occasionally-stuck behaviour is understood as a known limit, not an oversight.
+
 ## 6. File map
 
 ```
