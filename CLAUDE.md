@@ -142,6 +142,27 @@ delegation must name: the exact `/sumo/` source file to read, the target C# file
 scenario, the command to run, and the numeric done-condition. Nothing crosses the boundary
 except the prompt.
 
+### The orchestration loop (Opus orchestrates, Sonnet implements, Opus reviews hard)
+
+The standing division of labour once the design-first docs exist:
+
+1. **Opus orchestrates.** Opus has already detailed the tasks and their success conditions up front, so
+   each task should be small and unambiguous enough for a cheaper implementor. Opus groups tasks into a
+   **batch** and delegates it to a **Sonnet implementor** (a subagent) with a self-contained prompt: the
+   task IDs, the design/section references, the exact files, and the precise success conditions.
+2. **Sonnet implements** the batch and reports back.
+3. **Opus reviews HARD — and does not believe the report.** Opus independently verifies that each task's
+   success conditions are *actually* met: read the diff, read the tests to confirm they assert the real
+   condition (not a vacuous or self-fulfilling check), and re-run `dotnet test` / the hash gate itself
+   rather than trusting the implementor's summary. A task is accepted (its tracker box ticked) only when
+   Opus has confirmed its success conditions first-hand. Anything not confirmed goes back as the next
+   batch.
+4. **Repeat** — Opus ticks the tracker and delegates the next batch.
+
+Reserve Opus for orchestration, decomposition, ambiguity resolution, and this accept/reject gate;
+delegate the implementation volume to Sonnet. The review is the load-bearing step — treat every "done"
+as unverified until proven.
+
 ## Reporting a parity failure
 
 When a scenario is out of tolerance, report: scenario name, first-divergence step,
