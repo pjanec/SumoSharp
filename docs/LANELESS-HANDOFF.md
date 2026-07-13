@@ -154,11 +154,17 @@ skipped / 0 failed**.
 
 ## Next steps (owner-gated / recommended order)
 
-1. **[BIG, needs owner go-ahead] Unified two-population solver — REAL Engine integration.** The design
-   (`docs/UNIFIED-SOLVER.md`) is written and the standalone **prototype (Q5) validates the architecture**.
-   What remains is wiring it into the real Engine (reusing the Engine's exact Krauss longitudinal
-   reduction instead of the prototype's simplified follower) behind a default-off `Mode` switch. **Answer
-   the §10 questions first** (esp. reciprocity default + replace-vs-coexist), then authorise.
+1. **[ATTEMPTED — empirical finding, reverted] Unified two-population solver — REAL Engine integration.**
+   The design (`docs/UNIFIED-SOLVER.md`) is written and the standalone prototype (Q5) validates the
+   architecture. The real-Engine integration was ATTEMPTED (`Engine.CrowdReactionSubSteps` sub-stepping
+   the lateral swerve + longitudinal brake, byte-identical at K=1) and **reverted**: measured to give no
+   benefit and slight harm, because the prototype's win needs co-simulating the vehicle's atomic Krauss
+   LONGITUDINAL step, which the iron law forbids sub-stepping on the committed path. See the
+   "Integration attempt" note in `docs/UNIFIED-SOLVER.md` for the evidence. **Net: keep the
+   `LockstepBridge`.** The only way to a hard close-range guarantee is sub-stepping the crowd-coupled
+   vehicle's FULL motion at dt/K (allowed off-golden, but changes its longitudinal dynamics away from
+   validated single-step Krauss) — a separate, invasive decision, pursue only if close-range crossing
+   safety is a hard requirement (realistic separations are already collision-free today).
 2. **[DONE — Q6, option b] Normal-mode vehicles swerve for crowd agents.** Owner chose realism over
    hard-stops: a normal (phase-1, non-laneless, non-sublane) vehicle now SWERVES around a `CrowdSource`
    crowd agent it can clear, braking to a stop only when boxed in. Implemented in `ComputeLateralEvasion`

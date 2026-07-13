@@ -5,6 +5,30 @@ This document is the approval artifact. A gated *standalone prototype* (a parall
 replace the committed path) may be built and validated ahead of approval; wiring it into the shipped
 coupling is the architectural commitment this doc asks you to authorize.
 
+**Integration attempt (real Engine — DONE, then REVERTED with an empirical finding).** The real-Engine
+integration was attempted: `Engine.CrowdReactionSubSteps` sub-stepping a laneless-RVO vehicle's lateral
+swerve (`ComputeRvoLateral`) and its longitudinal brake gap-finding (`CrowdLongitudinalConstraint`),
+byte-identical at the default K=1. **It delivered no benefit and slight harm, so it was reverted** (no
+dead complexity in the parity-critical path; hash stays `909605E965BFFE59`, suite 294/3/0). The
+measurement (fast 13.9 m/s vehicle, pedestrian crossing at dt=1) is decisive and *confirms* §5's residual
+rather than closing it:
+- **Extreme-close crossings** (crosser within ~one step of the vehicle's position) graze identically at
+  K=1 and K=8: the vehicle sweeps through **at full speed, never braking**, because it is already upon the
+  crosser before its first atomic step — and sub-stepping the *reaction* cannot help when the vehicle
+  advances `speed·dt` in one **atomic longitudinal Krauss step** (the parity core).
+- **Realistic separations** (crosser ≥ ~1 step ahead) are **already collision-free at K=1** (3–6 m
+  clearance); K=8 was consistently *worse* (e.g. 3.17 m → 2.67 m) because the incremental re-prediction
+  makes the vehicle under-commit its swerve.
+- **Root cause:** the standalone prototype's win came from co-simulating the vehicle's LONGITUDINAL
+  advance (mid-step braking) together with the lateral, per sub-step. In the real Engine that longitudinal
+  advance IS the atomic Krauss step. Closing the guarantee therefore requires sub-stepping the
+  crowd-coupled vehicle's *full motion* at `dt/K` — permitted on the crowd-coupled path (§2.2, no golden)
+  but a genuinely invasive change that makes a crowd-coupled vehicle's longitudinal dynamics no longer the
+  validated single-step Krauss, and needs its own owner decision. **Recommendation: keep the
+  `LockstepBridge`;** the coarse-dt residual affects only extreme-close crossings (realistic separations
+  are already safe), matching the honest bound this doc set out. Pursue full-motion sub-stepping only if a
+  hard guarantee at close range is a real requirement.
+
 **Prototype status (Q5 — LANDED, standalone).** `src/Sim.Core/Unified/UnifiedWorld.cs` implements this
 design's two load-bearing claims and validates them on the canonical hard case (`UnifiedSolverTests`):
 the single joint plan/execute (both regimes read the same frozen start-of-step snapshot, §4) and the
