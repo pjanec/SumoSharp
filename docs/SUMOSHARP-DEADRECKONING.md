@@ -344,6 +344,14 @@ public interface IPublishPolicy { bool ShouldPublish(in PublishSignals s); }  //
 // Replication.Dds — [DdsTopic] wrappers (geometry/registry, keyed lifecycle, batched state + crowd blob).
 ```
 
+**STATUS: `SumoSharp.Replication` landed** (transport-agnostic). `Records.cs` (`VehicleRecord`,
+`CrowdRecord`, `UpcomingLanes`), `FrameCodec` (the canonical packed little-endian blob — header + records,
+allocation-free, ns2.1-clean, round-trips both frame kinds), and `PublishPolicy` (`IPublishPolicy` +
+`DefaultPublishPolicy` + `PublishSignals`). Depends only on `Core`; in `Traffic.sln` (no external deps →
+hermetic gate safe). `RungB22` round-trips both frames, checks the policy, and proves an end-to-end
+encode→decode→`PoseResolver` reconstructs the engine's own pose. **Still to build:** the DDS wrappers
+(`SumoSharp.Replication.Dds`, out of `Traffic.sln`), the publisher wiring, and the `Sim.LiveHost` showcase.
+
 ## 11. Phased implementation plan (each additive, gated, hash-stable)
 
 1. **Pose-resolver + `ChordHeading`** (`PoseResolver`, pure function; a test proving chord ≠ tangent for a

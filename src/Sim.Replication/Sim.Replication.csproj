@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0 + netstandard2.1 (Unity/Godot can replicate over TCP/UDP too). -->
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <!-- NuGet: the transport-agnostic dead-reckoning replication layer (SUMOSHARP-DEADRECKONING.md §4, §10):
+         record structs, the canonical packed blob codec, and the pluggable publish policy. Depends only on
+         SumoSharp.Core (for DrModel/PoseResolver). No transport dependency: the SAME blob feeds TCP/UDP and
+         rides DDS as an opaque payload; concrete DDS types live in the separate SumoSharp.Replication.Dds
+         package (which is NOT in Traffic.sln, so the hermetic offline gate never needs CycloneDDS.NET). -->
+    <IsPackable>true</IsPackable>
+    <PackageId>SumoSharp.Replication</PackageId>
+    <Description>SumoSharp — transport-agnostic dead-reckoning replication for the SumoSharp traffic engine: compact handle-based vehicle/crowd records, a canonical packed blob codec (DDS-blob / TCP / UDP), and a pluggable adaptive publish policy. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
+    <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+</Project>
