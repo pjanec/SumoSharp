@@ -1242,6 +1242,9 @@ public sealed partial class Engine : IEngine
     public ReadOnlySpan<float> Speed => _readBuffer.SpeedF.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<int> LaneHandles => _readBuffer.LaneHandle.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<double> Pos => _readBuffer.Pos.AsSpan(0, _readBuffer.Count);
+    // Longitudinal acceleration (m/s^2), parity-exact double -- the getAcceleration() analog. The key
+    // ingredient for renderer-side dead reckoning (SUMOSHARP-API.md §5.1): pos' = pos + v*dt + 0.5*a*dt^2.
+    public ReadOnlySpan<double> Acceleration => _readBuffer.AccelD.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<double> PosLat => _readBuffer.PosLat.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<string> VehicleIds => _readBuffer.VehicleId.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<string> VehicleTypes => _readBuffer.VehicleType.AsSpan(0, _readBuffer.Count);
@@ -1296,7 +1299,7 @@ public sealed partial class Engine : IEngine
                 : 0.0;
 
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
-                v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Kinematics.LatOffset,
+                v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle);
         }
 
@@ -1585,6 +1588,30 @@ public sealed partial class Engine : IEngine
 
         v = null!;
         return false;
+    }
+
+    // SUMOSHARP-API.md §5.1 (dead-reckoning lookahead): copy the vehicle's upcoming lane handles -- the
+    // CURRENT lane first, then the lanes it will traverse next -- into `dest`, returning the count written
+    // (<= dest.Length), or 0 for a stale / not-yet-active handle. A renderer resolves the static lane
+    // geometry once (per lane handle) and walks this path to dead-reckon a lane-bound vehicle along its
+    // actual curve: integrate pos' = pos + speed*dt + 0.5*accel*dt^2 (from the read columns) and step into
+    // the next lane when pos' passes the current lane length. Purely a read over committed route state.
+    public int GetUpcomingLanes(VehicleHandle handle, Span<int> dest)
+    {
+        if (dest.IsEmpty || !TryResolveActive(handle, out var v))
+        {
+            return 0;
+        }
+
+        var from = v.LaneSeqStart + v.LaneSeqIndex;
+        var end = v.LaneSeqStart + v.LaneSeqLen;
+        var n = Math.Min(dest.Length, end - from);
+        for (var i = 0; i < n; i++)
+        {
+            dest[i] = _laneSeqPool[from + i];
+        }
+
+        return n;
     }
 
     // Apply a new remaining route to an active vehicle -- mirrors UpdateReroutes' reassignment exactly:

@@ -25,6 +25,7 @@ internal sealed class VehicleReadBuffer
     public string[] LaneId = new string[InitialCapacity];
     public double[] Pos = new double[InitialCapacity];
     public double[] SpeedD = new double[InitialCapacity];
+    public double[] AccelD = new double[InitialCapacity];   // longitudinal acceleration (getAcceleration analog)
     public double[] PosLat = new double[InitialCapacity];
     public float[] PosX = new float[InitialCapacity];
     public float[] PosY = new float[InitialCapacity];
@@ -48,7 +49,7 @@ internal sealed class VehicleReadBuffer
 
     public void Add(
         VehicleHandle handle, int entityIndex, string vehicleId, string vehicleType,
-        int laneHandle, string laneId, double pos, double speed, double posLat,
+        int laneHandle, string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle)
     {
         EnsureColumnCapacity(Count + 1);
@@ -62,6 +63,7 @@ internal sealed class VehicleReadBuffer
         LaneId[i] = laneId;
         Pos[i] = pos;
         SpeedD[i] = speed;
+        AccelD[i] = accel;
         PosLat[i] = posLat;
         PosX[i] = x;
         PosY[i] = y;
@@ -108,6 +110,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref LaneId, newCap);
         Array.Resize(ref Pos, newCap);
         Array.Resize(ref SpeedD, newCap);
+        Array.Resize(ref AccelD, newCap);
         Array.Resize(ref PosLat, newCap);
         Array.Resize(ref PosX, newCap);
         Array.Resize(ref PosY, newCap);

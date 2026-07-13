@@ -9,7 +9,7 @@ Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 - **Branch:** `claude/sumo-csharp-nuget-strategy-4vlkki` (all work pushed).
 - **Gates (must stay true after every change):**
   - `dotnet test` → **0 failed, 1 skipped**; the pass count grows as new-surface tests are added
-    (**250** at the start of the packaging work → **273** after this session's B13–B18 tests).
+    (**250** at the start of the packaging work → **276** after this session's B13–B19 tests).
   - `Sim.Bench` determinism hash → **`909605E965BFFE59`** (single **and** parallel).
 - **What exists now:** the whole Phase-1 public API + NuGet packaging + a working browser-live demo.
   Every addition is *additive / inert-when-absent*, so it is byte-identical where the new paths are
@@ -41,6 +41,7 @@ so `apt-get update` first). SUMO is not needed for `dotnet test`.
 
 | Commit | What |
 |---|---|
+| *(this session)* | **Dead-reckoning inputs** (§5.1): `Acceleration` read column (getAcceleration analog) + `GetUpcomingLanes` (lane-handle path ahead); `RungB19`. Foundation for the networked DR layer (below). |
 | *(this session)* | **Vehicle-slot recycling** (§9): `Despawn` frees the `EntityIndex`; next runtime `SpawnVehicle` reuses it (rebuild-in-place + reset idx-keyed side state + bumped generation). `CreateRuntime` split into `BuildRuntime`/append + `AllocateRuntime`. Inert for goldens; `RungB18`. |
 | *(this session)* | **Sim.LiveHost**: verified builds/runs after the core changes (Playwright smoke); enabled the snapshot pool server-side + client-side entity interpolation for smooth 60 fps playback. |
 | *(this session)* | **Publish + CI workflows** `.github/workflows/publish.yml` (tag-gated pack+push, version-from-tag, SourceLink fetch-depth 0) and `ci.yml` (build/test/determinism-hash on push/PR). |
@@ -113,6 +114,37 @@ host game engine's convention), `VTypeHandle`, `AvoidanceClass`, `VehicleLifecyc
    timeout; teleport off). Wire if/when those engine behaviors exist.
 7. **`VTypeParams` sublane fields** (`maxSpeedLat`/`latAlignment`/`minGapLat`) — added at the laneless
    merge, which owns those `VType` additions.
+
+## Networked dead-reckoning layer — design (inputs landed §5.1; full layer pending scope confirmation)
+
+Motivation (from the user): 10k+ vehicles; reading location for render/replication must not block the sim
+step (use the async runner's immutable snapshot — it already doesn't); renderer at 60–120 Hz over a ~10 Hz
+sim, often on a **different machine**; rate-limit network updates to ~10 Hz (and lower for predictable
+vehicles). Grounded facts: sim is 1-D arc-length; `Acceleration` + `GetUpcomingLanes` now exposed (§5.1);
+SUMO `getPosition`=front on centerline (`MSVehicle.cpp:1265`), `computeAngle`=back→front **chord** (1515) —
+our port emits front **tangent** (parity-passing but a fidelity gap for long veh on curves; Angle IS
+compared, `TrajectoryComparator:179`).
+
+Design to implement (once confirmed):
+- **Lane-relative, handle-based, network-transferable packet** per vehicle per update: `{handle, laneHandle,
+  pos, posLat, speed, accel, upcomingLaneHandles[k], drModel, (vx,vy for free model)}` (~20–30 B; **no
+  strings** — send an id table once). Static lane geometry sent once (LiveHost already does).
+- **Portable pose-resolver** (ns2.1-clean, mirrorable in JS): integrate `pos'=pos+v·dt+½·a·dt²`, walk shared
+  lane polylines via `PositionAtOffset`; produce (x,y,z,heading). Reproduces SUMO's **chord heading**
+  (place front at `pos`, back at `pos-length` along geometry) and can apply a **renderer-only** long-vehicle
+  corner-cut correction from physical params (length/width) — sim Angle column untouched (parity-safe).
+- **Per-vehicle DR-model tag:** `LaneArc` (lane-bound, curve-following) vs `FreeKinematic` (laneless/RVO or
+  lateral-dodge `LatOffset≠0` → extrapolate by velocity vector, no lane path) vs `Stationary`. Vehicle
+  switches model when it starts dodging / enters RVO. **Coordinates with the laneless sibling branch**
+  (which produces the free-model vehicles) — likely a shared enum on the neutral seam.
+- **Adaptive publish rate:** predictability/error-budget heuristic (accel magnitude, obstacle proximity,
+  RVO-active) picks each vehicle's next-publish time — steady followers ~1 Hz, near-obstacle/braking/RVO at
+  full 10 Hz. Renderer keeps extrapolating between packets; reconcile (snap/blend) on arrival.
+- **Two consumption modes, one packet:** extrapolation (0 latency, clamp at a published stop-line) or
+  interpolation (~1-frame delay, exact).
+Open forks needing steer: packet wire format / where it lives (new `SumoSharp.Runtime`?); async
+`SimulationSnapshot` gains `accel`+`drModel`+path columns; how the adaptive scheduler is exposed; the
+laneless coordination for `drModel`. **Chord-heading sim-side fix stays out unless separately parity-gated.**
 
 ## Coordination with the laneless/RVO branch (`claude/sumo-phase-2-planning-p3w7kh`)
 

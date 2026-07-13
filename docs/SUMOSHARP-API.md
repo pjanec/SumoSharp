@@ -278,6 +278,32 @@ all-zero column until geometry-3D lands. The columns are populated only by `Step
 - **Validity contract:** spans are valid **until the next `Step()`**. In async mode the runner
   double-buffers these column arrays (§7).
 
+### 5.1 Dead-reckoning inputs (renderer-side extrapolation)
+
+Because the sim is **1-D arc-length along known lane geometry**, a renderer (often at 60–120 Hz, and often
+on a *different machine* than a 10 Hz sim) can extrapolate vehicle motion cheaply and exactly-to-the-curve
+from a small lane-relative state, instead of receiving dense world-space positions every frame. The
+ingredients are now on the read surface (all additive, Step-path projection only — `Run()`/parity
+unaffected, determinism hash unchanged):
+
+- **`ReadOnlySpan<double> Acceleration`** — per-vehicle longitudinal acceleration (the `getAcceleration()`
+  analog, already computed each step). With `Pos`/`Speed` this drives `pos' = pos + speed·dt + ½·accel·dt²`.
+- **`int GetUpcomingLanes(VehicleHandle, Span<int> dest)`** — the vehicle's lane-handle path ahead (current
+  lane first). A renderer resolves the **static lane geometry once** (per lane handle) and walks this path,
+  stepping into the next lane when `pos'` passes the current lane length, mapping arc-length → (x, y,
+  heading) with the same `PositionAtOffset` math (portable to any client, incl. JS).
+
+**STATUS: landed** (`Acceleration` column + `GetUpcomingLanes`, `RungB19`). These are the *inputs*. The
+full **networked dead-reckoning layer** on top of them — a compact, handle-based, network-transferable
+prediction packet; per-vehicle **DR-model tag** (`LaneArc` for lane-bound vs `FreeKinematic` for
+laneless/RVO/lateral-dodge vehicles, which the laneless sibling branch produces); **adaptive per-vehicle
+publish rate** (highly-predictable steady followers down to ~1 Hz, near-obstacle/braking/RVO at full rate);
+a portable **pose-resolver** (which also reproduces SUMO's back-to-front **chord heading** and can apply a
+**renderer-only** long-vehicle corner-cut correction from the vehicle's physical params, keeping sim parity
+untouched); and interpolation-vs-extrapolation reconciliation — is **designed but pending scope
+confirmation** (it coordinates with the laneless branch and involves several product forks). See the
+session handoff for the captured design.
+
 ---
 
 ## 6. 3D / multi-level roads & tunnels
