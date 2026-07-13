@@ -122,15 +122,33 @@ That cross-check is a unit test — it is how we trust the novel geometry.
   obstacles (disc-obstacle lines with the vehicle's inscribed radius — see limit below);
   heterogeneous fleet; invariant + anisotropy + determinism tests; an Indian-junction viz.
 
-**Explicit limits (documented, not hidden):**
-- **Holonomic.** Vehicles are still holonomic (velocity chosen freely each step); a long bus
-  can currently translate sideways. True car-like non-holonomy (bounded steering, no
-  sideslip — NH-ORCA) is a later rung. Heading is tracked from the chosen velocity for
-  rendering and shape orientation, not yet a hard kinematic constraint.
+**Non-holonomic (car-like) steering — implemented (`MixedTrafficCrowd.Nonholonomic`).**
+The pure holonomic model (velocity chosen freely each step, heading = atan2(velocity)) is
+unrealistic in congestion: the solve picks backward/sideways escape velocities, heading snaps
+180°, and the motion looks like "bacteria under a microscope". The non-holonomic mode treats
+the ORCA velocity as a STEERING TARGET and maps it onto executable car-like motion
+(`SteerNonholonomic`):
+- **no reverse** — a target pointing behind the heading becomes braking, never reverse;
+- **bounded, speed-scaled turn** — heading changes at most `speed·dt / MinTurnRadius` per step,
+  so a slow/stopped vehicle cannot pivot in place (a small crawl term keeps enough steering
+  authority to ease into a turn);
+- **bounded accel/brake**, and a `cos(headingError)` speed falloff so a vehicle brakes for a
+  sharp maneuver instead of sliding sideways.
+Because bounded steering cannot perfectly track the holonomic avoidance velocity, real
+footprints could overlap (the NH-ORCA problem); this is handled by a **tracking-error safety
+margin** (`SafetyMargin`) that inflates the footprint *for the solve only* (rendering/overlap
+use the true footprint), keeping real bodies apart. Measured on the dense junction scene: the
+holonomic model had 16% of steps with >45° heading jumps and 9% backward flips; NH steering
+drops both to ~0% with no meaningful interpenetration. Scene inflow is metered by a
+spawn-clearance gate (a vehicle enters only when its entry point is clear), which also removes
+the spawn-overlap that gentle NH acceleration would otherwise cause.
+
+**Remaining explicit limits (documented, not hidden):**
 - **Obstacle avoidance stays disc-based** (inscribed radius) in v1 — road confinement is
   isotropic even though agent-agent avoidance is anisotropic. Shaped obstacle VO is a later
   rung; inscribed radius is conservative (keeps the whole footprint on-road) so it is safe,
-  just slightly generous.
+  just slightly generous. (The NH safety margin on the vehicle's own solve shape adds wall
+  clearance too.)
 - **Not SUMO-parity, by design.** Judged only by §3. No golden, never in the hash path.
 - **Perf:** the shaped VO reuses the agent-agent spatial hash; per-pair Minkowski is a small
   constant (≤ ~8 vertices). This is for *localized zones* (dozens–hundreds of agents), not a

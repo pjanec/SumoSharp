@@ -337,12 +337,14 @@ internal static class SceneGen
 
         var crowd = new MixedTrafficCrowd(400)
         {
-            SymmetryBreak = 0.06,
+            Nonholonomic = true,     // car-like steering: no reverse, bounded turn, no pivot-in-place
+            SafetyMargin = 0.6,      // NH-ORCA tracking-error margin: real bodies stay apart despite steer lag
+            SymmetryBreak = 0.03,    // gentler jitter -- the steering filter smooths motion anyway
             MaxNeighbours = 10,      // RVO2-ish; fewer simultaneous constraints -> rarer infeasibility
             RemoveOnArrival = true,
             ArrivalRadius = 3.0,
-            NeighbourDist = 16.0,
-            TimeHorizon = 1.8,       // react on ~2 s; long horizons freeze big footprints
+            NeighbourDist = 18.0,
+            TimeHorizon = 3.0,       // longer look-ahead: bounded steering must start avoiding EARLY
         };
 
         // Four corner buildings confine the movers to the cross-shaped carriageway (their road-facing
@@ -385,9 +387,8 @@ internal static class SceneGen
         var vtCross = 0;
 
         // Cap the number of SIMULTANEOUSLY-active movers (not the lifetime count) so the shared box
-        // stays busy but not so packed that big footprints drive the LP infeasible (which, in a
-        // holonomic gridlock, would shove a bus backward out of the box -- see INDIA-TRAFFIC.md).
-        const int liveCap = 75;
+        // stays busy but not so packed that big footprints drive the LP infeasible.
+        const int liveCap = 110;
         int Live()
         {
             var n = 0;
@@ -402,9 +403,26 @@ internal static class SceneGen
             return n;
         }
 
+        // A vehicle only enters when its spawn point is clear -- a real approach queues at the mouth
+        // rather than materialising on top of the car ahead. This matters under non-holonomic steering
+        // (vehicles accelerate gently and linger near the entry), and it naturally meters inflow to
+        // what the junction can absorb instead of forcing an overlap.
+        bool SpawnClear(Vec2 p)
+        {
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                if (crowd.IsActive(i) && (crowd.Position(i) - p).Abs < 7.0)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         void TryAddMain(Vec2 start, Vec2 goal)
         {
-            if (crowd.Count >= 380 || Live() >= liveCap)
+            if (crowd.Count >= 380 || Live() >= liveCap || !SpawnClear(start))
             {
                 return;
             }
@@ -417,7 +435,7 @@ internal static class SceneGen
 
         void TryAddCross(Vec2 start, Vec2 goal)
         {
-            if (crowd.Count >= 380 || Live() >= liveCap)
+            if (crowd.Count >= 380 || Live() >= liveCap || !SpawnClear(start))
             {
                 return;
             }
@@ -464,7 +482,7 @@ internal static class SceneGen
         const int stopSpawnAt = 315;
         for (var step = 0; step < steps; step++)
         {
-            if (step < stopSpawnAt && step % 5 == 0)
+            if (step < stopSpawnAt && step % 2 == 0)
             {
                 SpawnWave();
             }

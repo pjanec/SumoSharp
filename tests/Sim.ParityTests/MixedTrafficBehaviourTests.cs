@@ -313,6 +313,97 @@ public class MixedTrafficBehaviourTests
             $"expected the yielding stream to deviate more (motos {motoCross:F3} vs buses {busCross:F3})");
     }
 
+    // ------------------------------------------------------------------ non-holonomic (car-like) motion
+
+    // The holonomic model lets a vehicle pick any velocity each step -- including backward and
+    // sideways -- so in congestion heading snaps 180 deg and the motion looks like "bacteria under a
+    // microscope". Non-holonomic steering must produce CAR-LIKE motion: no reversing, bounded per-step
+    // heading change (no pivot-in-place), smooth speed. This drives a dense crossing under NH and
+    // asserts those invariants directly on the trajectories.
+    [Fact]
+    public void Nonholonomic_DenseCrossing_NoReverse_NoPivot_SmoothHeading()
+    {
+        var c = new MixedTrafficCrowd(48)
+        {
+            Nonholonomic = true,
+            SafetyMargin = 0.6,
+            SymmetryBreak = 0.03,
+            MaxNeighbours = 10,
+            RemoveOnArrival = true,
+            ArrivalRadius = 3.0,
+            NeighbourDist = 18.0,
+            TimeHorizon = 3.0,
+        };
+
+        // Two crossing streams of mixed vehicles that must interleave through the origin.
+        var ew = new[] { VehicleClass.Bus, VehicleClass.Car, VehicleClass.Car, VehicleClass.AutoRickshaw };
+        for (var i = 0; i < ew.Length; i++)
+        {
+            c.Add(ew[i], new Vec2(-45 - i * 12, i * 3.0 - 4.5), new Vec2(60, i * 3.0 - 4.5),
+                headingRad: 0.0, maxSpeedOverride: ew[i].MaxSpeed * 0.4);
+        }
+
+        var ns = new[] { VehicleClass.Motorcycle, VehicleClass.AutoRickshaw, VehicleClass.Motorcycle, VehicleClass.Car };
+        for (var i = 0; i < ns.Length; i++)
+        {
+            c.Add(ns[i], new Vec2(i * 3.0 - 4.5, -45 - i * 12), new Vec2(i * 3.0 - 4.5, 60),
+                headingRad: Math.PI / 2, maxSpeedOverride: ns[i].MaxSpeed * 0.4);
+        }
+
+        var n = c.Count;
+        var prevHeading = new double[n];
+        var prevVel = new Vec2[n];
+        var seen = new bool[n];
+        var maxHeadingStep = 0.0;
+        var reverseFlips = 0;
+        var backwardMotion = 0;
+
+        for (var step = 0; step < 500 && !c.AllArrived(2.5); step++)
+        {
+            c.Step(Dt);
+            for (var i = 0; i < n; i++)
+            {
+                if (!c.IsActive(i))
+                {
+                    continue;
+                }
+
+                var h = c.Heading(i);
+                var v = c.Velocity(i);
+
+                // Motion is always forward along the heading (never reverse): v . heading >= -eps.
+                var fwd = Vec2.Dot(v, new Vec2(Math.Cos(h), Math.Sin(h)));
+                if (v.Abs > 0.05 && fwd < -0.05)
+                {
+                    backwardMotion++;
+                }
+
+                if (seen[i])
+                {
+                    var dh = Math.Abs(Math.Atan2(Math.Sin(h - prevHeading[i]), Math.Cos(h - prevHeading[i])));
+                    maxHeadingStep = Math.Max(maxHeadingStep, dh);
+                    if (v.Abs > 0.2 && prevVel[i].Abs > 0.2 && Vec2.Dot(v, prevVel[i]) < 0)
+                    {
+                        reverseFlips++;
+                    }
+                }
+
+                prevHeading[i] = h;
+                prevVel[i] = v;
+                seen[i] = true;
+            }
+        }
+
+        _out.WriteLine($"NH: max heading change/step = {maxHeadingStep * 180 / Math.PI:F1} deg, "
+            + $"reverse-flips = {reverseFlips}, backward-motion steps = {backwardMotion}");
+        Assert.Equal(0, backwardMotion);       // never drives backward along its heading
+        Assert.Equal(0, reverseFlips);          // velocity never flips ~180 deg step-to-step
+        // A single step can never spin more than the nimblest vehicle's speed*dt/Rmin bound (~55 deg
+        // for a fast motorcycle); no 180-degree "bacteria" flips.
+        Assert.True(maxHeadingStep < 70 * Math.PI / 180,
+            $"heading jumped {maxHeadingStep * 180 / Math.PI:F0} deg in one step (pivot/flip)");
+    }
+
     // ------------------------------------------------------------------ hard invariant: determinism
 
     [Fact]

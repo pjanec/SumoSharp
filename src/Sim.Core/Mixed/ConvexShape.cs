@@ -179,6 +179,21 @@ public sealed class ConvexShape
         return max;
     }
 
+    // Grow the footprint outward by `margin` on all sides (exact convex offset with rounded corners),
+    // computed as the Minkowski sum with a small disc-approximating octagon. Used for the
+    // non-holonomic TRACKING-ERROR margin: the SOLVE uses the inflated shape so real footprints stay
+    // apart even when bounded steering cannot perfectly track the avoidance velocity (NH-ORCA). The
+    // true (un-inflated) shape is still used for rendering and overlap measurement.
+    public ConvexShape Inflate(double margin)
+    {
+        if (margin <= 0.0)
+        {
+            return this;
+        }
+
+        return MinkowskiSum(RegularPolygon(8, margin));
+    }
+
     // Largest distance from the centroid-origin to any vertex (bounding-circle radius). A safe
     // neighbour-range and rendering bound.
     public double CircumRadius()

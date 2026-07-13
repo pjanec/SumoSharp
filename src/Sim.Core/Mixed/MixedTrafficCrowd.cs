@@ -36,6 +36,7 @@ public sealed class MixedTrafficCrowd
     private double[] _assert;
     private VehicleClass[] _class;
     private ConvexShape[] _shapeProto; // LOCAL-frame footprint (rotated to heading each plan)
+    private ConvexShape[] _solveProto; // LOCAL-frame footprint inflated by SafetyMargin, used in the VO
     private bool[] _active;
     private int _count;
 
@@ -75,6 +76,23 @@ public sealed class MixedTrafficCrowd
     // Speed below which heading is held rather than re-derived from velocity (avoids spin at a stop).
     public double HeadingHoldSpeed { get; set; } = 0.3;
 
+    // NON-HOLONOMIC steering (docs/INDIA-TRAFFIC.md). When true, the holonomic velocity the shaped
+    // ORCA solve produces is treated as a STEERING TARGET, not the actual motion: the vehicle turns
+    // toward it at a rate bounded by its speed and minimum turning radius (so it cannot pivot in
+    // place), never reverses (a backward-pointing target becomes braking), and changes speed within
+    // its acceleration limits. This removes the "bacteria" pathology of the pure holonomic model --
+    // 180-degree heading flips and backward darts in congestion -- and produces car-like motion.
+    // Default false keeps the pure-holonomic behaviour (and the existing holonomic tests) intact.
+    public bool Nonholonomic { get; set; }
+
+    // Tracking-error safety margin (m): the footprint is grown by this much FOR THE AVOIDANCE SOLVE
+    // only, so real bodies stay apart even when bounded (non-holonomic) steering cannot perfectly
+    // track the ORCA velocity (NH-ORCA). Rendering and overlap use the TRUE footprint. Must be set
+    // before Add(); default 0 (no inflation -> pure holonomic behaviour and tests unchanged).
+    public double SafetyMargin { get; set; }
+
+    private double[] _newHeading;
+
     private int _stepIndex;
 
     public MixedTrafficCrowd(int capacity = 16)
@@ -88,8 +106,10 @@ public sealed class MixedTrafficCrowd
         _assert = new double[capacity];
         _class = new VehicleClass[capacity];
         _shapeProto = new ConvexShape[capacity];
+        _solveProto = new ConvexShape[capacity];
         _active = new bool[capacity];
         _newVelocity = new Vec2[capacity];
+        _newHeading = new double[capacity];
     }
 
     public int Count => _count;
@@ -125,6 +145,7 @@ public sealed class MixedTrafficCrowd
         _assert[i] = cls.Assertiveness;
         _class[i] = cls;
         _shapeProto[i] = cls.Shape();
+        _solveProto[i] = _shapeProto[i].Inflate(SafetyMargin);
         _active[i] = true;
         _newVelocity[i] = Vec2.Zero;
         return i;
@@ -191,9 +212,19 @@ public sealed class MixedTrafficCrowd
 
         for (var i = 0; i < _count; i++)
         {
-            if (_active[i])
+            if (!_active[i])
             {
-                _newVelocity[i] = Plan(i, dt);
+                continue;
+            }
+
+            var desired = Plan(i, dt);
+            if (Nonholonomic)
+            {
+                _newVelocity[i] = SteerNonholonomic(i, desired, dt, out _newHeading[i]);
+            }
+            else
+            {
+                _newVelocity[i] = desired;
             }
         }
 
@@ -206,7 +237,11 @@ public sealed class MixedTrafficCrowd
 
             _velocity[i] = _newVelocity[i];
             _position[i] += _velocity[i] * dt;
-            if (_velocity[i].Abs > HeadingHoldSpeed)
+            if (Nonholonomic)
+            {
+                _heading[i] = _newHeading[i];   // integrated by the bounded steer, not snapped to velocity
+            }
+            else if (_velocity[i].Abs > HeadingHoldSpeed)
             {
                 _heading[i] = Math.Atan2(_velocity[i].Y, _velocity[i].X);
             }
@@ -242,7 +277,7 @@ public sealed class MixedTrafficCrowd
     {
         var pos = _position[i];
         var maxSpeed = _maxSpeed[i];
-        var selfShape = _shapeProto[i].RotatedTo(_heading[i]);
+        var selfShape = _solveProto[i].RotatedTo(_heading[i]);
         var self = new ShapedVoSolver.ShapedAgent(pos, _velocity[i], selfShape);
 
         // Preferred velocity: straight at the goal at maxSpeed, easing in near it, with an optional
@@ -301,7 +336,7 @@ public sealed class MixedTrafficCrowd
             var assertJ = _assert[j];
             var resp = assertJ / (assertI + assertJ);
             var agent = new ShapedVoSolver.ShapedAgent(
-                _position[j], _velocity[j], _shapeProto[j].RotatedTo(_heading[j]), resp);
+                _position[j], _velocity[j], _solveProto[j].RotatedTo(_heading[j]), resp);
             k = Insert(agent, dsq, k, maxN);
         }
 
@@ -333,6 +368,42 @@ public sealed class MixedTrafficCrowd
 
         return ShapedVoSolver.ComputeNewVelocity(
             self, _nbScratch.AsSpan(0, k), pref, maxSpeed, TimeHorizon, dt, _lineScratch.AsSpan(0, k));
+    }
+
+    // Map the holonomic ORCA target velocity onto a car-like motion the vehicle can actually execute
+    // this step, given its FROZEN start-of-step heading and speed (deterministic). Three limits:
+    //   * no reversing        -- a target pointing behind the heading becomes braking, never reverse;
+    //   * bounded turn        -- heading changes at most (speed*dt / MinTurnRadius) rad, so a slow or
+    //                            stopped vehicle cannot pivot in place (a small crawl term keeps a
+    //                            little steering authority so it can ease into a turn, not lock up);
+    //   * bounded accel/brake -- speed changes within [MaxDecel, MaxAccel] * dt, clamped to [0, max].
+    // The vehicle also slows for a sharp maneuver: the target speed is scaled by cos(headingError),
+    // so a target 90 deg off the heading brakes toward a stop rather than sliding sideways.
+    private Vec2 SteerNonholonomic(int i, Vec2 desired, double dt, out double newHeading)
+    {
+        var cls = _class[i];
+        var theta = _heading[i];
+        var curSpeed = _velocity[i].Abs;
+
+        var desiredSpeed = desired.Abs;
+        var desiredHeading = desiredSpeed > 1e-9 ? Math.Atan2(desired.Y, desired.X) : theta;
+        var headingErr = Math.Atan2(Math.Sin(desiredHeading - theta), Math.Cos(desiredHeading - theta));
+
+        // Target forward speed: brake for the turn (cos falloff), never negative (no reverse).
+        var alignment = Math.Max(0.0, Math.Cos(headingErr));
+        var targetSpeed = desiredSpeed * alignment;
+
+        // Longitudinal accel/brake limit, then the physical speed range.
+        var newSpeed = Math.Clamp(targetSpeed, curSpeed - cls.MaxDecel * dt, curSpeed + cls.MaxAccel * dt);
+        newSpeed = Math.Clamp(newSpeed, 0.0, cls.MaxSpeed);
+
+        // Turn rate scales with the distance travelled this step (speed * dt) over the turn radius; a
+        // small crawl term gives minimal steering authority from rest so it can begin a turn.
+        var maxTurn = (newSpeed + 0.5) * dt / cls.MinTurnRadius;
+        var turn = Math.Clamp(headingErr, -maxTurn, maxTurn);
+        newHeading = theta + turn;
+
+        return new Vec2(Math.Cos(newHeading), Math.Sin(newHeading)) * newSpeed;
     }
 
     // Nearest-k bounded insertion (sorted nearest-first), identical in spirit to OrcaCrowd's. maxN<=0
@@ -381,7 +452,9 @@ public sealed class MixedTrafficCrowd
         Array.Resize(ref _assert, newCapacity);
         Array.Resize(ref _class, newCapacity);
         Array.Resize(ref _shapeProto, newCapacity);
+        Array.Resize(ref _solveProto, newCapacity);
         Array.Resize(ref _active, newCapacity);
         Array.Resize(ref _newVelocity, newCapacity);
+        Array.Resize(ref _newHeading, newCapacity);
     }
 }
