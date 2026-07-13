@@ -20,21 +20,28 @@ internal static class HtmlPage
   #hud .row{margin-top:6px;color:#9da7b3}
   button{background:#21262d;color:#e6edf3;border:1px solid #3b424c;border-radius:6px;padding:5px 9px;cursor:pointer;margin-top:8px}
   button:hover{background:#2d333b}
+  #mode{color:#58a6ff;text-transform:uppercase;font-size:11px;letter-spacing:.5px}
+  .tog{margin-left:8px;color:#9da7b3;user-select:none;cursor:pointer}
   canvas{display:block;cursor:crosshair}
 </style>
 </head>
 <body>
 <div id="hud">
-  <div><b>SumoSharp</b> live &middot; <span id="stat">connecting…</span></div>
-  <div class="row"><b>click</b> the road to drop an obstacle</div>
-  <div class="row">wheel = zoom &middot; drag = pan</div>
-  <button id="clear">clear obstacles</button>
+  <div><b>SumoSharp</b> live &middot; <span id="mode"></span> &middot; <span id="stat">connecting…</span></div>
+  <div class="row"><b>click</b> the road to drop an obstacle &middot; wheel = zoom &middot; drag = pan</div>
+  <div class="row">
+    <button id="restart">restart</button>
+    <button id="clear">clear obstacles</button>
+    <label class="tog"><input type="checkbox" id="random"> inject random traffic</label>
+  </div>
 </div>
 <canvas id="c"></canvas>
 <script>
 (function(){
   const cv = document.getElementById('c'), ctx = cv.getContext('2d');
   const stat = document.getElementById('stat');
+  const modeEl = document.getElementById('mode');
+  const randomChk = document.getElementById('random');
   let net = null;
   const cam = { scale: 1, ox: 0, oy: 0 };
 
@@ -307,6 +314,12 @@ internal static class HtmlPage
     cam.ox = e.clientX - before[0]*cam.scale; cam.oy = e.clientY + before[1]*cam.scale; draw();
   }, { passive:false });
   document.getElementById('clear').addEventListener('click', () => send({ type:'clear' }));
+  document.getElementById('restart').addEventListener('click', () => {
+    tracked.clear();           // drop the old run's vehicles immediately (server rewinds to t=0)
+    lastStep = -1;
+    send({ type:'restart' });
+  });
+  randomChk.addEventListener('change', () => send({ type:'random', on: randomChk.checked }));
 
   // --- socket ---
   let ws;
@@ -315,7 +328,11 @@ internal static class HtmlPage
     ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
     ws.onmessage = ev => {
       const m = JSON.parse(ev.data);
-      if(m.type === 'network'){ net = m; fit(m.bounds); resize(); }
+      if(m.type === 'network'){
+        net = m; fit(m.bounds); resize();
+        modeEl.textContent = (m.mode || '') + (m.mode === 'scenario' ? ' demand' : '');
+        randomChk.checked = !!m.randomTraffic;
+      }
       else if(m.type === 'frame'){ ingestFrame(m); }
     };
     ws.onclose = () => { stat.textContent = 'disconnected — retrying…'; setTimeout(connect, 1000); };
