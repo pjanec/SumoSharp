@@ -13,13 +13,16 @@ only when the task's success conditions all pass.
 > implementor, Opus-reviewed before ticking). Accepted tasks are ticked; gaps carry a note.
 
 ## S1 — Core seam
-- [ ] **T1.1** `Engine.SetVehicleParams` + `VehicleParamOverride` — *review: cond. 1–3 met (setter
-      correct, EmergencyDecel≥Decel, suite green + hash unmoved); cond. 4 (focused unit test) pending — B1*
+- [x] **T1.1** `Engine.SetVehicleParams` + `VehicleParamOverride` — *accepted (B1, Opus-reviewed):
+      `SetVehicleParamsTests` proves the MaxSpeed cap reaches the car-following model + stale handle → false;
+      EmergencyDecel≥Decel; suite green + hash 909605E965BFFE59 unmoved*
 
 ## S2 — Evac primitives
-- [ ] **T2.1** `Incident` + radius fear — *review: code correct; dedicated unit test pending — B1*
-- [ ] **T2.2** `BlockedDetector` (DrModel.Stationary + dwell) — *review: code correct; unit test pending — B1*
-- [ ] **T2.3** `FakeNavMesh` (net-bbox hard edge) — *review: code correct; unit test pending — B1*
+- [x] **T2.1** `Incident` + radius fear — *accepted (B1): `IncidentTests` (epicentre=1, half-radius=0.5, ≥radius=0, pre-start=0)*
+- [x] **T2.2** `BlockedDetector` (DrModel.Stationary + dwell) — *accepted (B1): pure `Update` overload +
+      `BlockedDetectorTests` (accumulate/reset/forget/Dwell)*
+- [x] **T2.3** `FakeNavMesh` (net-bbox hard edge) — *accepted (B1): `FakeNavMeshTests`; reviewer replaced a
+      vacuous margin assertion with a real check vs independently-recomputed raw geometry*
 
 ## S3 — Orchestration
 - [x] **T3.1** `EvacDirector` tick skeleton + observability — *accepted via T5.1/T5.2/T5.3*
@@ -29,7 +32,8 @@ only when the task's success conditions all pass.
 
 ## S4 — Demo scenario
 - [x] **T4.1** grid network authored + committed (parity-exempt) — *accepted (net committed, README, no golden)*
-- [ ] **T4.2** `EvacGridScenario` shared builder — *review: ABSENT (reverted); recreate + refactor test — B1*
+- [x] **T4.2** `EvacGridScenario` shared builder — *accepted (B1): single source of truth; `EvacSpineTests`
+      refactored onto it, all names/assertions unchanged and still passing*
 
 ## S5 — End-to-end validation
 - [x] **T5.1** cascade plays once — *accepted (Grid_IncidentTriggersPanicFleeBlockConvertAndFootExodus)*
@@ -47,6 +51,9 @@ only when the task's success conditions all pass.
 ---
 
 ### Batches
-- **B1 (next, delegated to Sonnet):** T2.1, T2.2, T2.3 unit tests; T1.1 cond. 4 unit test; T4.2 shared
-  builder + refactor `EvacSpineTests` onto it. Opus reviews, then ticks T1.1/T2.1/T2.2/T2.3/T4.2.
-- **B2 (after B1):** S6 viz (T6.1–T6.4).
+- **B1 — DONE (Sonnet implemented, Opus-reviewed & accepted).** T2.1/T2.2/T2.3 unit tests; T1.1 cond. 4
+  test; T4.2 shared builder + `EvacSpineTests` refactor. 15 new unit tests; suite 383 pass / 3 skip / 0
+  fail; hash 909605E965BFFE59 unmoved. Reviewer fixed one vacuous assertion in `FakeNavMeshTests`.
+  → **S1, S2, S4 now fully green; S3, S5 already accepted. Phase-1 spine is complete except the viz.**
+- **B2 (next):** S6 viz — T6.1 payload overlays, T6.2 `SceneGen.BuildEvacGrid`, T6.3 `template.js`
+  incident/boundary drawing, T6.4 bundle wire + artifact.

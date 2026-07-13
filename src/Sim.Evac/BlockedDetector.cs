@@ -17,9 +17,15 @@ public sealed class BlockedDetector
 
     // Advance this vehicle's dwell by dt and return whether it is now blocked. Call once per step for
     // each tracked, still-alive vehicle.
-    public bool Update(Engine engine, VehicleHandle handle, double dt)
+    public bool Update(Engine engine, VehicleHandle handle, double dt) =>
+        Update(handle, engine.GetDrModel(handle) == DrModel.Stationary, dt);
+
+    // Pure overload (no Engine dependency): the dwell logic itself, testable in isolation. `stationary`
+    // is the caller-supplied classification for this step (Engine-backed callers pass
+    // GetDrModel(handle) == DrModel.Stationary); dwell accumulates while stationary and resets to 0 the
+    // moment it isn't.
+    public bool Update(VehicleHandle handle, bool stationary, double dt)
     {
-        var stationary = engine.GetDrModel(handle) == DrModel.Stationary;
         var dwell = _dwell.TryGetValue(handle, out var cur) ? cur : 0.0;
         dwell = stationary ? dwell + dt : 0.0;
         _dwell[handle] = dwell;
