@@ -101,15 +101,35 @@ internal static class HtmlPage
   }
 
   // Dead-reckon one vehicle `dt` sim-seconds past its sampled lane-relative state, walking into the next
-  // lane if it runs off the end (one boundary, matching the server's single-lookahead `nx`).
+  // lane if it runs off the end. Returns the FRONT point (SUMO's reference) + a heading precisely matching
+  // SUMO's computeAngle: the back->front CHORD, where the back point is one body length behind the front
+  // along the geometry (into the previous lane `pv` when the front is near a lane start). This orients the
+  // rectangle correctly through curves, unlike the raw lane tangent.
   function resolvePose(v, dt){
     let arc = v.p + v.s * dt + 0.5 * v.a * dt * dt;
     if(arc < v.p) arc = v.p;                       // never predict backwards (matches PoseResolver)
-    let lane = net.lanes[v.ln];
-    if(!lane) return null;
-    if(arc > lane.len && v.nx >= 0 && net.lanes[v.nx]){ arc -= lane.len; lane = net.lanes[v.nx]; }
-    const a = Math.max(0, Math.min(arc, lane.len));
-    return positionAtOffset(lane.pts, a, v.pl);
+    let curH = v.ln, beforeH = v.pv;               // the lane before `curH` on the route
+    let cur = net.lanes[curH];
+    if(!cur) return null;
+    if(arc > cur.len && v.nx >= 0 && net.lanes[v.nx]){ arc -= cur.len; beforeH = curH; curH = v.nx; cur = net.lanes[curH]; }
+    const frontArc = Math.max(0, Math.min(arc, cur.len));
+    const front = positionAtOffset(cur.pts, frontArc, v.pl);
+
+    const bodyLen = v.l || CAR_LEN;
+    let back;
+    if(frontArc >= bodyLen){
+      back = positionAtOffset(cur.pts, frontArc - bodyLen, v.pl);
+    } else if(beforeH >= 0 && net.lanes[beforeH]){
+      const bl = net.lanes[beforeH];
+      back = positionAtOffset(bl.pts, Math.max(0, bl.len - (bodyLen - frontArc)), v.pl);
+    } else {
+      back = positionAtOffset(cur.pts, 0, v.pl);   // no known previous lane -> clamp to this lane's start
+    }
+
+    const dx = front.x - back.x, dy = front.y - back.y;
+    let deg = (dx*dx + dy*dy) > 1e-9 ? (90 - Math.atan2(dy, dx) * 180/Math.PI) : front.deg;
+    deg %= 360; if(deg < 0) deg += 360;
+    return { x: front.x, y: front.y, deg };
   }
 
   function resize(){ cv.width = innerWidth; cv.height = innerHeight; if(net) draw(); }

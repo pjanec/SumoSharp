@@ -69,6 +69,7 @@ public sealed class SimHost : IDisposable
                 id = snap.VehicleId[i],
                 ln = snap.LaneHandle[i],
                 nx = snap.NextLaneHandle[i],
+                pv = snap.PrevLaneHandle[i],
                 p = Math.Round(snap.Pos[i], 3),
                 pl = Math.Round(snap.PosLat[i], 3),
                 s = Math.Round(snap.SpeedExact[i], 3),

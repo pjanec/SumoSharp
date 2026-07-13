@@ -26,6 +26,7 @@ public sealed class SimulationSnapshot
     public double[] Accel { get; init; } = Array.Empty<double>();        // longitudinal accel (DR extrapolation)
     public int[] LaneHandle { get; init; } = Array.Empty<int>();
     public int[] NextLaneHandle { get; init; } = Array.Empty<int>();     // next lane on route, -1 if none (DR lookahead)
+    public int[] PrevLaneHandle { get; init; } = Array.Empty<int>();     // previous lane on route, -1 if none (chord back-walk)
     public double[] Pos { get; init; } = Array.Empty<double>();
     public double[] PosLat { get; init; } = Array.Empty<double>();
     public string[] VehicleId { get; init; } = Array.Empty<string>();
@@ -65,6 +66,7 @@ public sealed class SimulationSnapshot
             Accel = engine.Acceleration.ToArray(),
             LaneHandle = engine.LaneHandles.ToArray(),
             NextLaneHandle = engine.NextLaneHandles.ToArray(),
+            PrevLaneHandle = engine.PrevLaneHandles.ToArray(),
             Pos = engine.Pos.ToArray(),
             PosLat = engine.PosLat.ToArray(),
             VehicleId = engine.VehicleIds.ToArray(),

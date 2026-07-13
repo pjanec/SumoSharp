@@ -1272,6 +1272,9 @@ public sealed partial class Engine : IEngine
     // DR lookahead: the next lane handle on each vehicle's route (-1 if none). Lets a dead-reckoning
     // client walk past the current lane's end during extrapolation (SUMOSHARP-DEADRECKONING.md §5.1/§6).
     public ReadOnlySpan<int> NextLaneHandles => _readBuffer.NextLane.AsSpan(0, _readBuffer.Count);
+    // Previous lane handle on each vehicle's route (-1 if none). Lets a renderer walk the chord/off-track
+    // back point past the current lane's start for a correct heading on curves (§6.2).
+    public ReadOnlySpan<int> PrevLaneHandles => _readBuffer.PrevLane.AsSpan(0, _readBuffer.Count);
     // §5.2: TL-controlled approach lanes (static) and their current signal-state chars (refreshed each
     // Step), aligned index-for-index. For rendering junction signals; empty when the net has no road TL.
     public ReadOnlySpan<int> TlLaneHandles => _tlLaneHandles.AsSpan();
@@ -1346,9 +1349,14 @@ public sealed partial class Engine : IEngine
             var nextLane = v.LaneSeqIndex + 1 < v.LaneSeqLen
                 ? _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex + 1]
                 : -1;
+            // The previous lane on the route, so a renderer can walk the chord/off-track BACK point past
+            // the current lane's start for a correct heading through curves.
+            var prevLane = v.LaneSeqIndex - 1 >= 0
+                ? _laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex - 1]
+                : -1;
 
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
-                v.LaneHandle, nextLane, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
+                v.LaneHandle, nextLane, prevLane, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width);
         }
 
