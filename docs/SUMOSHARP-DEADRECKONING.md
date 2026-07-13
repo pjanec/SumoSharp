@@ -137,6 +137,15 @@ while also working over plain **TCP/UDP**. Design principles:
   Recommendation: ship **(2) the blob** as the canonical high-rate path (one codec everywhere, minimal
   overhead) and offer **(1) the structured chunk** for consumers who want DDS-native typed access. Both are
   in the replication package; neither is in `Core`.
+
+  **Status — both landed** (`SumoSharp.Replication.Dds`, out of `Traffic.sln`): `DdsWireFrame` (opaque blob,
+  canonical) and `DdsVehicleBatch` (the structured option). The structured topic is **columnar** (one typed
+  DDS array per field, `MaxSamples = 256` movers/sample) rather than an array-of-nested-struct: this
+  generator marshals arrays as C `fixed` buffers (primitive-only), and columns are simpler, allocation-free,
+  and mirror the engine's own SoA layout while still giving a subscriber typed per-field access. Chunk sizing
+  for **both** shapes is `SumoSharp.Replication.FrameChunker` (by byte budget for the blob, by sample count
+  for the batch), which is in the hermetic gate (`RungB25`) even though the DDS types themselves cannot run
+  here (CycloneDDS.NET native lib is win-x64).
 - **Rate-limit at the writer** (§7): the high-rate topic writes at ≤10 Hz globally, and the adaptive policy
   decides *which* vehicles are even included in each frame (so a predictable vehicle simply isn't re-sent).
 
@@ -428,9 +437,10 @@ projection, parity/hash unaffected.
   "trucks swing wide") now**. Both renderer-only, zero extra wire data. (§6.2)
 - **Sim-side chord heading:** **no** — the parity FCD `Angle` column stays tangent (zero parity risk); the
   chord/off-tracking correction is render-only.
-- **DDS high-rate shape:** ship the **opaque blob** as canonical **and** the structured `InlineArray` chunk
-  as an option. (§4.3)
+- **DDS high-rate shape:** ship the **opaque blob** as canonical **and** the structured chunk as an option.
+  (§4.3) — **DONE:** `DdsWireFrame` + `DdsVehicleBatch` (columnar, not array-of-struct — see §4.3 status).
 
-All owner decisions are now made; implementation can proceed. Remaining coordination is DR1/DR2 with the
-laneless branch (issue #3), which is merge-order-independent and does not block the NuGet-side build.
+All owner decisions are now made and implemented. Coordination DR1/DR2 with the laneless branch (issue #3)
+is **closed** — the seam is frozen (vehicles `LaneArc`/`Stationary`; `Engine.Manoeuvring` is the rate
+signal); merge-order-independent, does not block the NuGet-side build.
 ```

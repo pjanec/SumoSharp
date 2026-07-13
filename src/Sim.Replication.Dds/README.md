@@ -16,6 +16,12 @@ TCP, and UDP; DDS just transports the bytes.
   buffer; `ReadPayload` hands the valid prefix back to `FrameCodec.Read*`. Batching many movers into one
   sample (per 64 KiB chunk) amortizes DDS per-sample overhead — the key to 10k+ movers (one keyed sample
   *per mover* would be untenable).
+- **`DdsVehicleBatch`** — the high-rate **structured** state topic (the *option* alongside the blob). Same
+  data as typed DDS fields instead of an opaque payload, so DDS tooling (introspection, content filters,
+  keyed QoS) sees per-field values without the SumoSharp codec. It is **columnar** (one typed array per
+  field, up to `DdsStructured.MaxSamples = 256` movers per sample); `SetBatch` fills it from a
+  `FrameChunker`-sized chunk of `VehicleRecord`s, `ReadBatch` hands them back. Use it when a subscriber wants
+  to consume fields directly; prefer `DdsWireFrame` (fewer bytes, one codec across all transports) otherwise.
 - **`DdsVehicleLifecycle`** — the low-rate, **keyed** (by vehicle index) spawn/despawn + dims/type registry
   (DDS's "track many objects" sweet spot; affordable because it is low-rate).
 
@@ -58,5 +64,24 @@ foreach (var sample in loan)
 }
 ```
 
-Recommended QoS: `BEST_EFFORT` / `KEEP_LAST(1)` for `DdsWireFrame` state; `RELIABLE` /
+## Structured option (`DdsVehicleBatch`)
+
+Same per-tick chunking, but typed columns instead of a blob. `FrameChunker` sizes the chunks either way —
+by byte budget for the blob, by sample count here:
+
+```csharp
+using var writer = new DdsWriter<DdsVehicleBatch>(participant);
+
+var maxPerChunk = DdsStructured.MaxSamples;                      // 256 movers / structured sample
+for (var c = 0; c < FrameChunker.ChunkCount(recs.Length, maxPerChunk); c++)
+{
+    var (start, count) = FrameChunker.ChunkRange(c, recs.Length, maxPerChunk);
+    var batch = new DdsVehicleBatch();
+    batch.SetBatch(step, time, recs.AsSpan(start, count), c);
+    writer.Write(batch);
+}
+// reader: var n = batch.ReadBatch(recs);  // -> VehicleRecord[], then PoseResolver.Resolve(...)
+```
+
+Recommended QoS: `BEST_EFFORT` / `KEEP_LAST(1)` for `DdsWireFrame` / `DdsVehicleBatch` state; `RELIABLE` /
 `TRANSIENT_LOCAL` for `DdsVehicleLifecycle` (and a geometry topic) so late joiners get the current fleet.
