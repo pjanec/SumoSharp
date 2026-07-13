@@ -596,6 +596,99 @@ internal static class SceneGen
             new[] { "car", "motorcycle", "auto-rickshaw", "bus" });
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Panic evacuation" (docs/PANIC-EVAC-DESIGN.md S6): the organized-traffic-to-panic
+    // transition on the evac grid. Driven end-to-end through EvacGridScenario.Build (the same fixture
+    // EvacSpineTests uses), so the viz exercises the exact public seams the tests do -- Engine for the
+    // driving core, EvacDirector for the external panic/pedestrian layer.
+    // ---------------------------------------------------------------------------------------
+    private const int KindFleeing = 4;    // #38bdf8 -- fleeing pedestrian
+    private const int KindEscaped = 5;    // #34d399 -- escaped pedestrian
+    private const int KindAbandoned = 6;  // #b91c1c -- abandoned car
+
+    internal static ScenePayload BuildEvacGrid(string repoRoot)
+    {
+        var netPath = Path.Combine(repoRoot, "scenarios", "evac-grid", "net.net.xml");
+        var (engine, director, _) = Sim.Evac.EvacGridScenario.Build(netPath);
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var frames = new List<FramePayload>();
+
+        for (var step = 0; step < 240; step++)
+        {
+            director.Tick();
+
+            var handles = engine.VehicleHandles;
+            var px = engine.PosX;
+            var py = engine.PosY;
+            var pa = engine.Angle;
+
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!slotByHandle.ContainsKey(handles[i].Index))
+                {
+                    slotByHandle[handles[i].Index] = slotByHandle.Count;
+                }
+            }
+
+            var v = new double[slotByHandle.Count][];
+            for (var i = 0; i < handles.Length; i++)
+            {
+                var slot = slotByHandle[handles[i].Index];
+                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]) };
+            }
+
+            var discs = new List<double[]>();
+            for (var i = 0; i < director.PedestrianCount; i++)
+            {
+                var p = director.PedestrianPosition(i);
+                var kind = director.PedestrianEscaped(i) ? KindEscaped : KindFleeing;
+                discs.Add(new[] { R(p.X), R(p.Y), 0.6, (double)kind });
+            }
+
+            for (var i = 0; i < director.AbandonedCarCount; i++)
+            {
+                var c = director.AbandonedCar(i);
+                discs.Add(new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned });
+            }
+
+            frames.Add(new FramePayload(v, discs.ToArray()));
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+
+        var nm = director.NavMesh;
+        var boundary = new[]
+        {
+            R(nm.MinX), R(nm.MinY), R(nm.MinX), R(nm.MaxY), R(nm.MaxX), R(nm.MaxY), R(nm.MaxX), R(nm.MinY),
+        };
+
+        var inc = director.Incident;
+        var cfg = Sim.Evac.EvacGridScenario.DefaultConfig();
+        var incident = new[] { R(inc.X), R(inc.Y), R(inc.Radius), R(inc.StartTime), R(cfg.SafeRadius) };
+
+        var labels = new string[7];
+        labels[4] = "fleeing pedestrian";
+        labels[5] = "escaped pedestrian";
+        labels[6] = "abandoned car";
+
+        return new ScenePayload(
+            "Panic evacuation",
+            "Organized grid traffic; a central incident (amber zone) triggers panic; cars flee to exits "
+            + "and jam; boxed-in drivers abandon cars (dark-red discs) and flee on foot (cyan, turning "
+            + "green past the safe radius); the dashed rectangle is the known-world hard edge. Driving "
+            + "core = SUMO port; pedestrians + panic = external Sim.Evac layer.",
+            new double[] { R(nm.MinX), R(nm.MinY), R(nm.MaxX), R(nm.MaxY) },
+            network,
+            new double[] { 5.0, 1.8 },
+            Sim.Evac.EvacGridScenario.StepLength,
+            frames.ToArray(),
+            labels,
+            incident,
+            boundary);
+    }
+
     // Run a pure crowd to convergence, snapshotting disc positions each step and keeping every
     // `decimate`-th snapshot (the frames are dense, so linear interpolation on the front end is
     // ample). Disc kind is per-agent (its stream), captured at Add time.

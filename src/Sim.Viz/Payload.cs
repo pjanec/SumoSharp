@@ -48,9 +48,13 @@ internal sealed record ScenePayload(
     double[] Vdim,           // [length, width] shared vehicle box dims (0,0 if no vehicles)
     double Dt,               // seconds between successive frames
     FramePayload[] Frames,
-    string[]? Labels = null);// optional per-scene legend labels indexed by disc kind (overrides the
+    string[]? Labels = null,// optional per-scene legend labels indexed by disc kind (overrides the
                              // global DISC_LABELS -- e.g. the mixed-traffic scene labels kinds by
                              // vehicle class rather than stream/pedestrian)
+    double[]? Incident = null,  // panic-evac overlay: [x, y, radius, startTime, safeRadius] -- null
+                                 // for scenes with no incident
+    double[]? Boundary = null); // panic-evac overlay: flat closed loop [x0,y0,x1,y1,...] -- the
+                                 // known-world hard edge; null for scenes with no boundary
 
 internal sealed record ReplayData(ScenePayload[] Scenes);
 

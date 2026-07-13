@@ -101,7 +101,12 @@ internal static class Program
 
         var scenes = new List<ScenePayload>();
 
-        // Scene 0 -- the Indian junction (opens first): SHAPED mixed traffic (long buses, compact
+        // Scene 0 -- the panic-evacuation demo (opens first, docs/PANIC-EVAC-DESIGN.md S6): organized
+        // grid traffic transitions to panic/abandonment/foot-flight under a central incident, driven
+        // through the real Engine + external Sim.Evac.EvacDirector (the same fixture EvacSpineTests use).
+        scenes.Add(SceneGen.BuildEvacGrid(repoRoot));
+
+        // Scene 1 -- the Indian junction: SHAPED mixed traffic (long buses, compact
         // motorcycles) negotiating an uncontrolled crossroads by anisotropic avoidance with SOFT
         // priority (assertive main road vs yielding cross road), from the Sim.Core.Mixed layer.
         scenes.Add(SceneGen.BuildIndianJunction());

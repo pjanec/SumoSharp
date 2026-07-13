@@ -54,7 +54,12 @@
   // (the classic passenger blue). Speed colouring (derived from motion) is available via the HUD.
   var VEHICLE_COLOR = "#4f8ef7";
   // Discs (crowd/pedestrian agents) coloured by kind.
-  var DISC_COLORS = { 0: "#38bdf8", 1: "#fb7185", 2: "#c084fc", 3: "#f59e0b" };
+  var DISC_COLORS = {
+    0: "#38bdf8", 1: "#fb7185", 2: "#c084fc", 3: "#f59e0b",
+    4: "#38bdf8", // fleeing pedestrian (panic evac)
+    5: "#34d399", // escaped pedestrian (panic evac)
+    6: "#b91c1c", // abandoned car (panic evac)
+  };
   var DISC_LABELS = { 0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian" };
 
   // Speed heatmap: cold (slow) -> hot (fast), 0..cap m/s.
@@ -447,6 +452,54 @@
     ctx.fill();
   }
 
+  // Panic-evac overlay (S6): the known-world hard edge -- a dashed closed loop, flat [x0,y0,...].
+  function drawBoundary(flat) {
+    var n = flat.length / 2;
+    if (n < 2) return;
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(148,163,184,0.85)";
+    ctx.beginPath();
+    for (var i = 0; i < n; i++) {
+      var p = worldToScreen(flat[i * 2], flat[i * 2 + 1]);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Panic-evac overlay (S6): the incident -- a filled danger disc (radius), a dashed safe-radius ring,
+  // and an epicentre dot. inc = [x, y, radius, startTime, safeRadius]. Hidden until it "goes off".
+  function drawIncident(inc, simT) {
+    if (simT < inc[3]) return;   // not detonated yet
+    var c = worldToScreen(inc[0], inc[1]);
+    var rDanger = inc[2] * camera.scale, rSafe = inc[4] * camera.scale;
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], rDanger, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(239,68,68,0.10)";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(239,68,68,0.55)";
+    ctx.stroke();
+    ctx.save();
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], rSafe, 0, Math.PI * 2);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(52,211,153,0.7)";
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(c[0], c[1], 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#ef4444";
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+  }
+
   function drawLaneBand(lane) {
     var n = lane.shape.length / 2;
     if (n < 2) return;
@@ -588,6 +641,11 @@
       drawLaneMarkings();
       drawSignals(simT);
     }
+
+    // Panic-evac overlays (S6): the known-world hard edge and the incident danger/safe rings. Additive
+    // and null-guarded -- absent on every scene except "Panic evacuation".
+    if (scene.boundary) drawBoundary(scene.boundary);
+    if (scene.incident) drawIncident(scene.incident, simT);
 
     // 5. Discs (crowd/pedestrian agents).
     var discs = interpolatedDiscs(simT);

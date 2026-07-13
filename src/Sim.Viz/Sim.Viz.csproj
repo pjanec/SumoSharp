@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
     <ProjectReference Include="..\Sim.Harness\Sim.Harness.csproj" />
+    <ProjectReference Include="..\Sim.Evac\Sim.Evac.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -43,10 +43,10 @@ only when the task's success conditions all pass.
 - [x] **T5.5** suite green + hash gate — *accepted (368 pass / 3 skip; hashA=hashPar=909605E965BFFE59)*
 
 ## S6 — Visualization
-- [ ] **T6.1** payload overlays (incident + boundary)
-- [ ] **T6.2** `SceneGen.BuildEvacGrid`
-- [ ] **T6.3** `template.js` overlay drawing
-- [ ] **T6.4** bundle wire + artifact
+- [x] **T6.1** payload overlays (incident + boundary) — *accepted (B2): optional `Incident`/`Boundary` on ScenePayload, null for all other scenes*
+- [x] **T6.2** `SceneGen.BuildEvacGrid` — *accepted (B2): drives EvacGridScenario, 240 frames, typed discs + overlays*
+- [x] **T6.3** `template.js` overlay drawing — *accepted (B2): dashed hard edge + incident danger/safe rings (time-gated); existing scenes unchanged*
+- [x] **T6.4** bundle wire + artifact — *accepted (B2, Opus rendered it): opening scene; screenshots at t=5/30/90 confirm organized → incident rings → abandoned cars + fleeing→escaped pedestrians, all inside the hard edge*
 
 ---
 
@@ -55,5 +55,11 @@ only when the task's success conditions all pass.
   test; T4.2 shared builder + `EvacSpineTests` refactor. 15 new unit tests; suite 383 pass / 3 skip / 0
   fail; hash 909605E965BFFE59 unmoved. Reviewer fixed one vacuous assertion in `FakeNavMeshTests`.
   → **S1, S2, S4 now fully green; S3, S5 already accepted. Phase-1 spine is complete except the viz.**
-- **B2 (next):** S6 viz — T6.1 payload overlays, T6.2 `SceneGen.BuildEvacGrid`, T6.3 `template.js`
-  incident/boundary drawing, T6.4 bundle wire + artifact.
+- **B2 — DONE (Sonnet implemented, Opus-reviewed & accepted).** S6 viz: payload overlays,
+  `SceneGen.BuildEvacGrid`, `template.js` incident/boundary drawing, bundle wiring. Opus reviewed the
+  code AND rendered the bundle headlessly (Chromium) at t=5/30/90 to confirm the transition reads
+  coherently — not just that it compiles. Suite 383 pass / 3 skip / 0 fail; hash unmoved.
+
+**Phase-1 spine COMPLETE — all of S1–S6 accepted.** Next natural step is Phase 2 (panic as local
+information: contagion + LoS + jam-unease) per PANIC-EVAC.md §6.2, which will get its own design-first
+docs before any code.
