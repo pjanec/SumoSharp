@@ -14,18 +14,25 @@ a realistic-enough backdrop; the evacuation is the product. **Not** an "Indian t
   (value: scooters/cyclists filtering to the front at red lights, still stopping on red). Start
   **without** sublane.
 - **R2 — external decides, the core drives (vehicles only).** The panic **decision** is external,
-  applied **per vehicle** by setting that vehicle's **parameters** (`aggressiveness`, `mode`, flee
-  route). The vehicle modes the core drives:
+  applied **per vehicle**. The core exposes the individual SUMO driver knobs (impatience,
+  sublane assertiveness, `tau`/gap, speed-factor, right-of-way relaxation, …) **independently
+  settable** at runtime — they are not hidden behind panic. **"Flee mode" is just another
+  override/call**: it bulk-sets those knobs to **predefined aggressive values**, overwriting
+  whatever was there. It is a preset over the same param surface, not a special state. The vehicle
+  modes the core drives:
     - **Organized** — normal lane/sublane driving.
-    - **Flee** — aggressive organized driving to a flee route (raised impatience / assertiveness /
-      speed-factor, smaller gaps, relaxed right-of-way). Still on roads, still the SUMO model.
-    - **Orca** *(later phase)* — free-space movement in the road+vicinity band when organized
-      driving has nowhere to go (cars mounting the shoulder). The core owns it.
+    - **Flee** — the aggressive-preset params applied; still normal on-road lane driving, just
+      pushy, on a flee route. (A param preset, not a separate code path.)
+    - **Orca** *(later phase)* — a genuinely separate mode: free-space movement in the
+      road+vicinity band when organized driving has nowhere to go (cars mounting the shoulder). The
+      core owns it. Selected by an explicit `mode` flag, not by the param preset.
 - **R3 — panic spread is a separate external layer.** Fear/contagion sits on top of the shared
   data; **local-information only** (direct LoS-gated proximity + contagion from panicking
   neighbours + mild jam-unease). No global broadcast → distant traffic stays organized, unaware,
   just jammed.
-- **R4 — the port emits a `blocked` signal.** Per vehicle, when it can no longer make progress.
+- **R4 — the port emits a `blocked` signal.** Per vehicle, when it can no longer make progress —
+  **derived from the DR seam**: `DrModel.Stationary` (≈ stopped) held for a short dwell with no
+  feasible forward gap. No brand-new signal; reuses issue #3's regime read.
 - **R5 — pedestrians are ALWAYS external.** The port does **not** simulate pedestrian movement; it
   only sees pedestrians as **external obstacles** (`ExternalObstacle`/`WorldDisc`) its vehicles
   avoid. The **external system drives them** (fake-navmesh + ORCA).
@@ -34,13 +41,20 @@ a realistic-enough backdrop; the evacuation is the product. **Not** an "Indian t
   a pedestrian entity (external obstacle) and starts driving it; (b) commands the port to **stop the
   vehicle for good → static obstacle**. The entity *migrates* from port-simulated vehicle to
   externally-simulated pedestrian at this instant.
-- **R7 — known world = road + close vicinity.** Lanes + an immediately-adjacent band
-  (sidewalk/grass). Its **outer edge is a hard boundary** (ditch/fence/soft soil) where actors
-  **block** — matching reality (cars pile at the road edge). Beyond = future real navmesh, out of
-  scope; actors mostly block before reaching it.
+- **R6b — escape = far enough from the incident (not necessarily the world edge).** A pedestrian's
+  goal is simply to increase distance from the incident; it is **Escaped** once beyond a safe
+  radius — reached at a **far-enough street point or off-road point**, which may be well short of
+  the known-world boundary (that boundary is only a hard blocker, not the required destination).
+- **R7 — known world = road + close vicinity.** Lanes + an immediately-adjacent band. Where the
+  SUMO net **has sidewalks** (SUMO models them as pedestrian-only lanes), the band follows the
+  **sidewalk geometry** — it *defines/extends* the vicinity where present, and usually there is a
+  blocker just beyond it. Where absent, a **fixed tunable width** is used. Its **outer edge is a
+  hard boundary** (ditch/fence/soft soil) where actors **block** — matching reality (cars/people
+  pile at the road edge). Beyond = future real navmesh, out of scope; actors mostly block first.
 - **R8 — fake-navmesh from SUMO data only (external).** Navigable region = lane+junction geometry
-  buffered outward by a vicinity width; outer edge = wall; cars (incl. abandoned) = interior
-  obstacles. Replaceable later by a real 3D-world navmesh behind the same interface — out of scope.
+  (incl. sidewalk lanes where present) buffered outward by the vicinity width; outer edge = wall;
+  cars (incl. abandoned) = interior obstacles. Replaceable later by a real 3D-world navmesh behind
+  the same interface — out of scope.
 - **R9 — parity.** The driving core stays parity-exact; with no panic params set and no external
   obstacles, it is byte-identical to today (hash `909605E965BFFE59` unchanged). The panic layer is
   parity-exempt.
@@ -96,10 +110,10 @@ a realistic-enough backdrop; the evacuation is the product. **Not** an "Indian t
    external, on `blocked`+panic:  stop vehicle → STATIC OBSTACLE (core)  +  spawn PEDESTRIAN
                                                                                    │
  PEDESTRIAN (external evac system: ORCA + fake-navmesh; a moving external obstacle to the core)
-      flee within road+vicinity toward the away-edge, avoiding cars + walls + peds; block at edge
-      │  reaches away-edge
+      flee AWAY FROM THE INCIDENT within road+vicinity, avoiding cars + walls + peds; block at edge
+      │  distance-from-incident > safe radius (a far-enough street or off-road point)
       ▼
-   Escaped (leaves the simulated area)
+   Escaped (may be well short of the world boundary; the edge is only a hard blocker)
 ```
 
 ## 5. Believability / correctness bar
@@ -127,17 +141,24 @@ a realistic-enough backdrop; the evacuation is the product. **Not** an "Indian t
 4. **Sublane realism (optional, separate)** — filter-to-front at lights in the organized phase.
 5. **Scale** — hundreds → thousands; spatial indexing; far side stays jammed and unaware.
 
-## 7. Open decisions (pin at Phase-1 kickoff)
+## 7. Resolved decisions + remaining tunables
 
-- The `blocked` signal definition (stuck-duration + no feasible progress) and whether it's a new
-  explicit per-vehicle signal or derived from `DrModel.Stationary` + a dwell timer.
-- The per-vehicle **param surface** the core exposes (`aggressiveness` → which SUMO params;
-  `mode`; flee route) — existing vs. small additive opt-in fields — and the stop-vehicle→obstacle
-  command.
-- Vicinity buffer width; hard-edge representation (buffered-polygon boundary as an ORCA obstacle
-  loop vs. explicit fence).
-- Away-direction flee-goal from the road graph; what counts as an away-edge "escape".
-- Fear constants (θ_panic, decay, contagion kernel) — tuned against the viz.
+Resolved (folded into R1–R10 above):
+- **`blocked`** = `DrModel.Stationary` + dwell, no feasible forward gap (R4). No new signal.
+- **Param surface** = individual SUMO knobs stay independently settable; **flee mode is a preset
+  override** that bulk-sets predefined aggressive values (R2). `mode` (Orca) is a separate flag.
+- **Vicinity band** = follows **sidewalk lanes where the net has them**, else a fixed tunable
+  width; hard outer edge just beyond (R7).
+- **Escape** = pedestrian gets **far enough from the incident** (safe radius), not necessarily to
+  the world boundary (R6b).
+
+Remaining as **tunables** (calibrated against the viz, not fixed here):
+- Fixed vicinity width (where no sidewalk); dwell time for `blocked`; the flee-preset param values;
+  the safe-escape radius; fear constants (θ_panic, decay, contagion kernel/radius).
+
+To pin only at Phase-1 kickoff (implementation detail, not architecture):
+- Which SUMO knobs already exist vs. need a small additive opt-in setter; hard-edge representation
+  (buffered-polygon obstacle loop vs. explicit fence geometry).
 
 ## 8. Relationship to other docs
 
