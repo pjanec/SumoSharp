@@ -419,9 +419,11 @@ public sealed class MixedTrafficCrowd
         var newSpeed = Math.Clamp(targetSpeed, curSpeed - cls.MaxDecel * dt, curSpeed + cls.MaxAccel * dt);
         newSpeed = Math.Clamp(newSpeed, 0.0, cls.MaxSpeed);
 
-        // Turn rate scales with the distance travelled this step (speed * dt) over the turn radius; a
-        // small crawl term gives minimal steering authority from rest so it can begin a turn.
-        var maxTurn = (newSpeed + 0.5) * dt / cls.MinTurnRadius;
+        // Turn rate is bounded by the arc actually swept this step: heading can change at most
+        // (distance travelled) / MinTurnRadius = newSpeed*dt / R. This ties steering strictly to
+        // forward motion -- a stopped or crawling vehicle CANNOT rotate in place (no turntable spin);
+        // it must roll forward to change heading, exactly like a real wheeled vehicle.
+        var maxTurn = newSpeed * dt / cls.MinTurnRadius;
         var turn = Math.Clamp(headingErr, -maxTurn, maxTurn);
         newHeading = theta + turn;
 

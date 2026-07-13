@@ -378,6 +378,10 @@ internal static class SceneGen
         };
 
         var headings = new List<double>();
+        // For a TURNING vehicle: its final exit goal, held until it reaches the junction box, then
+        // swapped in (a two-leg route enter->centre->exit) so it arcs THROUGH the junction instead of
+        // cutting a straight diagonal. null for a straight-through vehicle.
+        var pendingExit = new List<Vec2?>();
         var mainRows = new[] { -5.0, -1.8 };   // W->E keeps to y<0 ; E->W to y>0 (loose, Indian-style)
         var mainRows2 = new[] { 1.8, 5.0 };
         var crossRows = new[] { 1.8, 5.0 };    // S->N keeps to x>0 ; N->S to x<0
@@ -385,6 +389,13 @@ internal static class SceneGen
         var spawn = 0;
         var vtMain = 0;
         var vtCross = 0;
+
+        // Exit-arm lane points (well past the field edge so vehicles drive fully off before despawn).
+        var exN = new Vec2(2.5, half + 16);
+        var exS = new Vec2(-2.5, -(half + 16));
+        var exE = new Vec2(half + 16, -2.5);
+        var exW = new Vec2(-(half + 16), 2.5);
+        var centre = new Vec2(0, 0);
 
         // Cap the number of SIMULTANEOUSLY-active movers (not the lifetime count) so the shared box
         // stays busy but not so packed that big footprints drive the LP infeasible.
@@ -420,31 +431,31 @@ internal static class SceneGen
             return true;
         }
 
-        void TryAddMain(Vec2 start, Vec2 goal)
+        // A movement is straight-through (exit == null) or a turn routed via the junction centre
+        // (initial goal = centre, exit swapped in on arrival at the box). `main` picks the fleet mix.
+        void TryAdd(bool main, Vec2 start, Vec2 goal, Vec2? exit)
         {
             if (crowd.Count >= 380 || Live() >= liveCap || !SpawnClear(start))
             {
                 return;
             }
 
-            var cls = MainClass(vtMain++);
+            var cls = main ? MainClass(vtMain++) : CrossClass(vtCross++);
             var dir = goal - start;
             crowd.Add(cls, start, goal, maxSpeedOverride: cls.MaxSpeed * 0.4);
             headings.Add(Math.Atan2(dir.Y, dir.X) * 180.0 / Math.PI);
+            pendingExit.Add(exit);
         }
 
-        void TryAddCross(Vec2 start, Vec2 goal)
-        {
-            if (crowd.Count >= 380 || Live() >= liveCap || !SpawnClear(start))
+        // Pick a movement for an arm: mostly straight, some left, some right (deterministic cycle).
+        // Returns (initialGoal, exit): straight keeps the row across; a turn heads to the centre first.
+        (Vec2 goal, Vec2? exit) Movement(int phase, Vec2 straightGoal, Vec2 leftExit, Vec2 rightExit) =>
+            (phase % 4) switch
             {
-                return;
-            }
-
-            var cls = CrossClass(vtCross++);
-            var dir = goal - start;
-            crowd.Add(cls, start, goal, maxSpeedOverride: cls.MaxSpeed * 0.4);
-            headings.Add(Math.Atan2(dir.Y, dir.X) * 180.0 / Math.PI);
-        }
+                2 => (centre, leftExit),    // ~25% turn left through the junction
+                3 => (centre, rightExit),   // ~25% turn right
+                _ => (straightGoal, (Vec2?)null),   // ~50% straight through
+            };
 
         void SpawnWave()
         {
@@ -452,10 +463,19 @@ internal static class SceneGen
             var m2 = mainRows2[(spawn / 2) % mainRows2.Length];
             var c1 = crossRows[(spawn / 2) % crossRows.Length];
             var c2 = crossRows2[(spawn / 2) % crossRows2.Length];
-            TryAddMain(new Vec2(-half, m1), new Vec2(half + 16, m1));    // W->E
-            TryAddMain(new Vec2(half, m2), new Vec2(-half - 16, m2));    // E->W
-            TryAddCross(new Vec2(c1, -half), new Vec2(c1, half + 16));   // S->N
-            TryAddCross(new Vec2(c2, half), new Vec2(c2, -half - 16));   // N->S
+
+            // W->E : straight E, left N, right S.
+            var we = Movement(spawn, new Vec2(half + 16, m1), exN, exS);
+            TryAdd(true, new Vec2(-half, m1), we.goal, we.exit);
+            // E->W : straight W, left S, right N.
+            var ew = Movement(spawn + 1, new Vec2(-half - 16, m2), exS, exN);
+            TryAdd(true, new Vec2(half, m2), ew.goal, ew.exit);
+            // S->N : straight N, left W, right E.
+            var sn = Movement(spawn + 2, new Vec2(c1, half + 16), exW, exE);
+            TryAdd(false, new Vec2(c1, -half), sn.goal, sn.exit);
+            // N->S : straight S, left E, right W.
+            var ns = Movement(spawn + 3, new Vec2(c2, -half - 16), exE, exW);
+            TryAdd(false, new Vec2(c2, half), ns.goal, ns.exit);
             spawn++;
         }
 
@@ -485,6 +505,19 @@ internal static class SceneGen
             if (step < stopSpawnAt && step % 2 == 0)
             {
                 SpawnWave();
+            }
+
+            // A turning vehicle heads for the junction centre first; once inside the box, swap in its
+            // exit goal so it arcs out along the destination arm (rather than being removed at the
+            // centre or cutting a straight diagonal). Done before Step so this step already steers out.
+            for (var i = 0; i < crowd.Count; i++)
+            {
+                if (crowd.IsActive(i) && pendingExit[i] is { } exit
+                    && crowd.Position(i).Abs < roadHalf)
+                {
+                    crowd.SetGoal(i, exit);
+                    pendingExit[i] = null;
+                }
             }
 
             crowd.Step(0.2);
@@ -544,10 +577,13 @@ internal static class SceneGen
         return new ScenePayload(
             "Indian junction (shaped, soft priority)",
             "Believable mixed traffic: SHAPED vehicles (long buses, compact motorcycles) negotiate an "
-            + "uncontrolled crossroads by anisotropic reciprocal avoidance. Priority is SOFT -- the "
-            + "east-west main road runs assertive buses/cars and largely holds its line, while the "
-            + "north-south motorcycles/auto-rickshaws weave and yield through the gaps. No lanes, no "
-            + "signals. Blue=car, pink=motorcycle, purple=auto-rickshaw, amber=bus.",
+            + "uncontrolled crossroads by anisotropic reciprocal avoidance, with CAR-LIKE kinematics -- "
+            + "non-holonomic steering (no reverse, no pivot-in-place) and a kinematic-bicycle body that "
+            + "pivots about its rear axle, so a turning bus swings its front wide while the rear tracks "
+            + "in (real off-tracking). About half the traffic turns left/right through the junction. "
+            + "Priority is SOFT -- assertive buses/cars hold their line while motorcycles/auto-rickshaws "
+            + "weave and yield. No lanes, no signals. Blue=car, pink=motorcycle, purple=auto-rickshaw, "
+            + "amber=bus.",
             new double[] { -half, -half, half, half },
             network,
             new double[] { 0, 0 },
