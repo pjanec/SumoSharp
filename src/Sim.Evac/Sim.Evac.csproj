@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PANIC-EVAC.md: the EXTERNAL evac layer (fear/panic decision, pedestrians-as-obstacles,
+       fake-navmesh). Parity-EXEMPT and app-layer: it consumes Sim.Core's frozen seams (DrModel,
+       SetVehicleParams, SetDestination, Despawn, AddObstacle, CrowdSource/WorldDisc, OrcaCrowd)
+       but the driving core never references it, so nothing here can move the determinism hash.
+       Not packaged (the NuGet surface is Sim.Core/Sim.Ingest only). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+  </ItemGroup>
+
+</Project>

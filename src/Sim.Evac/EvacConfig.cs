@@ -1,0 +1,59 @@
+using Sim.Core;
+
+namespace Sim.Evac;
+
+// PANIC-EVAC.md §7: the evac layer's tunables (calibrated against the viz, not fixed by architecture)
+// plus the flee-preset param bundle. All defaults are first-cut values for the Phase-1 spine.
+public sealed record EvacConfig
+{
+    // Fear (0..1) at or above which a driver panics and switches to flee (R3 / §8.2). Low by default:
+    // in Phase 1 essentially anyone inside the incident radius panics.
+    public double ThetaPanic { get; init; } = 0.05;
+
+    // Fixed vicinity width (m) added beyond the road geometry to form the known-world's hard outer
+    // edge where sidewalks are absent (R7). The pedestrian bounding wall sits this far out.
+    public double VicinityWidth { get; init; } = 8.0;
+
+    // A vehicle is 'blocked' (R4) once its DR regime has been Stationary for this dwell (s).
+    public double BlockedDwellSeconds { get; init; } = 3.0;
+
+    // A fleeing pedestrian is 'Escaped' (R6b) once it is farther than this (m) from the incident —
+    // a far-enough point, not necessarily the world edge.
+    public double SafeRadius { get; init; } = 120.0;
+
+    // Pedestrian footprint (m) and panicked jog speed (m/s).
+    public double PedRadius { get; init; } = 0.25;
+    public double PedMaxSpeed { get; init; } = 3.0;
+
+    // How far ahead (m) the radial away-from-incident goal is placed each step. Clamped into the
+    // navmesh, so in practice the goal lands on the hard edge and pedestrians pile there.
+    public double FleeGoalDistance { get; init; } = 200.0;
+
+    // Car footprint radius (m) pedestrians (and other cars via the core) avoid — moving while driven,
+    // frozen once abandoned.
+    public double VehicleDiscRadius { get; init; } = 2.0;
+
+    // Occupants that spill out of each abandoned car as pedestrians (R6).
+    public int PedestriansPerCar { get; init; } = 1;
+
+    // Pedestrian ORCA sub-steps per engine step: the lane engine runs at the scenario's (coarse,
+    // parity) dt, but ORCA collision-avoidance wants a finer dt, so the crowd is sub-stepped
+    // (the same idea as Engine.CrowdReactionSubSteps). Purely internal to the evac layer.
+    public int CrowdSubSteps { get; init; } = 10;
+
+    // Boundary edges a fleeing car reroutes toward (R2 flee route). The director picks, per car,
+    // the reachable exit whose far end is farthest from the incident.
+    public string[] ExitEdges { get; init; } = Array.Empty<string>();
+
+    // The aggressive "flee" preset (R2): the bulk override applied to a panicked vehicle. Kept
+    // DETERMINISTIC (no jmIgnoreFoe* lever — those consult a per-vehicle RNG); the gridlock is meant
+    // to emerge from density + aggression converging on a few exits, not from stochastic gap-running.
+    public VehicleParamOverride FleePreset { get; init; } = new()
+    {
+        SpeedFactor = 1.6,   // want to drive well above the limit
+        Tau = 0.5,           // tailgate
+        MinGap = 0.5,        // pack close
+        Accel = 4.0,         // jump into gaps
+        Decel = 6.0,         // and brake hard when they close
+    };
+}
