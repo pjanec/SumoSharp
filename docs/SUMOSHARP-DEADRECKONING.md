@@ -228,6 +228,12 @@ upcoming/previous lane geometry + physical dims). So:
    altered, and the whole thing is off the `Run()`/golden path. So **parity validation stays byte-exact
    and separate**, exactly as it should: parity is for checking the algorithms, realism is for production.
 
+   **STATUS: landed** — `Engine.RenderMode` (default `ParityTangent`). When set to `ChordHeading` /
+   `CornerCutCorrected`, `PublishReadState` overrides only the render floats via `PoseResolver` (dt=0),
+   building each vehicle's upcoming+preceding lane path from its lane sequence. Default is byte-identical
+   (the override branch is skipped). `RungB21` proves the parity-exact columns are invariant to the mode
+   and the default `Angle` equals the lane tangent; the determinism hash is unchanged.
+
 ## 7. Adaptive publish rate
 
 Per-vehicle, the publisher decides how often to send an update based on a **predictability / error

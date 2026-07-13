@@ -988,6 +988,7 @@ public sealed partial class Engine : IEngine
         _stopsByEntity.Clear();
         _avoidedByEntity.Clear();
         _freeEntitySlots.Clear(); // §9: recycled slots belong to the previous scenario's index space
+        _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
         _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
         _insertRouteSeqCache.Clear(); // insert route-resolution memo is scenario-specific
         // W1: a freshly (re)loaded scenario is a fresh timeline -- the next Run/WarmUp resets the
@@ -1200,6 +1201,18 @@ public sealed partial class Engine : IEngine
 
     private readonly VehicleReadBuffer _readBuffer = new();
 
+    // SUMOSHARP-DEADRECKONING.md §6.3: opt-in PRODUCTION render mode. Off by default (ParityTangent) -> the
+    // published render floats (PosX/PosY/Angle) are byte-identical to before and to the FCD/parity Angle.
+    // When set to ChordHeading / CornerCutCorrected, the read surface's DERIVED render floats carry the
+    // SUMO chord heading (and, for CornerCutCorrected, the swept-path off-tracking bow) so a host that
+    // renders locally can look right rather than SUMO-exact. Only the derived floats change; the
+    // parity-exact lane-relative doubles (Pos/PosLat/LaneHandle) are untouched, and this whole path is
+    // Step()-only (Run()/goldens never publish), so parity + the determinism hash are unaffected either way.
+    public RenderRealism RenderMode { get; set; } = RenderRealism.ParityTangent;
+    private NetworkLaneSource? _laneSource;
+    private int[] _renderUpBuf = new int[8];
+    private int[] _renderPreBuf = new int[8];
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -1298,12 +1311,51 @@ public sealed partial class Engine : IEngine
                 ? LaneGeometry.ElevationAtOffset(lane.Shape, shapeZ, v.Kinematics.Pos)
                 : 0.0;
 
+            // §6.3 production render mode: override ONLY the derived render floats with the chord /
+            // off-tracking pose. Default (ParityTangent) skips this entirely -> byte-identical.
+            if (RenderMode != RenderRealism.ParityTangent)
+            {
+                var pose = ComputeRenderPose(v);
+                x = pose.X; y = pose.Y; z = pose.Z; angle = pose.HeadingDeg;
+            }
+
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
                 v.LaneHandle, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle);
         }
 
         DetectLifecycleEvents();
+    }
+
+    // SUMOSHARP-DEADRECKONING.md §6.3: the chord / off-tracking render pose for a vehicle at its CURRENT
+    // state (dt=0), used only when RenderMode != ParityTangent. Builds the vehicle's upcoming + preceding
+    // lane-handle paths from its lane sequence (reusable buffers; this is the opt-in Step-only path, never
+    // the parity path) and delegates to the shared PoseResolver.
+    private Pose ComputeRenderPose(VehicleRuntime v)
+    {
+        _laneSource ??= new NetworkLaneSource(_network!);
+
+        var upLen = v.LaneSeqLen - v.LaneSeqIndex;
+        if (upLen < 0) upLen = 0;
+        var preLen = v.LaneSeqIndex;
+        if (_renderUpBuf.Length < upLen) _renderUpBuf = new int[Math.Max(upLen, _renderUpBuf.Length * 2)];
+        if (_renderPreBuf.Length < preLen) _renderPreBuf = new int[Math.Max(preLen, _renderPreBuf.Length * 2)];
+
+        var baseIdx = v.LaneSeqStart + v.LaneSeqIndex;
+        for (var i = 0; i < upLen; i++) _renderUpBuf[i] = _laneSeqPool[baseIdx + i];
+        for (var i = 0; i < preLen; i++) _renderPreBuf[i] = _laneSeqPool[baseIdx - 1 - i]; // nearest-behind first
+
+        var state = new DrState
+        {
+            Model = DrModel.LaneArc,
+            LaneHandle = v.LaneHandle,
+            Pos = v.Kinematics.Pos,
+            PosLat = v.Kinematics.LatOffset,
+            Length = v.VType.Length,
+        };
+
+        return PoseResolver.Resolve(
+            _laneSource, state, _renderUpBuf.AsSpan(0, upLen), _renderPreBuf.AsSpan(0, preLen), 0.0, RenderMode);
     }
 
     // §10: diff each vehicle's lifecycle against the previous published frame and record Departed
