@@ -416,7 +416,13 @@
       var a = da[i], b = db[i];
       // Interpolate position; hold radius/kind, and (for shaped vehicles) heading + shape as-is.
       var e = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]];
-      if (a.length >= 6) { e.push(a[4], a[5]); }
+      if (a.length >= 6) {
+        // Interpolate heading along the SHORTEST arc (degrees) so a turning vehicle rotates smoothly
+        // between frames instead of snapping its facing at each frame boundary (which reads as jerky
+        // jump-rotation, worst on long vehicles). Shape held as-is.
+        var dh = (((b[4] - a[4]) % 360) + 540) % 360 - 180;
+        e.push(a[4] + dh * frac, a[5]);
+      }
       if (a.length >= 8) { e.push(a[6], a[7]); }   // true half-length / half-width for shaped rects
       out.push(e);
     }

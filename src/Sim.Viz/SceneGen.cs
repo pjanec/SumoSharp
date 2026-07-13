@@ -338,13 +338,16 @@ internal static class SceneGen
         var crowd = new MixedTrafficCrowd(400)
         {
             Nonholonomic = true,     // car-like steering: no reverse, bounded turn, no pivot-in-place
-            SafetyMargin = 0.6,      // NH-ORCA tracking-error margin: real bodies stay apart despite steer lag
-            SymmetryBreak = 0.03,    // gentler jitter -- the steering filter smooths motion anyway
+            SafetyMargin = 0.5,      // NH-ORCA tracking-error margin: real bodies stay apart despite steer lag
+            SymmetryBreak = 0.05,    // gentle jitter to break 4-way standoffs at the centre
             MaxNeighbours = 10,      // RVO2-ish; fewer simultaneous constraints -> rarer infeasibility
             RemoveOnArrival = true,
             ArrivalRadius = 3.0,
             NeighbourDist = 18.0,
             TimeHorizon = 3.0,       // longer look-ahead: bounded steering must start avoiding EARLY
+            // CreepSpeed left at 0: strict kinematics (a stopped vehicle never turns). At this inflow
+            // the junction FLOWS without a creep hack; pushing inflow higher gridlocks the greedy
+            // solve (vehicles freeze mid-turn) -- so density is metered to the flowing regime below.
         };
 
         // Four corner buildings confine the movers to the cross-shaped carriageway (their road-facing
@@ -397,9 +400,10 @@ internal static class SceneGen
         var exW = new Vec2(-(half + 16), 2.5);
         var centre = new Vec2(0, 0);
 
-        // Cap the number of SIMULTANEOUSLY-active movers (not the lifetime count) so the shared box
-        // stays busy but not so packed that big footprints drive the LP infeasible.
-        const int liveCap = 110;
+        // Cap the number of SIMULTANEOUSLY-active movers. Kept in the FLOWING regime: too high and the
+        // greedy non-holonomic solve gridlocks (vehicles freeze mid-turn and never clear), which reads
+        // as "stuck despite gaps". Metered here so the junction keeps draining.
+        const int liveCap = 70;
         int Live()
         {
             var n = 0;
@@ -502,7 +506,7 @@ internal static class SceneGen
         const int stopSpawnAt = 315;
         for (var step = 0; step < steps; step++)
         {
-            if (step < stopSpawnAt && step % 2 == 0)
+            if (step < stopSpawnAt && step % 3 == 0)
             {
                 SpawnWave();
             }

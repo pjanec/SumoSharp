@@ -76,6 +76,14 @@ public sealed class MixedTrafficCrowd
     // Speed below which heading is held rather than re-derived from velocity (avoids spin at a stop).
     public double HeadingHoldSpeed { get; set; } = 0.3;
 
+    // Creep-and-turn floor (m/s, non-holonomic only). Because turn rate is tied to forward speed, a
+    // vehicle that brakes fully to turn can no longer steer -- it deadlocks. A small creep keeps it
+    // rolling (so it can keep steering out of a jam) WHENEVER the avoidance solve still permits
+    // forward motion; if the solve says stop (blocked by an obstacle/vehicle), the creep is clamped to
+    // that and the vehicle genuinely stops (no in-place spin). Default 0 (strict model); scenes set a
+    // small value (~0.8) to keep dense junctions flowing.
+    public double CreepSpeed { get; set; }
+
     // NON-HOLONOMIC steering (docs/INDIA-TRAFFIC.md). When true, the holonomic velocity the shaped
     // ORCA solve produces is treated as a STEERING TARGET, not the actual motion: the vehicle turns
     // toward it at a rate bounded by its speed and minimum turning radius (so it cannot pivot in
@@ -411,9 +419,11 @@ public sealed class MixedTrafficCrowd
         var desiredHeading = desiredSpeed > 1e-9 ? Math.Atan2(desired.Y, desired.X) : theta;
         var headingErr = Math.Atan2(Math.Sin(desiredHeading - theta), Math.Cos(desiredHeading - theta));
 
-        // Target forward speed: brake for the turn (cos falloff), never negative (no reverse).
+        // Target forward speed: brake for the turn (cos falloff), never negative (no reverse). A creep
+        // floor keeps the vehicle rolling so it can still steer out of a jam -- but only up to what the
+        // avoidance solve permits (min with desiredSpeed), so a genuinely blocked vehicle still stops.
         var alignment = Math.Max(0.0, Math.Cos(headingErr));
-        var targetSpeed = desiredSpeed * alignment;
+        var targetSpeed = Math.Max(Math.Min(CreepSpeed, desiredSpeed), desiredSpeed * alignment);
 
         // Longitudinal accel/brake limit, then the physical speed range.
         var newSpeed = Math.Clamp(targetSpeed, curSpeed - cls.MaxDecel * dt, curSpeed + cls.MaxAccel * dt);
