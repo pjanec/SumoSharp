@@ -25,6 +25,28 @@ work queue. This file is the rules of the road.
    only the memory layout and the *timing of structural mutations* (deferred to a command
    buffer). When in doubt, read the vendored source and match it.
 
+## Ways of working: design-first, no ad-hoc development
+
+**Design before code. No ad-hoc development unless the user explicitly asks for it.** When a new
+feature or change is requested, do NOT jump to editing source. First produce, and get agreement on,
+three committed documents (small features may fold the first two together, but the separation is the
+default):
+
+1. **A design document — HOW it will work.** Mechanisms, data structures, algorithms, the exact
+   seams/APIs touched, the data flow, and the determinism/parity argument. This is where the thinking
+   happens. Reference the requirements/spec doc for the WHAT; do not restate it.
+2. **A task-description document — the work broken into stages and tasks.** Each task names its design
+   reference (a section, not a copy), the files it touches, its dependencies, and — mandatory —
+   **clear success conditions the implementor must fulfil** (specific test cases / assertions /
+   measurable outcomes). References the design doc to avoid duplicating information.
+3. **A task-tracker document — a plain checkable to-do list** referencing the task IDs from (2). This
+   is the at-a-glance overview of what is done and what remains.
+
+Only after these exist (and the user is happy with them) does implementation begin, task by task,
+each closed only when its stated success conditions pass. This forces implementation to be thought
+through up front and gives a clean overview of scope. Design docs live in `docs/`; keep them in sync
+as understanding changes.
+
 ## Environment bootstrapping
 
 The .NET 8 SDK itself is **not committed** — it is ephemeral, provisioned by the cloud
