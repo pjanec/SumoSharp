@@ -179,32 +179,62 @@ internal static class SceneGen
             ArrivalRadius = 1.0,
             UseSpatialHash = true,    // Q3 -- keep the crowd cheap at scale
             NeighbourDist = 8.0,
+            TimeHorizonObst = 8.0,    // react to the building walls early (more clearance margin)
         };
-        var kinds = new List<int>();
 
-        var radii = new[] { 0.9, 0.5, 0.75, 0.45, 0.8, 0.55 }; // car / bike / tuk-tuk / bike / car / bike
-        var rows = new[] { 1.6, 3.6, 5.6 };                    // 3 sub-streams per direction (keep-right side)
+        // Confine movers to the CROSS-shaped carriageway: the four corner "buildings" are STATIC ORCA
+        // obstacles (the Q1 obstacle-line port), so a mover cannot cut a corner into a building -- it is
+        // bounded within the road along the arms and only mixes freely in the central box. Wound CCW
+        // (agents stay outside), extended well past the exit goals so the arm walls confine movers the
+        // whole way in and out (no lateral drift even off-screen).
+        const double b = roadHalf, outer = 60.0;
+        void Building(double x0, double y0, double x1, double y1) =>
+            crowd.AddObstacle(new[] { new Vec2(x0, y0), new Vec2(x1, y0), new Vec2(x1, y1), new Vec2(x0, y1) });
+        Building(-outer, b, -b, outer);       // NW
+        Building(b, b, outer, outer);         // NE
+        Building(-outer, -outer, -b, -b);     // SW
+        Building(b, -outer, outer, -b);       // SE
+
+        var kinds = new List<int>();      // colour: 0 = E<->W (blue), 1 = N<->S (red)
+        var shapes = new List<int>();     // 0 = rectangle (car / tuk-tuk), 1 = hexagon (motorcycle)
+        var headings = new List<double>();
+        var rows = new[] { 1.6, 3.6, 5.6 };  // 3 sub-streams per direction (keep-right side)
         var spawn = 0;
+        var vt = 0;
 
-        void TryAdd(Vec2 start, Vec2 goal, int kind, double r)
+        // Deterministic vehicle mix -- mostly motorcycles + cars, some tuk-tuks (the Egypt/India blend).
+        static (double Radius, int Shape) VType(int i) => (i % 6) switch
+        {
+            0 => (0.95, 0),   // car (rectangle)
+            1 => (0.48, 1),   // motorcycle (hexagon)
+            2 => (0.72, 0),   // tuk-tuk (rectangle)
+            3 => (0.50, 1),   // motorcycle
+            4 => (0.90, 0),   // car
+            _ => (0.52, 1),   // motorcycle
+        };
+
+        void TryAdd(Vec2 start, Vec2 goal, int kind)
         {
             if (crowd.Count >= 340)
             {
                 return;
             }
 
+            var (r, shape) = VType(vt++);
             crowd.Add(start, r, maxSpeed: 2.6, goal: goal);
             kinds.Add(kind);
+            shapes.Add(shape);
+            var dir = goal - start;
+            headings.Add(Math.Atan2(dir.Y, dir.X) * 180.0 / Math.PI);   // initial facing = toward goal
         }
 
         void SpawnWave()
         {
-            var r = radii[spawn % radii.Length];
             var row = rows[(spawn / 4) % rows.Length];
-            TryAdd(new Vec2(-half, -row), new Vec2(half + 8, -row), 0, r);  // W->E  (blue, right side = -y)
-            TryAdd(new Vec2(half, row), new Vec2(-half - 8, row), 0, r);    // E->W  (blue, +y)
-            TryAdd(new Vec2(row, -half), new Vec2(row, half + 8), 1, r);    // S->N  (red, +x)
-            TryAdd(new Vec2(-row, half), new Vec2(-row, -half - 8), 1, r);  // N->S  (red, -x)
+            TryAdd(new Vec2(-half, -row), new Vec2(half + 12, -row), 0);  // W->E (right side = -y)
+            TryAdd(new Vec2(half, row), new Vec2(-half - 12, row), 0);    // E->W (+y)
+            TryAdd(new Vec2(row, -half), new Vec2(row, half + 12), 1);    // S->N (+x)
+            TryAdd(new Vec2(-row, half), new Vec2(-row, -half - 12), 1);  // N->S (-x)
             spawn++;
         }
 
@@ -215,7 +245,16 @@ internal static class SceneGen
             for (var i = 0; i < crowd.Count; i++)
             {
                 var p = crowd.Position(i);
-                d[i] = new[] { R(p.X), R(p.Y), R(crowd.Radius(i)), (double)kinds[i] };
+                var vel = crowd.Velocity(i);
+                if (vel.Abs > 0.3)   // update facing only when actually moving (hold it steady while jammed)
+                {
+                    headings[i] = Math.Atan2(vel.Y, vel.X) * 180.0 / Math.PI;
+                }
+
+                d[i] = new[]
+                {
+                    R(p.X), R(p.Y), R(crowd.Radius(i)), (double)kinds[i], R(headings[i]), (double)shapes[i],
+                };
             }
 
             snapshots.Add(d);

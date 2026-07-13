@@ -414,7 +414,10 @@
     var n = Math.min(da.length, db.length);
     for (var i = 0; i < n; i++) {
       var a = da[i], b = db[i];
-      out.push([a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]]);
+      // Interpolate position; hold radius/kind, and (for shaped vehicles) heading + shape as-is.
+      var e = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]];
+      if (a.length >= 6) { e.push(a[4], a[5]); }
+      out.push(e);
     }
     // Any discs only present in one endpoint (shouldn't happen for the stable crowds) held as-is.
     for (var j = n; j < da.length; j++) out.push(da[j]);
@@ -509,16 +512,51 @@
     ctx.restore();
   }
 
-  // Crowd/pedestrian disc: filled circle at (x,y), radius scaled to world, coloured by kind.
+  // A crowd/vehicle agent. Round agents (pedestrians) are drawn as filled circles from
+  // [x,y,radius,kind]; VEHICLE agents carry [x,y,radius,kind,headingDeg,shape] and are drawn as an
+  // ORIENTED shape aligned to travel direction: shape 0 = rectangle (car / tuk-tuk), 1 = hexagon
+  // (motorcycle). Coloured by kind. headingDeg is the world-space travel angle (CCW from +x); the
+  // shape's corners are built in world coords and mapped through worldToScreen (so the camera's y-flip
+  // is handled uniformly, same as the lane/vehicle-box draws).
   function drawDisc(d) {
+    var color = DISC_COLORS[d[3]] || "#9ca3af";
+    if (d.length >= 6) { drawShaped(d[0], d[1], d[2], color, d[4], d[5]); return; }
     var p = worldToScreen(d[0], d[1]);
     var r = Math.max(d[2] * camera.scale, 3);
     ctx.beginPath();
     ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
-    ctx.fillStyle = DISC_COLORS[d[3]] || "#9ca3af";
+    ctx.fillStyle = color;
     ctx.fill();
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.stroke();
+  }
+
+  function drawShaped(x, y, radius, color, headingDeg, shape) {
+    var r = Math.max(radius, 5.5 / camera.scale);   // floor the on-screen size when zoomed out
+    var hr = (headingDeg * Math.PI) / 180;
+    var hx = Math.cos(hr), hy = Math.sin(hr);        // world heading unit
+    var pts;
+    if (shape === 1) {
+      // motorcycle: slim pointed-front hexagon, elongated along heading
+      var hl = 0.95 * r, hw = 0.42 * r;
+      pts = [[hl, 0], [0.4 * hl, hw], [-0.6 * hl, hw], [-hl, 0], [-0.6 * hl, -hw], [0.4 * hl, -hw]];
+    } else {
+      // car / tuk-tuk: rectangle
+      var cl = 0.95 * r, cw = 0.5 * r;
+      pts = [[cl, cw], [cl, -cw], [-cl, -cw], [-cl, cw]];
+    }
+    ctx.beginPath();
+    for (var i = 0; i < pts.length; i++) {
+      var a = pts[i][0], pp = pts[i][1];
+      var sp = worldToScreen(x + a * hx + pp * (-hy), y + a * hy + pp * hx);
+      if (i === 0) ctx.moveTo(sp[0], sp[1]); else ctx.lineTo(sp[0], sp[1]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
     ctx.stroke();
   }
 
