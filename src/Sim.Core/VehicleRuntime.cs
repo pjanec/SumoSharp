@@ -330,4 +330,14 @@ internal sealed class VehicleRuntime
     // detection), so inert wherever opposite-direction overtaking is absent. Consumed by
     // ComputeLateralEvasion, which drifts ego to its outer edge while it is set.
     public bool CooperativeShift;
+
+    // DR2 (dead-reckoning coordination, issue #3): true iff this vehicle's laneless-RVO / cross-regime
+    // lateral solve ACTIVELY COUPLED to a neighbour or crowd agent THIS step (ComputeRvoLateral's
+    // forbCount > 0) -- i.e. it is mid-swerve, so its short-horizon lateral is a reactive manoeuvre, NOT
+    // linearly lane-predictable. The DR publisher reads this (via Engine.GetDrModel / the DrModels column)
+    // to classify the vehicle FreeKinematic-while-swerving vs LaneArc. Pure plan-phase SIDE-WRITE:
+    // nothing on the Run()/golden path reads it, so it is byte-identical (determinism hash unmoved), and
+    // it is only ever WRITTEN under LanelessRvo && _sublane -- left false for every parity scenario, so a
+    // plain lane vehicle is always LaneArc. Recomputed fresh each real plan pass.
+    public bool LateralManoeuvre;
 }

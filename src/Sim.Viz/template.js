@@ -1,13 +1,17 @@
 // Sim.Viz front-end -- committed static template (VIZ_SPEC.md "Architecture"). Vanilla JS,
-// Canvas 2D, no external libraries. Inlined verbatim into replay.html by Sim.Viz/Program.cs
-// (the `/*TEMPLATE_JS*/` marker in template.html), right after a `const REPLAY_DATA = {...}`
-// block this file reads as its only external input.
+// Canvas 2D, no external libraries. Inlined verbatim into the replay HTML by Sim.Viz/Program.cs
+// (the `/*TEMPLATE_JS*/` marker in template.html), right after a `const REPLAY_DATA = {...}` block.
+//
+// REPLAY_DATA is a UNIFIED MULTI-SCENE payload: `{ scenes: [ SCENE, ... ] }`. Each SCENE carries a
+// camera view box, an OPTIONAL network (null for pure open-space crowd scenes), a single shared
+// vehicle box dim, a timestep, and per-frame lists of vehicles (oriented boxes) and discs
+// (crowd/pedestrian agents). A scene selector switches between them. The single-scenario export
+// wraps its one scenario as a one-element scenes array, so this same code path serves both.
 (function () {
   "use strict";
 
   // On-screen error surface: a black replay on a device we can't debug remotely is useless, so
-  // any uncaught error paints its message over the canvas instead of failing silently. If you
-  // still see a blank page, whatever text shows here is the actual fault.
+  // any uncaught error paints its message over the canvas instead of failing silently.
   window.addEventListener("error", function (e) {
     var d = document.getElementById("vizError");
     if (!d) {
@@ -24,6 +28,7 @@
   });
 
   var data = REPLAY_DATA;
+  var scenes = (data && data.scenes) || [];
 
   // ---------------------------------------------------------------------
   // DOM
@@ -33,6 +38,8 @@
   var wrap = document.getElementById("canvasWrap");
   var legendEl = document.getElementById("legend");
   var vehCountEl = document.getElementById("vehCount");
+  var captionEl = document.getElementById("caption");
+  var sceneSel = document.getElementById("sceneSel");
   var btnPlay = document.getElementById("btnPlay");
   var btnRestart = document.getElementById("btnRestart");
   var speedSel = document.getElementById("speedSel");
@@ -41,50 +48,19 @@
   var timeSlider = document.getElementById("timeSlider");
 
   // ---------------------------------------------------------------------
-  // vClass color palette (also drives the legend)
+  // Palettes
   // ---------------------------------------------------------------------
-  var VCLASS_COLORS = {
-    passenger: "#4f8ef7",
-    truck: "#f5a623",
-    bus: "#2ecc71",
-    coach: "#9b59b6",
-    delivery: "#f97316",
-    trailer: "#e74c3c",
-    bicycle: "#22d3ee",
-    motorcycle: "#ec4899",
-    moped: "#a3a3a3",
-    emergency: "#dc2626",
-    pedestrian: "#eab308",
-    // Rail family (rungs R1-R6): trains render as long amber/gold boxes -- distinct from the
-    // passenger blue and the emergency red, and long enough (rail vType lengths are tens of
-    // metres) to read unmistakably as a train. tram gets a lighter gold so a mixed street-rail
-    // scene still separates the two.
-    rail: "#f59e0b",
-    rail_urban: "#f59e0b",
-    rail_electric: "#f59e0b",
-    rail_fast: "#f59e0b",
-    rail_slow: "#f59e0b",
-    subway: "#f59e0b",
-    cityrail: "#f59e0b",
-    tram: "#fcd34d",
-    // EXTERNAL-AGENT demo (Sim.ExtDemo): agents injected OUTSIDE SUMO via the B1/B5 obstacle API
-    // (AddObstacle/AddMovingObstacle), never a real SUMO vehicle. Deliberately loud/unmistakable
-    // colors, distinct from every real vClass above (magenta pedestrian marker, lime "obstacle
-    // car" box) -- see drawVehicle's ext_pedestrian circle special-case below.
-    ext_pedestrian: "#ff2d95",
-    ext_car: "#a3ff12",
-  };
-  var DEFAULT_COLOR = "#9ca3af";
+  // Vehicles in the unified payload share one box dim per scene and render in a single colour
+  // (the classic passenger blue). Speed colouring (derived from motion) is available via the HUD.
+  var VEHICLE_COLOR = "#4f8ef7";
+  // Discs (crowd/pedestrian agents) coloured by kind.
+  var DISC_COLORS = { 0: "#38bdf8", 1: "#fb7185", 2: "#c084fc", 3: "#f59e0b" };
+  var DISC_LABELS = { 0: "stream / agent A", 1: "stream / agent B", 2: "pedestrian" };
 
-  function colorForVClass(vClass) {
-    return VCLASS_COLORS[vClass] || DEFAULT_COLOR;
-  }
-
-  // Speed heatmap: cold (slow) -> hot (fast), 0..speedCap m/s.
-  var SPEED_COLOR_CAP = 20.0; // m/s (~72 km/h); chosen to give useful contrast on urban scenarios.
+  // Speed heatmap: cold (slow) -> hot (fast), 0..cap m/s.
+  var SPEED_COLOR_CAP = 20.0;
   function colorForSpeed(speed) {
     var t = Math.max(0, Math.min(1, speed / SPEED_COLOR_CAP));
-    // blue (slow) -> yellow -> red (fast).
     var r, g, b;
     if (t < 0.5) {
       var u = t / 0.5;
@@ -98,112 +74,6 @@
       b = Math.round(21 + v * (38 - 21));
     }
     return "rgb(" + r + "," + g + "," + b + ")";
-  }
-
-  // ---------------------------------------------------------------------
-  // Network precomputation
-  // ---------------------------------------------------------------------
-  var lanesById = {};
-  data.network.lanes.forEach(function (lane) {
-    lanesById[lane.id] = lane;
-  });
-
-  // Group lanes by edge, sorted by index, for lane-marking placement.
-  var lanesByEdge = {};
-  data.network.lanes.forEach(function (lane) {
-    (lanesByEdge[lane.edgeId] = lanesByEdge[lane.edgeId] || []).push(lane);
-  });
-  Object.keys(lanesByEdge).forEach(function (edgeId) {
-    lanesByEdge[edgeId].sort(function (a, b) {
-      return a.index - b.index;
-    });
-  });
-
-  // Offset a flat [x0,y0,x1,y1,...] polyline perpendicular to its local travel direction by
-  // `dist` (positive = to the LEFT of travel direction, matching this repo's lane-index
-  // left/right convention). Per-segment offset (no miter join) -- sufficient for SUMO nets,
-  // which are built from short straight/gently-curved segments.
-  function offsetPolyline(flatShape, dist) {
-    var out = [];
-    var n = flatShape.length / 2;
-    for (var i = 0; i < n - 1; i++) {
-      var x1 = flatShape[i * 2], y1 = flatShape[i * 2 + 1];
-      var x2 = flatShape[(i + 1) * 2], y2 = flatShape[(i + 1) * 2 + 1];
-      var dx = x2 - x1, dy = y2 - y1;
-      var len = Math.sqrt(dx * dx + dy * dy) || 1;
-      // Left-normal of travel direction (dx,dy): (-dy, dx) normalized.
-      var nx = (-dy / len) * dist;
-      var ny = (dx / len) * dist;
-      out.push([x1 + nx, y1 + ny, x2 + nx, y2 + ny]);
-    }
-    return out;
-  }
-
-  var laneMarkings = []; // array of segment arrays [x1,y1,x2,y2]
-  Object.keys(lanesByEdge).forEach(function (edgeId) {
-    var lanes = lanesByEdge[edgeId];
-    for (var i = 0; i < lanes.length; i++) {
-      var lane = lanes[i];
-      var hasLeftNeighbor = lanes.some(function (l) {
-        return l.index === lane.index + 1;
-      });
-      if (!hasLeftNeighbor) {
-        continue;
-      }
-      var segs = offsetPolyline(lane.shape, lane.width / 2);
-      segs.forEach(function (s) {
-        laneMarkings.push(s);
-      });
-    }
-  });
-
-  var tlsById = {};
-  data.network.tls.forEach(function (tl) {
-    tlsById[tl.id] = tl;
-  });
-
-  function cycleLength(tl) {
-    var sum = 0;
-    for (var i = 0; i < tl.phases.length; i++) sum += tl.phases[i].duration;
-    return sum;
-  }
-
-  // Mirrors Sim.Core/TrafficLightState.cs GetLinkState exactly: (time - offset) mod cycle,
-  // then walk cumulative phase durations.
-  function tlLinkState(tl, linkIndex, simTime) {
-    var cl = cycleLength(tl);
-    if (cl <= 0) return "o";
-    var position = (simTime - tl.offset) % cl;
-    if (position < 0) position += cl;
-    var cumulative = 0;
-    for (var i = 0; i < tl.phases.length; i++) {
-      cumulative += tl.phases[i].duration;
-      if (position < cumulative) {
-        return tl.phases[i].state[linkIndex];
-      }
-    }
-    var last = tl.phases[tl.phases.length - 1];
-    return last.state[linkIndex];
-  }
-
-  function colorForSignalState(ch) {
-    switch (ch) {
-      case "G":
-      case "g":
-        return "#2ecc71";
-      case "y":
-      case "Y":
-        return "#f1c40f";
-      case "r":
-        return "#e74c3c";
-      case "u":
-        return "#e08a2f"; // red-yellow
-      case "o":
-      case "O":
-        return "#555555";
-      default:
-        return "#888888";
-    }
   }
 
   // ---------------------------------------------------------------------
@@ -221,31 +91,124 @@
     return [(sx - camera.offsetX) / camera.scale, -(sy - camera.offsetY) / camera.scale];
   }
 
+  // ---------------------------------------------------------------------
+  // Per-scene state (set by loadScene)
+  // ---------------------------------------------------------------------
+  var scene = null;        // the active SCENE object
+  var frames = [];         // scene.frames
+  var network = null;      // scene.network (may be null)
+  var vdim = [4.3, 1.8];   // [length, width]
+  var stepSize = 1.0;      // scene.dt
+  var simStart = 0, simEnd = 0, simTime = 0;
+  var lanesById = {}, lanesByEdge = {}, laneMarkings = [], tlsById = {};
+
+  // Set once the user manually zooms/pans, so auto-fit stops fighting them.
+  var userAdjusted = false;
+
+  // Offset a flat [x0,y0,...] polyline perpendicular to travel by `dist` (positive = LEFT).
+  function offsetPolyline(flatShape, dist) {
+    var out = [];
+    var n = flatShape.length / 2;
+    for (var i = 0; i < n - 1; i++) {
+      var x1 = flatShape[i * 2], y1 = flatShape[i * 2 + 1];
+      var x2 = flatShape[(i + 1) * 2], y2 = flatShape[(i + 1) * 2 + 1];
+      var dx = x2 - x1, dy = y2 - y1;
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      var nx = (-dy / len) * dist;
+      var ny = (dx / len) * dist;
+      out.push([x1 + nx, y1 + ny, x2 + nx, y2 + ny]);
+    }
+    return out;
+  }
+
+  function cycleLength(tl) {
+    var sum = 0;
+    for (var i = 0; i < tl.phases.length; i++) sum += tl.phases[i].duration;
+    return sum;
+  }
+
+  // Mirrors Sim.Core/TrafficLightState.cs GetLinkState exactly.
+  function tlLinkState(tl, linkIndex, simT) {
+    var cl = cycleLength(tl);
+    if (cl <= 0) return "o";
+    var position = (simT - tl.offset) % cl;
+    if (position < 0) position += cl;
+    var cumulative = 0;
+    for (var i = 0; i < tl.phases.length; i++) {
+      cumulative += tl.phases[i].duration;
+      if (position < cumulative) return tl.phases[i].state[linkIndex];
+    }
+    return tl.phases[tl.phases.length - 1].state[linkIndex];
+  }
+
+  function colorForSignalState(ch) {
+    switch (ch) {
+      case "G": case "g": return "#2ecc71";
+      case "y": case "Y": return "#f1c40f";
+      case "r": return "#e74c3c";
+      case "u": return "#e08a2f";
+      case "o": case "O": return "#555555";
+      default: return "#888888";
+    }
+  }
+
+  // Recompute the per-scene network derivations (lane grouping, lane markings, TL index). Cleanly
+  // no-ops when the scene has no network (pure open-space crowd scenes).
+  function precomputeNetwork() {
+    lanesById = {};
+    lanesByEdge = {};
+    laneMarkings = [];
+    tlsById = {};
+    if (!network) return;
+
+    network.lanes.forEach(function (lane) {
+      lanesById[lane.id] = lane;
+      (lanesByEdge[lane.edgeId] = lanesByEdge[lane.edgeId] || []).push(lane);
+    });
+    Object.keys(lanesByEdge).forEach(function (edgeId) {
+      lanesByEdge[edgeId].sort(function (a, b) { return a.index - b.index; });
+    });
+
+    // Lane markings: dashed line on the LEFT edge of any lane that has a left neighbour.
+    Object.keys(lanesByEdge).forEach(function (edgeId) {
+      var lanes = lanesByEdge[edgeId];
+      for (var i = 0; i < lanes.length; i++) {
+        var lane = lanes[i];
+        var hasLeftNeighbor = lanes.some(function (l) { return l.index === lane.index + 1; });
+        if (!hasLeftNeighbor) continue;
+        offsetPolyline(lane.shape, lane.width / 2).forEach(function (s) { laneMarkings.push(s); });
+      }
+    });
+
+    (network.tls || []).forEach(function (tl) { tlsById[tl.id] = tl; });
+  }
+
   function fitToView() {
-    var bbox = data.bbox;
-    var bw = Math.max(1e-6, bbox.maxX - bbox.minX);
-    var bh = Math.max(1e-6, bbox.maxY - bbox.minY);
+    // Prefer the scene's declared view box; fall back to the network extent if absent.
+    var view = scene && scene.view;
+    var minX, minY, maxX, maxY;
+    if (view && view.length === 4) {
+      minX = view[0]; minY = view[1]; maxX = view[2]; maxY = view[3];
+    } else {
+      minX = -1; minY = -1; maxX = 1; maxY = 1;
+    }
+    var bw = Math.max(1e-6, maxX - minX);
+    var bh = Math.max(1e-6, maxY - minY);
     var cw = canvas.clientWidth || 300;
     var ch = canvas.clientHeight || 300;
-    var margin = 0.9; // fill 90% of the viewport
+    var margin = 0.9;
     var scale = Math.min(cw / bw, ch / bh) * margin;
-    var wcx = (bbox.minX + bbox.maxX) / 2;
-    var wcy = (bbox.minY + bbox.maxY) / 2;
+    var wcx = (minX + maxX) / 2;
+    var wcy = (minY + maxY) / 2;
     camera.scale = scale;
     camera.offsetX = cw / 2 - wcx * scale;
     camera.offsetY = ch / 2 + wcy * scale;
   }
 
-  // Set once the user manually zooms/pans, so auto-fit stops fighting them. Until then the
-  // camera keeps re-fitting to the viewport every frame -- which is what makes the replay robust
-  // to a layout whose real size only settles a few frames in (iOS Safari address-bar / flex).
-  var userAdjusted = false;
-
   function zoomAt(screenX, screenY, factor) {
     userAdjusted = true;
     var before = screenToWorld(screenX, screenY);
     camera.scale = Math.max(0.02, Math.min(4000, camera.scale * factor));
-    // Re-anchor so `before` still projects to (screenX, screenY).
     camera.offsetX = screenX - before[0] * camera.scale;
     camera.offsetY = screenY + before[1] * camera.scale;
   }
@@ -257,18 +220,15 @@
   }
 
   // ---------------------------------------------------------------------
-  // Canvas sizing (devicePixelRatio-aware)
+  // Canvas sizing (devicePixelRatio-aware) -- mobile hardening preserved verbatim.
   // ---------------------------------------------------------------------
   var dpr = Math.max(1, window.devicePixelRatio || 1);
   function resizeCanvas() {
     var cw = wrap.clientWidth;
     var ch = wrap.clientHeight;
-    // Skip while the layout has no measurable size yet (iOS Safari can report 0 height at the
-    // end-of-body script and again during address-bar transitions). resizeCanvas is called every
-    // frame from frame(), so it self-corrects the moment a real size appears.
-    if (cw <= 0 || ch <= 0) {
-      return;
-    }
+    // Skip while the layout has no measurable size yet (iOS Safari can report 0 height). Called
+    // every frame until the user takes control, so it self-corrects the moment a real size appears.
+    if (cw <= 0 || ch <= 0) return;
     var needW = Math.max(1, Math.round(cw * dpr));
     var needH = Math.max(1, Math.round(ch * dpr));
     if (canvas.width !== needW || canvas.height !== needH) {
@@ -277,148 +237,85 @@
       canvas.style.width = cw + "px";
       canvas.style.height = ch + "px";
     }
-    // Keep the whole network framed until the user takes manual control. This is deliberately
-    // NOT a one-shot "first fit": on iOS the first non-zero size can be a transient wrong value,
-    // so re-fitting every frame (until userAdjusted) guarantees the scene is on-screen once the
-    // real viewport settles, instead of latching a bad camera forever.
-    if (!userAdjusted) {
-      fitToView();
-    }
+    if (!userAdjusted) fitToView();
   }
   window.addEventListener("resize", resizeCanvas);
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener("resize", resizeCanvas);
-  }
-  if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(resizeCanvas).observe(wrap);
-  }
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", resizeCanvas);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(resizeCanvas).observe(wrap);
 
   // ---------------------------------------------------------------------
-  // Pointer input: wheel zoom, drag pan, touch pinch/pan.
+  // Pointer input: wheel zoom, drag pan, touch pinch/pan (CSS-pixel coords).
   // ---------------------------------------------------------------------
-  canvas.addEventListener(
-    "wheel",
-    function (ev) {
-      ev.preventDefault();
-      var rect = canvas.getBoundingClientRect();
-      var sx = ev.clientX - rect.left;
-      var sy = ev.clientY - rect.top;
-      var factor = Math.exp(-ev.deltaY * 0.0015);
-      zoomAt(sx, sy, factor);
-    },
-    { passive: false }
-  );
+  canvas.addEventListener("wheel", function (ev) {
+    ev.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    zoomAt(ev.clientX - rect.left, ev.clientY - rect.top, Math.exp(-ev.deltaY * 0.0015));
+  }, { passive: false });
 
-  var dragging = false;
-  var lastX = 0, lastY = 0;
+  var dragging = false, lastX = 0, lastY = 0;
   canvas.addEventListener("mousedown", function (ev) {
     if (ev.button !== 0) return;
-    dragging = true;
-    lastX = ev.clientX;
-    lastY = ev.clientY;
+    dragging = true; lastX = ev.clientX; lastY = ev.clientY;
   });
   window.addEventListener("mousemove", function (ev) {
     if (!dragging) return;
-    var dx = ev.clientX - lastX;
-    var dy = ev.clientY - lastY;
-    lastX = ev.clientX;
-    lastY = ev.clientY;
-    panBy(dx, dy);
+    panBy(ev.clientX - lastX, ev.clientY - lastY);
+    lastX = ev.clientX; lastY = ev.clientY;
   });
-  window.addEventListener("mouseup", function () {
-    dragging = false;
-  });
+  window.addEventListener("mouseup", function () { dragging = false; });
 
-  // Touch: one-finger pan, two-finger pinch-zoom anchored at the pinch midpoint.
-  var touchState = null; // { mode: 'pan'|'pinch', ... }
-  canvas.addEventListener(
-    "touchstart",
-    function (ev) {
-      ev.preventDefault();
-      var rect = canvas.getBoundingClientRect();
-      if (ev.touches.length === 1) {
-        touchState = {
-          mode: "pan",
-          x: ev.touches[0].clientX,
-          y: ev.touches[0].clientY,
-        };
-      } else if (ev.touches.length >= 2) {
-        var t0 = ev.touches[0], t1 = ev.touches[1];
-        var dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
-        touchState = {
-          mode: "pinch",
-          dist: Math.sqrt(dx * dx + dy * dy),
-          midX: (t0.clientX + t1.clientX) / 2 - rect.left,
-          midY: (t0.clientY + t1.clientY) / 2 - rect.top,
-        };
-      }
-    },
-    { passive: false }
-  );
-  canvas.addEventListener(
-    "touchmove",
-    function (ev) {
-      ev.preventDefault();
-      if (!touchState) return;
-      var rect = canvas.getBoundingClientRect();
-      if (touchState.mode === "pan" && ev.touches.length === 1) {
-        var dx = ev.touches[0].clientX - touchState.x;
-        var dy = ev.touches[0].clientY - touchState.y;
-        touchState.x = ev.touches[0].clientX;
-        touchState.y = ev.touches[0].clientY;
-        panBy(dx, dy);
-      } else if (touchState.mode === "pinch" && ev.touches.length >= 2) {
-        var t0 = ev.touches[0], t1 = ev.touches[1];
-        var ddx = t1.clientX - t0.clientX, ddy = t1.clientY - t0.clientY;
-        var dist = Math.sqrt(ddx * ddx + ddy * ddy);
-        var midX = (t0.clientX + t1.clientX) / 2 - rect.left;
-        var midY = (t0.clientY + t1.clientY) / 2 - rect.top;
-        var factor = dist / (touchState.dist || dist);
-        zoomAt(midX, midY, factor);
-        touchState.dist = dist;
-        touchState.midX = midX;
-        touchState.midY = midY;
-      }
-    },
-    { passive: false }
-  );
+  var touchState = null;
+  canvas.addEventListener("touchstart", function (ev) {
+    ev.preventDefault();
+    var rect = canvas.getBoundingClientRect();
+    if (ev.touches.length === 1) {
+      touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    } else if (ev.touches.length >= 2) {
+      var t0 = ev.touches[0], t1 = ev.touches[1];
+      var dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+      touchState = {
+        mode: "pinch",
+        dist: Math.sqrt(dx * dx + dy * dy),
+        midX: (t0.clientX + t1.clientX) / 2 - rect.left,
+        midY: (t0.clientY + t1.clientY) / 2 - rect.top,
+      };
+    }
+  }, { passive: false });
+  canvas.addEventListener("touchmove", function (ev) {
+    ev.preventDefault();
+    if (!touchState) return;
+    var rect = canvas.getBoundingClientRect();
+    if (touchState.mode === "pan" && ev.touches.length === 1) {
+      panBy(ev.touches[0].clientX - touchState.x, ev.touches[0].clientY - touchState.y);
+      touchState.x = ev.touches[0].clientX; touchState.y = ev.touches[0].clientY;
+    } else if (touchState.mode === "pinch" && ev.touches.length >= 2) {
+      var t0 = ev.touches[0], t1 = ev.touches[1];
+      var ddx = t1.clientX - t0.clientX, ddy = t1.clientY - t0.clientY;
+      var dist = Math.sqrt(ddx * ddx + ddy * ddy);
+      var midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+      var midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+      zoomAt(midX, midY, dist / (touchState.dist || dist));
+      touchState.dist = dist; touchState.midX = midX; touchState.midY = midY;
+    }
+  }, { passive: false });
   canvas.addEventListener("touchend", function (ev) {
     if (ev.touches.length === 0) touchState = null;
-    else if (ev.touches.length === 1) {
-      touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
-    }
+    else if (ev.touches.length === 1) touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
   });
 
   // ---------------------------------------------------------------------
-  // Real-time clock (VIZ_SPEC.md "Real-time clock")
+  // Playback clock (VIZ_SPEC.md "Real-time clock")
   // ---------------------------------------------------------------------
-  var simStart = data.simStart;
-  var simEnd = data.simEnd;
-  var stepSize = data.stepSize > 0 ? data.stepSize : 1.0;
-  var simTime = simStart;
-  var playing = true;
+  var prefersReduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var playing = !prefersReduced;   // respect prefers-reduced-motion: start paused
   var speedMultiplier = 1;
   var sliderDragging = false;
-  var wasPlayingBeforeDrag = true;
+  var wasPlayingBeforeDrag = playing;
 
-  timeSlider.min = String(simStart);
-  timeSlider.max = String(simEnd);
-  timeSlider.step = String(Math.max(stepSize / 10, 0.001));
-  timeSlider.value = String(simStart);
-
-  var steps = data.trajectory; // array of {t, v: {id: {x,y,angle,speed}}}
-
-  function stepIndexAt(t) {
-    if (steps.length === 0) return 0;
-    if (t <= steps[0].t) return 0;
-    if (t >= steps[steps.length - 1].t) return steps.length - 1;
-    // stepSize is uniform across committed scenarios; a direct index estimate plus a small
-    // linear correction handles any FP drift without a full binary search.
-    var idx = Math.floor((t - steps[0].t) / stepSize);
-    idx = Math.max(0, Math.min(steps.length - 2, idx));
-    while (idx + 1 < steps.length && steps[idx + 1].t <= t) idx++;
-    while (idx > 0 && steps[idx].t > t) idx--;
-    return idx;
+  function frameIndexAt(t) {
+    if (frames.length <= 1) return 0;
+    var idx = Math.floor(t / stepSize);
+    return Math.max(0, Math.min(frames.length - 2, idx));
   }
 
   function shortestArcDeg(fromDeg, toDeg) {
@@ -426,16 +323,13 @@
     return fromDeg + d;
   }
 
-  // Returns a map id -> {x,y,angle,speed} interpolated at `t`; a vehicle present at step k but
-  // absent at step k+1 is omitted (VIZ_SPEC.md: "stops being drawn").
   // Centripetal Catmull-Rom through p0..p3 (segment p1->p2, local u in [0,1]). Centripetal
-  // (alpha=0.5) is used rather than uniform because FCD samples are unevenly spaced through a
-  // junction (the vehicle slows to turn), and uniform Catmull-Rom overshoots / loops on uneven
-  // spacing -- exactly the "slide" artifact. Barry-Goldman pyramid form.
+  // (alpha=0.5) avoids the overshoot/loop that uniform Catmull-Rom shows on unevenly-spaced FCD
+  // samples (a vehicle slowing through a junction). Barry-Goldman pyramid form.
   function catmullRom(p0, p1, p2, p3, u) {
     function knot(ti, pa, pb) {
       var dx = pb[0] - pa[0], dy = pb[1] - pa[1];
-      return ti + Math.max(Math.pow(dx * dx + dy * dy, 0.25), 1e-6); // alpha/2 = 0.25
+      return ti + Math.max(Math.pow(dx * dx + dy * dy, 0.25), 1e-6);
     }
     function lerp(pa, pb, s) {
       return [pa[0] + (pb[0] - pa[0]) * s, pa[1] + (pb[1] - pa[1]) * s];
@@ -450,70 +344,95 @@
     return lerp(b1, b2, (tt - t1) / (t2 - t1));
   }
 
-  // naviDegree (0 = north/+Y, clockwise) from a world-space motion vector -- same convention as
-  // Sim.Ingest.LaneGeometry, so tangent-derived headings match the engine's FCD angles.
+  // naviDegree (0 = north/+Y, clockwise) from a world-space motion vector.
   function headingFromDelta(dx, dy) {
     var deg = 90 - (Math.atan2(dy, dx) * 180) / Math.PI;
     deg = deg % 360;
     return deg < 0 ? deg + 360 : deg;
   }
 
+  // Vehicles interpolated at time t. Fixed-slot arrays: slot i is always the same vehicle, a
+  // vehicle absent this frame is null in its slot. Centripetal Catmull-Rom in position; heading
+  // from the path tangent (falls back to the stored FCD angle when barely moving). Returns an
+  // array of {x,y,angle,speed} (or null for an empty slot).
   function interpolatedVehicles(t) {
-    var result = {};
-    if (steps.length === 0) return result;
-    var k = stepIndexAt(t);
-    var k2 = Math.min(k + 1, steps.length - 1);
-    var stepA = steps[k];
-    var stepB = steps[k2];
-    var span = stepB.t - stepA.t;
-    var frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - stepA.t) / span)) : 0;
+    var out = [];
+    if (frames.length === 0) return out;
+    var k = frameIndexAt(t);
+    var k2 = Math.min(k + 1, frames.length - 1);
+    var fa = frames[k].v || [];
+    var fb = frames[k2].v || [];
+    var fp = (frames[k - 1] && frames[k - 1].v) || [];
+    var fn = (frames[k + 2] && frames[k + 2].v) || [];
+    var tA = k * stepSize;
+    var span = (k2 - k) * stepSize;
+    var frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - tA) / span)) : 0;
 
-    // Neighbours for the spline (k-1 and k+2); may be absent for a vehicle that just appeared or
-    // is about to leave -- clamp to the segment endpoints in that case (Catmull-Rom endpoint rule).
-    var stepPrev = steps[k - 1];
-    var stepNext2 = steps[k + 2];
-
-    var idsA = stepA.v;
-    for (var id in idsA) {
-      if (!Object.prototype.hasOwnProperty.call(idsA, id)) continue;
-      var a = idsA[id];
-      var b = stepB.v[id];
+    var n = Math.max(fa.length, fb.length);
+    for (var i = 0; i < n; i++) {
+      var a = fa[i], b = fb[i];
+      if (!a) { out.push(null); continue; }
       if (!b) {
-        // Vehicle not present next step: hold only if we're at/after the last step, else it's gone.
-        if (k === k2) result[id] = a;
+        // Present now, gone next step: hold only at/after the last step, else drop.
+        out.push(k === k2 ? { x: a[0], y: a[1], angle: a[2], speed: 0 } : null);
         continue;
       }
-
-      var p1 = [a.x, a.y], p2 = [b.x, b.y];
-      var pv = stepPrev && stepPrev.v[id] ? stepPrev.v[id] : a;
-      var pn = stepNext2 && stepNext2.v[id] ? stepNext2.v[id] : b;
-      var p0 = [pv.x, pv.y], p3 = [pn.x, pn.y];
-
+      var p1 = [a[0], a[1]], p2 = [b[0], b[1]];
+      var pv = fp[i] || a, pn = fn[i] || b;
+      var p0 = [pv[0], pv[1]], p3 = [pn[0], pn[1]];
       var pos = catmullRom(p0, p1, p2, p3, frac);
 
-      // Heading from the path tangent (sample the curve slightly ahead), so the box faces its
-      // actual direction of travel through the curve instead of crabbing. Fall back to the FCD
-      // angle when barely moving (tangent undefined).
       var df = 0.06;
-      var ahead = frac + df <= 1 ? catmullRom(p0, p1, p2, p3, frac + df) : pos;
-      var behind = frac + df <= 1 ? pos : catmullRom(p0, p1, p2, p3, frac - df);
-      var dx = frac + df <= 1 ? ahead[0] - pos[0] : pos[0] - behind[0];
-      var dy = frac + df <= 1 ? ahead[1] - pos[1] : pos[1] - behind[1];
+      var forward = frac + df <= 1;
+      var probe = forward ? catmullRom(p0, p1, p2, p3, frac + df) : catmullRom(p0, p1, p2, p3, frac - df);
+      var dx = forward ? probe[0] - pos[0] : pos[0] - probe[0];
+      var dy = forward ? probe[1] - pos[1] : pos[1] - probe[1];
       var moving = dx * dx + dy * dy > 1e-4;
-      var angle = moving ? headingFromDelta(dx, dy) : shortestArcDeg(a.angle, b.angle);
+      var angle = moving ? headingFromDelta(dx, dy) : shortestArcDeg(a[2], b[2]);
 
-      result[id] = {
-        x: pos[0],
-        y: pos[1],
-        angle: angle,
-        speed: a.speed + (b.speed - a.speed) * frac,
-      };
+      // Speed (m/s) derived from step displacement -- drives the optional speed heatmap.
+      var segDx = p2[0] - p1[0], segDy = p2[1] - p1[1];
+      var speed = span > 1e-9 ? Math.sqrt(segDx * segDx + segDy * segDy) / span : 0;
+
+      out.push({ x: pos[0], y: pos[1], angle: angle, speed: speed });
     }
-    return result;
+    return out;
+  }
+
+  // Discs interpolated at time t (linear -- crowd frames are dense). Returns [x,y,radius,kind].
+  function interpolatedDiscs(t) {
+    var out = [];
+    if (frames.length === 0) return out;
+    var k = frameIndexAt(t);
+    var k2 = Math.min(k + 1, frames.length - 1);
+    var da = frames[k].d || [];
+    var db = frames[k2].d || [];
+    var tA = k * stepSize;
+    var span = (k2 - k) * stepSize;
+    var frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - tA) / span)) : 0;
+
+    var n = Math.min(da.length, db.length);
+    for (var i = 0; i < n; i++) {
+      var a = da[i], b = db[i];
+      // Interpolate position; hold radius/kind, and (for shaped vehicles) heading + shape as-is.
+      var e = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]];
+      if (a.length >= 6) {
+        // Interpolate heading along the SHORTEST arc (degrees) so a turning vehicle rotates smoothly
+        // between frames instead of snapping its facing at each frame boundary (which reads as jerky
+        // jump-rotation, worst on long vehicles). Shape held as-is.
+        var dh = (((b[4] - a[4]) % 360) + 540) % 360 - 180;
+        e.push(a[4] + dh * frac, a[5]);
+      }
+      if (a.length >= 8) { e.push(a[6], a[7]); }   // true half-length / half-width for shaped rects
+      out.push(e);
+    }
+    // Any discs only present in one endpoint (shouldn't happen for the stable crowds) held as-is.
+    for (var j = n; j < da.length; j++) out.push(da[j]);
+    return out;
   }
 
   // ---------------------------------------------------------------------
-  // Rendering (VIZ_SPEC.md "Rendering layers", back-to-front)
+  // Rendering (back-to-front)
   // ---------------------------------------------------------------------
   function drawPolygon(flatShape, fillStyle) {
     var n = flatShape.length / 2;
@@ -521,8 +440,7 @@
     ctx.beginPath();
     for (var i = 0; i < n; i++) {
       var p = worldToScreen(flatShape[i * 2], flatShape[i * 2 + 1]);
-      if (i === 0) ctx.moveTo(p[0], p[1]);
-      else ctx.lineTo(p[0], p[1]);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
     }
     ctx.closePath();
     ctx.fillStyle = fillStyle;
@@ -535,13 +453,10 @@
     ctx.beginPath();
     for (var i = 0; i < n; i++) {
       var p = worldToScreen(lane.shape[i * 2], lane.shape[i * 2 + 1]);
-      if (i === 0) ctx.moveTo(p[0], p[1]);
-      else ctx.lineTo(p[0], p[1]);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
     }
     ctx.strokeStyle = "#4a4d55";
-    // True lane width, floored to ~2.5 px so roads read as roads when the whole network is in
-    // view (a 3.2 m lane is ~1 px hairline at city zoom-out); the real width dominates once
-    // zoomed in, keeping lane-change/overtake geometry width-accurate where it matters.
+    // True width, floored to ~2.5 px so roads read as roads when zoomed out.
     ctx.lineWidth = Math.max(2.5, lane.width * camera.scale);
     ctx.lineCap = "butt";
     ctx.lineJoin = "round";
@@ -549,6 +464,7 @@
   }
 
   function drawLaneMarkings() {
+    if (laneMarkings.length === 0) return;
     ctx.save();
     ctx.strokeStyle = "rgba(255,255,255,0.85)";
     ctx.lineWidth = Math.max(1, 0.15 * camera.scale);
@@ -565,7 +481,8 @@
   }
 
   function drawSignals(simT) {
-    data.network.signals.forEach(function (sig) {
+    if (!network || !network.signals) return;
+    network.signals.forEach(function (sig) {
       var tl = tlsById[sig.tl];
       if (!tl) return;
       var state = tlLinkState(tl, sig.linkIndex, simT);
@@ -580,95 +497,188 @@
     });
   }
 
-  function drawVehicle(id, v) {
-    var info = data.vehicles[id];
-    if (!info) return;
-    var length = info.length || 4.3;
-    var width = info.width || 1.8;
-
+  // Oriented vehicle box (same geometry as the original single-scenario drawVehicle): (x,y) is the
+  // FRONT-CENTRE reference point; the box extends BACK by `length` along the heading. naviDegree
+  // 0 = up-screen (+Y world), increasing clockwise -> ctx.rotate(angleRad - PI/2).
+  function drawVehicle(v) {
+    var length = vdim[0] || 4.3;
+    var width = vdim[1] || 1.8;
     var p = worldToScreen(v.x, v.y);
-    // naviDegree: 0 = north (+Y world), increasing clockwise. Canvas rotate() is clockwise for
-    // positive angles in a standard (Y-down) screen space already, and our world Y is flipped
-    // in worldToScreen -- a naviDegree heading maps directly onto canvas rotation with the
-    // convention "angle 0 points up the screen (-Y screen / +Y world), increasing clockwise",
-    // which is exactly ctx.rotate(angleRad) in canvas space (canvas +angle = clockwise, 0 = +X
-    // screen axis) once we rotate an extra -90deg to move "0 = up" to "0 = +X screen axis".
-    var angleRad = (v.angle * Math.PI) / 180;
-
     ctx.save();
     ctx.translate(p[0], p[1]);
-    ctx.rotate(angleRad - Math.PI / 2);
-    // True-scale box, but floored to a small on-screen minimum so a real-size car (5 m x 1.8 m)
-    // is still visible when the whole network is in view (e.g. a 1 km single lane), instead of
-    // collapsing to a sub-pixel dot. At normal/zoomed-in scales the real dimensions dominate, so
-    // the bus-bigger-than-car distinction is preserved where it matters.
+    ctx.rotate((v.angle * Math.PI) / 180 - Math.PI / 2);
     var lengthPx = Math.max(length * camera.scale, 5);
     var widthPx = Math.max(width * camera.scale, 3);
-    var boxColor = speedColorToggle.checked ? colorForSpeed(v.speed) : colorForVClass(info.vClass);
-    ctx.fillStyle = boxColor;
+    ctx.fillStyle = speedColorToggle.checked ? colorForSpeed(v.speed) : VEHICLE_COLOR;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    if (info.vClass === "ext_pedestrian") {
-      // External-agent demo: draw a pedestrian as a small filled circle (not an oriented box --
-      // a person has no "heading" the way a car does) so it reads unmistakably as something
-      // other than SUMO traffic at a glance, even at the ~0.5x0.5m real footprint's tiny scale.
-      var r = Math.max(Math.max(lengthPx, widthPx) / 2, 4);
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-    } else {
-      // (x,y) is the vehicle's FRONT-CENTER reference point (VIZ_SPEC.md); offset the box back
-      // by half its length so it sits behind the reference point along its own heading.
-      ctx.rect(-lengthPx, -widthPx / 2, lengthPx, widthPx);
-    }
+    ctx.rect(-lengthPx, -widthPx / 2, lengthPx, widthPx);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
   }
 
+  // A crowd/vehicle agent. Round agents (pedestrians) are drawn as filled circles from
+  // [x,y,radius,kind]; VEHICLE agents carry [x,y,radius,kind,headingDeg,shape] and are drawn as an
+  // ORIENTED shape aligned to travel direction: shape 0 = rectangle (car / tuk-tuk), 1 = hexagon
+  // (motorcycle). Coloured by kind. headingDeg is the world-space travel angle (CCW from +x); the
+  // shape's corners are built in world coords and mapped through worldToScreen (so the camera's y-flip
+  // is handled uniformly, same as the lane/vehicle-box draws).
+  function drawDisc(d) {
+    var color = DISC_COLORS[d[3]] || "#9ca3af";
+    if (d.length >= 6) { drawShaped(d[0], d[1], d[2], color, d[4], d[5], d[6], d[7]); return; }
+    var p = worldToScreen(d[0], d[1]);
+    var r = Math.max(d[2] * camera.scale, 3);
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.stroke();
+  }
+
+  function drawShaped(x, y, radius, color, headingDeg, shape, halfLen, halfWid) {
+    var r = Math.max(radius, 5.5 / camera.scale);   // floor the on-screen size when zoomed out
+    var hr = (headingDeg * Math.PI) / 180;
+    var hx = Math.cos(hr), hy = Math.sin(hr);        // world heading unit
+    // When true footprint half-dimensions are supplied (mixed-traffic scenes) use them directly so a
+    // bus renders long and a car short (true aspect); otherwise fall back to a radius-derived box.
+    var floor = 3.0 / camera.scale;
+    var hasDims = typeof halfLen === "number" && typeof halfWid === "number";
+    var hl = hasDims ? Math.max(halfLen, floor) : 0.95 * r;
+    var hw = hasDims ? Math.max(halfWid, floor) : 0.5 * r;
+    var pts;
+    if (shape === 1) {
+      // motorcycle: slim pointed-front hexagon, elongated along heading
+      var mh = hasDims ? hl : 0.95 * r, mw = hasDims ? hw : 0.42 * r;
+      pts = [[mh, 0], [0.4 * mh, mw], [-0.6 * mh, mw], [-mh, 0], [-0.6 * mh, -mw], [0.4 * mh, -mw]];
+    } else {
+      // car / tuk-tuk / bus: rectangle at true aspect
+      pts = [[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]];
+    }
+    ctx.beginPath();
+    for (var i = 0; i < pts.length; i++) {
+      var a = pts[i][0], pp = pts[i][1];
+      var sp = worldToScreen(x + a * hx + pp * (-hy), y + a * hy + pp * hx);
+      if (i === 0) ctx.moveTo(sp[0], sp[1]); else ctx.lineTo(sp[0], sp[1]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.stroke();
+  }
+
   function render(simT) {
-    // devicePixelRatio-correct draw path. The canvas backing store is (cssW*dpr, cssH*dpr)
-    // device pixels, but the camera (fitToView) and worldToScreen work in CSS pixels. Reset to
-    // the identity transform to clear the whole backing store, then scale the context by dpr so
-    // every CSS-pixel coordinate worldToScreen emits maps onto the right device pixels. Without
-    // this the scene draws at 1/dpr scale in the wrong corner on any high-DPR (mobile) screen --
-    // which read as an all-dark canvas on a phone while looking fine on a dpr=1 desktop.
+    // devicePixelRatio-correct draw path: clear the whole backing store at identity, then scale the
+    // context by dpr so every CSS-pixel coordinate worldToScreen emits lands on the right device px.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#1b1e26";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // 1. Junctions.
-    data.network.junctions.forEach(function (j) {
-      drawPolygon(j.shape, "#33363f");
-    });
+    // 1..4 Network layers (skipped cleanly for pure-crowd scenes).
+    if (network) {
+      (network.junctions || []).forEach(function (j) { drawPolygon(j.shape, "#33363f"); });
+      network.lanes.forEach(function (lane) { drawLaneBand(lane); });
+      drawLaneMarkings();
+      drawSignals(simT);
+    }
 
-    // 2. Lanes (width-accurate bands).
-    data.network.lanes.forEach(function (lane) {
-      drawLaneBand(lane);
-    });
+    // 5. Discs (crowd/pedestrian agents).
+    var discs = interpolatedDiscs(simT);
+    discs.forEach(drawDisc);
 
-    // 3. Lane markings.
-    drawLaneMarkings();
-
-    // 4. Traffic lights.
-    drawSignals(simT);
-
-    // 5. Vehicles.
+    // 6. Vehicles (oriented boxes).
     var vehicles = interpolatedVehicles(simT);
-    var count = 0;
-    for (var id in vehicles) {
-      if (!Object.prototype.hasOwnProperty.call(vehicles, id)) continue;
-      drawVehicle(id, vehicles[id]);
-      count++;
+    var vehCount = 0;
+    for (var i = 0; i < vehicles.length; i++) {
+      if (vehicles[i]) { drawVehicle(vehicles[i]); vehCount++; }
     }
 
-    vehCountEl.textContent = "vehicles: " + count;
-    timeReadout.textContent =
-      "t = " + simT.toFixed(1) + " s / " + simEnd.toFixed(1) + " s";
-    if (!sliderDragging) {
-      timeSlider.value = String(simT);
+    var parts = [];
+    if (vdim[0] > 0) parts.push("vehicles: " + vehCount);
+    if (discs.length > 0) parts.push("discs: " + discs.length);
+    vehCountEl.textContent = parts.join("  ·  ") || "";
+    timeReadout.textContent = "t = " + simT.toFixed(1) + " s / " + simEnd.toFixed(1) + " s";
+    if (!sliderDragging) timeSlider.value = String(simT);
+  }
+
+  // ---------------------------------------------------------------------
+  // Legend (per scene): the vehicle swatch (if any) + the disc kinds present.
+  // ---------------------------------------------------------------------
+  function buildLegend() {
+    legendEl.innerHTML = "";
+    function addRow(color, label, circle) {
+      var row = document.createElement("div");
+      row.className = "row";
+      var sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = color;
+      if (circle) sw.style.borderRadius = "50%";
+      row.appendChild(sw);
+      var lab = document.createElement("span");
+      lab.textContent = label;
+      row.appendChild(lab);
+      legendEl.appendChild(row);
     }
+
+    if (vdim[0] > 0) addRow(VEHICLE_COLOR, "vehicle", false);
+
+    // Collect disc kinds present anywhere in the scene.
+    var kinds = {};
+    frames.forEach(function (f) {
+      (f.d || []).forEach(function (d) { kinds[d[3]] = true; });
+    });
+    var labels = (scene && scene.labels) || null;   // per-scene override (e.g. vehicle classes)
+    Object.keys(kinds).sort().forEach(function (k) {
+      var label = (labels && labels[k]) || DISC_LABELS[k] || ("kind " + k);
+      addRow(DISC_COLORS[k] || "#9ca3af", label, true);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Scene loading / switching
+  // ---------------------------------------------------------------------
+  function loadScene(idx) {
+    if (idx < 0 || idx >= scenes.length) return;
+    scene = scenes[idx];
+    frames = scene.frames || [];
+    network = scene.network || null;
+    vdim = scene.vdim || [4.3, 1.8];
+    stepSize = scene.dt > 0 ? scene.dt : 1.0;
+    simStart = 0;
+    simEnd = frames.length > 1 ? (frames.length - 1) * stepSize : 0;
+    simTime = simStart;
+
+    precomputeNetwork();
+    buildLegend();
+
+    captionEl.innerHTML = "";
+    var title = document.createElement("span");
+    title.className = "title";
+    title.textContent = scene.name || "";
+    captionEl.appendChild(title);
+    if (scene.desc) {
+      captionEl.appendChild(document.createTextNode(scene.desc));
+    }
+
+    timeSlider.min = String(simStart);
+    timeSlider.max = String(simEnd);
+    timeSlider.step = String(Math.max(stepSize / 10, 0.001));
+    timeSlider.value = String(simStart);
+
+    // Re-fit the camera to the new scene and re-enable auto-fit (until the user pans/zooms).
+    userAdjusted = false;
+    resizeCanvas();
+    fitToView();
+
+    if (!prefersReduced) setPlaying(true);
+    render(simTime);
   }
 
   // ---------------------------------------------------------------------
@@ -679,18 +689,29 @@
     btnPlay.textContent = playing ? "Pause" : "Play";
   }
 
-  btnPlay.addEventListener("click", function () {
-    setPlaying(!playing);
+  // Populate the scene selector.
+  (function buildSceneSelector() {
+    scenes.forEach(function (s, i) {
+      var opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = (i + 1) + ". " + (s.name || ("scene " + (i + 1)));
+      sceneSel.appendChild(opt);
+    });
+    // Hide the selector chrome entirely for a single-scene (single-scenario) export.
+    if (scenes.length <= 1) {
+      var wrapEl = document.getElementById("sceneSelWrap");
+      if (wrapEl) wrapEl.style.display = "none";
+    }
+  })();
+
+  sceneSel.addEventListener("change", function () {
+    var idx = parseInt(sceneSel.value, 10) || 0;
+    loadScene(idx);
   });
 
-  btnRestart.addEventListener("click", function () {
-    simTime = simStart;
-    setPlaying(true);
-  });
-
-  speedSel.addEventListener("change", function () {
-    speedMultiplier = parseFloat(speedSel.value) || 1;
-  });
+  btnPlay.addEventListener("click", function () { setPlaying(!playing); });
+  btnRestart.addEventListener("click", function () { simTime = simStart; setPlaying(true); });
+  speedSel.addEventListener("change", function () { speedMultiplier = parseFloat(speedSel.value) || 1; });
 
   timeSlider.addEventListener("pointerdown", function () {
     sliderDragging = true;
@@ -707,54 +728,18 @@
   });
 
   window.addEventListener("keydown", function (ev) {
-    if (ev.code === "Space") {
-      ev.preventDefault();
-      setPlaying(!playing);
-    } else if (ev.key === "r" || ev.key === "R") {
-      simTime = simStart;
-      setPlaying(true);
-    } else if (ev.key === "ArrowRight") {
-      simTime = Math.min(simEnd, simTime + stepSize);
-      render(simTime);
-    } else if (ev.key === "ArrowLeft") {
-      simTime = Math.max(simStart, simTime - stepSize);
-      render(simTime);
-    }
+    if (ev.code === "Space") { ev.preventDefault(); setPlaying(!playing); }
+    else if (ev.key === "r" || ev.key === "R") { simTime = simStart; setPlaying(true); }
+    else if (ev.key === "ArrowRight") { simTime = Math.min(simEnd, simTime + stepSize); render(simTime); }
+    else if (ev.key === "ArrowLeft") { simTime = Math.max(simStart, simTime - stepSize); render(simTime); }
   });
-
-  // Legend.
-  (function buildLegend() {
-    var seenVClasses = {};
-    Object.keys(data.vehicles).forEach(function (id) {
-      seenVClasses[data.vehicles[id].vClass] = true;
-    });
-    var classes = Object.keys(seenVClasses);
-    if (classes.length === 0) classes = ["passenger"];
-    legendEl.innerHTML = "";
-    classes.forEach(function (vc) {
-      var row = document.createElement("div");
-      row.className = "row";
-      var sw = document.createElement("span");
-      sw.className = "swatch";
-      sw.style.background = colorForVClass(vc);
-      row.appendChild(sw);
-      var label = document.createElement("span");
-      label.textContent = vc;
-      row.appendChild(label);
-      legendEl.appendChild(row);
-    });
-  })();
 
   // ---------------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------------
   var lastFrameMs = null;
   function frame(nowMs) {
-    // Re-measure/size/fit every frame until the user manually zooms or pans. This makes the
-    // replay robust to a viewport whose real size only appears (or changes) a few frames in --
-    // the iOS Safari failure mode where the one-shot init fit ran against a 0/transient height
-    // and the scene ended up drawn off-screen (all-dark canvas). Self-disables on first user
-    // gesture (userAdjusted), after which the camera is left exactly where the user put it.
+    // Re-measure/size/fit every frame until the user manually zooms or pans (iOS Safari robustness).
     if (!userAdjusted) resizeCanvas();
     if (lastFrameMs === null) lastFrameMs = nowMs;
     var realDelta = (nowMs - lastFrameMs) / 1000;
@@ -762,10 +747,7 @@
 
     if (playing && !sliderDragging) {
       simTime += realDelta * speedMultiplier;
-      if (simTime >= simEnd) {
-        simTime = simEnd;
-        setPlaying(false);
-      }
+      if (simTime >= simEnd) { simTime = simEnd; setPlaying(false); }
       if (simTime < simStart) simTime = simStart;
     }
 
@@ -773,6 +755,12 @@
     requestAnimationFrame(frame);
   }
 
+  if (scenes.length === 0) {
+    // Nothing to show -- surface it rather than a silent black canvas.
+    throw new Error("REPLAY_DATA has no scenes");
+  }
+
+  loadScene(0);
   resizeCanvas();
   requestAnimationFrame(frame);
 })();

@@ -57,7 +57,19 @@ public sealed record VType(
     double? ResCoefLinear = null,
     double? ResCoefQuadratic = null,
     double? MassFactor = null,
-    double? Mass = null);
+    double? Mass = null,
+    // Phase 2 (sublane, P2.3): SUMO's sublane vType attributes
+    // (sumo/src/utils/vehicle/SUMOVTypeParameter.cpp:333-335 defaults). MaxSpeedLat is the max
+    // lateral speed (m/s, default 1.0); LatAlignment is the preferred lateral alignment
+    // ("center" default | "right" | "left" | "compact" | "nice" | "arbitrary" | a numeric offset).
+    // Both null (absent) resolve to their SUMO defaults; inert unless lateral-resolution > 0.
+    double? MaxSpeedLat = null,
+    string? LatAlignment = null,
+    // Rung P2-core (keepLatGap): SUMOVTypeParameter.cpp:62 minGapLat(0.6) -- the desired lateral
+    // gap (m, at high speed/closing-speed) a vehicle tries to keep from a same-lane neighbour.
+    // Null (absent) resolves to SUMO's 0.6 default in VTypeDefaults.Resolve; inert unless
+    // lateral-resolution > 0.
+    double? MinGapLat = null);
 
 public sealed record Route(
     string Id,
@@ -80,7 +92,12 @@ public sealed record VehicleDef(
     double DepartPos,
     double DepartSpeed,
     int DepartLaneIndex,
-    IReadOnlyList<StopDef>? Stops = null)
+    IReadOnlyList<StopDef>? Stops = null,
+    // Phase 2 (sublane, P2.2): SUMO's departPosLat -- the initial lateral position on the depart
+    // lane. "center" (default) | "left" | "right" | a numeric offset (m, +left). null (absent)
+    // resolves to centre (0). Applied only when lateral-resolution > 0 (the engine keeps every
+    // phase-1 vehicle lane-centred), so byte-identical for phase 1.
+    string? DepartPosLat = null)
 {
     // Records can't default a reference-type param to a freshly-allocated empty collection
     // (default values must be compile-time constants), so callers that omit Stops get null;

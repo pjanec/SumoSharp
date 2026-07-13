@@ -54,6 +54,22 @@
   }
   #legend .row { display: flex; align-items: center; gap: 6px; }
   #legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+  #caption {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    margin: 0 auto;
+    max-width: 640px;
+    background: rgba(20, 22, 28, 0.82);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1.4;
+    pointer-events: none;
+  }
+  #caption .title { font-weight: 600; margin-right: 6px; }
   #vehCount {
     position: absolute;
     top: 8px;
@@ -98,9 +114,13 @@
     <canvas id="cv"></canvas>
     <div id="legend"></div>
     <div id="vehCount">vehicles: 0</div>
+    <div id="caption"></div>
   </div>
   <div id="hud">
     <div class="hud-row">
+      <label id="sceneSelWrap">scene
+        <select id="sceneSel"></select>
+      </label>
       <button id="btnPlay">Pause</button>
       <button id="btnRestart">Restart</button>
       <label>speed

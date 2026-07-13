@@ -1,0 +1,17 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-12T00:00:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+net_command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+fcd_precision=6
+# PHASE 2 / P2.3 SINGLE-VEHICLE LATERAL DRIFT ANCHOR (sublane model, exact @1e-3 on posLat).
+#   lateral-resolution=0.8 (sublane model ON). One passenger (width 1.8) on ONE wide lane
+#   (width 4.8, centre y=-2.40), latAlignment="right", departPosLat="center". SUMO steers it from
+#   the centre toward the right lane edge at maxSpeedLat (default 1.0 m/s):
+#     posLat: 0 -> -1.0 (step 1, full 1.0 m/s step) -> -1.4995 (step 2, remaining 0.4995) -> holds.
+#   Target magnitude 1.4995 = (laneWidth - vehWidth)/2 - edgeKeep = (4.8-1.8)/2 - 0.0005 = 1.5 - 0.0005.
+#   Longitudinal (pos/speed) is IDENTICAL to free-flow (2.6, 5.2, ..., 13.89) -- the lateral drift
+#   does not perturb car-following here, isolating the lateral integration axis. comparedAttributes
+#   includes posLat (needs the P2.0 lateral harness). NOTE: posLat is NOT in SUMO's default FCD set;
+#   it must be requested via --fcd-output.attributes (see command above). The exact -0.0005 edge-keep
+#   constant is to be reproduced from MSLCM_SL2015 during the P2.3 port.

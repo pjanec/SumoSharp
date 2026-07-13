@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- keepLatGap isolation: the slow leader is PINNED to the left edge (latAlignment and
+         departPosLat left, posLat +2.7). The fast follower stays CENTERED and free-flows past
+         (footprints disjoint, so no braking and no speed-gain change) but nudges laterally away
+         (to posLat -0.3015) while passing, to maintain minGapLat. The only lateral motion is the
+         keepLatGap gap-keep. -->
+    <vType id="slow" vClass="passenger" sigma="0" maxSpeed="5" latAlignment="left"/>
+    <vType id="fast" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="v0" type="slow" route="r0" depart="0" departPos="30" departSpeed="0" departPosLat="left"/>
+    <vehicle id="v1" type="fast" route="r0" depart="0" departPos="0"  departSpeed="0"/>
+</routes>

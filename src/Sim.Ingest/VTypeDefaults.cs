@@ -51,6 +51,16 @@ public sealed record ResolvedVType(
     // Rung OV1 (opposite-direction overtaking): may this vType overtake using the oncoming lane?
     // Defaults to false, so the whole opposite-direction subsystem is inert for every other vType.
     bool LcOpposite,
+    // Phase 2 (sublane, P2.3): SUMO's sublane vType params (SUMOVTypeParameter.cpp:333-335).
+    // MaxSpeedLat = max lateral speed (m/s, default 1.0); LatAlignment = preferred lateral
+    // alignment (default "center"). Read only by the sublane lateral driver (lateral-resolution >
+    // 0); for every phase-1 vType they carry these inert defaults and are never read.
+    double MaxSpeedLat,
+    string LatAlignment,
+    // Rung P2-core (keepLatGap): SUMOVTypeParameter.cpp:62 minGapLat(0.6) -- the desired lateral
+    // gap (m) kept from a same-lane neighbour (MSLCM_SL2015::keepLatGap/updateGaps). Overridable
+    // via the vType's minGapLat attribute; inert (never read) unless lateral-resolution > 0.
+    double MinGapLat,
     // Rung R6: resolved MSCFModel_Rail traction parameters. Only meaningful when
     // CarFollowModel=="Rail"; for every other model they stay at these inert defaults and are never
     // read. Weight/MassFactor give the rotating mass (rotWeight = Weight*MassFactor);
@@ -347,6 +357,13 @@ public static class VTypeDefaults
             HasBluelight: vType.HasBluelight ?? false,
             // Rung OV1: false default -> opposite-direction overtaking is inert for every vType.
             LcOpposite: vType.LcOpposite ?? false,
+            // Phase 2 (sublane): SUMOVTypeParameter.cpp:333 maxSpeedLat(1.0),
+            // :335 latAlignmentProcedure(CENTER). Overridable via the vType's maxSpeedLat /
+            // latAlignment attributes; inert (never read) unless lateral-resolution > 0.
+            MaxSpeedLat: vType.MaxSpeedLat ?? 1.0,
+            LatAlignment: vType.LatAlignment ?? "center",
+            // Rung P2-core: SUMOVTypeParameter.cpp:62 minGapLat(0.6).
+            MinGapLat: vType.MinGapLat ?? 0.6,
             // Rung R6: MSCFModel_Rail traction params (inert NaN/0 for every non-Rail vType).
             Weight: railWeight,
             MassFactor: railMassFactor,

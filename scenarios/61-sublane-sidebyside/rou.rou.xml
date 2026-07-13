@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- slow leader hugging the LEFT sublane, fast follower hugging the RIGHT sublane. On one wide
+         (4.8 m) lane the sublane model lets them coexist side-by-side, so the follower should pass
+         the slow leader WITHOUT braking (unlike lane mode, where a same-lane leader always binds). -->
+    <vType id="slow" vClass="passenger" sigma="0" maxSpeed="5" latAlignment="left"/>
+    <vType id="fast" vClass="passenger" sigma="0" latAlignment="right"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="v0" type="slow" route="r0" depart="0" departPos="0" departSpeed="0" departPosLat="left"/>
+    <vehicle id="v1" type="fast" route="r0" depart="4" departPos="0" departSpeed="0" departPosLat="right"/>
+</routes>

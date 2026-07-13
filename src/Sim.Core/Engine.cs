@@ -152,6 +152,13 @@ public sealed partial class Engine : IEngine
     // (all committed scenarios + the bench) takes zero opposite-direction work and stays identical.
     private bool _anyLcOpposite;
 
+    // Phase 2 (sublane, P2.3): SUMO's MSGlobals::gLateralResolution master switch -- true iff the
+    // scenario sets lateral-resolution > 0. The GLOBAL sublane gate (not per-vType): the sublane
+    // lateral driver (ComputeSublaneLateral) runs ONLY when this is true, so every phase-1 scenario
+    // (lateral-resolution 0) takes exactly the pre-existing lane-centred path and stays byte-identical.
+    // Set once per LoadScenario from the immutable config.
+    private bool _sublane;
+
     // Perf (willPass/plan fusion): the disqualifier master-switches. The fusion (PlanMovements reuses
     // the willPass pre-pass Intent instead of recomputing it) is byte-identical ONLY when every
     // prePass/real divergence OTHER than the crossing-yield relax is inert -- see the FusionEligible
@@ -175,7 +182,7 @@ public sealed partial class Engine : IEngine
     // for every non-crossing-yield vehicle; when false the exact two-pass path runs (byte-identical).
     private bool FusionEligible =>
         _actionStepFusionOk && !_anyKraussDawdle && !_anyIdmm && !_anyBluelight && !_anyLcOpposite
-        && _obstacles.Count == 0;
+        && _obstacles.Count == 0 && !_sublane;
 
     // F2 (probabilistic flow): per-<flow probability=> runtime insertion state, index-aligned with
     // _demand.ProbabilisticFlows. `_probFlowRng[i]` is that flow's own seeded Bernoulli stream (one
@@ -514,6 +521,29 @@ public sealed partial class Engine : IEngine
     // tolerance of the deterministic run, and no vehicle overlaps. No committed parity test or
     // scenario ever sets this, so every golden stays on the exact SUMO-faithful path.
     public bool FastMode;
+
+    // Laneless direction (docs/LANELESS-DIRECTION.md): opt-in proof-of-concept for the continuous
+    // footprint / velocity-obstacle (RVO-lite) lateral layer. When true AND the sublane model is
+    // active (_sublane), the lateral intent comes from ComputeRvoLateral (continuous avoidance over
+    // near-neighbours + external obstacles, treated uniformly) instead of the SUMO-faithful
+    // ComputeSublaneLateral drift. This is the laneless axis's OWN model: SUMO's lateral PHYSICS as
+    // the reference (minGapLat clearance, maxSpeedLat bound) but validated BEHAVIOURALLY (no-overlap,
+    // overtake-completes, recenters) rather than byte-exact -- because SUMO's exact sublane timing is
+    // an ECS-hostile persistent state machine reproducing a lane-anchored approximation (see
+    // docs/PHASE2-SUBLANE.md). Default false, so every committed golden (incl. the exact sublane rungs
+    // 60/61/62) stays on the SUMO-faithful path and is byte-identical; no committed test sets it.
+    public bool LanelessRvo;
+
+    // Cross-regime bridge (docs/LANELESS-DIRECTION.md, "the cross-regime bridge"): an optional
+    // OPEN-SPACE crowd whose agents this engine's laneless-RVO vehicles avoid. When set (by the
+    // CrossRegimeCoupling), ComputeRvoLateral queries it for crowd agents near ego's WORLD position
+    // and projects each onto ego's lane as a one-sided RvoNeighbour -- so a lane vehicle swerves for a
+    // pedestrian the same way it swerves for another vehicle, closing the "SUMO traffic respects
+    // non-SUMO agents" loop. Null by default => the crowd loop in ComputeRvoLateral is skipped
+    // entirely => byte-identical (and it is reachable ONLY under LanelessRvo && _sublane anyway, so no
+    // committed golden can touch it). Deliberately a neutral world-disc source (Bridge.
+    // ICrowdFootprintSource), NOT the string-keyed ExternalObstacle API the owner is replacing.
+    public Sim.Core.Bridge.ICrowdFootprintSource? CrowdSource { get; set; }
 
     // Perf diagnostics: opt-in per-phase wall-time accounting for the Run loop. OFF by default and
     // effectively free then (one bool test per phase per step -- GetTimestamp is not even called, no
@@ -1006,6 +1036,8 @@ public sealed partial class Engine : IEngine
         // re-LoadScenario on the same Engine never inherits the previous demand's answer).
         _anyBluelight = false;
         _anyLcOpposite = false;
+        // Phase 2 (sublane): the global sublane master switch, from the immutable config.
+        _sublane = _config!.LateralResolution > 0.0;
         // Perf (willPass/plan fusion): reset + recompute the disqualifiers for this scenario (same
         // reset discipline as the give-way switch above). CreateRuntime OR's in the per-vType ones.
         _anyKraussDawdle = false;
@@ -1260,6 +1292,16 @@ public sealed partial class Engine : IEngine
     // float; parity-exact lane-relative values are double (D7). PosZ is present from day one (0 on 2-D
     // nets, real when geometry-3D lands, SUMOSHARP-API.md §6). Same index across every span == same vehicle.
     public ReadOnlySpan<VehicleHandle> VehicleHandles => _readBuffer.Handles.AsSpan(0, _readBuffer.Count);
+    // DR2 (issue #3): per-vehicle dead-reckoning regime, aligned with VehicleHandles (same index == same
+    // vehicle). The batched read the DR publisher iterates for 10k+ vehicles: LaneArc unless the vehicle is
+    // mid-RVO/ORCA swerve this step (FreeKinematic) or effectively stopped (Stationary). Cast each byte to
+    // `DrModel`. Populated only in the Step projection (off the golden path) -> hash unaffected.
+    public ReadOnlySpan<byte> DrModels => _readBuffer.DrModel.AsSpan(0, _readBuffer.Count);
+    // DR2 (issue #3): the mid-manoeuvre bit aligned with VehicleHandles -- true when the vehicle is
+    // swerving/dodging this step (RVO/ORCA lateral, or a normal-mode obstacle/crowd/overtake/give-way
+    // steer), so its lateral is a reactive manoeuvre rather than steady lane-following. The DR publisher
+    // reads this to raise the vehicle's publish rate; the vehicle stays LaneArc regardless (see RegimeOf).
+    public ReadOnlySpan<bool> Manoeuvring => _readBuffer.Manoeuvring.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosX => _readBuffer.PosX.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosY => _readBuffer.PosY.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> PosZ => _readBuffer.PosZ.AsSpan(0, _readBuffer.Count);
@@ -1321,6 +1363,38 @@ public sealed partial class Engine : IEngine
         return false;
     }
 
+    // DR2 (issue #3): the per-vehicle accessor form of the DrModels column -- the shape SUMOSHARP-API §16
+    // names ("DrModel Engine.GetDrModel(VehicleHandle) returning FreeKinematic while swerving"). Same
+    // regime the DrModels column carries; use the column for bulk (10k) publishing, this for random
+    // access. Inert-when-absent: a stale generation or a vehicle not in the current snapshot -> Stationary
+    // (nothing to extrapolate).
+    public DrModel GetDrModel(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicleGeneration.Length && _vehicleGeneration[idx] == handle.Generation
+            && _readBuffer.TryGetSlot(idx, out var slot))
+        {
+            return (DrModel)_readBuffer.DrModel[slot];
+        }
+
+        return DrModel.Stationary;
+    }
+
+    // DR2 (issue #3): is this vehicle mid-manoeuvre (swerving/dodging) in the current published frame?
+    // The DR publisher's adaptive-rate signal (per-handle form of the Manoeuvring column). Inert-when-
+    // absent: a stale/absent handle -> false.
+    public bool IsManoeuvring(VehicleHandle handle)
+    {
+        var idx = (int)handle.Index;
+        if (idx >= 0 && idx < _vehicleGeneration.Length && _vehicleGeneration[idx] == handle.Generation
+            && _readBuffer.TryGetSlot(idx, out var slot))
+        {
+            return _readBuffer.Manoeuvring[slot];
+        }
+
+        return false;
+    }
+
     // Fill the read buffer from the current active vehicles, projecting each to (x, y, angle) with the SAME
     // LaneGeometry.PositionAtOffset call EmitTrajectory uses -- so the read columns match the FCD geometry
     // exactly. Reads only committed post-step state; mutates nothing in the simulation.
@@ -1375,7 +1449,8 @@ public sealed partial class Engine : IEngine
 
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
-                (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width);
+                (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
+                (byte)RegimeOf(v), v.LateralManoeuvre);
         }
 
         DetectLifecycleEvents();
@@ -1458,6 +1533,21 @@ public sealed partial class Engine : IEngine
             ? actuated.CurrentState[linkIndex]
             : TrafficLightState.GetLinkState(tlLogic, linkIndex, evalTime);
     }
+
+    // DR2 (issue #3, re-scoped per the NuGet reply): a lane vehicle's dead-reckoning regime for the
+    // current published frame. A VEHICLE is NEVER FreeKinematic -- even mid-swerve it stays LaneArc,
+    // because LaneArc extrapolates `pos` along the (possibly curved) lane polyline whereas FreeKinematic
+    // would extrapolate a straight world line and drift a swerving car off the road between updates. The
+    // mid-manoeuvre state is surfaced SEPARATELY as the `Manoeuvring` bit (the DR publisher reads it to
+    // raise that vehicle's publish rate, not to change its extrapolator). FreeKinematic comes only from
+    // the crowd source (OrcaCrowd via ICrowdFootprintSource/WorldDisc), never from a vehicle. So a vehicle
+    // is Stationary when effectively stopped, else LaneArc.
+    private DrModel RegimeOf(VehicleRuntime v) =>
+        v.Kinematics.Speed <= DrStationarySpeed ? DrModel.Stationary : DrModel.LaneArc;
+
+    // Below this speed (m/s) a vehicle is classified Stationary for dead-reckoning (position only, no
+    // extrapolation this frame). A render/DR-only threshold; never touches the parity path.
+    private const double DrStationarySpeed = 0.01;
 
     // §10: diff each vehicle's lifecycle against the previous published frame and record Departed
     // (Pending -> Active) / Arrived (-> Arrived) events. Iterates ALL vehicles (not just active) so an
@@ -2246,7 +2336,9 @@ public sealed partial class Engine : IEngine
             // actual insertion speed in this branch.
             Pos = v.Def.DepartPos,
             Speed = v.Def.DepartSpeed,
-            LatOffset = 0.0,
+            // Phase 2 (P2.2): departPosLat initial lateral placement -- 0 for every phase-1 vehicle
+            // (lane-centred, gated on _sublane), so byte-identical.
+            LatOffset = InitialLatOffset(v, lane),
         };
 
         // Rung 9a: resolve the FULL lane sequence for this vehicle's route (spanning internal/
@@ -3258,6 +3350,11 @@ public sealed partial class Engine : IEngine
         // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
         vPos = Math.Min(vPos, ObstacleConstraint(v, time, laneVehicleMaxSpeed));
 
+        // Cross-regime bridge (Direction B longitudinal safety): brake for a crowd agent ego is still
+        // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
+        // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
+        vPos = Math.Min(vPos, CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed));
+
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
         // RemainingDuration) and returns the transition to apply at Execute -- never mutates.
@@ -3365,7 +3462,13 @@ public sealed partial class Engine : IEngine
             // stays side-effect-free); ComputeLateralEvasion returns 0 for every vehicle with no
             // dodgeable obstacle in range, so this is inert wherever no lateral obstacle is present.
             // ER5 additionally routes an ER3 give-way intent through the same lateral-drift primitive.
-            LatOffset = prePass ? 0.0 : ComputeLateralEvasion(v, lane, neighbors, time, dt),
+            // Phase 2 (P2.3): when the sublane model is active, the SUMO sublane lateral driver
+            // (ComputeSublaneLateral) replaces the external-agent evasion path -- gated on _sublane,
+            // so every phase-1 scenario keeps exactly the ComputeLateralEvasion path below.
+            LatOffset = prePass ? 0.0
+                : _sublane ? (LanelessRvo ? ComputeRvoLateral(v, lane, neighbors, time, dt)
+                                          : ComputeSublaneLateral(v, lane, dt))
+                : ComputeLateralEvasion(v, lane, neighbors, time, dt),
             StopUpdate = stopUpdate,
         };
     }
@@ -6109,6 +6212,85 @@ public sealed partial class Engine : IEngine
             ballistic: _config!.Ballistic);
     }
 
+    // Cross-regime bridge (Direction B, LONGITUDINAL safety net): brake for a crowd agent directly
+    // ahead in ego's path -- the "car stops for a pedestrian it hasn't swerved clear of" behaviour that
+    // makes the bridge collision-safe even when a lateral swerve alone cannot clear in time (a fast or
+    // still-accelerating vehicle meeting a pedestrian). Exactly mirrors ObstacleConstraint: a crowd
+    // agent is a virtual stopped-ish leader (Krauss car-following) ONLY while ego's lateral footprint
+    // still overlaps it; as ego swerves aside the overlap ends and this releases, so ego proceeds past
+    // (never a permanent block -- the swerve is still the primary manoeuvre, this only covers the gap).
+    // Gated on CrowdSource != null -> +Infinity (inert) for every scenario without a coupling attached,
+    // so byte-identical (no committed golden sets CrowdSource). Uses the neutral world-disc seam +
+    // LaneProjection, NOT the string ExternalObstacle store.
+    private double CrowdLongitudinalConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
+    {
+        if (CrowdSource is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var lane = _network!.LanesByHandle[v.LaneHandle];
+        var egoHalf = v.VType.Width * 0.5;
+        var (egoX, egoY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+        var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * v.VType.Length + 5.0;
+
+        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+        var got = CrowdSource.QueryNear(egoX, egoY, radius, discs);
+
+        var nearestBack = double.PositiveInfinity;
+        var nearestSpeed = 0.0;
+        var found = false;
+        for (var d = 0; d < got; d++)
+        {
+            var disc = discs[d];
+            var (offset, latOff, _) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+            var back = offset - disc.Radius;                 // near (longitudinal) edge of the agent
+            if (back < v.Kinematics.Pos)
+            {
+                continue;                                    // not ahead of ego
+            }
+
+            // Lateral overlap with ego's CURRENT footprint. Releases as ego swerves clear (|Δlat| grows
+            // past the half-widths), exactly like ObstacleOverlapsLaterally for a dodgeable obstacle.
+            if (Math.Abs(latOff - v.Kinematics.LatOffset) >= egoHalf + disc.Radius)
+            {
+                continue;
+            }
+
+            if (back < nearestBack)
+            {
+                nearestBack = back;
+                var (lon, _) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                nearestSpeed = Math.Max(0.0, lon);           // approaching agent -> treat as stopped (conservative)
+                found = true;
+            }
+        }
+
+        if (!found)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
+        return FollowSpeedFor(
+            v.VType,
+            egoSpeed: v.Kinematics.Speed,
+            gap: gap,
+            predSpeed: nearestSpeed,
+            predMaxDecel: v.VType.Decel,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
+            dt: _config!.StepLength,
+            time: time,
+            accControlMode: ref v.AccControlMode,
+            accLastUpdateTime: ref v.AccLastUpdateTime,
+            caccControlMode: ref v.CaccControlMode,
+            egoAcceleration: v.Acceleration,
+            hasPred: true,
+            predIsCacc: false,
+            levelOfService: v.LevelOfService,
+            ballistic: _config!.Ballistic);
+    }
+
     // B6 emergency lateral-evasion tuning. Not a SUMO-parity behaviour (SUMO's sublane model does
     // not do emergency ped-swerves) -- this is the external-agent "live reactivity" seam (DESIGN.md),
     // property-tested, inert when no dodgeable obstacle is present.
@@ -6121,6 +6303,423 @@ public sealed partial class Engine : IEngine
     // lane in right-hand traffic). This puts ego's near edge past a similar-width leader's far edge,
     // so the same-lane !FootprintsOverlap leader bypass lets ego pass it.
     private const double OvertakeSpillGap = 0.5;
+
+    // Phase 2 (sublane, P2.3): the single-vehicle lateral driver -- SUMO's MSLCM_SL2015 preferred-
+    // alignment drift. Returns ego's NEW absolute lateral offset (posLat) this step: a bounded drift
+    // toward the lane position its latAlignment prefers, at maxSpeedLat. Ported from MSLCM_SL2015:
+    //   * the alignment target (MSLCM_SL2015.cpp:1891-1902 _wantsChangeSublane): RIGHT ->
+    //     -halfLaneWidth + halfVehWidth, LEFT -> +halfLaneWidth - halfVehWidth, CENTER -> 0, where
+    //   * halfVehWidth uses MSLCM_SL2015::getWidth() == vType.Width + NUMERICAL_EPS
+    //     (MSLCM_SL2015.cpp:3386) -- this is why SUMO settles at 1.4995, not 1.5, on a 4.8 m lane
+    //     with a 1.8 m car ((4.8-1.801)/2 = 1.4995);
+    //   * the per-step truncation to maxSpeedLat (MSLCM_SL2015.cpp:2301 computeSpeedLat
+    //     `latDist = MAX2(MIN2(latDist, maxDist), -maxDist)`, maxDist = maxSpeedLat*dt), applied here
+    //     by DriftToward.
+    // For a LONE vehicle the lane-edge safe clamp (mySafeLatDistRight, checkBlocking:2339) exactly
+    // coincides with this target (the target IS the edge-keep position, so safe-dist there is 0 and
+    // DriftToward never overshoots it) -- so no neighbour gap arithmetic is needed at this rung; the
+    // multi-vehicle safe clamp arrives with the per-sublane neighbour query (P2.2). Reads only ego's
+    // own frozen state, writes nothing (caller stores the result in ego's MoveIntent) -> parallel-safe.
+    // Runs ONLY when _sublane (lateral-resolution > 0); every phase-1 scenario keeps the lane-centred
+    // ComputeLateralEvasion path and is byte-identical.
+    private double ComputeSublaneLateral(VehicleRuntime v, Lane lane, double dt)
+    {
+        // DR2 (issue #3): sublane drift toward the alignment target is STEADY and lane-predictable (its
+        // latSpeed captures it for LaneArc extrapolation), so it is not a "manoeuvre" for the publish-rate
+        // signal. Side-write only; off the golden path.
+        v.LateralManoeuvre = false;
+        var curLat = v.Kinematics.LatOffset;
+        var halfLaneWidth = lane.Width * 0.5;
+        // MSLCM_SL2015::getWidth() = vType width + NUMERICAL_EPS (keeps the vehicle NUMERICAL_EPS
+        // inside the lane edge -- the source of SUMO's 1.4995 vs the naive 1.5).
+        var halfVehWidth = (v.VType.Width + KraussModel.NumericalEps) * 0.5;
+
+        double target = v.VType.LatAlignment switch
+        {
+            "right" => -halfLaneWidth + halfVehWidth,
+            "left" => halfLaneWidth - halfVehWidth,
+            // "center"/"default" and every not-yet-ported alignment (nice/compact/arbitrary/numeric
+            // offset) hold the centreline for now -- P2.3 ports only the fixed right/left/center
+            // alignments a single-vehicle drift exercises; the rest arrive with their own scenarios.
+            _ => 0.0,
+        };
+
+        // MSLCM_SL2015.cpp:1924: the preferred-alignment drift is applied only when it is larger
+        // than NUMERICAL_EPS * actionStepLengthSecs -- SUMO ignores sub-epsilon lateral corrections.
+        // This is why a vehicle placed by departPosLat at exactly the lane edge (±(halfLane -
+        // width/2), REAL width) does NOT then creep the extra 0.0005 to the alignment target
+        // (halfLane - (width+EPS)/2): the 0.0005 correction is below the threshold and skipped.
+        var latDist = target - curLat;
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+        if (Math.Abs(latDist) <= KraussModel.NumericalEps * actionStepLengthSecs)
+        {
+            return curLat;
+        }
+
+        var maxStep = v.VType.MaxSpeedLat * dt;
+        return DriftToward(curLat, target, maxStep);
+    }
+
+    // Laneless direction (docs/LANELESS-DIRECTION.md), Stage 2: the RECIPROCAL, MULTI-NEIGHBOUR
+    // continuous footprint / velocity-obstacle lateral driver. Opt-in (Engine.LanelessRvo); replaces
+    // the SUMO-faithful ComputeSublaneLateral drift when set. Returns ego's new absolute posLat this
+    // step. Each step ego is pushed away from every laterally-overlapping near-neighbour (same-lane
+    // leader AND follower) by HALF the lateral deficit needed to reach `minGapLat` clearance
+    // (reciprocal ORCA-style: the neighbour, running the same solve, takes the other half -> mutual
+    // separation, no oscillation, no persistent state); when nothing couples it, ego drifts back to
+    // centre. All motion is bounded by maxSpeedLat. Because clearing a slower leader by minGapLat
+    // makes their footprints disjoint, the existing !FootprintsOverlap same-lane leader bypass
+    // (LeaderFollowSpeedConstraint) then lets ego accelerate past -> an EMERGENT overtake in which
+    // BOTH vehicles share the lateral move (unlike the Stage-1 one-sided PoC).
+    //
+    // SUMO's lateral PHYSICS are the reference (minGapLat clearance, maxSpeedLat bound); the exact
+    // posLat/timing are our own, validated BEHAVIOURALLY (no-overlap, overtake-completes, recentres,
+    // reciprocity) not byte-exact. Parallel-safe: reads only ego's own frozen state + the frozen
+    // neighbour query, writes nothing (caller stores the result in ego's own MoveIntent).
+    //
+    // Neighbours are consumed as neutral value-typed `RvoNeighbor`s (no strings, no dictionary) built
+    // from VehicleRuntime today; the Stage-3 scalable int-indexed agent store (replacing the current
+    // ExternalObstacle string API -- see LANELESS-DIRECTION.md) will feed the SAME list, unifying
+    // external navmesh/RVO agents into this solve without touching it. Full 2D reciprocal ORCA over a
+    // fixed-radius spatial-hash query is the further Stage-2/2b work; this is the 1D-lateral reduction
+    // (longitudinal stays the validated Krauss car-following).
+    private readonly struct RvoNeighbor
+    {
+        public readonly double Pos;         // longitudinal front position (lane-relative)
+        public readonly double Length;
+        public readonly double LatOffset;   // lateral centre (+left)
+        public readonly double HalfWidth;
+        public readonly double Speed;
+        // reciprocity share: 0.5 for a SUMO vehicle (it runs the same solve, takes the other half),
+        // 1.0 one-sided for an external agent (we don't control it -> ego avoids fully). Populated from
+        // the SoA store's per-agent AvoidanceClass byte for external agents (coord B1): Reciprocal -> 0.5,
+        // OneSided/StaticBlocker -> 1.0.
+        public readonly double Share;
+
+        public RvoNeighbor(double pos, double length, double latOffset, double halfWidth, double speed, double share)
+        {
+            Pos = pos; Length = length; LatOffset = latOffset; HalfWidth = halfWidth; Speed = speed; Share = share;
+        }
+
+        public static RvoNeighbor FromVehicle(VehicleRuntime n) => new(
+            n.Kinematics.Pos, n.VType.Length, n.Kinematics.LatOffset, n.VType.Width * 0.5, n.Kinematics.Speed, 0.5);
+    }
+
+    private double ComputeRvoLateral(VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double time, double dt)
+    {
+        var curLat = v.Kinematics.LatOffset;
+        var eps = KraussModel.NumericalEps;
+        var egoHalf = v.VType.Width * 0.5;
+        var maxOffset = lane.Width * 0.5 - egoHalf;    // reachable lateral extent (real width)
+        var maxStep = v.VType.MaxSpeedLat * dt;
+        var egoDesired = v.VType.MaxSpeed * v.SpeedFactor;
+
+        var egoPos = v.Kinematics.Pos;
+        var egoLen = v.VType.Length;
+        var minGapLat = v.VType.MinGapLat;
+        // Stage 2b: gather ALL near footprint agents -- SUMO vehicles AND external agents -- within a
+        // fixed radius into one list, then reduce over them uniformly. This is Seam-1's phase-2 form:
+        // the solve consumes a single radius query, not lane-structured leader/follower + a separate
+        // obstacle loop. The reaction radius covers the ahead horizon (~3 s) + a car-length behind.
+        // Spatial index: the per-lane bucket is already Pos-sorted, so filtering it by radius is the
+        // O(k) near-neighbour scan (a genuine cross-lane fixed-radius grid over global x/y -- for a
+        // curved/multi-edge laneless space -- is the further step; on the wide single lane the sublane
+        // model uses, "same lane within radius" IS the full neighbourhood). MaxRvoNeighbors caps the
+        // reduction; denser-than-16 neighbourhoods truncate (behavioural, opt-in).
+        const int MaxRvoNeighbors = 16;
+        Span<RvoNeighbor> near = stackalloc RvoNeighbor[MaxRvoNeighbors];
+        var count = 0;
+        var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * egoLen + 5.0;
+
+        var laneList = neighbors.OnLane(v.LaneHandle);
+        for (var i = 0; i < laneList.Count && count < MaxRvoNeighbors; i++)
+        {
+            var o = laneList[i];
+            if (ReferenceEquals(o, v) || Math.Abs(o.Kinematics.Pos - egoPos) > radius)
+            {
+                continue;
+            }
+            near[count++] = RvoNeighbor.FromVehicle(o);
+        }
+
+        // External agents on ego's lane within radius, folded into the SAME RvoNeighbor list. A Width<=0
+        // agent is a full-lane block ego cannot go around -> excluded here so ObstacleConstraint brakes
+        // ego to a stop (the B6 behaviour). This is the Stage-3 adapter now retargeted onto the landed
+        // SoA store (ObstacleStore, docs/SUMOSHARP-API.md §4.3-4.4): `_obstacles.Values` materialises each
+        // live slot's columns by value, so the frozen `RvoNeighbor` seam reads the SoA columns directly --
+        // the solve below never changed. The reciprocity `share` is now SOURCED from the store's
+        // per-agent AvoidanceClass byte (coord B1): a Reciprocal agent (a cooperative navmesh/RVO mover
+        // running its own solve) -> 0.5; a OneSided/StaticBlocker agent -> 1.0. NB `RvoNeighbor.Share` is
+        // currently INERT in this 1D lateral feasible-interval solve -- that solve is inherently one-sided
+        // (ego fully clears; reciprocity is emergent from both vehicles running it), so it forbids the full
+        // band regardless of share. Share is consumed by the open-space 2D ORCA path (Agent.Responsibility)
+        // and reserved for the future unified two-population solver. Wiring it from the class here keeps the
+        // seam honest (the field reflects the store's class) with no behavioural change: every committed
+        // scenario's obstacles are the default OneSided, and the field is unread here regardless.
+        if (_obstacles.Count > 0)
+        {
+            foreach (var obstacle in _obstacles.Values)
+            {
+                if (count >= MaxRvoNeighbors)
+                {
+                    break;
+                }
+                if (obstacle.Width <= 0.0 || obstacle.LaneId != lane.Id
+                    || obstacle.StartTime > time || time >= obstacle.EndTime
+                    || Math.Abs(obstacle.FrontPos - egoPos) > radius)
+                {
+                    continue;
+                }
+                var share = obstacle.AvoidanceClass == AvoidanceClass.Reciprocal ? 0.5 : 1.0;
+                near[count++] = new RvoNeighbor(
+                    obstacle.FrontPos, obstacle.Length, obstacle.LatPos, obstacle.Width * 0.5, obstacle.Speed, share);
+            }
+        }
+
+        // Cross-regime bridge (Direction B -- vehicle avoids crowd): query the open-space CrowdSource
+        // for crowd agents near ego's WORLD position and project each onto ego's lane as a one-sided
+        // RvoNeighbour, so the feasible-interval solve below forbids their lateral band exactly like a
+        // vehicle's or obstacle's. This is how a lane vehicle swerves for a pedestrian. Gated: skipped
+        // entirely when no crowd is attached (CrowdSource == null), so byte-identical when unused; and
+        // reachable only here, under LanelessRvo && _sublane, so no committed golden is affected. Uses
+        // the neutral world-disc seam + LaneProjection (the inverse of PositionAtOffset), NOT the
+        // string ExternalObstacle store.
+        if (CrowdSource is not null && count < MaxRvoNeighbors)
+        {
+            var (egoWorldX, egoWorldY, _) = LaneGeometry.PositionAtOffset(lane.Shape, egoPos, curLat);
+            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxRvoNeighbors];
+            var got = CrowdSource.QueryNear(egoWorldX, egoWorldY, radius, discs);
+            for (var d = 0; d < got && count < MaxRvoNeighbors; d++)
+            {
+                var disc = discs[d];
+                var (offset, latOff, dist) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+                // Ignore a crowd agent too far off THIS lane laterally to interact (it belongs to a
+                // different corridor); the disc's own radius + ego half-width + minGapLat is the reach.
+                if (dist > egoHalf + disc.Radius + minGapLat + maxOffset)
+                {
+                    continue;
+                }
+
+                // Decompose the agent's world velocity into ego's lane frame: longitudinal (for the
+                // ahead/behind coupling test) and lateral (to PREDICT where a CROSSING agent will be by
+                // the time ego reaches it). Without the lateral prediction the myopic solve dodges to
+                // the currently-nearer gap -- which a perpendicular crosser then walks into; predicting
+                // its lateral position at time-to-encounter (as B6's ComputeLateralEvasion does for
+                // obstacles) makes ego commit to the side the crosser is leaving. Mirrors the swerve's
+                // "predicted lateral position" logic exactly.
+                var (laneSpeed, latVel) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                var gapAhead = offset - disc.Radius - egoPos;
+                var tte = gapAhead > 0.0 ? gapAhead / Math.Max(v.Kinematics.Speed, KraussModel.NumericalEps) : 0.0;
+                var predictedLat = latOff + latVel * Math.Min(tte, 4.0);   // cap the horizon at 4 s
+                near[count++] = new RvoNeighbor(offset, 2.0 * disc.Radius, predictedLat, disc.Radius, laneSpeed, 1.0);
+            }
+        }
+
+        // Stage 2b-ii: reduce over the gathered neighbours by a 1D lateral FEASIBLE-INTERVAL solve --
+        // the half-plane intersection reduced to the lateral axis, which correctly resolves CONFLICTING
+        // neighbours (a plain push-sum could strand ego between two that push opposite ways). Each
+        // COUPLED neighbour forbids the lateral band where ego would be within minGapLat of it:
+        // (n.lat - sep, n.lat + sep). Ego then drifts toward the feasible latOffset CLOSEST TO ITS
+        // CURRENT LINE (stickiness -> holds a cleared line, commits to one side; keep-right tie-break),
+        // or toward centre when nothing couples it. If NO feasible point exists (neighbours block the
+        // whole lane) ego holds and the longitudinal car-following (LeaderFollowSpeedConstraint /
+        // ObstacleConstraint, both footprint-gated) brakes it -- the "too narrow -> no overtake"
+        // fallback. NB full 2D reciprocal ORCA (both agents share, holonomic, disc-shaped) is the
+        // OPEN-SPACE navmesh/RVO layer; lane-derived vehicles are elongated and quasi-1D longitudinally,
+        // so a lateral feasible-interval + validated car-following longitudinally is the right model for
+        // them (docs/LANELESS-DIRECTION.md).
+        //
+        // Coupling: a neighbour AHEAD (slower, within the reaction horizon) or OVERLAPPING ego
+        // longitudinally forbids a band; one fully BEHIND is ignored (it avoids ego via its own solve).
+        // The overlapping case is what yields the reciprocal nudge -- while alongside, ego's forbidden
+        // band reaches the neighbour, so the neighbour (running the same solve) also steps aside.
+        Span<double> forbLo = stackalloc double[MaxRvoNeighbors];
+        Span<double> forbHi = stackalloc double[MaxRvoNeighbors];
+        var forbCount = 0;
+        var reactionHorizon = v.Kinematics.Speed * 3.0 + v.VType.MinGap;
+        for (var k = 0; k < count; k++)
+        {
+            var n = near[k];
+            var gapAhead = n.Pos - n.Length - egoPos;   // >0: neighbour fully ahead
+            var gapBehind = egoPos - egoLen - n.Pos;    // >0: neighbour fully behind
+            bool couple;
+            if (gapAhead > 0.0)
+            {
+                couple = n.Speed < egoDesired - eps && gapAhead < reactionHorizon;
+            }
+            else if (gapBehind > 0.0)
+            {
+                couple = false;                          // fully behind -> it avoids ego, not vice versa
+            }
+            else
+            {
+                couple = true;                           // overlapping -> gap-keep (reciprocal nudge)
+            }
+
+            if (couple)
+            {
+                var sep = egoHalf + n.HalfWidth + minGapLat;
+                forbLo[forbCount] = n.LatOffset - sep;
+                forbHi[forbCount] = n.LatOffset + sep;
+                forbCount++;
+            }
+        }
+
+        double target;
+        if (forbCount == 0)
+        {
+            target = 0.0;                                // nothing couples ego -> recentre
+        }
+        else
+        {
+            target = FeasibleClosestTo(curLat, forbLo, forbHi, forbCount, -maxOffset, maxOffset, eps);
+            if (double.IsNaN(target))
+            {
+                target = curLat;                         // fully blocked -> hold; car-following brakes
+            }
+        }
+
+        // DR2 (issue #3): record whether ego actively coupled to a neighbour/crowd this step -- i.e. it is
+        // mid-swerve, so its short-horizon lateral is reactive and NOT linearly lane-predictable. Pure
+        // side-write consumed only by the (opt-in) DR classification (Engine.GetDrModel / DrModels);
+        // nothing on the golden path reads it, so byte-identical. forbCount > 0 == coupled == FreeKinematic.
+        v.LateralManoeuvre = forbCount > 0;
+
+        return DriftToward(curLat, target, maxStep);
+    }
+
+    // Cross-regime bridge helper: decompose a world velocity (vx, vy) into ego's lane frame at
+    // arc-length `offset` -- LONGITUDINAL (along the tangent, for the ahead/behind coupling test) and
+    // LATERAL (along the +left normal, for predicting a crossing agent's lateral drift). Finds the
+    // segment containing `offset` and projects onto its unit tangent / left-normal. A pedestrian
+    // crossing perpendicular -> ~0 longitudinal (couples as a slow foe) and a large lateral component.
+    private static (double Longitudinal, double Lateral) LaneFrameVelocity(Lane lane, double offset, double vx, double vy)
+    {
+        var shape = lane.Shape;
+        if (shape.Count < 2)
+        {
+            return (0.0, 0.0);
+        }
+
+        var remaining = offset;
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var (x1, y1) = shape[i];
+            var (x2, y2) = shape[i + 1];
+            var dx = x2 - x1;
+            var dy = y2 - y1;
+            var segLen = Math.Sqrt(dx * dx + dy * dy);
+            if (remaining <= segLen || i == shape.Count - 2)
+            {
+                if (segLen <= 0.0)
+                {
+                    return (0.0, 0.0);
+                }
+
+                var lon = (vx * dx + vy * dy) / segLen;
+                var lat = (vx * (-dy) + vy * dx) / segLen;   // +left normal, matching LatOffset's sign
+                return (lon, lat);
+            }
+
+            remaining -= segLen;
+        }
+
+        return (0.0, 0.0);
+    }
+
+    // The lateral feasible-interval solve: return the point in [lo, hi] MINUS the union of the
+    // `count` forbidden OPEN bands (forbLo[i], forbHi[i]) that is closest to `preferred`, or NaN if
+    // none exists (every point is inside some band -> ego cannot clear laterally). Keep-right tie:
+    // the smaller (more rightward) point wins an exact tie. The feasible set is a union of closed
+    // sub-intervals, so the closest feasible point is either `preferred` itself (if feasible) or a
+    // band boundary just outside a forbidden band, or a bound -- a small finite candidate set.
+    private static double FeasibleClosestTo(
+        double preferred, Span<double> forbLo, Span<double> forbHi, int count, double lo, double hi, double eps)
+    {
+        var p = Math.Clamp(preferred, lo, hi);
+        if (LateralFeasible(p, forbLo, forbHi, count, eps))
+        {
+            return p;
+        }
+
+        var best = double.NaN;
+        var bestDist = double.PositiveInfinity;
+        ConsiderCandidate(lo, preferred, forbLo, forbHi, count, lo, hi, eps, ref best, ref bestDist);
+        ConsiderCandidate(hi, preferred, forbLo, forbHi, count, lo, hi, eps, ref best, ref bestDist);
+        for (var i = 0; i < count; i++)
+        {
+            ConsiderCandidate(forbLo[i] - eps, preferred, forbLo, forbHi, count, lo, hi, eps, ref best, ref bestDist);
+            ConsiderCandidate(forbHi[i] + eps, preferred, forbLo, forbHi, count, lo, hi, eps, ref best, ref bestDist);
+        }
+        return best;
+    }
+
+    private static void ConsiderCandidate(
+        double x, double preferred, Span<double> forbLo, Span<double> forbHi, int count,
+        double lo, double hi, double eps, ref double best, ref double bestDist)
+    {
+        if (x < lo - eps || x > hi + eps)
+        {
+            return;
+        }
+        x = Math.Clamp(x, lo, hi);
+        if (!LateralFeasible(x, forbLo, forbHi, count, eps))
+        {
+            return;
+        }
+        var dist = Math.Abs(x - preferred);
+        // strictly closer, or an exact tie broken keep-right (smaller x wins).
+        if (dist < bestDist - eps || (dist <= bestDist + eps && (double.IsNaN(best) || x < best)))
+        {
+            best = x;
+            bestDist = dist;
+        }
+    }
+
+    private static bool LateralFeasible(double x, Span<double> forbLo, Span<double> forbHi, int count, double eps)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            if (x > forbLo[i] + eps && x < forbHi[i] - eps)   // strictly inside a forbidden band
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Phase 2 (sublane, P2.2): SUMO's departPosLat initial lateral placement. Returns the vehicle's
+    // starting lateral offset (posLat) on its depart lane. Only non-zero when the sublane model is
+    // active (_sublane == lateral-resolution > 0); every phase-1 vehicle stays lane-centred (0), so
+    // insertion is byte-identical. "left"/"right" put the vehicle's outer edge on the lane border
+    // using the REAL vehicle width (±(halfLaneWidth - width/2)) -- SUMO places at ±1.5 on a 4.8 m lane
+    // with a 1.8 m car, NOT the width+EPS the alignment target uses; a numeric value is an absolute
+    // offset (m, +left). "center"/absent -> 0. Other symbolic values (random/free/...) are out of
+    // scope for this rung.
+    private double InitialLatOffset(VehicleRuntime v, Lane lane)
+    {
+        if (!_sublane)
+        {
+            return 0.0;
+        }
+
+        var departPosLat = v.Def.DepartPosLat;
+        if (string.IsNullOrEmpty(departPosLat) || departPosLat == "center")
+        {
+            return 0.0;
+        }
+
+        var edge = lane.Width * 0.5 - v.VType.Width * 0.5;
+        return departPosLat switch
+        {
+            "left" => edge,
+            "right" => -edge,
+            _ when double.TryParse(departPosLat, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var numeric) => numeric,
+            _ => throw new NotSupportedException(
+                $"departPosLat=\"{departPosLat}\" (vehicle '{v.Def.Id}') is not supported; only " +
+                "\"center\"/\"left\"/\"right\"/a numeric offset are in scope for the sublane rungs."),
+        };
+    }
 
     // B6: given a dodgeable (Width > 0) obstacle ahead on ego's lane that ego CANNOT stop before,
     // return the vehicle's new lateral offset this step -- a bounded drift toward a target that
@@ -6135,6 +6734,12 @@ public sealed partial class Engine : IEngine
         var curLat = v.Kinematics.LatOffset;
         var maxStep = SwerveMaxLateralSpeed * dt;
 
+        // DR2 (issue #3): default this step's manoeuvre bit to false; each ACTIVE-steer branch below sets
+        // it true (overtake spill, cooperative shift, give-way, an obstacle/crowd swerve or a threat-hold).
+        // Steady lane-following / recentre paths leave it false. Pure side-write (read only by the Step
+        // DR projection), so byte-identical / off the golden path.
+        v.LateralManoeuvre = false;
+
         // Rung OV3 (opposite-direction overtake execution): while committed to an overtake
         // (OvertakeActive, set by DetectOvertake / OV2's gap acceptance), spill laterally toward the
         // oncoming lane far enough to clear the leader's footprint, so the same-lane
@@ -6146,6 +6751,7 @@ public sealed partial class Engine : IEngine
         // every vehicle with OvertakeActive == false (i.e. every scenario with no lcOpposite vType).
         if (v.OvertakeActive)
         {
+            v.LateralManoeuvre = true;
             return DriftToward(curLat, v.VType.Width + OvertakeSpillGap, maxStep);
         }
 
@@ -6160,6 +6766,7 @@ public sealed partial class Engine : IEngine
         // below, which cannot co-occur with an opposite-direction overtake in a supported scenario.
         if (v.CooperativeShift)
         {
+            v.LateralManoeuvre = true;
             var outerMargin = Math.Max(0.0, lane.Width / 2.0 - v.VType.Width / 2.0);
             return DriftToward(curLat, -outerMargin, maxStep);
         }
@@ -6175,13 +6782,17 @@ public sealed partial class Engine : IEngine
         var singleLane = lane.LeftNeighbor < 0 && lane.RightNeighbor < 0;
         if (singleLane && v.GiveWaySide != 0)
         {
+            v.LateralManoeuvre = true;
             return DriftToward(curLat, GiveWayEdgeTarget(v, lane), maxStep);
         }
 
-        if (_obstacles.Count == 0)
+        if (_obstacles.Count == 0 && CrowdSource is null)
         {
             // Recentre if a just-cleared give-way (or other) drift left us off-centre; otherwise the
             // unchanged fast path (curLat is already 0 in lane-centred mode -> returns 0 exactly).
+            // NB the CrowdSource guard: when a crowd is attached we must fall through to the crowd scan
+            // below even with no obstacles. CrowdSource is null for every committed golden, so this is
+            // byte-identical there.
             return curLat != 0.0 ? DriftToward(curLat, 0.0, maxStep) : curLat;
         }
 
@@ -6197,6 +6808,7 @@ public sealed partial class Engine : IEngine
         ExternalObstacle? threat = null;
         var threatBack = double.PositiveInfinity;
         var threatPredLat = 0.0;
+        var threatIsCrowd = false;
         foreach (var o in _obstacles.Values)
         {
             if (o.Width <= 0.0 || o.StartTime > time || time >= o.EndTime || o.LaneId != v.LaneId)
@@ -6223,6 +6835,56 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // Q6 (option b): make CrowdSource crowd agents first-class dodgeable threats in NORMAL mode too,
+        // so a vehicle SWERVES around a pedestrian/agent it can clear instead of hard-stopping (the
+        // brake-vs-swerve gate below is skipped for a crowd threat -> swerve preferred). Gated on
+        // CrowdSource != null, which no committed golden sets and no normal-mode test sets (only the
+        // laneless bridge attaches a crowd, and that runs the ComputeRvoLateral path, not this one) --
+        // so byte-identical / hash-safe by construction. Each nearby crowd agent is projected onto ego's
+        // lane and synthesised as an ExternalObstacle, so the entire B6 selection + swerve machinery
+        // (predicted lateral, vacating-side, spill-to-adjacent-lane) applies unchanged. Uses the neutral
+        // world-disc seam + LaneProjection, NOT the string obstacle store.
+        if (CrowdSource is not null)
+        {
+            var (egoWX, egoWY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
+            var crowdLookahead = v.Kinematics.Speed * SwervePredictionHorizon + v.VType.Length + v.VType.MinGap + 5.0;
+            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+            var got = CrowdSource.QueryNear(egoWX, egoWY, crowdLookahead, discs);
+            for (var d = 0; d < got; d++)
+            {
+                var disc = discs[d];
+                var (offset, latOff, dist) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+
+                // Ignore an agent too far off THIS lane laterally to be a same-lane threat.
+                if (dist > v.VType.Width / 2.0 + disc.Radius + lane.Width / 2.0)
+                {
+                    continue;
+                }
+
+                var (laneSpeed, latVel) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+                var width = 2.0 * disc.Radius;
+                var synth = new ExternalObstacle(
+                    string.Empty, lane.Id, offset + disc.Radius, width,
+                    double.NegativeInfinity, double.PositiveInfinity, laneSpeed, 0.0, latOff, width, latVel);
+
+                var predLat = PredictedLatPos(synth, v);
+                if (synth.FrontPos < v.Kinematics.Pos - v.VType.Length
+                    || !FootprintsOverlap(predLat, width, 0.0, v.VType.Width))
+                {
+                    continue;   // fully behind ego, or a centred car would clear its predicted position
+                }
+
+                var back = synth.FrontPos - synth.Length;
+                if (back < threatBack)   // strict: an obstacle wins an exact tie (deterministic)
+                {
+                    threatBack = back;
+                    threat = synth;
+                    threatPredLat = predLat;
+                    threatIsCrowd = true;
+                }
+            }
+        }
+
         if (threat is null)
         {
             return DriftToward(curLat, 0.0, maxStep); // no threat -> recentre toward the lane centre
@@ -6231,14 +6893,17 @@ public sealed partial class Engine : IEngine
         // ExternalObstacle is now a value type; capture the resolved threat once (stack copy).
         var th = threat.Value;
 
-        // Swerve ONLY when braking alone cannot stop before the obstacle (the "jumped out, can't stop
-        // in time" case). While the obstacle is still strictly AHEAD and ego is still lane-centred and
-        // CAN stop, just brake (ObstacleConstraint) and stay centred -- the pre-B6 stop-behind
-        // behaviour. Once ego has committed to a swerve (off-centre) or can no longer stop, it evades.
+        // For an OBSTACLE threat: swerve ONLY when braking alone cannot stop before it (the "jumped out,
+        // can't stop in time" case) -- while it is still strictly AHEAD and ego is lane-centred and CAN
+        // stop, just brake (ObstacleConstraint) and stay centred (the pre-B6 stop-behind behaviour).
+        // For a CROWD threat (Q6 option b): PREFER the swerve -- skip this stop-and-stay-centred gate so
+        // a dodgeable crowd agent is gone around (decelerating as needed via CrowdLongitudinalConstraint)
+        // rather than hard-stopped; if no side is feasible below, ego still holds and brakes. Once ego
+        // has committed to a swerve (off-centre) or can no longer stop, it evades either way.
         var stillAhead = threatBack >= v.Kinematics.Pos;
         var gap = threatBack - v.VType.MinGap - v.Kinematics.Pos;
         var brakeGap = KraussModel.BrakeGap(v.Kinematics.Speed, v.VType.Decel, headwayTime: 0.0, dt);
-        if (stillAhead && brakeGap <= gap && Math.Abs(curLat) < 1e-6)
+        if (!threatIsCrowd && stillAhead && brakeGap <= gap && Math.Abs(curLat) < 1e-6)
         {
             return DriftToward(curLat, 0.0, maxStep);
         }
@@ -6280,9 +6945,11 @@ public sealed partial class Engine : IEngine
         }
         else
         {
+            v.LateralManoeuvre = true;   // engaged with a threat it cannot clear (about to hold + brake)
             return curLat; // cannot dodge -> hold; ObstacleConstraint brakes to a stop behind it
         }
 
+        v.LateralManoeuvre = true;       // actively swerving around the obstacle/crowd threat
         return DriftToward(curLat, chosen.Value, maxStep);
     }
 
@@ -6432,6 +7099,10 @@ public sealed partial class Engine : IEngine
             v.Kinematics.Pos += _config!.Ballistic
                 ? 0.5 * (oldSpeed + v.Intent.NewSpeed) * dt
                 : v.Intent.NewSpeed * dt;
+            // Phase 2 (P2.1/P2.3): lateral velocity = this step's lateral displacement / dt (computed
+            // from the OLD offset before it is overwritten). 0 for every lane-centred vehicle (Intent
+            // .LatOffset == current == 0), so inert for phase-1; not hashed/compared, so byte-identical.
+            v.Kinematics.LatSpeed = (v.Intent.LatOffset - v.Kinematics.LatOffset) / dt;
             v.Kinematics.LatOffset = v.Intent.LatOffset;
 
             // C6-ii: feed the actuated-TLS induction loops this vehicle's within-step motion along
@@ -7649,7 +8320,8 @@ public sealed partial class Engine : IEngine
                     X: xp,
                     Y: yp,
                     Angle: anglep,
-                    Acceleration: null);
+                    Acceleration: null)
+                { PosLat = v.Kinematics.LatOffset };
             });
 
             for (var i = 0; i < _vehicles.Count; i++)
@@ -7685,7 +8357,8 @@ public sealed partial class Engine : IEngine
                 angle: angle,
                 giveWaySide: v.GiveWaySide,
                 overtakeActive: v.OvertakeActive,
-                cooperativeShift: v.CooperativeShift);
+                cooperativeShift: v.CooperativeShift,
+                posLat: v.Kinematics.LatOffset);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,
@@ -7696,7 +8369,8 @@ public sealed partial class Engine : IEngine
                 X: snapshot.X,
                 Y: snapshot.Y,
                 Angle: snapshot.Angle,
-                Acceleration: null));
+                Acceleration: null)
+            { PosLat = snapshot.PosLat });
 
             // D9: notify every registered observer with the SAME snapshot -- empty list by
             // default, so this is a zero-iteration `foreach` (no allocation, no virtual call)

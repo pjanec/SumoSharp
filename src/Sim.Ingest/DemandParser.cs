@@ -72,7 +72,16 @@ public static class DemandParser
                 ResCoefLinear: ParseNullableDouble(vTypeEl, "resCoef_linear"),
                 ResCoefQuadratic: ParseNullableDouble(vTypeEl, "resCoef_quadratic"),
                 MassFactor: ParseNullableDouble(vTypeEl, "massFactor"),
-                Mass: ParseNullableDouble(vTypeEl, "mass"));
+                Mass: ParseNullableDouble(vTypeEl, "mass"),
+                // Phase 2 (sublane): SUMO's maxSpeedLat / latAlignment vType attributes. Absent
+                // for every phase-1 vType -> resolve to SUMO defaults (1.0 / "center") in
+                // VTypeDefaults.Resolve; inert unless the scenario sets lateral-resolution > 0.
+                MaxSpeedLat: ParseNullableDouble(vTypeEl, "maxSpeedLat"),
+                LatAlignment: vTypeEl.Attribute("latAlignment")?.Value,
+                // Rung P2-core (keepLatGap): SUMO's minGapLat vType attribute. Absent for every
+                // pre-existing vType -> resolves to SUMO's 0.6 default in VTypeDefaults.Resolve;
+                // inert unless lateral-resolution > 0.
+                MinGapLat: ParseNullableDouble(vTypeEl, "minGapLat"));
 
             vTypes.Add(vType);
             vTypesById[vType.Id] = vType;
@@ -141,7 +150,9 @@ public static class DemandParser
                 DepartPos: ParseNullableDouble(vehicleEl, "departPos") ?? 0.0,
                 DepartSpeed: ParseNullableDouble(vehicleEl, "departSpeed") ?? 0.0,
                 DepartLaneIndex: ParseNullableInt(vehicleEl, "departLane") ?? 0,
-                Stops: stops));
+                Stops: stops,
+                // Phase 2 (sublane): SUMO's departPosLat vehicle attribute. Absent -> centre.
+                DepartPosLat: vehicleEl.Attribute("departPosLat")?.Value));
         }
 
         // F1 (deterministic flow demand): a <flow> is a template that expands to many <vehicle>s

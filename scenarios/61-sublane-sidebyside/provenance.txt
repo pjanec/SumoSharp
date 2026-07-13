@@ -1,0 +1,17 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-12T00:00:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+net_command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+fcd_precision=6
+# PHASE 2 / P2.2 SUBLANE SIDE-BY-SIDE COEXISTENCE ANCHOR (exact @1e-3 on pos/speed/posLat).
+#   lateral-resolution=0.8. ONE wide lane (width 4.8). Slow leader v0 (maxSpeed 5, latAlignment
+#   "left", departPosLat "left" -> posLat +1.5) and fast follower v1 (default maxSpeed, latAlignment
+#   "right", departPosLat "right" -> posLat -1.5). Their footprints are DISJOINT ([+0.6,+2.4] vs
+#   [-2.4,-0.6]), so the sublane model lets them COEXIST side-by-side: v1 free-flows to 13.89 and
+#   PASSES v0 with NO braking -- unlike lane mode, where a same-lane leader always binds. Both hold
+#   posLat = ±1.5 exactly: departPosLat uses REAL width (±(2.4-0.9)=±1.5) while latAlignment's target
+#   is ±1.4995 (width+EPS), and SUMO SKIPS the 0.0005 correction (|latDist| <= NUMERICAL_EPS*
+#   actionStep = 0.001, MSLCM_SL2015.cpp:1924). Exercises: departPosLat placement, the small-latDist
+#   drift threshold, and the existing FootprintsOverlap same-lane leader bypass (no MSLeaderInfo
+#   needed -- only ONE leader ahead of the follower; the multi-leader query is a later rung).

@@ -12,6 +12,11 @@ namespace Sim.Ingest;
 // Default 0 = the instant lane-index snap every pre-C10 scenario uses (byte-identical). > 0 spreads
 // the change over round(duration/stepLength) steps, holding the source lane label until the vehicle
 // crosses the lane midpoint (MSVehicle emits the lane whose half the vehicle center is in).
+// Phase 2 (sublane): LateralResolution is the sumocfg's <processing><lateral-resolution> -- SUMO's
+// MSGlobals::gLateralResolution, the width (m) of a sublane. Default 0 = the sublane model is OFF
+// (every phase-1 scenario), so the engine's lateral state stays lane-centred and byte-identical.
+// > 0 activates the continuous-lateral / sublane model (MSLCM_SL2015); it is the single global
+// master switch, exactly as in SUMO, not a per-vType flag.
 public sealed record ScenarioConfig(
     double Begin,
     double End,
@@ -21,4 +26,5 @@ public sealed record ScenarioConfig(
     double ActionStepLength,
     double SpeedDev,
     int Seed,
-    double LaneChangeDuration = 0.0);
+    double LaneChangeDuration = 0.0,
+    double LateralResolution = 0.0);

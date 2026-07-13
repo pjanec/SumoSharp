@@ -1,0 +1,15 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-12T00:00:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration --precision 6 --no-step-log true
+fcd_precision=6
+# PHASE 2 / LANELESS-DIRECTION Stage 4 STATISTICAL CROSS-CHECK BASELINE (NOT exact-parity).
+# This golden is a SUMO sublane run used only as an AGGREGATE reference, never compared byte-exact.
+# Scenario: 8 interleaved fast (default maxSpeed) + slow (maxSpeed 5) vehicles on one 7.2 m lane,
+# lateral-resolution=0.8, sigma=0, run to t=120 -- the fast ones overtake the slow ones laterally.
+# RungRvoStatisticalCrossCheckTests runs OUR laneless RVO model (Engine.LanelessRvo) on the same
+# inputs and asserts distribution-level aggregates (mean speed + posLat std over all vehicle-steps)
+# are SUMO-comparable: measured SUMO meanSpeed=8.8350, posLatStd=0.5288 over 744 samples; the RVO
+# model gives meanSpeed=8.8648 (0.34% rel err), posLatStd=0.4457 (84% of SUMO's lateral spread).
+# There is deliberately NO tolerance.json / exact golden compare for this scenario -- the laneless
+# model is our own (behavioural/statistical bar, docs/LANELESS-DIRECTION.md), not an exact port.

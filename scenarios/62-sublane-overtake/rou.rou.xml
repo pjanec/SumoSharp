@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- both CENTERED. Fast follower held up behind slow leader must sublane-change laterally to
+         overtake within the wide lane (the continuous _wantsChangeSublane speed-gain decision). -->
+    <vType id="slow" vClass="passenger" sigma="0" maxSpeed="5"/>
+    <vType id="fast" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="v0" type="slow" route="r0" depart="0" departPos="30" departSpeed="0"/>
+    <vehicle id="v1" type="fast" route="r0" depart="0" departPos="0"  departSpeed="0"/>
+</routes>

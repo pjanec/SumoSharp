@@ -83,6 +83,17 @@ while IFS= read -r -d '' CFG; do
     --no-step-log true
   )
 
+  # Phase 2 (sublane): SUMO does NOT emit posLat in the default FCD attribute set, even with the
+  # sublane model active. A scenario with <lateral-resolution value="R"/> (R > 0) is a sublane
+  # scenario whose golden must carry the lateral position, so request the explicit attribute list
+  # (which REPLACES the default set -- hence it must re-list x/y/angle/speed/pos/lane and
+  # acceleration alongside posLat). Phase-1 scenarios (no lateral-resolution, or 0) keep the
+  # default set unchanged.
+  LATRES="$(grep -oE 'lateral-resolution[^>]*value="[^"]*"' "$CFG" | grep -oE 'value="[^"]*"' | grep -oE '[0-9.]+' | head -1 || true)"
+  if [[ -n "${LATRES:-}" ]] && awk "BEGIN{exit !(${LATRES} > 0)}"; then
+    SUMO_CMD+=(--fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration)
+  fi
+
   echo "    ${SUMO_CMD[*]}"
   ( cd "$SCEN_DIR" && "${SUMO_CMD[@]}" )
 

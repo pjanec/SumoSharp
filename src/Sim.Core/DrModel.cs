@@ -11,6 +11,12 @@ namespace Sim.Core;
 // `byte`-backed on purpose: it maps to a DDS `@bit_bound(8)` enum (CycloneDDS.NET) and packs into one byte
 // on the TCP/UDP wire. Additive and inert for the parity path — nothing in the lane engine's Run()/golden
 // path reads it; it is a classification consumed only by the (opt-in) render/replication layer.
+//
+// SHARED SEAM NOTE (laneless branch, DR1 confirmation, issue #3): this file is a byte-identical copy of the
+// enum landed on the NuGet branch (`claude/sumo-csharp-nuget-strategy-4vlkki`). Both branches carry the
+// same definition so each compiles standalone; the merge reconciles them as identical (exactly like
+// `RvoNeighbor`). Confirmed sufficient at three members — see the DR coordination subsection in
+// docs/LANELESS-DIRECTION.md for why a vehicle mid-swerve does NOT need a distinct member.
 public enum DrModel : byte
 {
     // Lane-bound vehicle (including a sublane / laterally-dodging one, posLat != 0). Predict by integrating

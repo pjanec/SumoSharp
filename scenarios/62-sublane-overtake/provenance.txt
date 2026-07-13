@@ -1,0 +1,13 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-12T00:00:00Z
+command=sumo -c config.sumocfg --fcd-output golden.fcd.xml --fcd-output.attributes x,y,angle,speed,pos,lane,posLat,acceleration --precision 6 --save-state.times 1 --save-state.files golden.state.xml --no-step-log true
+net_command=netconvert --node-files nodes.nod.xml --edge-files edges.edg.xml --output-file net.net.xml --no-turnarounds true --junctions.corner-detail 0
+fcd_precision=6
+# PHASE 2 SUBLANE FOLLOWING (too-narrow -> NO overtake) ANCHOR (exact @1e-3 on pos/speed/posLat).
+#   lateral-resolution=0.8, ONE 4.8 m lane. Both vehicles CENTERED. Fast follower v1 catches the slow
+#   leader v0 (maxSpeed 5) and settles behind it at 5 -- posLat stays 0 the whole run. A 4.8 m lane is
+#   too narrow for two 1.8 m cars to pass with minGapLat clearance (max sublane offset +/-1.5 still
+#   overlaps the centered leader by 0.3 m), so SUMO's sublane model correctly makes NO lateral change:
+#   this is Krauss following, unchanged. Validates that the sublane drift code is INERT for a
+#   centered-following pair (no spurious lateral motion) -- reproduced with no new leader/decision code.

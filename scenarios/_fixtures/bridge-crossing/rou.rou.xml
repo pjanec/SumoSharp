@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Cross-regime bridge fixture: one laneless-RVO vehicle on the 7.2 m lane (centreline y=-3.6,
+         +x). The test injects an open-space ORCA pedestrian crossing the lane in y; vehicle and
+         pedestrian must MUTUALLY avoid. maxSpeed capped so per-step motion is moderate. No golden. -->
+    <vType id="car" vClass="passenger" sigma="0" maxSpeed="5"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="v0" type="car" route="r0" depart="0" departPos="0" departSpeed="0"/>
+</routes>
