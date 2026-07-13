@@ -1,20 +1,29 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
+using static Sim.Viz.PayloadBuilder;
 
-// VB-1..VB-4 (VIZ_BENCH_TASKS.md / VIZ_SPEC.md): reads a scenario directory's net + fcd + rou,
-// builds the compact REPLAY_DATA JSON payload the committed front-end template consumes, and
-// writes a fully self-contained `replay.html` next to the inputs.
+namespace Sim.Viz;
+
+// VB-1..VB-4 (VIZ_SPEC.md): builds the compact REPLAY_DATA JSON the committed front-end template
+// consumes and writes a fully self-contained HTML replay. REPLAY_DATA is now a UNIFIED multi-scene
+// payload `{ scenes: [ SCENE, ... ] }` (see Payload.cs); the template renders one scene at a time
+// with a scene selector.
 //
-// Usage:
+// Two modes:
 //   dotnet run --project src/Sim.Viz -- <scenarioDir> [--fcd <path>]
+//       Single-scenario mode (unchanged behaviour): reads a scenario dir's net+fcd+rou and writes
+//       <scenarioDir>/replay.html. The one scenario is wrapped as a one-element scenes array, so it
+//       shares the exact same template path as the bundle.
 //
-// Default FCD input is <scenarioDir>/golden.fcd.xml; pass --fcd to point at an engine
-// engine.fcd.xml (VB-0's Sim.Run output) instead. Not part of `dotnet test` -- a utility, like
-// Sim.Run/Sim.Bench.
+//   dotnet run --project src/Sim.Viz -- --bundle <outPath>
+//       Bundle mode (NEW): assembles the five showcase scenes (two FCD laneless/sublane scenarios
+//       plus three programmatically-generated open-space/cross-regime crowd scenes) into ONE
+//       self-contained HTML written to <outPath>.
+//
+// Not part of `dotnet test` -- a utility, and never touches the parity engine's inputs/goldens.
 internal static class Program
 {
     private static int Main(string[] args)
@@ -22,9 +31,18 @@ internal static class Program
         if (args.Length == 0 || args[0] is "-h" or "--help")
         {
             Console.Error.WriteLine("usage: Sim.Viz <scenarioDir> [--fcd <path>]");
+            Console.Error.WriteLine("       Sim.Viz --bundle <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
+        return args[0] == "--bundle" ? RunBundle(args) : RunSingle(args);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Single-scenario mode (backwards compatible).
+    // ---------------------------------------------------------------------------------------
+    private static int RunSingle(string[] args)
+    {
         var scenarioDir = args[0];
         if (!Directory.Exists(scenarioDir))
         {
@@ -46,6 +64,100 @@ internal static class Program
             }
         }
 
+        var scene = BuildFcdScene(scenarioDir, fcdOverride, out var err);
+        if (scene is null)
+        {
+            Console.Error.WriteLine(err);
+            return 2;
+        }
+
+        var payload = new ReplayData(new[] { scene });
+        var outPath = Path.Combine(scenarioDir, "replay.html");
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        Console.WriteLine(
+            $"wrote {outPath}  (scene='{scene.Name}', lanes={scene.Network?.Lanes.Length ?? 0}, " +
+            $"frames={scene.Frames.Length}, dt={scene.Dt:0.###})");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Bundle mode: the five-scene laneless showcase.
+    // ---------------------------------------------------------------------------------------
+    private static int RunBundle(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --bundle requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+        var scenarios = Path.Combine(repoRoot, "scenarios");
+
+        var scenes = new List<ScenePayload>();
+
+        // Scene A -- FCD "Laneless overtake" (8 vehicles, lateral RVO).
+        scenes.Add(RequireFcdScene(
+            Path.Combine(scenarios, "65-mixed-sublane"),
+            "Laneless overtake",
+            "Eight vehicles on a laneless (sub-lane) road overtaking with continuous lateral RVO. "
+            + "Replayed from the committed SUMO golden FCD trajectory."));
+
+        // Scene B -- FCD "Sublane overtake" (a follower drifts to pass).
+        scenes.Add(RequireFcdScene(
+            Path.Combine(scenarios, "63-sublane-overtake-wide"),
+            "Sublane overtake",
+            "A faster follower drifts laterally within a wide lane to pass the vehicle ahead. "
+            + "Replayed from the committed SUMO golden FCD trajectory."));
+
+        // Scenes C/D/E -- programmatically generated from the engine's ORCA layer (no golden FCD).
+        scenes.Add(SceneGen.BuildCarAvoidsPedestrian(Path.Combine(scenarios, "_fixtures", "bridge-crossing")));
+        scenes.Add(SceneGen.BuildCounterFlow());
+        scenes.Add(SceneGen.BuildCrossing());
+
+        var payload = new ReplayData(scenes.ToArray());
+        if (!WriteHtml(payload, "Laneless showcase", outPath))
+        {
+            return 2;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine($"wrote {outPath}  ({size} bytes, {scenes.Count} scenes)");
+        foreach (var s in scenes)
+        {
+            Console.WriteLine(
+                $"  - {s.Name}: network={(s.Network is null ? "none" : s.Network.Lanes.Length + " lanes")}, " +
+                $"frames={s.Frames.Length}, dt={s.Dt:0.###}");
+        }
+
+        return 0;
+    }
+
+    private static ScenePayload RequireFcdScene(string scenarioDir, string name, string desc)
+    {
+        var scene = BuildFcdScene(scenarioDir, null, out var err, name, desc);
+        return scene ?? throw new InvalidOperationException(err);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // FCD scene builder: reads a scenario dir's net + rou + golden FCD and turns it into a SCENE
+    // (network + vehicle-box frames). Reuses the original single-scenario derivation. Returns null
+    // (with `err` set) if the inputs are missing, so the single-scenario CLI can report cleanly.
+    // ---------------------------------------------------------------------------------------
+    private static ScenePayload? BuildFcdScene(
+        string scenarioDir,
+        string? fcdOverride,
+        out string err,
+        string? name = null,
+        string? desc = null)
+    {
+        err = string.Empty;
+
         var netPath = SingleFile(scenarioDir, "*.net.xml");
         var rouPath = SingleFile(scenarioDir, "*.rou.xml");
         var cfgPath = SingleFile(scenarioDir, "*.sumocfg");
@@ -53,16 +165,15 @@ internal static class Program
 
         if (netPath is null || rouPath is null)
         {
-            Console.Error.WriteLine(
-                $"error: scenario dir must contain exactly one each of *.net.xml, *.rou.xml " +
-                $"(found net={netPath}, rou={rouPath})");
-            return 2;
+            err = $"error: scenario dir must contain exactly one each of *.net.xml, *.rou.xml " +
+                  $"(found net={netPath}, rou={rouPath})";
+            return null;
         }
 
         if (!File.Exists(fcdPath))
         {
-            Console.Error.WriteLine($"error: FCD file not found: {fcdPath}");
-            return 2;
+            err = $"error: FCD file not found: {fcdPath}";
+            return null;
         }
 
         var network = NetworkParser.Parse(netPath);
@@ -70,9 +181,112 @@ internal static class Program
         var trajectorySet = FcdParser.Parse(fcdPath);
         var config = cfgPath is not null ? ScenarioConfigParser.Parse(cfgPath) : null;
 
-        var payload = BuildPayload(Path.GetFileName(Path.GetFullPath(scenarioDir).TrimEnd('/', '\\')),
-            network, demand, trajectorySet, config);
+        var sceneName = name ?? Path.GetFileName(Path.GetFullPath(scenarioDir).TrimEnd('/', '\\'));
 
+        var networkPayload = BuildNetwork(network);
+
+        // Camera view = the extent of the network geometry plus every trajectory sample.
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in networkPayload.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in networkPayload.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        // Resolve one shared vehicle box dimension for the scene (VIZ_SPEC unified model uses a
+        // single vdim per scene). Use the first vehicle's resolved vType; the committed sublane
+        // scenarios are homogeneous passenger traffic, so this is representative.
+        var vehicleTypeById = demand.Vehicles.ToDictionary(v => v.Id, v => v.TypeId);
+        double vehLength = 0, vehWidth = 0;
+        foreach (var vid in trajectorySet.VehicleIds)
+        {
+            if (vehicleTypeById.TryGetValue(vid, out var t) && demand.VTypesById.TryGetValue(t, out var vType))
+            {
+                var resolved = VTypeDefaults.Resolve(vType);
+                vehLength = resolved.Length;
+                vehWidth = resolved.Width;
+                break;
+            }
+        }
+
+        if (vehLength <= 0)
+        {
+            var fallback = VTypeDefaults.Resolve(new VType("__default__", "passenger", Sigma: null));
+            vehLength = fallback.Length;
+            vehWidth = fallback.Width;
+        }
+
+        // Fixed vehicle slots: a stable index per vehicle id (sorted for determinism), so slot i is
+        // always the same vehicle across frames; a vehicle absent in a frame is null in its slot.
+        var orderedIds = trajectorySet.VehicleIds.OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        var slotById = new Dictionary<string, int>(orderedIds.Length);
+        for (var i = 0; i < orderedIds.Length; i++) slotById[orderedIds[i]] = i;
+
+        // Group FCD points by timestep.
+        var byTime = new SortedDictionary<double, Dictionary<string, (double X, double Y, double A)>>();
+        foreach (var point in trajectorySet.AllPoints)
+        {
+            if (!byTime.TryGetValue(point.Time, out var atTime))
+            {
+                atTime = new Dictionary<string, (double, double, double)>();
+                byTime[point.Time] = atTime;
+            }
+
+            atTime[point.VehicleId] = (point.X, point.Y, point.Angle);
+            Track(point.X, point.Y);
+        }
+
+        var frames = new FramePayload[byTime.Count];
+        var noDiscs = Array.Empty<double[]>();
+        var fi = 0;
+        foreach (var kv in byTime)
+        {
+            var v = new double[orderedIds.Length][];
+            foreach (var (vid, st) in kv.Value)
+            {
+                v[slotById[vid]] = new[] { R(st.X), R(st.Y), R(st.A) };
+            }
+
+            frames[fi++] = new FramePayload(v, noDiscs);
+        }
+
+        var times = byTime.Keys.ToArray();
+        var dt = times.Length > 1 ? times[1] - times[0] : config?.StepLength ?? 1.0;
+
+        if (double.IsInfinity(minX))
+        {
+            minX = minY = 0;
+            maxX = maxY = 1;
+        }
+
+        return new ScenePayload(
+            sceneName,
+            desc ?? sceneName,
+            new[] { R(minX), R(minY), R(maxX), R(maxY) },
+            networkPayload,
+            new[] { vehLength, vehWidth },
+            dt,
+            frames);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Shared HTML writer: serialize the payload and inject it + the template JS into template.html.
+    // ---------------------------------------------------------------------------------------
+    private static bool WriteHtml(ReplayData payload, string title, string outPath)
+    {
         var jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -88,24 +302,18 @@ internal static class Program
         {
             Console.Error.WriteLine(
                 $"error: template files not found next to the built exe ({templateHtmlPath}, {templateJsPath})");
-            return 2;
+            return false;
         }
 
         var html = File.ReadAllText(templateHtmlPath);
         var js = File.ReadAllText(templateJsPath);
 
-        html = html.Replace("__SCENARIO_NAME__", payload.Scenario);
+        html = html.Replace("__SCENARIO_NAME__", title);
         html = html.Replace("/*REPLAY_DATA*/", json);
         html = html.Replace("/*TEMPLATE_JS*/", js);
 
-        var outPath = Path.Combine(scenarioDir, "replay.html");
         File.WriteAllText(outPath, html);
-
-        Console.WriteLine(
-            $"wrote {outPath}  (lanes={payload.Network.Lanes.Length}, junctions={payload.Network.Junctions.Length}, " +
-            $"vehicles={payload.Vehicles.Count}, steps={payload.Trajectory.Length}, " +
-            $"t=[{payload.SimStart:0.###},{payload.SimEnd:0.###}])");
-        return 0;
+        return true;
     }
 
     private static string? SingleFile(string dir, string pattern)
@@ -114,198 +322,15 @@ internal static class Program
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    private static ReplayData BuildPayload(
-        string scenarioName,
-        NetworkModel network,
-        DemandModel demand,
-        TrajectorySet trajectorySet,
-        ScenarioConfig? config)
+    private static string RepoRoot()
     {
-        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
-        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
-
-        void Track(double x, double y)
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Traffic.sln")))
         {
-            if (x < minX) minX = x;
-            if (y < minY) minY = y;
-            if (x > maxX) maxX = x;
-            if (y > maxY) maxY = y;
+            dir = dir.Parent;
         }
 
-        var lanes = new LanePayload[network.LanesByHandle.Count];
-        for (var i = 0; i < network.LanesByHandle.Count; i++)
-        {
-            var lane = network.LanesByHandle[i];
-            var flat = new double[lane.Shape.Count * 2];
-            for (var p = 0; p < lane.Shape.Count; p++)
-            {
-                var (x, y) = lane.Shape[p];
-                flat[p * 2] = x;
-                flat[p * 2 + 1] = y;
-                Track(x, y);
-            }
-
-            lanes[i] = new LanePayload(lane.Id, lane.EdgeId, lane.Index, lane.Width, flat);
-        }
-
-        var junctions = new List<JunctionPayload>();
-        foreach (var junction in network.Junctions)
-        {
-            if (junction.Shape.Count == 0)
-            {
-                continue;
-            }
-
-            var flat = new double[junction.Shape.Count * 2];
-            for (var p = 0; p < junction.Shape.Count; p++)
-            {
-                var (x, y) = junction.Shape[p];
-                flat[p * 2] = x;
-                flat[p * 2 + 1] = y;
-                Track(x, y);
-            }
-
-            junctions.Add(new JunctionPayload(junction.Id, flat));
-        }
-
-        var tls = network.TlLogicsById.Values
-            .Select(tl => new TlLogicPayload(
-                tl.Id,
-                tl.Offset,
-                tl.Phases.Select(p => new TlPhasePayload(p.Duration, p.State)).ToArray()))
-            .ToArray();
-
-        // Signal heads: one per TL-controlled <connection>, placed at the stop-line end (arc
-        // length = the from-lane's own Length) of that lane -- VIZ_SPEC.md "Traffic lights"
-        // layer. LaneGeometry.PositionAtOffset is the exact same derivation the engine already
-        // uses for FCD x/y, so the marker sits precisely at the lane's physical end point.
-        var signals = new List<SignalHeadPayload>();
-        foreach (var connection in network.Connections)
-        {
-            if (connection.Tl is null || connection.LinkIndex is null)
-            {
-                continue;
-            }
-
-            if (!network.EdgesById.TryGetValue(connection.From, out var fromEdge))
-            {
-                continue;
-            }
-
-            var fromLane = fromEdge.Lanes.FirstOrDefault(l => l.Index == connection.FromLane);
-            if (fromLane is null)
-            {
-                continue;
-            }
-
-            var (x, y, angle) = LaneGeometry.PositionAtOffset(fromLane.Shape, fromLane.Length);
-            signals.Add(new SignalHeadPayload(connection.Tl, connection.LinkIndex.Value, x, y, angle));
-        }
-
-        var networkPayload = new NetworkPayload(lanes, junctions.ToArray(), tls, signals.ToArray());
-
-        // Vehicle dimension records: join FCD vehicle id -> rou.xml <vehicle type=...> ->
-        // <vType> -> VTypeDefaults.Resolve (VIZ_SPEC.md "Inputs" #3). Vehicles that appear in
-        // the FCD but have no matching rou.xml <vehicle> (shouldn't happen for the committed
-        // scenarios, but tolerated) fall back to a default resolved passenger vType rather than
-        // failing the export.
-        var vehicleTypeById = demand.Vehicles.ToDictionary(v => v.Id, v => v.TypeId);
-        var fallbackVType = VTypeDefaults.Resolve(new VType("__default__", "passenger", Sigma: null));
-
-        var vehicles = new Dictionary<string, VehicleInfoPayload>();
-        foreach (var vehicleId in trajectorySet.VehicleIds)
-        {
-            // External-agent naming convention (Sim.ExtDemo/CombinedFcdObserver.RenderId): an
-            // agent injected OUTSIDE SUMO via the B1/B5 obstacle API is never a real vehicle in
-            // this scenario's rou.xml (adding one there would make the ENGINE itself simulate it
-            // as a normal car -- exactly what it must not be), so the usual rou.xml join below
-            // can never resolve it. Recognize it by its "ext_pedestrian_"/"ext_car_" id prefix
-            // instead and assign fixed dimensions/vClass directly -- the vClass string doubles as
-            // the palette key template.js's VCLASS_COLORS.ext_pedestrian/ext_car resolve against.
-            if (vehicleId.StartsWith("ext_pedestrian_", StringComparison.Ordinal))
-            {
-                vehicles[vehicleId] = new VehicleInfoPayload("ext_pedestrian", "ext_pedestrian", 0.5, 0.5);
-                continue;
-            }
-
-            if (vehicleId.StartsWith("ext_car_", StringComparison.Ordinal))
-            {
-                vehicles[vehicleId] = new VehicleInfoPayload("ext_car", "ext_car", 4.5, 1.9);
-                continue;
-            }
-
-            ResolvedVType resolved;
-            string typeId;
-            if (vehicleTypeById.TryGetValue(vehicleId, out var t) && demand.VTypesById.TryGetValue(t, out var vType))
-            {
-                typeId = t;
-                resolved = VTypeDefaults.Resolve(vType);
-            }
-            else
-            {
-                typeId = vehicleTypeById.GetValueOrDefault(vehicleId, "passenger0");
-                resolved = fallbackVType;
-            }
-
-            vehicles[vehicleId] = new VehicleInfoPayload(typeId, resolved.VClass, resolved.Length, resolved.Width);
-        }
-
-        // Trajectory: one entry per distinct FCD timestep, each carrying every vehicle present
-        // at that step (VIZ_SPEC.md "Real-time clock" -- the front end interpolates between
-        // bracketing steps and stops drawing a vehicle absent from the next one).
-        var byTime = new SortedDictionary<double, Dictionary<string, VehicleStatePayload>>();
-        foreach (var point in trajectorySet.AllPoints)
-        {
-            if (!byTime.TryGetValue(point.Time, out var atTime))
-            {
-                atTime = new Dictionary<string, VehicleStatePayload>();
-                byTime[point.Time] = atTime;
-            }
-
-            atTime[point.VehicleId] = new VehicleStatePayload(point.X, point.Y, point.Angle, point.Speed);
-        }
-
-        var trajectory = byTime.Select(kv => new StepPayload(kv.Key, kv.Value)).ToArray();
-        var simStart = trajectory.Length > 0 ? trajectory[0].T : config?.Begin ?? 0.0;
-        var simEnd = trajectory.Length > 0 ? trajectory[^1].T : config?.End ?? 0.0;
-        var stepSize = trajectory.Length > 1 ? trajectory[1].T - trajectory[0].T : config?.StepLength ?? 1.0;
-
-        var bbox = new BboxPayload(minX, minY, maxX, maxY);
-
-        return new ReplayData(scenarioName, networkPayload, vehicles, trajectory, simStart, simEnd, stepSize, bbox);
+        return dir?.FullName
+            ?? throw new InvalidOperationException("Could not locate repo root (Traffic.sln not found above the exe).");
     }
-
-    private sealed record LanePayload(string Id, string EdgeId, int Index, double Width, double[] Shape);
-
-    private sealed record JunctionPayload(string Id, double[] Shape);
-
-    private sealed record TlPhasePayload(double Duration, string State);
-
-    private sealed record TlLogicPayload(string Id, double Offset, TlPhasePayload[] Phases);
-
-    private sealed record SignalHeadPayload(string Tl, int LinkIndex, double X, double Y, double Angle);
-
-    private sealed record NetworkPayload(
-        LanePayload[] Lanes,
-        JunctionPayload[] Junctions,
-        TlLogicPayload[] Tls,
-        SignalHeadPayload[] Signals);
-
-    private sealed record VehicleInfoPayload(string Type, string VClass, double Length, double Width);
-
-    private sealed record VehicleStatePayload(double X, double Y, double Angle, double Speed);
-
-    private sealed record StepPayload(double T, Dictionary<string, VehicleStatePayload> V);
-
-    private sealed record BboxPayload(double MinX, double MinY, double MaxX, double MaxY);
-
-    private sealed record ReplayData(
-        string Scenario,
-        NetworkPayload Network,
-        Dictionary<string, VehicleInfoPayload> Vehicles,
-        StepPayload[] Trajectory,
-        double SimStart,
-        double SimEnd,
-        double StepSize,
-        BboxPayload Bbox);
 }
