@@ -60,6 +60,41 @@ public sealed partial class Engine : IEngine
     // so which thread first computes a given key can never change the result (determinism preserved).
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string RouteId, string EdgeId), IReadOnlyList<LaneContinuation>> _bestLanesCache = new();
 
+    // Bugfix (surfaced by PANIC-EVAC-PHASE5-DESIGN.md T2.1 on a 2-lanes-per-edge net):
+    // RerouteActive/UpdateReroutes replace an ACTIVE vehicle's remaining LANE sequence
+    // (LaneSeqStart/Len) via the command buffer, but v.Def.RouteId (the key `_routesById` and
+    // `_bestLanesCache` are keyed on) is `init`-only on VehicleRuntime and cannot be repointed.
+    // v.Def.RouteId is also frequently SHARED by other vehicles still on the ORIGINAL route (SUMO's
+    // route reuse -- <route id="r0"/> referenced by several <vehicle>s), so mutating
+    // `_routesById[v.Def.RouteId]` in place to reflect ONE rerouted vehicle's new path would corrupt
+    // every other vehicle still reading that same entry (TryStrategicLaneChange/KeepRightStrategicStay
+    // would then see edges that are not really theirs -- exactly the "edge is not part of the given
+    // route" crash this fixes). Instead, a rerouted vehicle gets its OWN synthetic route id, registered
+    // fresh in `_routesById` and remembered here by EntityIndex; `EffectiveRouteId` is consulted by the
+    // only two ACTIVE-vehicle-hot-path reads of `_routesById[v.Def.RouteId]` + `_bestLanesCache`
+    // (TryStrategicLaneChange, KeepRightStrategicStay) -- every other `_routesById[v.Def.RouteId]` read
+    // in this file is insertion-time only (a not-yet-active candidate can never have been rerouted) and
+    // is deliberately left untouched. Empty for
+    // every vehicle that never calls SetDestination/Reroute -- i.e. the entire golden/parity path,
+    // where this table is never written and every lookup falls through to v.Def.RouteId unchanged
+    // (byte-identical; hash 909605E965BFFE59 unmoved).
+    private readonly Dictionary<int, string> _effectiveRouteIdByEntity = new();
+    private int _rerouteRouteCounter;
+
+    private string EffectiveRouteId(VehicleRuntime v) =>
+        _effectiveRouteIdByEntity.TryGetValue(v.EntityIndex, out var id) ? id : v.Def.RouteId;
+
+    // Register `fullEdges` (starting at the vehicle's CURRENT edge, exactly like RerouteActive's/
+    // UpdateReroutes' own `newEdges`) as a fresh route this vehicle alone owns, so its own remaining
+    // path is always what `RouteFor`/`EffectiveRouteId` resolve to from here on, without touching the
+    // original (possibly shared) `_routesById[v.Def.RouteId]` entry at all.
+    private void RegisterRerouted(VehicleRuntime v, IReadOnlyList<string> fullEdges)
+    {
+        var newId = $"{v.Def.RouteId}__reroute{v.EntityIndex}_{_rerouteRouteCounter++}";
+        _routesById[newId] = new Route(newId, new List<string>(fullEdges));
+        _effectiveRouteIdByEntity[v.EntityIndex] = newId;
+    }
+
     // R4 (rail signal): for each lane whose outgoing connection is controlled by a rail_signal
     // junction, the set of "conflict lane" HANDLES that must be clear for the signal to show green --
     // ported from MSRailSignal::DriveWay::conflictLaneOccupied (the driveway's forward block's bidi
@@ -1021,6 +1056,8 @@ public sealed partial class Engine : IEngine
         _laneSeqArrival.Clear();
         _stopsByEntity.Clear();
         _avoidedByEntity.Clear();
+        _effectiveRouteIdByEntity.Clear(); // reroute-registered ids belong to the previous scenario
+        _rerouteRouteCounter = 0;
         _freeEntitySlots.Clear(); // §9: recycled slots belong to the previous scenario's index space
         _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
         _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
@@ -1905,6 +1942,8 @@ public sealed partial class Engine : IEngine
     // buffer (this runs between steps, so the buffer is empty and Flush takes effect at once).
     private void RerouteActive(VehicleRuntime v, IReadOnlyList<string> newEdges)
     {
+        RegisterRerouted(v, newEdges);   // keep _routesById/BestLanes reads (see field header) in sync
+
         var laneIndex = _network!.LanesByHandle[v.LaneHandle].Index;
         var (newPoolSeq, newArrivalSeq) = _network.ResolveLaneSequenceHandlesWithArrival(newEdges, laneIndex);
         var newLaneSeqStart = _laneSeqPool.Count;
@@ -3089,6 +3128,8 @@ public sealed partial class Engine : IEngine
             // at the end of this method (matching today's timing exactly -- nothing later in
             // THIS SAME iteration or any other vehicle's iteration this loop reads v's
             // LaneSeqStart/Len/Index after this point, see UpdateReroutes' own D5 comment below).
+            RegisterRerouted(v, newEdges);   // keep _routesById/BestLanes reads in sync (see field header)
+
             var laneIndex = _network.LanesByHandle[v.LaneHandle].Index;
             // C2-v: append BOTH the Exit (pool) and Arrival slices in lockstep (they share
             // LaneSeqStart/Len). The reroute keeps the vehicle physically where it is (arrival[0] ==
@@ -7854,13 +7895,14 @@ public sealed partial class Engine : IEngine
 
     private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
     {
-        var route = _routesById[v.Def.RouteId];
+        var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
+        var route = _routesById[routeId];
         if (route.Edges.Count <= 1)
         {
             return false;
         }
 
-        var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, fromLane.EdgeId);
+        var bestLanes = BestLanesCached(routeId, route.Edges, fromLane.EdgeId);
         var currContinues = false;
         var rightLeavesRoute = false;
         var rightSoon = false;
@@ -8012,8 +8054,9 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        var route = _routesById[v.Def.RouteId];
-        var bestLanes = BestLanesCached(v.Def.RouteId, route.Edges, lane.EdgeId);
+        var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
+        var route = _routesById[routeId];
+        var bestLanes = BestLanesCached(routeId, route.Edges, lane.EdgeId);
 
         LaneContinuation? curr = null;
         foreach (var continuation in bestLanes)
