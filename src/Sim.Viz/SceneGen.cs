@@ -597,10 +597,14 @@ internal static class SceneGen
     }
 
     // ---------------------------------------------------------------------------------------
-    // Scene -- "Panic evacuation" (docs/PANIC-EVAC-DESIGN.md S6): the organized-traffic-to-panic
-    // transition on the evac grid. Driven end-to-end through EvacGridScenario.Build (the same fixture
-    // EvacSpineTests uses), so the viz exercises the exact public seams the tests do -- Engine for the
-    // driving core, EvacDirector for the external panic/pedestrian layer.
+    // Scene -- "Panic evacuation" (docs/PANIC-EVAC-DESIGN.md S6 / docs/EVAC-DEMO-TLS.md): the
+    // organized-traffic-to-panic transition on the richer, SIGNALIZED evac grid. Driven end-to-end
+    // through EvacTlsScenario.Build (the TLS sibling of the fixture EvacSpineTests/EvacPhase*Tests
+    // use), so the viz exercises the exact public seams the tests do -- Engine for the driving core
+    // (including the net's <tlLogic> TLS programs, built by Engine.InitializeLoaded on the
+    // LoadNetwork path same as LoadScenario), EvacDirector for the external panic/pedestrian layer.
+    // The original (untouched) EvacGridScenario/evac-grid demo stays pinned by its own tests; this
+    // scene is the denser, signalized successor used for the opening viz.
     // ---------------------------------------------------------------------------------------
     private const int KindFleeing = 4;    // #38bdf8 -- fleeing pedestrian
     private const int KindEscaped = 5;    // #34d399 -- escaped pedestrian
@@ -609,13 +613,9 @@ internal static class SceneGen
 
     internal static ScenePayload BuildEvacGrid(string repoRoot)
     {
-        var netPath = Path.Combine(repoRoot, "scenarios", "evac-grid", "net.net.xml");
-        // VIZ-ONLY incident: smaller than EvacGridScenario.DefaultIncident (radius 140, which
-        // saturates direct line-of-sight across the whole grid) so the panic front visibly spreads
-        // outward from the incident instead of the whole grid panicking at once. Local override --
-        // does not touch EvacGridScenario.DefaultIncident / DefaultConfig.
-        var vizIncident = new Sim.Evac.Incident(X: 180.0, Y: 180.0, StartTime: 8.0, Radius: 60.0);
-        var (engine, director, _) = Sim.Evac.EvacGridScenario.Build(netPath, vizIncident);
+        var netPath = Path.Combine(repoRoot, "scenarios", "evac-grid-tls", "net.net.xml");
+        var incidentSpec = Sim.Evac.EvacTlsScenario.DefaultIncident;
+        var (engine, director, _) = Sim.Evac.EvacTlsScenario.Build(netPath, incidentSpec);
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var slotByHandle = new Dictionary<uint, int>();
@@ -677,10 +677,10 @@ internal static class SceneGen
             R(nm.MinX), R(nm.MinY), R(nm.MinX), R(nm.MaxY), R(nm.MaxX), R(nm.MaxY), R(nm.MaxX), R(nm.MinY),
         };
 
-        var cfg = Sim.Evac.EvacGridScenario.DefaultConfig();
+        var cfg = Sim.Evac.EvacTlsScenario.DefaultConfig();
         var incident = new[]
         {
-            R(vizIncident.X), R(vizIncident.Y), R(vizIncident.Radius), R(vizIncident.StartTime), R(cfg.SafeRadius),
+            R(incidentSpec.X), R(incidentSpec.Y), R(incidentSpec.Radius), R(incidentSpec.StartTime), R(cfg.SafeRadius),
         };
 
         var labels = new string[9];
@@ -698,7 +698,7 @@ internal static class SceneGen
             new double[] { R(nm.MinX), R(nm.MinY), R(nm.MaxX), R(nm.MaxY) },
             network,
             new double[] { 5.0, 1.8 },
-            Sim.Evac.EvacGridScenario.StepLength,
+            Sim.Evac.EvacTlsScenario.StepLength,
             frames.ToArray(),
             labels,
             incident,
