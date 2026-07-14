@@ -72,6 +72,22 @@ public sealed class EngineHost : IDisposable
         }
     }
 
+    // The two latest published frames as an ATOMIC pair (both read under one lock), for render-behind
+    // interpolation in the viewer -- reading Snapshot and PreviousSnapshot separately could straddle a tick
+    // and pair frames from different moments. Cur is the newest; Prev is the one before (== Cur on the very
+    // first frame, before two exist). The pool is sized (EnableSnapshotPool below) so both stay valid for a
+    // render frame even if the sim ticks once meanwhile.
+    public (SimulationSnapshot Cur, SimulationSnapshot Prev) SnapshotPair
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return (_runner.Snapshot, _runner.PreviousSnapshot);
+            }
+        }
+    }
+
     // Current state of the runtime random-traffic spawner, for the ImGui checkbox binding.
     public bool RandomTraffic => _randomTraffic;
 
@@ -205,7 +221,10 @@ public sealed class EngineHost : IDisposable
             _truckType = engine.DefineVType(new VTypeParams { VClass = "truck", Length = 12.0 });
 
             var runner = new SimulationRunner(engine);
-            runner.EnableSnapshotPool(capacity: 3);
+            // Capacity 4 (was 3): the viewer holds BOTH the newest and previous frame across a render frame
+            // for interpolation (SnapshotPair), so the pool needs enough spare buffers that a sim tick (or
+            // two, at a high sim rate + a slow render frame) can't recycle the buffer we're still reading.
+            runner.EnableSnapshotPool(capacity: 4);
             // Local mode has no dead reckoning to smooth over sparse updates, so a higher rate than the web
             // demo's 2 Hz is fine -- the renderer draws the authoritative Snapshot every frame. The live
             // sim-rate slider drives SpeedMultiplier on top of this base (re-applied here so a Restart keeps

@@ -75,20 +75,14 @@ public static class Renderer
         };
     }
 
-    // Full-world draw (roads + dynamic overlay). Retained for any non-cached caller; the interactive/perf
-    // loop instead calls DrawStaticWorld (once per camera change, into a RoadLayerCache RenderTexture) plus
-    // DrawDynamicWorld (every frame) so a huge static net (e.g. scenarios/_bench/city-15000, ~13k edges) is
-    // not re-stroked every frame -- docs/SUMOSHARP-NATIVE-VIEWER-TESTING.md TASK 1.
-    public static void DrawWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host)
-    {
-        DrawStaticWorld(camera, network);
-        DrawDynamicWorld(camera, network, snapshot, host);
-    }
+    // The world is drawn in two halves so a huge static net (e.g. scenarios/_bench/city-15000, ~13k edges)
+    // is not re-stroked every frame -- docs/SUMOSHARP-NATIVE-VIEWER-TESTING.md TASK 1. The interactive/perf
+    // loop calls DrawStaticWorld once per camera change (baked into a RoadLayerCache RenderTexture) plus
+    // DrawDynamicWorld every frame.
 
-    // The camera-static half of the world: background + roads + lane markings. Identical output to the road
-    // passes DrawWorld used to inline -- factored out so RoadLayerCache can bake it into a RenderTexture and
-    // re-run it ONLY when the camera changes (pan/zoom), not every frame. Clears the background itself so the
-    // baked texture is opaque and its blit fully replaces the frame's ClearBackground.
+    // The camera-static half of the world: background + roads + lane markings. Factored out so RoadLayerCache
+    // can bake it into a RenderTexture and re-run it ONLY when the camera changes (pan/zoom), not every frame.
+    // Clears the background itself so the baked texture is opaque and its blit fully replaces ClearBackground.
     public static void DrawStaticWorld(Camera2D camera, NetworkModel network)
     {
         Raylib.ClearBackground(Background);
@@ -166,9 +160,13 @@ public static class Renderer
     }
 
     // The per-frame-dynamic half of the world: traffic-light dots (colour changes every step), vehicles, and
-    // injected obstacles. Drawn live every frame over the baked static road layer -- same output as the tail
-    // of the old monolithic DrawWorld.
-    public static void DrawDynamicWorld(Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host)
+    // injected obstacles. Drawn live every frame over the baked static road layer. Vehicles are passed in as
+    // an already-resolved list (`vehicles`) rather than read straight off the snapshot, so the caller can
+    // interpolate 10 Hz sim frames up to the 60 Hz render rate -- Program.cs builds it (raw or render-behind
+    // interpolated); TL dots and obstacles still come live from the authoritative snapshot/host.
+    public static void DrawDynamicWorld(
+        Camera2D camera, NetworkModel network, SimulationSnapshot snapshot, EngineHost host,
+        IReadOnlyList<DrVehicleDraw> vehicles)
     {
         Raylib.BeginMode2D(camera);
 
@@ -194,33 +192,7 @@ public static class Renderer
             Raylib.DrawCircleV(Flip(ex, ey), tlRadius, TlColor((char)snapshot.TlState[i]));
         }
 
-        // Vehicles: oriented rectangles sized Length x Width (world metres), positioned at the SUMO FRONT
-        // reference point (SimulationSnapshot.PosX/PosY -- PoseResolver.cs: "Position is the vehicle's
-        // front reference, matching SUMO getPosition"), rotated to match Angle (navi-deg, 0=N clockwise).
-        // Fill colour is speed-graded (HtmlPage.cs draw()'s speedColor(pk.s)) -- red = stopped, green =
-        // free-flow.
-        for (var i = 0; i < snapshot.Count; i++)
-        {
-            var front = Flip(snapshot.PosX[i], snapshot.PosY[i]);
-            var length = Math.Max(0.5f / camera.Zoom, snapshot.Length[i]);
-            var width = Math.Max(0.3f / camera.Zoom, snapshot.Width[i]);
-
-            // navi-deg (0=N, cw) -> world dir (sin,cos) -> screen dir (x,-y flip) -> screen rotation angle,
-            // matching HtmlPage.cs draw()'s `nr`/`sa` computation exactly:
-            //   nr = deg*PI/180; sa = atan2(-cos(nr), sin(nr))
-            var nr = snapshot.Angle[i] * MathF.PI / 180f;
-            var sa = MathF.Atan2(-MathF.Cos(nr), MathF.Sin(nr));
-            var rotationDeg = sa * 180f / MathF.PI;
-
-            // The front sits at the rectangle's local (width=length, height/2) point -- i.e. the body
-            // trails BEHIND the front along local -x, matching the browser's `ctx.rect(-L,-W/2,L,W)` drawn
-            // at a translate-origin of the front point (HtmlPage.cs draw()). raylib's DrawRectanglePro
-            // subtracts `origin` from the (width,height) box before rotating/translating to `rec.x,rec.y`,
-            // so origin=(length,width/2) reproduces that same occupied range [-length,0] x [-width/2,width/2].
-            var rec = new Rectangle(front.X, front.Y, length, width);
-            var origin = new Vector2(length, width / 2f);
-            Raylib.DrawRectanglePro(rec, origin, rotationDeg, SpeedColor(snapshot.SpeedExact[i]));
-        }
+        DrawVehicleList(camera, vehicles);
 
         // Obstacles: a red X at each injected obstacle's projected world point (HtmlPage.cs draw()'s
         // "obstacles" section).
@@ -321,10 +293,10 @@ public static class Renderer
     // `fpsCap` is the render frame-rate cap in fps, with 0 meaning "unlimited"; the radio here mutates it and
     // pushes the change straight to Raylib.SetTargetFPS so the choice takes effect on the next frame. It's a
     // ref because Program.cs owns the value (it sets the initial cap before the loop) -- see RunLocal.
-    public static void DrawControlsPanel(EngineHost host, ref int fpsCap)
+    public static void DrawControlsPanel(EngineHost host, ref int fpsCap, ref bool smooth)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(360, 300), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(360, 330), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - controls");
         ImGui.Text(host.ScenarioMode ? "mode: SCENARIO" : "mode: SANDBOX");
         ImGui.Separator();
@@ -356,6 +328,11 @@ public static class Renderer
             host.SetSimStepsPerSecond(simRate);
         }
 
+        // Render-behind interpolation: blend the two latest authoritative snapshots up to the render rate so
+        // vehicles glide instead of teleporting once per sim step. Costs ~one sim-step of latency; off = draw
+        // the raw newest snapshot (the old jumpy behaviour), useful for an A/B or exact-frame inspection.
+        ImGui.Checkbox("smooth (interpolate)", ref smooth);
+
         // Render FPS cap: 30 / 60 / unlimited. Rendering at the hundreds of fps the GPU allows for a 10 Hz
         // sim is wasted work, so default to a real cap; "unlimited" (0) stays available for perf measurement.
         ImGui.Text("render fps cap:");
@@ -384,6 +361,9 @@ public static class Renderer
         ImGui.Separator();
         ImGui.Text($"vehicles: {snapshot.Count}");
         ImGui.Text($"sim time: {snapshot.Time:F1}s   step: {snapshot.StepCount}");
+        // GC collection counts (gen0/1/2), to correlate any periodic frame hiccup with a collection. A
+        // climbing gen2 during hiccups points at GC pressure; flat counters rule GC out as the cause.
+        ImGui.Text($"GC gen0/1/2: {GC.CollectionCount(0)} / {GC.CollectionCount(1)} / {GC.CollectionCount(2)}");
         ImGui.End();
     }
 
@@ -483,8 +463,23 @@ public static class Renderer
             Raylib.DrawCircleV(Flip(ex, ey), tlRadius, TlColor((char)signal));
         }
 
-        foreach (var v in vehicles)
+        DrawVehicleList(camera, vehicles);
+
+        Raylib.EndMode2D();
+    }
+
+    // Draw a list of already-resolved vehicle poses as oriented rectangles -- shared by local (DrawDynamicWorld)
+    // and DDS (DrawWorldDds), which used identical loops. Each vehicle is sized Length x Width (world metres),
+    // positioned at the SUMO FRONT reference point, rotated to match its navi-deg heading (0=N, clockwise), and
+    // filled by speed-graded colour (red = stopped, green = free-flow). Caller has already called BeginMode2D.
+    //   navi-deg -> world dir (sin,cos) -> screen dir (x,-y flip) -> screen rotation, matching HtmlPage.cs's
+    //   `nr = deg*PI/180; sa = atan2(-cos(nr), sin(nr))`. The front sits at the rectangle's (length, width/2)
+    //   origin so the body trails behind the front along local -x (browser's `rect(-L,-W/2,L,W)` at the front).
+    private static void DrawVehicleList(Camera2D camera, IReadOnlyList<DrVehicleDraw> vehicles)
+    {
+        for (var i = 0; i < vehicles.Count; i++)
         {
+            var v = vehicles[i];
             var front = Flip(v.FrontX, v.FrontY);
             var length = Math.Max(0.5f / camera.Zoom, v.Length);
             var width = Math.Max(0.3f / camera.Zoom, v.Width);
@@ -497,8 +492,6 @@ public static class Renderer
             var origin = new Vector2(length, width / 2f);
             Raylib.DrawRectanglePro(rec, origin, rotationDeg, SpeedColor(v.SpeedExact));
         }
-
-        Raylib.EndMode2D();
     }
 
     // (float X, float Y)[] overloads of DrawDashedPolyline/DrawLaneChevron -- GeometryCodec.LaneGeo.Points

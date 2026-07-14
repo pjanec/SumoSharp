@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime;
 using CycloneDDS.Runtime;
 using Raylib_cs;
 using rlImGui_cs;
@@ -33,6 +34,12 @@ using Sim.Viewer.Core;
 // interactive slider's effect can be verified headlessly (can't be driven by mouse input under Xvfb).
 // `--seconds <n>` (P3): caps `--mode publish`'s otherwise-infinite loop to `n` wall-clock seconds, for
 // scripted/CI-style runs; omit it for a real long-lived headless publisher (Ctrl-C to stop).
+
+// Interactive viewer: prefer short, non-blocking GC pauses over throughput. SustainedLowLatency defers
+// blocking gen2 collections (trading some memory) so a background gen2 doesn't stall a render frame -- one
+// of the two things being chased for the ~2s frame hiccup (the other being per-frame allocations, now
+// removed on the render path). Applies to every mode; all are latency-sensitive.
+GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
 string? mode = null;
 string? inputPath = null;
@@ -209,6 +216,15 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     var perfWall = Stopwatch.StartNew();
     var lastPerfLog = 0.0;
 
+    // Render-behind interpolation state. renderClock is a sim-time cursor kept ~one sim-step behind the
+    // newest snapshot so each frame blends the two latest authoritative frames (10 Hz sim -> 60 Hz render
+    // without teleporting). vehicleDraws/prevIndex are reused every frame (Clear keeps capacity) so the
+    // smoothing adds no steady-state allocation. `smooth` is the panel toggle (default on).
+    var renderClock = 0.0;
+    var smooth = true;
+    var vehicleDraws = new List<Renderer.DrVehicleDraw>();
+    var prevIndex = new Dictionary<VehicleHandle, int>();
+
     // P1 drag-vs-click bookkeeping for the world camera (Camera2D pan/zoom/pick -- see Renderer.Flip's
     // doc comment for the world<->screen convention this camera operates in).
     var dragging = false;
@@ -286,11 +302,19 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
             }
         }
 
-        var snapshot = host.Snapshot;
-        roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
-        Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host);
+        // Atomic (cur, prev) pair; advance the render clock at the sim's speed and clamp it into the pair's
+        // [prev.Time, cur.Time] window, then blend. Clamping means we never extrapolate past the newest frame
+        // (starvation just freezes at cur) and we snap cleanly onto a new timeline after a restart.
+        var (snapshot, prevSnapshot) = host.SnapshotPair;
+        renderClock += Raylib.GetFrameTime() * host.SimStepsPerSecond;
+        if (renderClock > snapshot.Time) renderClock = snapshot.Time;
+        if (renderClock < prevSnapshot.Time) renderClock = prevSnapshot.Time;
+        BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex);
 
-        Renderer.DrawControlsPanel(host, ref fpsCap);
+        roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
+        Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host, vehicleDraws);
+
+        Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth);
         if (showDiagnostics)
         {
             Renderer.DrawDiagnosticsPanel(snapshot, frameStats);
@@ -836,6 +860,67 @@ static (double MinX, double MinY, double MaxX, double MaxY) ComputeGeometryBound
     }
 
     return (minX, minY, maxX, maxY);
+}
+
+// Render-behind interpolation for `--mode local`: fill `outDraws` with each current vehicle's draw pose,
+// blended from the matching vehicle in the previous authoritative frame toward the current one by the clock
+// fraction `a`. O(n) via a reused handle->index map (SimulationSnapshot.TryGetVehicle is a linear scan, so
+// per-vehicle lookups would be O(n^2) at 10k). Reuses `outDraws`/`prevIndex` (Clear keeps capacity) so a
+// warmed steady state allocates nothing. Falls back to the raw current frame when there's no distinct prior
+// frame to blend from (first frame / just after a restart / smoothing off).
+static void BuildLocalVehicleDraws(
+    SimulationSnapshot cur, SimulationSnapshot prev, double renderClock, bool smooth,
+    List<Renderer.DrVehicleDraw> outDraws, Dictionary<VehicleHandle, int> prevIndex)
+{
+    outDraws.Clear();
+
+    var span = cur.Time - prev.Time;
+    var interp = smooth && span > 1e-9 && prev.Count > 0 && !ReferenceEquals(prev, cur);
+
+    var a = 0f;
+    if (interp)
+    {
+        a = (float)((renderClock - prev.Time) / span);
+        if (a < 0f) a = 0f;
+        else if (a > 1f) a = 1f;
+
+        prevIndex.Clear();
+        for (var j = 0; j < prev.Count; j++)
+        {
+            prevIndex[prev.Handles[j]] = j;
+        }
+    }
+
+    for (var i = 0; i < cur.Count; i++)
+    {
+        float fx = cur.PosX[i], fy = cur.PosY[i], deg = cur.Angle[i];
+        double spd = cur.SpeedExact[i];
+
+        // Match by handle (spawn/despawn shuffles column indices between frames). A vehicle absent from the
+        // previous frame (just departed) is drawn at its raw current pose.
+        if (interp && prevIndex.TryGetValue(cur.Handles[i], out var j))
+        {
+            fx = prev.PosX[j] + (cur.PosX[i] - prev.PosX[j]) * a;
+            fy = prev.PosY[j] + (cur.PosY[i] - prev.PosY[j]) * a;
+            deg = LerpAngleDeg(prev.Angle[j], cur.Angle[i], a);
+            spd = prev.SpeedExact[j] + (cur.SpeedExact[i] - prev.SpeedExact[j]) * a;
+        }
+
+        outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd));
+    }
+}
+
+// Interpolate degrees along the shortest arc, so a heading crossing 0/360 (e.g. 350 -> 10) turns the short
+// way -- mirrors SimulationRunner.LerpAngleDeg (kept local; the runner's is internal). Straight lerp of
+// position + shortest-arc lerp of heading renders a smooth turn through a 90-deg junction; at 10 Hz the
+// chord-vs-arc position error between adjacent frames is sub-metre, so long vehicles round corners cleanly.
+static float LerpAngleDeg(float from, float to, float t)
+{
+    var delta = (to - from) % 360f;
+    if (delta > 180f) delta -= 360f;
+    else if (delta < -180f) delta += 360f;
+    var r = (from + delta * t) % 360f;
+    return r < 0f ? r + 360f : r;
 }
 
 // NOT Raylib.TakeScreenshot(path): raylib's TakeScreenshot silently drops the directory portion of `path`
