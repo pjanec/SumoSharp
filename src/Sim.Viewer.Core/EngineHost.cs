@@ -102,7 +102,7 @@ public sealed class EngineHost : IDisposable
     // positive range so the slider can't stall (0) or ask for an absurd catch-up.
     public void SetSimStepsPerSecond(double stepsPerSecond)
     {
-        _simStepsPerSecond = Math.Clamp(stepsPerSecond, 0.5, 60.0);
+        _simStepsPerSecond = Math.Clamp(stepsPerSecond, 0.1, 60.0);
         lock (_lock)
         {
             _runner.SpeedMultiplier = _simStepsPerSecond / BaseTickHz;

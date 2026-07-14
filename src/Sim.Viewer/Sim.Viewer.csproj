@@ -13,6 +13,13 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
+    <!-- Server + background GC for the interactive viewer: at 10k vehicles the engine's per-step churn
+         (Sim.Core, off-limits here) drives frequent gen0/gen1 collections whose STW pauses were the ~2s
+         frame hiccup. Server GC's much larger per-heap gen0 budget makes those collections far rarer and
+         shorter, and background GC runs gen2 concurrently. Costs memory + GC threads (fine on a desktop
+         GPU box); the parity test loop never builds this project, so nothing golden is affected. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

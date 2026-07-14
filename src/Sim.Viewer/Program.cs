@@ -163,10 +163,9 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         ? new EngineHost(netPath, spawnCap: cap, forceSandbox: true)
         : new EngineHost(netPath);
 
-    if (simRate is { } rate)
-    {
-        host.SetSimStepsPerSecond(rate);
-    }
+    // Default interactive speed to 1x real-time (what a viewer expects); perf runs keep the 10x fast-forward
+    // so the fleet warms up quickly. Either way the panel's "speed (x real-time)" slider overrides live.
+    host.SetSimStepsPerSecond(simRate ?? (perf ? 10.0 : 1.0));
 
     if (dropObstacle is { } drop)
     {

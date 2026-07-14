@@ -319,11 +319,14 @@ public static class Renderer
 
         ImGui.Separator();
 
-        // Sim update rate: continuous slider over Steps/s (each Step = 1s of sim time), i.e. how many sim
-        // ticks the background runner does per wall-clock second. 1 = real-time, 10 = the default 10x
-        // fast-forward. Drives EngineHost.SetSimStepsPerSecond (SpeedMultiplier) live, without a restart.
+        // Speed relative to real time. Each sim Step advances 1s of sim time, so "sim steps per wall-second"
+        // == the real-time factor: 1x = real speed, 3x = triple speed, etc. It's also the update rate (N
+        // steps/s = N snapshots/s the interpolator blends), so higher = faster AND smoother. Drives
+        // EngineHost.SetSimStepsPerSecond (SpeedMultiplier) live, no restart. NB: at a high vehicle count the
+        // engine is CPU-bound and may not sustain a high factor (e.g. ~3x max at 10k) -- the slider requests,
+        // the sim delivers what it can.
         var simRate = (float)host.SimStepsPerSecond;
-        if (ImGui.SliderFloat("sim steps/s", ref simRate, 1f, 20f, "%.1f"))
+        if (ImGui.SliderFloat("speed", ref simRate, 0.25f, 10f, "%.2fx real-time"))
         {
             host.SetSimStepsPerSecond(simRate);
         }
