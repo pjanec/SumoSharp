@@ -335,8 +335,14 @@ public sealed class EngineHost : IDisposable
         return _stepCfgPath;
     }
 
-    // Rebuild the sim from t=0 (re-queues the scenario demand / empties the sandbox). Obstacles cleared.
-    public void Restart() => BuildSim();
+    // Rebuild the sim from t=0 (re-queues the scenario demand / empties the sandbox). Obstacles cleared, and
+    // pause is released -- a restart means "run it again from the start", so it resumes even if paused (a
+    // step-length rebuild via SetStepLength keeps pause, since that's not a user "restart").
+    public void Restart()
+    {
+        _paused = false;
+        BuildSim();
+    }
 
     // A world-point click (already WORLD coordinates) -> project to the nearest lane and inject a
     // full-lane obstacle; vehicles queue behind it. Ignored if the click is far from any lane. Ported

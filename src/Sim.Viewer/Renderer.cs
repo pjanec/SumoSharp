@@ -684,11 +684,11 @@ public static class Renderer
     // Vehicles topic currently has a matched (live) writer, and whether the durable geometry topic has
     // delivered the whole network yet -- both meaningful only when there's no local publisher to fall back on.
     public static void DrawRemoteControlsPanel(
-        DdsCommandWriter cmd, ref bool paused, ref float speed, ref bool random,
+        DdsCommandWriter cmd, ref bool paused, ref float speed, ref bool random, ref int hz,
         ref float delaySeconds, ref bool smooth, bool connected, bool geometryComplete)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(380, 300), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 360), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - controls (remote)");
         ImGui.Text("mode: REMOTE (drives the publisher via DDS)");
         ImGui.Separator();
@@ -717,6 +717,18 @@ public static class Renderer
         {
             cmd.Send(ViewerCommandKind.SetSpeed, value: speed);
         }
+
+        // Sim tick rate (= 1/step-length), radios matching the local/loopback panels. Optimistic (`hz` is the
+        // last value we SENT, not confirmed state). Only takes effect on a SANDBOX publisher -- a scenario
+        // publisher's step-length is fixed by its .sumocfg, so it no-ops the command.
+        ImGui.Text("sim tick rate (sandbox):");
+        if (ImGui.RadioButton("1Hz", hz == 1)) { hz = 1; cmd.Send(ViewerCommandKind.SetStepLength, value: 1.0); }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("2Hz", hz == 2)) { hz = 2; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.5); }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("5Hz", hz == 5)) { hz = 5; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.2); }
+        ImGui.SameLine();
+        if (ImGui.RadioButton("10Hz", hz == 10)) { hz = 10; cmd.Send(ViewerCommandKind.SetStepLength, value: 0.1); }
 
         // --- these two are LOCAL to this viewer (client-side dead-reckoning playout, not engine state) ---
         ImGui.Separator();

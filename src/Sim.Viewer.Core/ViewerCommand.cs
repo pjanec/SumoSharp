@@ -14,6 +14,7 @@ public enum ViewerCommandKind : byte
     ClearObstacles = 3,
     SetRandomTraffic = 4, // Flag: 1 = on, 0 = off
     InjectObstacle = 5,   // X,Y = world point
+    SetStepLength = 6,    // Value = sim step length seconds (sandbox only)
 }
 
 // Remote side: publishes commands. WriterId keys the instance (unique per remote process) so several remotes
@@ -45,6 +46,7 @@ public sealed class DdsCommandWriter : IDisposable
             Y = y,
             Flag = (byte)(flag ? 1 : 0),
         });
+        Console.WriteLine($"CMD SENT kind={kind} seq={_seq} value={value:F2} flag={flag}");
     }
 
     public void Dispose() => _writer.Dispose();
@@ -79,6 +81,7 @@ public sealed class DdsCommandReader : IDisposable
             }
 
             _lastSeqByWriter[c.WriterId] = c.Seq;
+            Console.WriteLine($"CMD APPLIED kind={(ViewerCommandKind)c.Kind} seq={c.Seq} value={c.Value:F2} flag={c.Flag}");
             Apply(host, c);
         }
     }
@@ -93,6 +96,7 @@ public sealed class DdsCommandReader : IDisposable
             case ViewerCommandKind.ClearObstacles: host.ClearObstacles(); break;
             case ViewerCommandKind.SetRandomTraffic: host.SetRandomTraffic(c.Flag != 0); break;
             case ViewerCommandKind.InjectObstacle: host.InjectObstacleAtWorld(c.X, c.Y); break;
+            case ViewerCommandKind.SetStepLength: host.SetStepLength(c.Value); break;
         }
     }
 

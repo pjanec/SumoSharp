@@ -752,6 +752,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     var remotePaused = false;
     var remoteSpeed = 1f;
     var remoteRandom = false;
+    var remoteHz = 1;
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
@@ -846,7 +847,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
         }
 
         Renderer.DrawRemoteControlsPanel(commandWriter, ref remotePaused, ref remoteSpeed, ref remoteRandom,
-            ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
+            ref remoteHz, ref delaySlider, ref smooth, subscriber.Connected, subscriber.GeometryComplete);
         if (showDiagnostics)
         {
             var wallElapsed = startWall.Elapsed.TotalSeconds;
