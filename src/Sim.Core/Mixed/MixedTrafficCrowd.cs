@@ -262,14 +262,25 @@ public sealed class MixedTrafficCrowd
                     rear0.X + speed * dt * Math.Cos(thetaMid),
                     rear0.Y + speed * dt * Math.Sin(thetaMid));
                 var c1 = new Vec2(rear1.X + lc * Math.Cos(theta1), rear1.Y + lc * Math.Sin(theta1));
-                _velocity[i] = (c1 - c0) / dt;               // actual chord velocity (used by neighbours)
-                _position[i] = c1;
+
+                // Swept wall clip (docs/MIXED-WALL-CONTAINMENT.md W1): the ORCA wall half-plane only
+                // constrains the HOLONOMIC target velocity for this step, not the non-holonomic-steered
+                // commit above -- a thin wall / overlap-recovery burst can otherwise tunnel it in one
+                // step. Clip the committed centre displacement c0->c1 at the first wall it would cross.
+                var clipped = ClipToWalls(c0, c1);
+                _position[i] = clipped;
+                _velocity[i] = (clipped - c0) / dt;          // actual chord velocity (used by neighbours)
                 _heading[i] = theta1;
             }
             else
             {
+                var c0 = _position[i];
                 _velocity[i] = _newVelocity[i];
-                _position[i] += _velocity[i] * dt;
+                var c1 = c0 + _velocity[i] * dt;
+
+                var clipped = ClipToWalls(c0, c1);
+                _position[i] = clipped;
+                _velocity[i] = (clipped - c0) / dt;
                 if (_velocity[i].Abs > HeadingHoldSpeed)
                 {
                     _heading[i] = Math.Atan2(_velocity[i].Y, _velocity[i].X);
@@ -287,18 +298,6 @@ public sealed class MixedTrafficCrowd
     {
         _active[i] = false;
         _velocity[i] = Vec2.Zero;
-    }
-
-    // Force-correct an agent's pose out of band. Purely ADDITIVE -- not called by Step()/Plan() and
-    // does not change either for any existing caller/scene; a defensive escape hatch for a caller that
-    // needs a hard containment guarantee beyond what the shaped-VO wall alone provides (a thin static
-    // wall can be pierced by a single degenerate overlap-recovery step, since the wall's ORCA half-plane
-    // only constrains the HOLONOMIC target velocity every step, not the final non-holonomic-steered
-    // motion). Used by Sim.Evac.VehicleMover as a last-resort clamp for the Orca-push band.
-    public void SetPose(int i, Vec2 position, Vec2 velocity)
-    {
-        _position[i] = position;
-        _velocity[i] = velocity;
     }
 
     public bool AllArrived(double epsilon)
@@ -450,6 +449,121 @@ public sealed class MixedTrafficCrowd
         newHeading = theta + turn;
 
         return new Vec2(Math.Cos(newHeading), Math.Sin(newHeading)) * newSpeed;
+    }
+
+    // Skin distance (m) the swept wall clip pulls the entry point back by, so the body stops just
+    // short of the wall's true boundary on the interior side rather than resting exactly on it.
+    private const double WallClipSkin = 0.05;
+
+    // W1 (docs/MIXED-WALL-CONTAINMENT.md): clip the committed centre displacement c0->c1 at the
+    // FIRST wall (in fixed list order) whose convex box the segment enters, pulled back by a small
+    // skin. Deterministic: walls are tested in their fixed AddWall/AddBlock order and the EARLIEST
+    // entry (smallest t) wins regardless of iteration order, so ties resolve the same way every run.
+    // Returns c1 unchanged if the segment crosses no wall.
+    private Vec2 ClipToWalls(Vec2 c0, Vec2 c1)
+    {
+        var d = c1 - c0;
+        var lenSq = d.AbsSq;
+        if (lenSq < 1e-18)
+        {
+            return c1;
+        }
+
+        var len = Math.Sqrt(lenSq);
+        var bestT = double.PositiveInfinity;
+        for (var w = 0; w < _walls.Count; w++)
+        {
+            var (centre, shape) = _walls[w];
+
+            // Safe cull: if the closest point on the segment to the wall's centre is farther than the
+            // wall's bounding-circle radius, the (centre-bounded) polygon cannot touch the segment --
+            // no false negatives, just skips clearly-uninvolved walls.
+            var reach = shape.CircumRadius();
+            if (PointSegDistSq(centre, c0, d, lenSq) > reach * reach)
+            {
+                continue;
+            }
+
+            if (TrySegmentWallEntry(c0, d, centre, shape, out var t) && t < bestT)
+            {
+                bestT = t;
+            }
+        }
+
+        if (double.IsPositiveInfinity(bestT))
+        {
+            return c1;
+        }
+
+        var pulledBackT = Math.Max(0.0, bestT - WallClipSkin / len);
+        return c0 + d * pulledBackT;
+    }
+
+    // Squared distance from point p to the closest point on segment c0->(c0+d), d.AbsSq == dLenSq.
+    private static double PointSegDistSq(Vec2 p, Vec2 c0, Vec2 d, double dLenSq)
+    {
+        var t = Vec2.Dot(p - c0, d) / Math.Max(dLenSq, 1e-18);
+        t = Math.Clamp(t, 0.0, 1.0);
+        var closest = c0 + d * t;
+        return (p - closest).AbsSq;
+    }
+
+    // Cyrus-Beck segment-vs-convex-polygon clip: does the segment c0->c0+d enter the wall's convex
+    // box (world verts = shape.Verts + centre)? Walks the polygon's edges as inward half-planes
+    // (interior on the LEFT of each CCW edge, matching ConvexShape.ContainsPoint) and narrows
+    // [tMin, tMax] = 0..1 to the sub-interval that satisfies every half-plane. tEnter (tMin on return)
+    // is the earliest parameter at which the segment is inside ALL half-planes, i.e. inside the
+    // polygon. Returns false if the segment never enters the polygon within [0, 1].
+    private static bool TrySegmentWallEntry(Vec2 c0, Vec2 d, Vec2 centre, ConvexShape shape, out double tEnter)
+    {
+        var verts = shape.Verts;
+        var n = verts.Length;
+        var tMin = 0.0;
+        var tMax = 1.0;
+        for (var e = 0; e < n; e++)
+        {
+            var a = centre + verts[e];
+            var b = centre + verts[(e + 1) % n];
+            var edge = b - a;
+            var inwardNormal = new Vec2(-edge.Y, edge.X);   // CCW edge -> interior on the left
+            var numerator = Vec2.Dot(inwardNormal, a - c0);
+            var denominator = Vec2.Dot(inwardNormal, d);
+
+            if (Math.Abs(denominator) < 1e-12)
+            {
+                // Segment runs parallel to this edge: if c0 is already outside this half-plane, no t
+                // satisfies it (the segment never enters the polygon).
+                if (numerator > 1e-9)
+                {
+                    tEnter = 0.0;
+                    return false;
+                }
+
+                continue;
+            }
+
+            var t = numerator / denominator;
+            if (denominator > 0.0)
+            {
+                if (t > tMin)
+                {
+                    tMin = t;
+                }
+            }
+            else if (t < tMax)
+            {
+                tMax = t;
+            }
+
+            if (tMin > tMax)
+            {
+                tEnter = 0.0;
+                return false;
+            }
+        }
+
+        tEnter = tMin;
+        return true;
     }
 
     // Nearest-k bounded insertion (sorted nearest-first), identical in spirit to OrcaCrowd's. maxN<=0

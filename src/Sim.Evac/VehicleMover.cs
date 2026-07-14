@@ -39,18 +39,6 @@ public sealed class VehicleMover : ICrowdFootprintSource
     // shaped-VO solve, well below any genuine forward step at OrcaPushMaxSpeed.
     private const double ProgressEpsilon = 0.25;
 
-    // Defensive containment bounds, inferred from the wall segments ArmWalls is given (the band's own
-    // bounding rectangle). The shaped-VO wall is the PRIMARY confinement (a zero-velocity, full-yield
-    // neighbour every mover's Plan() sees every step); this is a last-resort backstop for the rare
-    // degenerate case where non-holonomic steering's overlap-recovery step (ShapedVoSolver's "already
-    // overlapping" branch, sized for a SHORT recovery horizon) produces a burst that carries a mover
-    // through a thin wall in one step before the VO can react again next step. Unset (+-infinity) until
-    // ArmWalls is called, so a VehicleMover with no walls armed is never clamped.
-    private double _boundsMinX = double.NegativeInfinity;
-    private double _boundsMinY = double.NegativeInfinity;
-    private double _boundsMaxX = double.PositiveInfinity;
-    private double _boundsMaxY = double.PositiveInfinity;
-
     public VehicleMover(EvacConfig cfg)
     {
         _cfg = cfg;
@@ -72,29 +60,14 @@ public sealed class VehicleMover : ICrowdFootprintSource
     public int Count => _crowd.Count;
 
     // Arm the band walls (PANIC-EVAC-PHASE3-DESIGN.md §4 / FakeNavMesh.BandWalls) -- confines pushers
-    // to the known world, the shaped analogue of the pedestrian BoundaryLoop. Also records the
-    // segments' bounding rectangle as the defensive containment backstop (see _boundsMinX etc.) --
-    // BandWalls is exactly the navmesh's own bounding rectangle, so this reconstructs it exactly.
+    // to the known world, the shaped analogue of the pedestrian BoundaryLoop. Confinement is now
+    // guaranteed by the solver's own swept wall clip (docs/MIXED-WALL-CONTAINMENT.md W1); this just
+    // feeds the wall segments into the crowd.
     public void ArmWalls(IEnumerable<(Vec2 A, Vec2 B)> walls, double thickness = 1.0)
     {
-        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
-        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
-
         foreach (var (a, b) in walls)
         {
             _crowd.AddWall(a, b, thickness);
-            minX = Math.Min(minX, Math.Min(a.X, b.X));
-            minY = Math.Min(minY, Math.Min(a.Y, b.Y));
-            maxX = Math.Max(maxX, Math.Max(a.X, b.X));
-            maxY = Math.Max(maxY, Math.Max(a.Y, b.Y));
-        }
-
-        if (!double.IsPositiveInfinity(minX))
-        {
-            _boundsMinX = minX;
-            _boundsMinY = minY;
-            _boundsMaxX = maxX;
-            _boundsMaxY = maxY;
         }
     }
 
@@ -155,24 +128,6 @@ public sealed class VehicleMover : ICrowdFootprintSource
                 continue;
             }
 
-            // Defensive containment backstop: clamp back inside the band bounds and kill velocity if a
-            // degenerate step carried this mover past the (primary) shaped-VO wall. A car pinned here
-            // creeps in place against the wall and correctly starts accruing wedge dwell below. Two
-            // independently-escaping movers can otherwise clamp to the SAME point (most often a
-            // corner, where both axes saturate) and coincide; a small deterministic per-index nudge
-            // (golden-angle spread, same trick as the evac layer's pedestrian-spawn offset) keeps
-            // distinct movers apart without touching the ordinary (non-escaped) path at all.
-            var p = _crowd.Position(i);
-            var cx = Math.Min(Math.Max(p.X, _boundsMinX), _boundsMaxX);
-            var cy = Math.Min(Math.Max(p.Y, _boundsMinY), _boundsMaxY);
-            if (cx != p.X || cy != p.Y)
-            {
-                var nudge = DeterministicNudge(i);
-                cx = Math.Min(Math.Max(cx + nudge.X, _boundsMinX), _boundsMaxX);
-                cy = Math.Min(Math.Max(cy + nudge.Y, _boundsMinY), _boundsMaxY);
-                _crowd.SetPose(i, new Vec2(cx, cy), Vec2.Zero);
-            }
-
             // Progress-based wedge (see _bestDistToGoal doc comment): distance to the CURRENT goal
             // (SetGoal is called fresh each tick by the caller, but the away-goal direction is stable
             // tick to tick, so this tracks real progress, not goal churn). Strictly improving beyond
@@ -205,21 +160,6 @@ public sealed class VehicleMover : ICrowdFootprintSource
     }
 
     public bool IsWedged(int i) => _active[i] && _dwell[i] >= _cfg.OrcaWedgeDwellSeconds;
-
-    // A tiny deterministic per-index spread (no RNG) so two movers whose escape clamp lands on the
-    // same boundary point (most often a shared corner) don't sit exactly stacked. A Vogel/sunflower
-    // spiral (r = c*sqrt(i+1), theta = i*goldenAngle) rather than a fixed-radius golden-angle ring:
-    // a fixed ring can put two SPECIFIC indices arbitrarily close (the angle step alone gives no
-    // distance floor), whereas the growing-radius spiral keeps EVERY pair of distinct indices at
-    // roughly the same minimum spacing (~c*sqrt(pi)) regardless of how many indices collide here.
-    private static Vec2 DeterministicNudge(int i)
-    {
-        const double goldenAngle = 2.399963;
-        const double c = 1.5;   // ~2.4 m guaranteed min spacing between any two distinct indices
-        var r = c * Math.Sqrt(i + 1);
-        var a = i * goldenAngle;
-        return new Vec2(Math.Cos(a) * r, Math.Sin(a) * r);
-    }
 
     // ICrowdFootprintSource (T3.1 §3): expose ACTIVE pushers as world discs so the lane engine can
     // discover and avoid them too (via a CompositeFootprintSource alongside the pedestrian crowd).

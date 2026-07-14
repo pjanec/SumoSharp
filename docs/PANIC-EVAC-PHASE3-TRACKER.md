@@ -36,10 +36,13 @@ verified its success conditions first-hand.
 - [x] **T4.5** determinism — *accepted (B2): signature incl. pusher poses bit-identical across runs*
 - [x] **T4.6** parity / inertness + gate — *accepted (B2): no-incident ⇒ 0 pushers/panicked/fear0; 417 pass / 3 skip; hash unmoved*
 
-> **Tech-debt (documented, accepted for a parity-exempt viz feature):** shaped-VO walls only constrain the
-> HOLONOMIC target each step, so a non-holonomic overlap-recovery step can pierce a thin band wall; the hard
-> containment guarantee therefore comes from `VehicleMover`'s clamp backstop, not the wall solver. A
-> solver-level fix (constrain the final steered motion against walls) is a future `Sim.Core.Mixed` improvement.
+> **Tech-debt — RESOLVED (2026-07-14, `docs/MIXED-WALL-CONTAINMENT.md`).** `MixedTrafficCrowd.Step` now
+> applies a swept wall clip in the integration (clip `c0→c1` at the first wall crossing), so confinement
+> is guaranteed at the SOLVER level. `VehicleMover`'s external clamp / nudge and `MixedTrafficCrowd.SetPose`
+> were removed; the pusher-confinement tests (`VehicleMoverTests.BandWalls_Confine…`, `EvacPhase3Tests.
+> ActivePushers_StayWithinNavmeshBounds`) now pass on the solver guarantee alone. New reproduce-then-fix
+> test `MixedWallContainmentTests` (tunnels pre-fix 204.96 → contained 19.85). Suite 418 pass / 3 skip;
+> hash unmoved; India mixed-traffic 13 tests unchanged.
 
 ## S5 — Viz: cars mounting the shoulder
 - [x] **T5.1** emit pushing cars as oriented shaped boxes — *accepted (B3): `ActivePushers()` → kind-8
