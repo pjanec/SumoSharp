@@ -62,6 +62,18 @@ public sealed class DdsSubscriber : IDisposable
         _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
     }
 
+    // Drop all per-vehicle state (history + dims + latest-sample-time) so it rebuilds from the live stream.
+    // Called on a publisher RESTART: the publisher rebuilds at t=0 and REUSES vehicle handle indices, so a
+    // reused handle's buffer would otherwise mix old-timeline samples (large Pos) with new ones (small Pos)
+    // -> the DR flings that vehicle backward instead of the old one vanishing. Geometry + TL are kept (the
+    // network didn't change).
+    public void ResetVehicles()
+    {
+        _history.Clear();
+        _dims.Clear();
+        LatestVehicleSampleTime = null;
+    }
+
     // Decoded static lane geometry, keyed by lane handle. Empty until PublishGeometryOnce's chunk(s) have
     // arrived; see GeometryComplete.
     public IReadOnlyDictionary<int, GeometryCodec.LaneGeo> Geometry => _geometryByHandle;

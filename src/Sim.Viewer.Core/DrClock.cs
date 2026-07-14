@@ -37,6 +37,18 @@ public sealed class DrClock
     public int BackSteps => _backSteps;
     public double EffectiveDelay { get; private set; }
 
+    // Re-anchor the clock to a fresh timeline (publisher restart at t=0). The long-baseline fit + renderSim
+    // are cleared so they re-fit from the new stream instead of staying far ahead of it (which would
+    // extrapolate wildly). Cumulative back-step count is left as a running health metric.
+    public void Reset()
+    {
+        _firstWallSec = null;
+        _lastIngestedSim = double.NaN;
+        _latestSim = 0.0;
+        _renderSim = 0.0;
+        _simRate = 1.0;
+    }
+
     public readonly struct Resolved
     {
         public Resolved(DrState state, UpcomingLanes upcoming, bool extrapolated)

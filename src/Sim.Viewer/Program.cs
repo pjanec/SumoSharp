@@ -143,7 +143,7 @@ if (mode == "loopback")
 
 if (mode == "publish")
 {
-    return RunPublish(ResolveNetPath(inputPath), secondsCap);
+    return RunPublish(ResolveNetPath(inputPath), secondsCap, fleet, stepLen);
 }
 
 Console.Error.WriteLine($"Sim.Viewer: unknown --mode '{mode ?? "(none)"}' (expected local|loopback|publish|remote).");
@@ -166,8 +166,8 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     int? fleet, bool perf, double? secondsCap, double? simRate, double? stepLen)
 {
     var step = stepLen ?? 1.0;
-    using var host = fleet is { } cap
-        ? new EngineHost(netPath, spawnCap: cap, forceSandbox: true, stepLength: step)
+    using var host = fleet is { } fleetCap
+        ? new EngineHost(netPath, spawnCap: fleetCap, forceSandbox: true, stepLength: step)
         : new EngineHost(netPath, stepLength: step);
 
     // Default interactive speed to 1x real-time (what a viewer expects); perf runs keep the 10x fast-forward
@@ -440,9 +440,15 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
 // just keeps calling PublishStep() at the sim cadence forever -- a real second process for `--mode remote`
 // to late-join against. `secondsCap` (wall-clock seconds, from `--seconds`) is an optional cap for scripted
 // runs; omit it (null) for a real long-lived publisher, stopped with Ctrl-C.
-static int RunPublish(string netPath, double? secondsCap)
+static int RunPublish(string netPath, double? secondsCap, int? fleet, double? stepLen)
 {
-    using var host = new EngineHost(netPath);
+    // `--fleet N` runs the net as a random-traffic SANDBOX (forceSandbox), which also makes the sim-tick-rate
+    // control changeable (a scenario's step-length is fixed) -- useful for exercising remote controls +
+    // lane-changes on a multilane net. Without it, a scenario dir drives its own committed demand.
+    var step = stepLen ?? 1.0;
+    using var host = fleet is { } fleetCap
+        ? new EngineHost(netPath, spawnCap: fleetCap, forceSandbox: true, stepLength: step)
+        : new EngineHost(netPath, stepLength: step);
     using var participant = new DdsParticipant();
     using var publisher = new DdsPublisher(host, participant);
     // Reverse channel: apply commands a view-only remote sends (pause/speed/restart/inject/...).
@@ -578,6 +584,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
     var smooth = false;
     var smoothed = new Dictionary<VehicleHandle, (float X, float Y, float Deg)>();
     var lastPublishedSimTime = double.NaN;
+    var lastLoopSimTime = 0.0;
     var startWall = Stopwatch.StartNew();
 
     var vehicleDraws = new List<Renderer.DrVehicleDraw>();
@@ -602,6 +609,17 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         // cadence -- EngineHost's SimulationRunner ticks in the background at its own targetHz, so most
         // render frames see an unchanged snapshot and would otherwise re-publish identical state.
         var snapTimeNow = host.Snapshot.Time;
+        // Restart detection (local): sim time jumping backward means Restart rebuilt at t=0. Drop stale
+        // vehicle state + re-anchor the clock, and reset the publish gate so the fresh timeline republishes
+        // (otherwise `> lastPublishedSimTime` would suppress it until sim time climbed back up).
+        if (snapTimeNow < lastLoopSimTime - 2.0)
+        {
+            subscriber.ResetVehicles();
+            drClock.Reset();
+            lastPublishedSimTime = double.NaN;
+        }
+
+        lastLoopSimTime = snapTimeNow;
         if (double.IsNaN(lastPublishedSimTime) || snapTimeNow > lastPublishedSimTime)
         {
             publisher.PublishStep();
@@ -760,6 +778,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     // the control widgets reflect what we've SENT). Initialised to the publisher's own interactive defaults.
     var remoteSpeed = 1f;
     var remoteRandom = false;
+    var lastRemoteSimTime = 0.0;
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
@@ -787,6 +806,15 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 
         statusReader.Pump();
         var status = statusReader.Current;
+        // Restart detection: the host's sim time jumping backward means it rebuilt at t=0. Drop stale vehicle
+        // state (reused handles would otherwise mix old + new timelines) and re-anchor the DR clock.
+        if (status.Present && status.SimTime < lastRemoteSimTime - 2.0)
+        {
+            subscriber.ResetVehicles();
+            drClock.Reset();
+        }
+
+        lastRemoteSimTime = status.SimTime;
         PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws,
             paused: status.Paused);
 
