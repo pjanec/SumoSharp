@@ -586,4 +586,19 @@ public sealed class EvacDirector
             }
         }
     }
+
+    // As ActivePushers, but also yields the pusher's originating VehicleHandle -- a STABLE identity the
+    // viz keys a fixed disc slot on, so the front-end's index-matched disc interpolation never smears
+    // one entity's position into another (see SceneGen's stable-disc-slot assembly).
+    public IEnumerable<(VehicleHandle Handle, double X, double Y, double HeadingRad)> ActivePushersWithHandle()
+    {
+        foreach (var (handle, idx) in _pushers)
+        {
+            if (_mover.IsActive(idx))
+            {
+                var p = _mover.Position(idx);
+                yield return (handle, p.X, p.Y, _mover.Heading(idx));
+            }
+        }
+    }
 }

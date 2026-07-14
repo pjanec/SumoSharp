@@ -74,7 +74,7 @@ internal static class Program
         {
             foreach (var d in frame.D)
             {
-                if (d.Length > 3 && (d[3] == SceneGen.KindFleeing || d[3] == SceneGen.KindEscaped))
+                if (d is { Length: > 3 } && (d[3] == SceneGen.KindFleeing || d[3] == SceneGen.KindEscaped))
                 {
                     pedestrianDiscs++;
                 }

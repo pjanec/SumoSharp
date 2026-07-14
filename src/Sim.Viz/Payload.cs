@@ -38,7 +38,7 @@ internal sealed record NetworkPayload(
 //       always the same vehicle; a vehicle absent this frame is `null` in its slot (vehicles enter /
 //       leave in FCD scenarios). Empty array for pure-crowd scenes.
 //   d = discs as [x, y, radius, kind]. kind: 0 = stream/agent A, 1 = stream/agent B, 2 = pedestrian.
-internal sealed record FramePayload(double[]?[] V, double[][] D);
+internal sealed record FramePayload(double[]?[] V, double[]?[] D);
 
 internal sealed record ScenePayload(
     string Name,

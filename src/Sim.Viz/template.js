@@ -433,12 +433,19 @@
     var span = (k2 - k) * stepSize;
     var frac = span > 1e-9 ? Math.max(0, Math.min(1, (t - tA) / span)) : 0;
 
-    var n = Math.min(da.length, db.length);
+    // Discs occupy FIXED per-entity slots across frames (SceneGen.AssignStableDiscSlots / the stable
+    // crowd builders), so da[i] and db[i] are the SAME entity -- index-matching is safe. An absent slot
+    // is null (entity not present that frame); hold the present endpoint, mirroring interpolatedVehicles,
+    // so a spawning/vanishing disc never smears from/to another entity's position.
+    var n = Math.max(da.length, db.length);
     for (var i = 0; i < n; i++) {
       var a = da[i], b = db[i];
+      if (!a && !b) continue;
+      if (!a) { out.push(b); continue; }   // appears next frame: hold at its position (no smear-in)
+      if (!b) { out.push(a); continue; }   // gone next frame: hold in place (abandoned cars persist)
       // Interpolate position; hold radius/kind, and (for shaped vehicles) heading + shape as-is.
       var e = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac, a[2], a[3]];
-      if (a.length >= 6) {
+      if (a.length >= 6 && b.length >= 6) {
         // Interpolate heading along the SHORTEST arc (degrees) so a turning vehicle rotates smoothly
         // between frames instead of snapping its facing at each frame boundary (which reads as jerky
         // jump-rotation, worst on long vehicles). Shape held as-is.
@@ -448,8 +455,6 @@
       if (a.length >= 8) { e.push(a[6], a[7]); }   // true half-length / half-width for shaped rects
       out.push(e);
     }
-    // Any discs only present in one endpoint (shouldn't happen for the stable crowds) held as-is.
-    for (var j = n; j < da.length; j++) out.push(da[j]);
     return out;
   }
 
@@ -709,7 +714,7 @@
     // Collect disc kinds present anywhere in the scene.
     var kinds = {};
     frames.forEach(function (f) {
-      (f.d || []).forEach(function (d) { kinds[d[3]] = true; });
+      (f.d || []).forEach(function (d) { if (d) kinds[d[3]] = true; });
     });
     var labels = (scene && scene.labels) || null;   // per-scene override (e.g. vehicle classes)
     Object.keys(kinds).sort().forEach(function (k) {

@@ -621,6 +621,7 @@ internal static class SceneGen
 
         var slotByHandle = new Dictionary<uint, int>();
         var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
 
         for (var step = 0; step < 240; step++)
         {
@@ -646,29 +647,35 @@ internal static class SceneGen
                 v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]), R(director.Fear(handles[i])) };
             }
 
-            var discs = new List<double[]>();
+            // Stable per-entity disc keys -> fixed slots via AssignStableDiscSlots (see BuildEvacOrganic
+            // for why: index-matched interpolation must lerp like-with-like, not smear entities).
+            var discs = new List<(string, double[])>();
             for (var i = 0; i < director.PedestrianCount; i++)
             {
                 var p = director.PedestrianPosition(i);
                 var kind = director.PedestrianEscaped(i) ? KindEscaped : KindFleeing;
-                discs.Add(new[] { R(p.X), R(p.Y), 0.6, (double)kind });
+                discs.Add(($"p{i}", new[] { R(p.X), R(p.Y), 0.6, (double)kind }));
             }
 
             for (var i = 0; i < director.AbandonedCarCount; i++)
             {
                 var c = director.AbandonedCar(i);
-                discs.Add(new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned });
+                discs.Add(($"a{i}", new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned }));
             }
 
-            foreach (var (px_, py_, headingRad) in director.ActivePushers())
+            foreach (var (handle, px_, py_, headingRad) in director.ActivePushersWithHandle())
             {
                 var headingDeg = headingRad * 180.0 / Math.PI;   // math radians (0=+x, CCW) -> degrees CCW from +x, exactly what drawShaped wants
-                discs.Add(new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 });
-                //                x       y       radius kind                head          shape halfLen halfWid   (rectangle 5.0x1.8)
+                discs.Add(($"push{handle.Index}",
+                    new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 }));
+                //         x       y       radius kind                head          shape halfLen halfWid   (rectangle 5.0x1.8)
             }
 
-            frames.Add(new FramePayload(v, discs.ToArray()));
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
         }
+
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
 
         NormalizeVehicleSlots(frames, slotByHandle.Count);
 
@@ -730,6 +737,7 @@ internal static class SceneGen
 
         var slotByHandle = new Dictionary<uint, int>();
         var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
 
         for (var step = 0; step < 300; step++)
         {
@@ -755,30 +763,38 @@ internal static class SceneGen
                 v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]), R(director.Fear(handles[i])) };
             }
 
-            var discs = new List<double[]>();
+            // Each disc carries a STABLE identity key (pedestrian index / abandoned-car index / pusher
+            // handle) so BuildStableDiscFrames can pin it to a fixed slot across frames. Without that,
+            // rebuilding the disc list fresh each frame shuffles which entity lands at index i as counts
+            // grow, and the front-end's index-matched interpolation smears one entity's position into
+            // another's -- the "discs flying between abandoned-car positions" artifact.
+            var discs = new List<(string, double[])>();
             for (var i = 0; i < director.PedestrianCount; i++)
             {
                 var p = director.PedestrianPosition(i);
                 var kind = director.PedestrianEscaped(i) ? KindEscaped : KindFleeing;
-                discs.Add(new[] { R(p.X), R(p.Y), 0.6, (double)kind });
+                discs.Add(($"p{i}", new[] { R(p.X), R(p.Y), 0.6, (double)kind }));
             }
 
             for (var i = 0; i < director.AbandonedCarCount; i++)
             {
                 var c = director.AbandonedCar(i);
-                discs.Add(new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned });
+                discs.Add(($"a{i}", new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned }));
             }
 
-            foreach (var (px_, py_, headingRad) in director.ActivePushers())
+            foreach (var (handle, px_, py_, headingRad) in director.ActivePushersWithHandle())
             {
                 var headingDeg = headingRad * 180.0 / Math.PI;
-                discs.Add(new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 });
+                discs.Add(($"push{handle.Index}",
+                    new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 }));
             }
 
-            frames.Add(new FramePayload(v, discs.ToArray()));
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
         }
 
         NormalizeVehicleSlots(frames, slotByHandle.Count);
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
 
         // Camera = the NET's own geometric extent (lanes + junctions) -- NOT the navmesh, which pads
         // outward by VicinityWidth and is drawn separately below as the hard-edge boundary rectangle.
@@ -892,6 +908,41 @@ internal static class SceneGen
             var grown = new double[slotCount][];
             Array.Copy(v, grown, v.Length);
             frames[f] = frames[f] with { V = grown };
+        }
+    }
+
+    // Pin each disc entity to a FIXED slot across all frames, keyed by its stable identity, and set
+    // frame f's D array from that (absent entities -> null slot). This is the disc analogue of
+    // NormalizeVehicleSlots: it guarantees D[i] refers to the SAME entity in every frame, so the front
+    // end's index-matched interpolation (interpolatedDiscs) lerps like-with-like instead of smearing a
+    // pedestrian into an abandoned car as per-frame counts grow. Slots are assigned in first-seen order
+    // (frames in time order, discs in the builder's stable within-frame order), so the mapping is
+    // deterministic. Null slots are held/dropped by interpolatedDiscs (mirrors the vehicle path).
+    private static void AssignStableDiscSlots(
+        List<FramePayload> frames, List<List<(string Key, double[] Disc)>> discsKeyedPerFrame)
+    {
+        var slotByKey = new Dictionary<string, int>();
+        foreach (var frame in discsKeyedPerFrame)
+        {
+            foreach (var (key, _) in frame)
+            {
+                if (!slotByKey.ContainsKey(key))
+                {
+                    slotByKey[key] = slotByKey.Count;
+                }
+            }
+        }
+
+        var slotCount = slotByKey.Count;
+        for (var f = 0; f < frames.Count; f++)
+        {
+            var d = new double[slotCount][];
+            foreach (var (key, disc) in discsKeyedPerFrame[f])
+            {
+                d[slotByKey[key]] = disc;
+            }
+
+            frames[f] = frames[f] with { D = d };
         }
     }
 }
