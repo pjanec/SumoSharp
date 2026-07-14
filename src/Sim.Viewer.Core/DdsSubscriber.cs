@@ -52,12 +52,14 @@ public sealed class DdsSubscriber : IDisposable
     private byte[] _geometryBytes = new byte[DdsWire.MaxPayload];
     private byte[] _tlBytes = new byte[DdsWire.MaxPayload];
 
+    // Must mirror DdsPublisher's per-topic QoS profile exactly (a RELIABLE reader will not match a
+    // BEST_EFFORT writer) -- see DdsQos's doc comment.
     public DdsSubscriber(DdsParticipant participant)
     {
-        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles);
-        _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry);
-        _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle);
-        _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl);
+        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
+        _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
+        _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
+        _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
     }
 
     // Decoded static lane geometry, keyed by lane handle. Empty until PublishGeometryOnce's chunk(s) have
@@ -86,6 +88,13 @@ public sealed class DdsSubscriber : IDisposable
     // P2b diagnostics — total vehicle records decoded across every Pump call so far (a monotonically
     // increasing counter; divide by elapsed wall time for a "DDS samples/s" HUD readout).
     public long TotalVehicleSamplesReceived { get; private set; }
+
+    // P3 ("remote mode + QoS") — true once THIS reader is currently matched with at least one live writer
+    // on the Vehicles topic (DDS's own publication-matched bookkeeping, not an inference from whether data
+    // has arrived yet), so a remote viewer's "connected: yes/no" indicator reflects the transport itself,
+    // not just "have I decoded a frame". A publisher that starts, publishes once, then is killed will show
+    // CurrentCount drop back to 0 here even though TotalVehicleSamplesReceived stays nonzero.
+    public bool Connected => _vehicleReader.CurrentStatus.CurrentCount > 0;
 
     public bool TryGetLatest(VehicleHandle handle, out VehicleSample sample)
     {

@@ -560,7 +560,9 @@ public static class Renderer
         var (min, avg, p99) = frameStats.Compute();
         ImGui.SetNextWindowPos(new Vector2(10, 250), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new Vector2(380, 190), ImGuiCond.FirstUseEver);
-        ImGui.Begin("SumoSharp - diagnostics (loopback)");
+        // Shared by loopback and remote (P3 refactor) -- neither the title nor the content depends on
+        // which of the two owns a local publisher, so one panel covers both.
+        ImGui.Begin("SumoSharp - diagnostics (dds)");
         ImGui.Text($"fps: {Raylib.GetFPS()}");
         ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
         ImGui.Separator();
@@ -568,6 +570,45 @@ public static class Renderer
         ImGui.Text($"renderSim: {clock.RenderSim:F2}s   simRate: {clock.SimRate:F2}/s");
         ImGui.Text($"clock back-steps: {clock.BackSteps}   delay: {clock.EffectiveDelay:F2}s");
         ImGui.Text($"vehicles: {vehicleCount}");
+        ImGui.End();
+    }
+
+    // P3 ("remote mode + QoS"): the view-only counterpart to DrawLoopbackControlsPanel -- same DR-delay
+    // slider + smoothing toggle, but no restart/clear-obstacles/random-traffic buttons (a remote viewer has
+    // no EngineHost to command -- docs/SUMOSHARP-NATIVE-VIEWER.md's "Delegation model": remote is
+    // view-only). Adds the two indicators a remote viewer needs that a loopback viewer doesn't: whether the
+    // Vehicles topic currently has a matched (live) writer, and whether the durable geometry topic has
+    // delivered the whole network yet -- both meaningful only when there's no local publisher to fall back on.
+    public static void DrawRemoteControlsPanel(ref float delaySeconds, ref bool smooth, bool connected, bool geometryComplete)
+    {
+        ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(380, 200), ImGuiCond.FirstUseEver);
+        ImGui.Begin("SumoSharp - controls (remote, view-only)");
+        ImGui.Text("mode: REMOTE (view-only -- no engine here)");
+        ImGui.Separator();
+        ImGui.Text(connected ? "connected: yes" : "connected: NO (waiting for a publisher)");
+        ImGui.Text(geometryComplete ? "geometry: received" : "geometry: waiting...");
+        ImGui.Separator();
+        ImGui.SliderFloat("DR delay (s)", ref delaySeconds, 0f, 1.5f, "%.2f");
+        ImGui.Checkbox("smooth (extrap only)", ref smooth);
+        ImGui.TextWrapped("delay 0 = extrapolate (predict ahead, may snap); raise = interpolate between DDS packets (smooth, delayed)");
+        ImGui.End();
+    }
+
+    // P3: a large centered banner shown while the remote viewer has no geometry yet, so a screenshot taken
+    // during that window reads unambiguously as "still connecting" rather than "broken" (an empty world
+    // would otherwise look identical to a bug). Purely cosmetic -- draws over whatever DrawWorldDds already
+    // produced (nothing, until the first geometry chunk arrives).
+    public static void DrawWaitingOverlay(int screenW, int screenH, string message)
+    {
+        var textSize = ImGui.CalcTextSize(message);
+        ImGui.SetNextWindowPos(new Vector2((screenW - textSize.X) / 2f - 16f, screenH / 2f - 40f), ImGuiCond.Always);
+        ImGui.SetNextWindowBgAlpha(0.85f);
+        ImGui.Begin(
+            "##waiting-overlay",
+            ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove |
+            ImGuiWindowFlags.NoInputs | ImGuiWindowFlags.AlwaysAutoResize);
+        ImGui.Text(message);
         ImGui.End();
     }
 }

@@ -50,13 +50,17 @@ public sealed class DdsPublisher : IDisposable
     private byte[] _tlScratch = new byte[DdsWire.MaxPayload];
     private double _lastTlTime = double.NegativeInfinity;
 
+    // docs/SUMOSHARP-NATIVE-VIEWER.md P3 QoS: geometry + lifecycle are RELIABLE/TRANSIENT_LOCAL (durable --
+    // a late-joining remote reader gets the last-published network + fleet); Vehicles + Tl are
+    // BEST_EFFORT/VOLATILE (perishable state, already re-published periodically) -- see DdsQos's doc
+    // comment for the two-process durability verification behind this split.
     public DdsPublisher(EngineHost host, DdsParticipant participant)
     {
         _host = host;
-        _vehicleWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.Vehicles);
-        _geometryWriter = new DdsWriter<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry);
-        _lifecycleWriter = new DdsWriter<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle);
-        _tlWriter = new DdsWriter<DdsTlState>(participant, DdsTopicNames.Tl);
+        _vehicleWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
+        _geometryWriter = new DdsWriter<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
+        _lifecycleWriter = new DdsWriter<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
+        _tlWriter = new DdsWriter<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
     }
 
     // Publish the network's static lane geometry ONCE (durable-intent: see the topic's own comment for the
