@@ -14,8 +14,8 @@ namespace Sim.Viewer;
 // any camera change preserves the on-screen appearance the immediate-mode renderer produced.
 public sealed class RoadLayerCache : IDisposable
 {
-    private readonly int _width;
-    private readonly int _height;
+    private int _width;
+    private int _height;
     private RenderTexture2D _rt;
     private bool _baked;
     private Camera2D _bakedCamera;
@@ -25,6 +25,22 @@ public sealed class RoadLayerCache : IDisposable
         _width = width;
         _height = height;
         _rt = Raylib.LoadRenderTexture(width, height);
+    }
+
+    // Resize the offscreen layer to a new window size (on a resizable-window resize event). Reloads the
+    // RenderTexture and forces a re-bake, since the old texture no longer matches the framebuffer.
+    public void Resize(int width, int height)
+    {
+        if (width == _width && height == _height)
+        {
+            return;
+        }
+
+        Raylib.UnloadRenderTexture(_rt);
+        _width = width;
+        _height = height;
+        _rt = Raylib.LoadRenderTexture(width, height);
+        _baked = false;
     }
 
     // Re-bake the static layer into the RenderTexture iff the camera changed since the last bake (or nothing

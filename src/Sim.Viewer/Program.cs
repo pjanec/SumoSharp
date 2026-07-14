@@ -179,10 +179,11 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         host.InjectObstacleAtWorld(drop.X, drop.Y);
     }
 
-    const int screenW = 1280;
-    const int screenH = 800;
+    var screenW = 1280;
+    var screenH = 800;
 
     Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
+    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow); // user-resizable (docs/testing handoff request)
     Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (local)");
     if (!Raylib.IsWindowReady())
     {
@@ -233,6 +234,11 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     var interpCap = Math.Max(fleet ?? 0, 256);
     var vehicleDraws = new List<Renderer.DrVehicleDraw>(interpCap);
     var prevIndex = new Dictionary<VehicleHandle, int>(interpCap);
+    // Per-vehicle rendered-heading low-pass state, double-buffered (swapped each frame) so it prunes
+    // despawned vehicles and stays bounded. Smooths the ~5 discrete headings of a junction's coarse internal
+    // lane (netconvert internal-link-detail=5) into a continuous rotation through the turn.
+    var headingPrev = new Dictionary<VehicleHandle, float>(interpCap);
+    var headingCur = new Dictionary<VehicleHandle, float>(interpCap);
     // Interpolation clock driven by the measured WALL interval between snapshot arrivals: interpolate
     // prev->cur by the fraction of that interval elapsed, which sweeps the pose at CONSTANT velocity across
     // each snapshot (matching the actual production cadence). lastSnapSimTime/Wall mark the newest arrival;
@@ -256,6 +262,16 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         if (Raylib.IsKeyPressed(KeyboardKey.D))
         {
             showDiagnostics = !showDiagnostics;
+        }
+
+        // Window resized: match the offscreen road layer to the new framebuffer and re-centre the camera
+        // offset so the current view stays put (pan/zoom otherwise unchanged).
+        if (Raylib.IsWindowResized())
+        {
+            screenW = Raylib.GetScreenWidth();
+            screenH = Raylib.GetScreenHeight();
+            roadLayer.Resize(screenW, screenH);
+            camera.Offset = new Vector2(screenW / 2f, screenH / 2f);
         }
 
         Raylib.BeginDrawing();
@@ -364,7 +380,9 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
         // measured arrival interval.
         var actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
-        BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex);
+        BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex,
+            headingPrev, headingCur, Raylib.GetFrameTime());
+        (headingPrev, headingCur) = (headingCur, headingPrev); // swap: headingCur becomes next frame's prior
 
         roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
         Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host, vehicleDraws);
@@ -925,12 +943,21 @@ static (double MinX, double MinY, double MaxX, double MaxY) ComputeGeometryBound
 // frame to blend from (first frame / just after a restart / smoothing off).
 static void BuildLocalVehicleDraws(
     SimulationSnapshot cur, SimulationSnapshot prev, double renderClock, bool smooth,
-    List<Renderer.DrVehicleDraw> outDraws, Dictionary<VehicleHandle, int> prevIndex)
+    List<Renderer.DrVehicleDraw> outDraws, Dictionary<VehicleHandle, int> prevIndex,
+    Dictionary<VehicleHandle, float> headingPrev, Dictionary<VehicleHandle, float> headingCur,
+    float frameDtWall)
 {
     outDraws.Clear();
+    headingCur.Clear(); // rebuilt from current vehicles only -> prunes despawned, stays bounded
 
     var span = cur.Time - prev.Time;
     var interp = smooth && span > 1e-9 && prev.Count > 0 && !ReferenceEquals(prev, cur);
+
+    // Heading low-pass coefficient (this frame). A junction's internal lane is a coarse ~5-point arc
+    // (netconvert internal-link-detail=5), so the raw/interpolated heading rotates in ~5 discrete bursts; a
+    // ~0.18s low-pass on the RENDER heading spreads them into one continuous rotation. Straights (constant
+    // heading) converge instantly -> no lag; only actual rotation is smoothed.
+    var headAlpha = smooth ? 1f - MathF.Exp(-frameDtWall / 0.18f) : 1f;
 
     var a = 0f;
     if (interp)
@@ -950,12 +977,13 @@ static void BuildLocalVehicleDraws(
 
     for (var i = 0; i < cur.Count; i++)
     {
+        var handle = cur.Handles[i];
         float fx = cur.PosX[i], fy = cur.PosY[i], deg = cur.Angle[i];
         double spd = cur.SpeedExact[i];
 
         // Match by handle (spawn/despawn shuffles column indices between frames). A vehicle absent from the
         // previous frame (just departed) is drawn at its raw current pose.
-        if (interp && prevIndex.TryGetValue(cur.Handles[i], out var j))
+        if (interp && prevIndex.TryGetValue(handle, out var j))
         {
             fx = prev.PosX[j] + (cur.PosX[i] - prev.PosX[j]) * a;
             fy = prev.PosY[j] + (cur.PosY[i] - prev.PosY[j]) * a;
@@ -963,6 +991,15 @@ static void BuildLocalVehicleDraws(
             spd = prev.SpeedExact[j] + (cur.SpeedExact[i] - prev.SpeedExact[j]) * a;
         }
 
+        // Low-pass the render heading toward `deg` from last frame's smoothed value (shortest arc). A big
+        // jump (respawn / opposite-direction reuse of a handle) snaps rather than spins.
+        if (smooth && headingPrev.TryGetValue(handle, out var prevDeg))
+        {
+            var d = ((deg - prevDeg + 540f) % 360f) - 180f;
+            deg = MathF.Abs(d) > 100f ? deg : (prevDeg + d * headAlpha + 360f) % 360f;
+        }
+
+        headingCur[handle] = deg;
         outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd));
     }
 }
