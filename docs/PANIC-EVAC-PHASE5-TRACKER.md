@@ -9,6 +9,9 @@ population, not city size). Staged: Tier 1 now, Tier 2 (heavy opt, 10k target) a
 > unmoved; locality proven: 50/371 ever-active vehicles tracked). B1 surfaced a latent parity-core
 > reroute bug (multi-lane active reroute read the stale original route → crash); fixed + committed
 > separately with a fail-pre-fix/pass-post-fix core regression test (`RungB3MultilaneRerouteRegressionTests`).
+> **Tier1-B2 DONE and Opus-reviewed** (viz rendered t=80/180/290; cost profile measured — see S4). **All
+> of Tier 1 is complete.** Tier-2 priority is now set by the measured profile (viz payload + auto-track
+> scan lead; evac-phase optimization gated on working-region population). Awaiting go for a Tier-2 addendum.
 
 ## TIER 1 — realistic organic town + local auto-attach
 ### S1 — working-region auto-attach
@@ -26,15 +29,36 @@ population, not city size). Staged: Tier 1 now, Tier 2 (heavy opt, 10k target) a
 - [x] **T3.4** suite green (427 pass) + hash gate (`909605E965BFFE59`) + existing grid/TLS evac tests unchanged
 
 ### S4 — viz + measurement
-- [ ] **T4.1** organic viz scene (Opus renders to confirm)
-- [ ] **T4.2** cost profile at ~400 vehicles (dominant evac hotspot) — scopes Tier 2
+- [x] **T4.1** organic viz scene (`SceneGen.BuildEvacOrganic`, `Sim.Viz --evac-organic`; Opus rendered t=80/180/290 — realistic mesh, town-wide congestion 100→212→312 vehicles, incident ring + safe-radius local, evac discs clustered in the working region)
+- [x] **T4.2** cost profile at ~400 vehicles (`Sim.EvacProfile`; opt-in `EvacDirector` profiler, off by default) — **dominant evac hotspot = pusher step**
+
+### Tier-1 measured cost profile (the input that scopes Tier 2)
+`Sim.EvacProfile`, organic town, 300 ticks, peak 320 / ever-active 372 vehicles, total 1.27 s:
+
+| phase | ms | % tick | note |
+|---|---|---|---|
+| engine.Step | 1089 | 86.1 % | parity core (not an evac cost) |
+| **pusher step** | **81** | **6.4 %** | `DriveOrcaPushers` — dominant EVAC phase |
+| other | 40 | 3.2 % | auto-track scan, blocked detector, bookkeeping |
+| pedestrian step | 21 | 1.7 % | |
+| fear update | 18 | 1.4 % | |
+| disc feeds | 6 | 0.4 % | |
+
+**Key conclusion (reframes Tier 2):** at local scale the *entire* evac layer is ~10 % of tick time; the
+parity engine dominates. Because the evac layer only ever touches the bounded working region, its
+absolute cost does **not** grow with city size — so the O(n²) evac phases (fear/disc/pusher) need
+optimizing **only if a denser incident traps a low-thousands local population** (design §1). The
+city-size-dependent Tier-2 costs are instead (a) the per-tick auto-track scan (O(city), currently a
+full read-buffer scan) and (b) viz payload (2.0 MB for 372×300 → must be managed for 10k).
 
 ## TIER 2 — 10k city (heavy optimization; outline, detailed later)
-- [ ] FearField uniform grid (bit-identical)
-- [ ] spatial composite CrowdSource + disc feeds (O(local) per query)
-- [ ] enable OrcaCrowd spatial hash; MixedTrafficCrowd hash if needed
-- [ ] 10k-city demo + viz payload management (region-crop / decimation, logged)
-- [ ] working-region scan optimization (only if measured necessary)
+Priority now set by the measured profile above:
+- [ ] **viz payload management** for a 10k city (region-crop / decimation / caps, logged) — the clearest city-size-driven cost
+- [ ] **auto-track scan** optimization (spatial query instead of full O(city) read-buffer scan each tick) — measure first at 10k
+- [ ] **pusher step** (`MixedTrafficCrowd`) spatial hash — first evac phase to optimize, but ONLY if working-region population reaches low-thousands
+- [ ] FearField uniform grid + spatial composite CrowdSource/disc feeds (bit-identical) — gated on the same working-region-population trigger
+- [ ] enable `OrcaCrowd.UseSpatialHash` at scale
+- [ ] 10k-city demo scenario
 
 ---
 

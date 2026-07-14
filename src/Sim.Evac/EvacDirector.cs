@@ -75,6 +75,11 @@ public sealed class EvacDirector
     private readonly List<VehicleHandle> _autoTrackScratch = new();
     private double _time;
 
+    // PANIC-EVAC-PHASE5-DESIGN.md §4 (T4.2): opt-in per-phase profiler, null unless EnableProfiling()
+    // is called. Every use below is a `_profiler?.` conditional-access no-op when null, so profiling
+    // OFF (every existing demo/test) is zero-cost and byte-identical to before this field existed.
+    private EvacProfiler? _profiler;
+
     public EvacDirector(Engine engine, NetworkModel net, Incident incident, EvacConfig cfg, double stepLength)
     {
         _engine = engine;
@@ -104,6 +109,17 @@ public sealed class EvacDirector
         }
     }
 
+    // ----- profiling (T4.2, opt-in, off by default) -----
+
+    // Turn on per-phase wall-time accounting for Tick(); returns the profiler so a caller (e.g.
+    // Sim.EvacProfile) can Snapshot() it after running some ticks. Idempotent -- a second call
+    // returns the SAME profiler instance rather than resetting accumulated timings.
+    public EvacProfiler EnableProfiling() => _profiler ??= new EvacProfiler();
+
+    // Cumulative per-phase timings since EnableProfiling() was called; all-zero if profiling was
+    // never enabled (never throws -- a read-only, always-safe observability seam).
+    public ProfileSnapshot Profile => _profiler?.Snapshot() ?? default;
+
     // ----- setup -----
 
     // Put a vehicle (spawned by the caller) under the evac layer's watch.
@@ -122,10 +138,18 @@ public sealed class EvacDirector
 
     public void Tick()
     {
+        var tickStart = _profiler?.Begin() ?? 0L;
+
         _time += _stepLength;
         PreStep();
+
+        var engineStart = _profiler?.Begin() ?? 0L;
         _engine.Step();
+        _profiler?.End(engineStart, EvacProfiler.Phase.EngineStep);
+
         PostStep();
+
+        _profiler?.EndTick(tickStart);
     }
 
     // PANIC-EVAC-PHASE5-DESIGN.md §3 (T1.2): opt-in auto-attach for `LoadScenario` demand -- vehicles
@@ -175,8 +199,11 @@ public sealed class EvacDirector
     {
         AutoTrackWorkingRegion();
 
+        var discFeedsStart = _profiler?.Begin() ?? 0L;
         FeedVehicleDiscsToPeds();
+        _profiler?.End(discFeedsStart, EvacProfiler.Phase.DiscFeeds);
 
+        var fearUpdateStart = _profiler?.Begin() ?? 0L;
         var obs = new List<FearField.VehicleObs>();
         foreach (var handle in _order)
         {
@@ -204,6 +231,7 @@ public sealed class EvacDirector
         }
 
         var newlyLatched = _fearField.Update(obs, _incident, _time, _abandoned, _cfg, _stepLength);
+        _profiler?.End(fearUpdateStart, EvacProfiler.Phase.FearUpdate);
 
         foreach (var handle in newlyLatched)
         {
@@ -253,8 +281,13 @@ public sealed class EvacDirector
             }
         }
 
+        var pusherStepStart = _profiler?.Begin() ?? 0L;
         DriveOrcaPushers();
+        _profiler?.End(pusherStepStart, EvacProfiler.Phase.PusherStep);
+
+        var pedestrianStepStart = _profiler?.Begin() ?? 0L;
         DrivePedestrians();
+        _profiler?.End(pedestrianStepStart, EvacProfiler.Phase.PedestrianStep);
     }
 
     // R6: a panicked, blocked car — its occupants abandon it. Freeze the car as an obstacle, remove it

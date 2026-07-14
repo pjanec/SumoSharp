@@ -32,10 +32,60 @@ internal static class Program
         {
             Console.Error.WriteLine("usage: Sim.Viz <scenarioDir> [--fcd <path>]");
             Console.Error.WriteLine("       Sim.Viz --bundle <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --evac-organic <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
-        return args[0] == "--bundle" ? RunBundle(args) : RunSingle(args);
+        return args[0] switch
+        {
+            "--bundle" => RunBundle(args),
+            "--evac-organic" => RunEvacOrganic(args),
+            _ => RunSingle(args),
+        };
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Standalone organic-town evac mode (PANIC-EVAC-PHASE5-TASKS.md T4.1): emits JUST the one scene,
+    // kept OUT of --bundle -- at ~400 vehicle slots x 300 frames the payload is a few MB, which would
+    // bloat the showcase bundle for no benefit (this scene is reviewed on its own).
+    // ---------------------------------------------------------------------------------------
+    private static int RunEvacOrganic(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --evac-organic requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+
+        var scene = SceneGen.BuildEvacOrganic(repoRoot);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var vehicleSlots = scene.Frames.Length > 0 ? scene.Frames[0].V.Length : 0;
+
+        var pedestrianDiscs = 0;
+        foreach (var frame in scene.Frames)
+        {
+            foreach (var d in frame.D)
+            {
+                if (d.Length > 3 && (d[3] == SceneGen.KindFleeing || d[3] == SceneGen.KindEscaped))
+                {
+                    pedestrianDiscs++;
+                }
+            }
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} vehicleSlots={vehicleSlots} " +
+            $"pedestrianDiscs={pedestrianDiscs}");
+        return 0;
     }
 
     // ---------------------------------------------------------------------------------------

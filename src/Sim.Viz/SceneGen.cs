@@ -606,10 +606,11 @@ internal static class SceneGen
     // The original (untouched) EvacGridScenario/evac-grid demo stays pinned by its own tests; this
     // scene is the denser, signalized successor used for the opening viz.
     // ---------------------------------------------------------------------------------------
-    private const int KindFleeing = 4;    // #38bdf8 -- fleeing pedestrian
-    private const int KindEscaped = 5;    // #34d399 -- escaped pedestrian
-    private const int KindAbandoned = 6;  // #b91c1c -- abandoned car
-    private const int KindPushingCar = 8; // #fb923c -- car pushing onto the shoulder (Phase 3)
+    // internal (not private): Program.cs's --evac-organic stats printer counts discs by kind too.
+    internal const int KindFleeing = 4;    // #38bdf8 -- fleeing pedestrian
+    internal const int KindEscaped = 5;    // #34d399 -- escaped pedestrian
+    internal const int KindAbandoned = 6;  // #b91c1c -- abandoned car
+    internal const int KindPushingCar = 8; // #fb923c -- car pushing onto the shoulder (Phase 3)
 
     internal static ScenePayload BuildEvacGrid(string repoRoot)
     {
@@ -699,6 +700,141 @@ internal static class SceneGen
             network,
             new double[] { 5.0, 1.8 },
             Sim.Evac.EvacTlsScenario.StepLength,
+            frames.ToArray(),
+            labels,
+            incident,
+            boundary);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Panic evacuation (organic town)" (PANIC-EVAC-PHASE5-DESIGN.md §4, T4.1): the Tier-1
+    // realistic-town evac. Mirrors BuildEvacGrid's structure exactly (fear-tinted vehicle frames,
+    // pedestrian discs, abandoned cars, pushers, hard-edge boundary, incident overlay) but drives the
+    // organic-town fixture (EvacOrganicScenario.Build) instead of the hand-built grid: LoadScenario's
+    // own demand inserts vehicles under the director's Tick() loop and the director AUTO-attaches to
+    // whatever drives into the working region -- there is no explicit handle list to iterate (unlike
+    // EvacGrid's manual spawn-and-Track), so vehicle frames are built the same way BuildEvacGrid does,
+    // straight off engine.VehicleHandles each tick. NOT part of --bundle (a few-MB payload at this
+    // frame/vehicle count would bloat the showcase); emitted standalone via `--evac-organic`.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildEvacOrganic(string repoRoot)
+    {
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", "_bench", "city-organic-L2");
+        var netPath = Path.Combine(scenarioDir, "net.net.xml");
+        var cfgPath = Path.Combine(scenarioDir, "config.sumocfg");
+
+        var (engine, director) = Sim.Evac.EvacOrganicScenario.Build(repoRoot);
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+        var scenarioConfig = ScenarioConfigParser.Parse(cfgPath);
+        var stepLength = scenarioConfig.StepLength > 0 ? scenarioConfig.StepLength : 1.0;
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var frames = new List<FramePayload>();
+
+        for (var step = 0; step < 300; step++)
+        {
+            director.Tick();
+
+            var handles = engine.VehicleHandles;
+            var px = engine.PosX;
+            var py = engine.PosY;
+            var pa = engine.Angle;
+
+            for (var i = 0; i < handles.Length; i++)
+            {
+                if (!slotByHandle.ContainsKey(handles[i].Index))
+                {
+                    slotByHandle[handles[i].Index] = slotByHandle.Count;
+                }
+            }
+
+            var v = new double[slotByHandle.Count][];
+            for (var i = 0; i < handles.Length; i++)
+            {
+                var slot = slotByHandle[handles[i].Index];
+                v[slot] = new[] { R(px[i]), R(py[i]), R(pa[i]), R(director.Fear(handles[i])) };
+            }
+
+            var discs = new List<double[]>();
+            for (var i = 0; i < director.PedestrianCount; i++)
+            {
+                var p = director.PedestrianPosition(i);
+                var kind = director.PedestrianEscaped(i) ? KindEscaped : KindFleeing;
+                discs.Add(new[] { R(p.X), R(p.Y), 0.6, (double)kind });
+            }
+
+            for (var i = 0; i < director.AbandonedCarCount; i++)
+            {
+                var c = director.AbandonedCar(i);
+                discs.Add(new[] { R(c.X), R(c.Y), R(c.Radius), (double)KindAbandoned });
+            }
+
+            foreach (var (px_, py_, headingRad) in director.ActivePushers())
+            {
+                var headingDeg = headingRad * 180.0 / Math.PI;
+                discs.Add(new[] { R(px_), R(py_), 2.5, (double)KindPushingCar, R(headingDeg), 0.0, 2.5, 0.9 });
+            }
+
+            frames.Add(new FramePayload(v, discs.ToArray()));
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+
+        // Camera = the NET's own geometric extent (lanes + junctions) -- NOT the navmesh, which pads
+        // outward by VicinityWidth and is drawn separately below as the hard-edge boundary rectangle.
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        void Track(double x, double y)
+        {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+
+        foreach (var lane in network.Lanes)
+        {
+            for (var p = 0; p < lane.Shape.Length; p += 2) Track(lane.Shape[p], lane.Shape[p + 1]);
+        }
+
+        foreach (var j in network.Junctions)
+        {
+            for (var p = 0; p < j.Shape.Length; p += 2) Track(j.Shape[p], j.Shape[p + 1]);
+        }
+
+        var nm = director.NavMesh;
+        var boundary = new[]
+        {
+            R(nm.MinX), R(nm.MinY), R(nm.MinX), R(nm.MaxY), R(nm.MaxX), R(nm.MaxY), R(nm.MaxX), R(nm.MinY),
+        };
+
+        var incidentSpec = director.Incident;
+        var cfg = Sim.Evac.EvacOrganicScenario.DefaultConfig();
+        var incident = new[]
+        {
+            R(incidentSpec.X), R(incidentSpec.Y), R(incidentSpec.Radius), R(incidentSpec.StartTime), R(cfg.SafeRadius),
+        };
+
+        var labels = new string[9];
+        labels[4] = "fleeing pedestrian";
+        labels[5] = "escaped pedestrian";
+        labels[6] = "abandoned car";
+        labels[8] = "abandoning car (shoulder)";
+
+        return new ScenePayload(
+            "Panic evacuation (organic town)",
+            "Realistic organic town (274 junctions, 1186 edges, ~406 peak concurrent traffic); a local "
+            + "incident at a busy signalized interior junction triggers panic ONLY in the auto-tracked "
+            + "working region around it -- distant traffic stays pure parity lane traffic, untouched by "
+            + "the evac layer (the load-bearing Phase-5 locality property). Cars flee toward town-edge "
+            + "exits and jam; boxed-in drivers nose onto the shoulder, then abandon (dark-red discs) and "
+            + "flee on foot (cyan, turning green past the safe radius); the dashed rectangle is the "
+            + "known-world hard edge. Driving core = SUMO port; pedestrians + panic = external Sim.Evac "
+            + "layer.",
+            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            network,
+            new double[] { 5.0, 1.8 },
+            stepLength,
             frames.ToArray(),
             labels,
             incident,

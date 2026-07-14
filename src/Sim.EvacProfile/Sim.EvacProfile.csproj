@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PANIC-EVAC-PHASE5-TASKS.md T4.2: the Tier-1 cost-profile deliverable, a small standalone
+       runner that builds the organic-town evac demo (EvacOrganicScenario), turns on EvacDirector's
+       opt-in profiler (EvacDirector.EnableProfiling(), off everywhere else), runs it to the demo's
+       usual scale, and prints the per-phase evac cost breakdown that scopes the Tier-2 optimization
+       list (design section 6). Mirrors Sim.BenchCity's csproj shape; a deliberate SEPARATE project
+       (like Sim.Bench / Sim.BenchCity / Sim.Viz) rather than folded into an existing runner, since
+       its one job is this specific measurement. NOT part of `dotnet test`, a CLI utility only. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <ProjectReference Include="..\Sim.Evac\Sim.Evac.csproj" />
+  </ItemGroup>
+
+</Project>
