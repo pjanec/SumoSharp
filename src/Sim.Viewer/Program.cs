@@ -233,10 +233,13 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
     var interpCap = Math.Max(fleet ?? 0, 256);
     var vehicleDraws = new List<Renderer.DrVehicleDraw>(interpCap);
     var prevIndex = new Dictionary<VehicleHandle, int>(interpCap);
-    // Measured actual sim rate (sim-seconds delivered per wall-second), EMA-smoothed, used to PACE the render
-    // clock so playback matches what the engine actually delivers (never outrunning it into stutter).
-    var simRateEma = 0.0;
-    var lastCurTime = 0.0;
+    // Interpolation clock driven by the measured WALL interval between snapshot arrivals: interpolate
+    // prev->cur by the fraction of that interval elapsed, which sweeps the pose at CONSTANT velocity across
+    // each snapshot (matching the actual production cadence). lastSnapSimTime/Wall mark the newest arrival;
+    // intervalEma smooths the arrival period.
+    var lastSnapSimTime = double.NaN;
+    var lastSnapWall = 0.0;
+    var intervalEma = 0.0;
 
     // P1 drag-vs-click bookkeeping for the world camera (Camera2D pan/zoom/pick -- see Renderer.Flip's
     // doc comment for the world<->screen convention this camera operates in).
@@ -315,30 +318,48 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
             }
         }
 
-        // Atomic (cur, prev) pair. Pace the render clock by the MEASURED delivered sim rate (not the
-        // requested speed): measure sim-seconds advanced per wall-second, EMA-smooth it, and advance
-        // renderClock at that. Clamp into [prev.Time, cur.Time] so we interpolate between two real frames and
-        // never extrapolate past the newest. If the engine can't sustain the requested speed, playback simply
-        // runs at what it delivers instead of outrunning cur and pinning to it (which read as stutter).
+        // Atomic (cur, prev) pair. Interpolate by the fraction of the measured snapshot-arrival interval
+        // elapsed since `cur` arrived -> the render pose sweeps prev->cur at constant velocity over the
+        // interval, matching however fast the engine is actually producing frames. (Estimating an
+        // instantaneous rate from the impulsive per-frame sim-time deltas produced a sawtooth: race to the
+        // newest frame then freeze until the next arrived.)
         var (snapshot, prevSnapshot) = host.SnapshotPair;
-        var frameDt = Raylib.GetFrameTime();
-        var simAdvanced = snapshot.Time - lastCurTime;
-        lastCurTime = snapshot.Time;
-        if (simAdvanced < 0)
+        var wallClock = perfWall.Elapsed.TotalSeconds;
+
+        if (double.IsNaN(lastSnapSimTime) || snapshot.Time < lastSnapSimTime)
         {
-            // restart / step-length rebuild reset the timeline -> resync onto it
-            renderClock = snapshot.Time;
-            simRateEma = 0;
+            // first frame, or a restart / step-length rebuild reset the timeline
+            lastSnapSimTime = snapshot.Time;
+            lastSnapWall = wallClock;
+            intervalEma = 0.0;
         }
-        else if (frameDt > 0)
+        else if (snapshot.Time > lastSnapSimTime)
         {
-            var alpha = 1.0 - Math.Exp(-frameDt / 0.4); // ~0.4s time constant
-            simRateEma += (simAdvanced / frameDt - simRateEma) * alpha;
+            var interval = wallClock - lastSnapWall;
+            if (interval > 1e-4)
+            {
+                intervalEma = intervalEma <= 0.0 ? interval : intervalEma + (interval - intervalEma) * 0.2;
+            }
+
+            lastSnapSimTime = snapshot.Time;
+            lastSnapWall = wallClock;
         }
 
-        renderClock += frameDt * simRateEma;
-        if (renderClock > snapshot.Time) renderClock = snapshot.Time;
-        if (renderClock < prevSnapshot.Time) renderClock = prevSnapshot.Time;
+        var span = snapshot.Time - prevSnapshot.Time;
+        if (smooth && span > 1e-9 && intervalEma > 1e-6)
+        {
+            var frac = (wallClock - lastSnapWall) / intervalEma;
+            if (frac < 0.0) frac = 0.0; else if (frac > 1.0) frac = 1.0;
+            renderClock = prevSnapshot.Time + frac * span;
+        }
+        else
+        {
+            renderClock = snapshot.Time; // smoothing off / not enough info yet -> draw the newest frame
+        }
+
+        // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
+        // measured arrival interval.
+        var actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
         BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex);
 
         roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
@@ -347,7 +368,7 @@ static int RunLocal(string netPath, string? screenshotPath, int frames, (double 
         Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth);
         if (showDiagnostics)
         {
-            Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, simRateEma, host.StepLength);
+            Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, actualSpeed, host.StepLength);
         }
 
         rlImGui.End();
