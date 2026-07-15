@@ -6,6 +6,12 @@ non-negotiable correctness bar. Performance matters, but a faster wrong answer i
 wrong. Read `docs/DESIGN.md` for the architecture of record; read `docs/TASKS.md` for the current
 work queue. This file is the rules of the road.
 
+## Interaction preferences
+
+- **Ask questions as plain chat text, not interactive question widgets.** When you need a
+  decision or clarification, write the options out in the message and let the user reply inline.
+  Do not use the question/choice picker UI.
+
 ## Prime directives
 
 1. **Work from the repo root.** Resolve it with `git rev-parse --show-toplevel`. Never
