@@ -18,13 +18,15 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
 - [x] P0.1 — Packaging design/tasks/tracker docs landed.
 - [x] P0.2 — `SUMOSHARP-API.md §1` points here; two-package reality + retired `Runtime` recorded.
 
-## Stage P1 — Replication transport contract + neutral sample (D8, D9)
-- [ ] P1.1 — `IReplicationSink`/`IReplicationSource` (4-channel contract) added in `Sim.Replication`.
-      **(OUTSTANDING — packaging branch owns this.)**
-- [x] P1.2 — `TimestampedSample` + `IVehicleSampleHistory` in `Sim.Replication` (+ history test).
-      **Landed on main via P2-A (`0d85486`)**, shape matching `PublishScheduler`'s ref field set.
-- [ ] P1.3 — `Sim.Replication.Dds` refactored to *implement* the contract. **(OUTSTANDING.)**
-- [ ] P1.4 — in-memory-transport round-trip test proves a second binding. **(OUTSTANDING.)**
+## Stage P1 — Replication transport contract + neutral sample (D8, D9)  ✅ COMPLETE
+- [x] P1.1 — `IReplicationSink`/`IReplicationSource` (4-channel contract) + `LifecycleRecord` in
+      `Sim.Replication` (`IReplication.cs`); references only data-model types (`24f8760`).
+- [x] P1.2 — `TimestampedSample` + `IVehicleSampleHistory` in `Sim.Replication` (landed via P2-A).
+- [x] P1.3 — DDS implements the contract: `DdsSubscriber : IReplicationSource` (surface already
+      matched) and `DdsPublisher : IReplicationSink` (encode+write extracted; byte-identical writes).
+      (These classes live in `Sim.Viewer.Core`; the contract is defined in `Sim.Replication`.)
+- [x] P1.4 — `InMemoryReplicationBus` (a non-DDS binding) + `ReplicationInMemoryTransportTests`
+      hermetic round-trip proves a second transport. Verified: parity 457/0/3, hash unchanged.
 
 ## Stage P2 — `SumoSharp.Viewer.Motion`  ✅ COMPLETE (on main)
 - [x] P2.1 — `DrClock` decoupled from `DdsSubscriber` onto the neutral sample/history (`5a32a3e`);
