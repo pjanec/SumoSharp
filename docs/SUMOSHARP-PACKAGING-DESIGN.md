@@ -319,7 +319,7 @@ relocated to the demo layer, keeping the packaged viewer generic.
 ## 7. Parity & packaging guard (success bar)
 
 - **Offline parity unchanged.** `dotnet test` must stay green and native-free after every packaging
-  step (baseline at time of writing, post-main-rebase: **446 passed, 0 failed, 3 skipped**;
+  step (baseline at time of writing, post-main-rebase: **451 passed, 0 failed, 3 skipped**;
   determinism anchor per `Sim.Bench` unchanged).
 - **Extend the packaging guard test.** `RungB13PackagingTargetsTests` already pins that Core/Ingest
   multi-target net8+ns2.1 and keep the polyfills. Add assertions that:

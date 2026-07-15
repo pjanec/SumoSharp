@@ -5,7 +5,7 @@ Work breakdown for the packaging rethink. **Design reference:** `SUMOSHARP-PACKA
 
 **Global invariants (every task must hold these):**
 - **G1 — Parity iron law.** `dotnet test` stays green and native-free (baseline, post-main-rebase:
-  **446 passed, 0 failed, 3 skipped**; `Sim.Bench` determinism anchor unchanged). No simulation
+  **451 passed, 0 failed, 3 skipped**; `Sim.Bench` determinism anchor unchanged). No simulation
   trajectory moves.
 - **G2 — No native leak into the portable tier.** Nothing in `Ingest`/`Core`/`Replication`/
   `Viewer.Motion` may `PackageReference` a native dep (CycloneDDS, raylib, rlImgui) or
