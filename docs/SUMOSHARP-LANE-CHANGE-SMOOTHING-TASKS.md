@@ -84,7 +84,16 @@ verification is via the `--trace-veh` harness on loopback (no `dotnet test` / SU
     - [ ] **07-keep-right** — startup/acceleration-dominated (veh0 departs from standstill on a single
       1000 m edge; bracketing packets ~65 m apart during accel). Not a clean steady-state lane-change
       signal; the guard snaps the large longitudinal bracket. Revisit with a mid-run change scenario.
-- [ ] **T4** *(polish — NEXT, user-prioritised 2026-07-15 live review)* — the abrupt part is the
+- [~] **T4** *(heading fix DONE, pending interactive sign-off)* — added an ALWAYS-ON render-heading
+      low-pass (τ=0.18 s, shortest-arc, >100° snap) in `PumpAndBuildVehicleDraws`, mirroring the local
+      viewer's heading filter; also moved the `DRTRACE` print AFTER the smoothing block so the harness
+      observes the DRAWN pose (it was structurally blind before — logged the raw pre-smoothing pose).
+      Verified (drawn pose): 12-overtake per-frame heading step **4.6° → 0.40°** (tilt still eases in);
+      44-junction heading smooth (1.1°/frame), full turn sweep preserved. Side effect to watch: the
+      low-pass adds ~0.18 s heading lag to junction turns (same filter/lag family the local viewer uses).
+      Open: interactive sign-off; tune τ (↓ toward 0.10 s) if the junction reads laggy. The position
+      entry-step (~1.2 m) is the SEPARATE jitter/extrapolation item, not this.
+- [ ] ~~**T4** *(polish — NEXT, user-prioritised 2026-07-15 live review)*~~ — the abrupt part is the
       **initial ORIENTATION (heading) jump when the lane change STARTS**, not the position: the frame the
       lateral straddle engages, `pdeg` snaps from the straight-lane heading to the chord tilt (~85°) in one
       step. Fix the HEADING discontinuity first (position slide already reads fine). Candidates: low-pass the

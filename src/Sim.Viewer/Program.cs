@@ -1115,53 +1115,49 @@ static void PumpAndBuildVehicleDraws(
             pdeg = pose.HeadingDeg;
         }
 
-        // Diagnostic (opt-in via --trace-veh): dump the DR-reconstructed render pose for the traced vehicle,
-        // with the extrapolated flag, resolved lane, and the effective playout delay, to compare against the
-        // AUTHTRACE ground truth -- the harness for junction/lane-change DR smoothness analysis.
+        var (_, avgFrame, _) = frameStats.Compute();
+        var frameDt = avgFrame > 0f ? avgFrame : 1f / 60f;
+
+        // Render-heading low-pass (ALWAYS on -- NOT gated on the `smooth` toggle, which controls only the
+        // extrapolation POSITION filter below): ease EVERY heading change over ~0.18 s so a lane-change
+        // entry/exit tilt (or any packet-boundary heading step) rotates continuously instead of snapping in
+        // one frame (the abrupt orientation twitch). Mirrors the local viewer's heading filter. Runs for ALL
+        // vehicles every frame -- a lane-change straddle is interpolated (extrap=False), so the
+        // extrapolation-only position block would never catch its heading snap. Shortest-arc; a >100 deg jump
+        // (handle reuse / opposite-direction respawn) snaps rather than spins.
+        if (smoothed.TryGetValue(handle, out var prevPose))
+        {
+            var aHead = 1f - MathF.Exp(-frameDt / 0.18f);
+            var dh = ((pdeg - prevPose.Deg + 540f) % 360f) - 180f;
+            pdeg = MathF.Abs(dh) > 100f ? pdeg : (prevPose.Deg + dh * aHead + 360f) % 360f;
+
+            // Optional POSITION low-pass, extrapolation-only (interpolated poses are already smooth): filter
+            // only extrapolated positions; a >7 m jump snaps (leave raw).
+            if (smooth && resolved.Extrapolated)
+            {
+                var aPos = 1f - MathF.Exp(-frameDt / 0.07f);
+                var ex = (float)px - prevPose.X;
+                var ey = (float)py - prevPose.Y;
+                if (ex * ex + ey * ey <= 49f)
+                {
+                    px = prevPose.X + ex * aPos;
+                    py = prevPose.Y + ey * aPos;
+                }
+            }
+        }
+
+        smoothed[handle] = ((float)px, (float)py, pdeg);
+
+        // Diagnostic (opt-in via --trace-veh): dump the FINAL drawn pose for the traced vehicle -- AFTER the
+        // heading low-pass + position filter, i.e. exactly what vehicleDraws renders (placed here, not before
+        // the smoothing block, so the trace observes the smoothing) -- plus the extrapolated flag, resolved
+        // lane, and effective playout delay, to compare against the AUTHTRACE ground truth.
         if (traceHandle is { } th && handle == th)
         {
             Console.WriteLine($"DRTRACE rsim={drClock.RenderSim:F2} x={px:F2} y={py:F2} deg={pdeg:F1} " +
                 $"laneH={resolved.State.LaneHandle} pos={resolved.State.Pos:F2} extrap={resolved.Extrapolated} " +
                 $"spd={resolved.State.Speed:F1} " +
                 $"delay={drClock.EffectiveDelay:F3} avgint={drClock.AvgSampleInterval:F3} hist={history.Count}");
-        }
-
-        // Optional low-pass, extrapolation-only (HtmlPage.cs's `smooth`): interpolated poses are already
-        // smooth/exact, so only extrapolated ones are filtered.
-        if (smooth && resolved.Extrapolated)
-        {
-            var (min, avg, _) = frameStats.Compute();
-            var frameDt = avg > 0f ? avg : 1f / 60f;
-            var aPos = 1f - MathF.Exp(-frameDt / 0.07f);
-            var aDeg = 1f - MathF.Exp(-frameDt / 0.06f);
-
-            if (smoothed.TryGetValue(handle, out var prev))
-            {
-                var ex = (float)px - prev.X;
-                var ey = (float)py - prev.Y;
-                if (ex * ex + ey * ey > 49f)
-                {
-                    smoothed[handle] = ((float)px, (float)py, pdeg);
-                }
-                else
-                {
-                    var nx = prev.X + ex * aPos;
-                    var ny = prev.Y + ey * aPos;
-                    var dd = ((pdeg - prev.Deg + 540f) % 360f) - 180f;
-                    var nd = Math.Abs(dd) > 50f ? pdeg : (prev.Deg + dd * aDeg + 360f) % 360f;
-                    smoothed[handle] = (nx, ny, nd);
-                }
-            }
-            else
-            {
-                smoothed[handle] = ((float)px, (float)py, pdeg);
-            }
-
-            (px, py, pdeg) = smoothed[handle];
-        }
-        else
-        {
-            smoothed[handle] = ((float)px, (float)py, pdeg);
         }
 
         vehicleDraws.Add(new Renderer.DrVehicleDraw(px, py, pdeg, length, width, resolved.State.Speed));
