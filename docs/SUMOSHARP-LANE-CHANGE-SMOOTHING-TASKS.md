@@ -67,10 +67,28 @@ verification is via the `--trace-veh` harness on loopback (no `dotnet test` / SU
 
 ## Tracker
 
-- [ ] **T1** — `DrClock.Resolve` classifies downstream vs lateral straddle; lateral returns two-state result
-- [ ] **T2** — `PumpAndBuildVehicleDraws` Cartesian pose blend + chord heading + sanity guard
-- [ ] **T3** — regression (44), sublane (61), and guard verification pass the numeric bars in design §7
-- [ ] **T4** *(optional)* — heading-tilt polish; interactive "looks NICE" sign-off
+- [x] **T1** — `DrClock.Resolve` classifies downstream vs lateral straddle; lateral returns two-state result.
+      Also discovered & fixed the *real* root cause of the "stuck on old lane" behaviour: the wire's
+      `Upcoming[0]` (lane-sequence pool) lags the record's own `LaneHandle` after a same-edge tactical
+      change, so `PoseResolver` sampled the OLD lane's geometry — `NormalizeUpcoming` re-anchors index 0
+      to the record's `LaneHandle` (viewer-side read fix, no Sim.Core touch).
+- [x] **T2** — `PumpAndBuildVehicleDraws` Cartesian pose blend + chord heading + sanity guard (guard gated
+      on the bracket's REAL span `resolved.PacketSpan`, not the smoothed EMA, so a slow-sampled slide is
+      not wrongly snapped).
+- [~] **T3** — regression & coverage (verified first-hand from DRTRACE):
+    - [x] **44 junction regression** — max lateral/frame **0.081 m** ≤ 0.10 m ✅ (NormalizeUpcoming safe).
+    - [x] **61 sublane** — max lateral/frame **0.000 m**, steady offset preserved ✅.
+    - [~] **12-overtake** — now traverses BOTH lanes with an 85° chord tilt (was stuck at one lane);
+      **residual 1.24 m step on ENTRY** to the slide (the prior frame was extrapolating on the old lane
+      and overshot `pos` ~16 m; the slide itself is smooth). Slide property met; entry-step > 0.5 m bar.
+    - [ ] **07-keep-right** — startup/acceleration-dominated (veh0 departs from standstill on a single
+      1000 m edge; bracketing packets ~65 m apart during accel). Not a clean steady-state lane-change
+      signal; the guard snaps the large longitudinal bracket. Revisit with a mid-run change scenario.
+- [ ] **T4** *(polish, pending user call)* — reduce the extrapolation→straddle entry step (extend the
+      §5.5 low-pass to cover the lateral-straddle entry, and/or ensure interpolation-entry via delay), and
+      interactive "looks NICE" sign-off. The entry step is the same extrapolation-reconciliation family as
+      the junction pass's residual longitudinal jump — a shared DR-timing item, not lane-change-specific.
 
-**Definition of done:** T1–T3 checked with the numeric success conditions confirmed first-hand from
-DRTRACE (not a summary), and an interactive run reviewed by the user.
+**Status:** core mechanism (T1+T2) done and visually confirmed smooth by the user on the interactive
+viewer; no regressions (44/61). Remaining work is the entry-transition polish (T4) and a cleaner
+mid-run lane-change test to replace 07.

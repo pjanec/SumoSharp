@@ -1024,15 +1024,82 @@ static void PumpAndBuildVehicleDraws(
 
         var resolved = drClock.Resolve(history, delaySeconds, geoSource);
         var (length, width) = subscriber.Dims.TryGetValue(handle, out var dims) ? dims : (5.0f, 1.8f);
-        var state = resolved.State with { Length = length, Width = width };
 
-        var upCount = resolved.Upcoming.CopyTo(upcomingScratch);
-        var pose = PoseResolver.Resolve(
-            geoSource, state, upcomingScratch[..upCount], default, 0.0, RenderRealism.ChordHeading);
+        // Lateral straddle (lane change, SUMOSHARP-LANE-CHANGE-SMOOTHING-DESIGN.md §4.2): resolve BOTH
+        // bracketing packets on their own lanes and Cartesian-lerp the two world poses -- the straight
+        // chord between two sibling lanes IS the lane-change diagonal (unlike a downstream/junction
+        // straddle, which walks the curved geometry via ArcInWindow instead and never reaches here).
+        double px, py;
+        float pdeg;
+        if (resolved.IsLateralStraddle)
+        {
+            var stateA = resolved.State with { Length = length, Width = width };
+            var upA = resolved.Upcoming.CopyTo(upcomingScratch);
+            var poseA = PoseResolver.Resolve(
+                geoSource, stateA, upcomingScratch[..upA], default, 0.0, RenderRealism.ChordHeading);
 
-        var px = pose.X;
-        var py = pose.Y;
-        var pdeg = pose.HeadingDeg;
+            var stateB = resolved.SecondState!.Value with { Length = length, Width = width };
+            var upB = resolved.SecondUpcoming.CopyTo(upcomingScratch); // reuse scratch: poseA already computed
+            var poseB = PoseResolver.Resolve(
+                geoSource, stateB, upcomingScratch[..upB], default, 0.0, RenderRealism.ChordHeading);
+
+            var f = resolved.Blend;
+            var dxw = poseB.X - poseA.X;
+            var dyw = poseB.Y - poseA.Y;
+            var chordLen = Math.Sqrt(dxw * dxw + dyw * dyw);
+
+            // Sanity guard (design §4.2 point 4): an implausibly large gap for ONE PACKET INTERVAL (handle
+            // reuse, despawn/respawn, or a genuine teleport) snaps to `poseB` instead of drawing a long
+            // diagonal across the map. Gated on THIS bracket's own real span (resolved.PacketSpan), not the
+            // smoothed average sample interval -- a lane-change bracket's actual gap can run well above the
+            // EMA average (observed on 12-overtake: avgint~1.2s vs. this pair's real ~2.9s), so using the
+            // average would under-estimate a perfectly normal slow-sampled slide's chord length and wrongly
+            // snap it (the ~3.2 m single-frame jump the T2/T3 numeric bars rule out).
+            var maxSlide = Math.Max(3.0 * width /* ~3 lane widths */,
+                resolved.State.Speed * Math.Max(resolved.PacketSpan, 0.1) * 1.5);
+
+            if (chordLen > maxSlide)
+            {
+                px = poseB.X;
+                py = poseB.Y;
+                pdeg = poseB.HeadingDeg;
+            }
+            else
+            {
+                px = poseA.X + dxw * f;
+                py = poseA.Y + dyw * f;
+
+                // Chord-derived heading (navi deg: 0=N, clockwise) so the car leans into the change; fall
+                // back to a shortest-arc lerp of the two lane headings when the chord is too short to be
+                // meaningful (e.g. a near-stationary change).
+                if (chordLen > 0.5)
+                {
+                    var deg = 90.0 - Math.Atan2(dyw, dxw) * 180.0 / Math.PI;
+                    deg %= 360.0;
+                    if (deg < 0)
+                    {
+                        deg += 360.0;
+                    }
+
+                    pdeg = (float)deg;
+                }
+                else
+                {
+                    pdeg = LerpAngleDeg(poseA.HeadingDeg, poseB.HeadingDeg, f);
+                }
+            }
+        }
+        else
+        {
+            var state = resolved.State with { Length = length, Width = width };
+            var upCount = resolved.Upcoming.CopyTo(upcomingScratch);
+            var pose = PoseResolver.Resolve(
+                geoSource, state, upcomingScratch[..upCount], default, 0.0, RenderRealism.ChordHeading);
+
+            px = pose.X;
+            py = pose.Y;
+            pdeg = pose.HeadingDeg;
+        }
 
         // Diagnostic (opt-in via --trace-veh): dump the DR-reconstructed render pose for the traced vehicle,
         // with the extrapolated flag, resolved lane, and the effective playout delay, to compare against the

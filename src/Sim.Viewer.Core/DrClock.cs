@@ -63,6 +63,31 @@ public sealed class DrClock
             State = state;
             Upcoming = upcoming;
             Extrapolated = extrapolated;
+            SecondState = null;
+            SecondUpcoming = default;
+            Blend = 0f;
+            PacketSpan = 0f;
+        }
+
+        // Lateral-straddle result (SUMOSHARP-LANE-CHANGE-SMOOTHING-DESIGN.md §4.1): `state`/`upcoming` is
+        // packet `a` (old lane), `secondState`/`secondUpcoming` is packet `b` (sibling lane), `blend` is the
+        // interpolation fraction `f` between them. The caller (PumpAndBuildVehicleDraws) resolves each on
+        // its own lane and Cartesian-lerps the two world poses (design §4.2) — DrClock itself carries no
+        // pose/geometry knowledge beyond ArcInWindow's classification. `packetSpan` (optional, defaults to 0
+        // so the pinned 5-arg signature still compiles) is the REAL a->b wall-clock gap for this specific
+        // bracket -- see PacketSpan below for why the caller's sanity guard needs it instead of the smoothed
+        // average sample interval.
+        public Resolved(
+            DrState stateA, UpcomingLanes upcomingA, DrState stateB, UpcomingLanes upcomingB, float blend,
+            float packetSpan = 0f)
+        {
+            State = stateA;
+            Upcoming = upcomingA;
+            Extrapolated = false;
+            SecondState = stateB;
+            SecondUpcoming = upcomingB;
+            Blend = blend;
+            PacketSpan = packetSpan;
         }
 
         // Render-time state: Pos/PosLat are already advanced to render time (dt already applied here), so
@@ -78,6 +103,20 @@ public sealed class DrClock
         // because the two bracketing packets straddled a lane change too large for the arc-window) rather
         // than interpolated exactly.
         public bool Extrapolated { get; }
+
+        // Lateral straddle only (see two-state ctor above): the second bracketing packet's state, its own
+        // upcoming-lane window (resolved on ITS lane, not `a`'s), and the a->b interpolation fraction.
+        public DrState? SecondState { get; }
+        public UpcomingLanes SecondUpcoming { get; }
+        public float Blend { get; }
+        public bool IsLateralStraddle => SecondState.HasValue;
+
+        // The REAL wall-clock gap (b.TimestampSeconds - a.TimestampSeconds) between this specific bracketing
+        // pair, for the caller's §4.2 sanity guard. NOT the same as DrClock.AvgSampleInterval (a smoothed EMA
+        // across ALL packets): a lane-change bracket's actual span can run well above the smoothed average
+        // (observed on 12-overtake: avgint~1.2s but this pair's real span ~2.9s), so gating the guard on the
+        // average under-estimates a perfectly normal slide's chord length and would wrongly snap it.
+        public float PacketSpan { get; }
     }
 
     // Call once per app frame (regardless of whether new DDS data arrived this frame). `newestSampleTime`
@@ -275,13 +314,36 @@ public sealed class DrClock
                 }
                 else
                 {
-                    // `b`'s lane isn't within `a`'s forward window (crossed >K lanes in one gap) -> fall back to
-                    // extrapolating from `a` (HtmlPage.cs's `arcInWindow === null` branch).
-                    var dt = sampleT - a.TimestampSeconds;
-                    pk = a.Record;
-                    posLat = pk.PosLat;
-                    arc = ExtrapolateArc(pk.Pos, pk.Speed, pk.Accel, dt);
-                    extrapolated = true;
+                    // `b`'s lane isn't within `a`'s forward window -> not a downstream/junction straddle at
+                    // all, but a LATERAL one: `b` is a sibling lane beside `a` (a lane change), not ahead of
+                    // it. Extrapolating along `a`'s old lane (the old fallback) never leaves it, then snaps
+                    // when `b` becomes current (SUMOSHARP-LANE-CHANGE-SMOOTHING-DESIGN.md §1/§3). Instead,
+                    // return both bracketing states + the fraction `f` so the caller can resolve each on its
+                    // own lane and Cartesian-lerp the two world poses (design §4.2).
+                    var stateA = new DrState
+                    {
+                        Model = a.Record.Model,
+                        LaneHandle = a.Record.LaneHandle,
+                        Pos = a.Record.Pos,
+                        PosLat = a.Record.PosLat,
+                        Speed = a.Record.Speed,
+                        Accel = a.Record.Accel,
+                        LatSpeed = a.Record.LatSpeed,
+                    };
+                    var stateB = new DrState
+                    {
+                        Model = b.Record.Model,
+                        LaneHandle = b.Record.LaneHandle,
+                        Pos = b.Record.Pos,
+                        PosLat = b.Record.PosLat,
+                        Speed = b.Record.Speed,
+                        Accel = b.Record.Accel,
+                        LatSpeed = b.Record.LatSpeed,
+                    };
+                    return new Resolved(
+                        stateA, NormalizeUpcoming(a.Record.LaneHandle, a.Record.Upcoming),
+                        stateB, NormalizeUpcoming(b.Record.LaneHandle, b.Record.Upcoming),
+                        (float)f, (float)span);
                 }
             }
         }
@@ -297,7 +359,34 @@ public sealed class DrClock
             LatSpeed = pk.LatSpeed,
         };
 
-        return new Resolved(state, pk.Upcoming, extrapolated);
+        return new Resolved(state, NormalizeUpcoming(pk.LaneHandle, pk.Upcoming), extrapolated);
+    }
+
+    // Defensive re-anchor of the wire's lane-path onto the record's OWN authoritative `LaneHandle`.
+    // `Resolved.Upcoming`'s contract (see its XML doc) is "current lane first" -- but the wire's
+    // `Upcoming`/`LaneWindow` (Engine.GetUpcomingLanes -> the route's per-edge lane-SEQUENCE POOL, refreshed
+    // only at edge boundaries/reroutes) can lag a vehicle's actual dynamic `LaneHandle` right after a
+    // same-edge tactical lane change (keep-right / speed-gain overtake): the pool's "current" entry still
+    // names the OLD lane for the rest of that edge, while `LaneHandle` already flipped. PoseResolver's
+    // SampleForward walks `path[0]` directly as the arc-length frame, so a stale head silently samples the
+    // WRONG lane's geometry (confirmed against scenario 12-overtake: the record reports LaneHandle=1 while
+    // its own Upcoming[0] still reads 0, rendering the vehicle frozen on the old lane's y forever after the
+    // change). Re-anchoring here — swap in the record's own LaneHandle as index 0, leaving any downstream
+    // entries (unaffected by an intra-edge lane index choice) as-is — is a no-op whenever the wire is already
+    // consistent (every branch this feeds, incl. the downstream/junction path where LaneSeqIndex IS kept in
+    // sync at the edge boundary), so it does not change behaviour there; it only corrects the exact stale-pool
+    // case this feature newly exercises. This does not touch Sim.Core -- purely a defensive read-side fix.
+    private static UpcomingLanes NormalizeUpcoming(int currentLane, UpcomingLanes raw)
+    {
+        if (raw[0] == currentLane)
+        {
+            return raw;
+        }
+
+        Span<int> buf = stackalloc int[UpcomingLanes.Count];
+        var n = raw.CopyTo(buf);
+        buf[0] = currentLane;
+        return new UpcomingLanes(buf[..Math.Max(n, 1)]);
     }
 
     // HtmlPage.cs's `arcInWindow`: express a later packet's lane position in `aRec`'s FORWARD lane-window arc
