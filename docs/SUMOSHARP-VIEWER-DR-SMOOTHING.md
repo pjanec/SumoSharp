@@ -4,8 +4,12 @@
 or a future 3D image-generator / "IG") that has to turn the engine's discrete state into smooth
 on-screen motion. **Companion docs:** `SUMOSHARP-DEADRECKONING.md` (the DR *wire contract* — §4.2
 records, §7/§8 pacing) and `SUMOSHARP-NATIVE-VIEWER.md` (the native viewer's mode/architecture).
-This note is the *HOW motion is reconstructed and smoothed*, the reasoning behind it, and the
-three bugs that were fixed in the junction-turn pass (commit `befd5ed`).
+This note is the *HOW motion is reconstructed and smoothed*, the reasoning behind it, and the bug
+fixes that shaped it. **§8 is the reimplementation checklist for a new (e.g. 3D IG) viewer** —
+start there, it points back into the mechanism sections. §6 covers the junction-turn pass (commit
+`befd5ed`); **§10 records the later as-built** — position error-smoothing, motion-derived heading tilt,
+auto-delay OFF by default, and **dead-reckoning-error-based publishing** (the publish-side root fix;
+its own doc `SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md`) — and supersedes the §5.4/§5.5 details.
 
 ---
 
@@ -177,7 +181,7 @@ arc to render time). Mechanics:
   (it is *not* in the parity path except `ParityTangent`) but lives in `Sim.Core`, so treat it as
   read-only from a viewer and select behaviour via the `realism` argument.
 
-### 5.4 Auto-delay — "always interpolate" (`Program.cs`, both loopback & remote sites)
+### 5.4 Auto-delay — "always interpolate" (`Program.cs`, both loopback & remote sites) — ⚠️ SUPERSEDED by §10.1 (now OFF by default; it caused speed pulsing)
 The delay is the single knob that decides interpolate vs extrapolate. Sitting ~1.5 sample-intervals
 behind the newest packet keeps `Resolve` in the interpolate branch through junctions (where the
 arc-window makes turns follow real geometry). It is **auto-driven and stabilised** (§6.3):
@@ -194,7 +198,7 @@ EMA jitter; the ±0.008 s/frame slew keeps any genuine drift well under one fram
 A user can uncheck "always interpolate" and drive the delay slider by hand (larger delay = smoother
 but laggier).
 
-### 5.5 Extrapolation low-pass (`Program.cs:1050`)
+### 5.5 Extrapolation low-pass (`Program.cs:1050`) — ⚠️ SUPERSEDED by §10.2 (replaced with capped-correction error-smoothing) and §10.3 (motion-derived heading tilt)
 Interpolated poses are already exact/continuous, so smoothing runs **only when `Extrapolated`**. A
 first-order low-pass toward the raw pose: position `τ = 0.07 s`, heading `τ = 0.06 s`
 (`α = 1−e^(−dt/τ)`, `dt` = measured frame time). A >7 m position jump or >50° heading jump *snaps*
@@ -266,7 +270,22 @@ runs have no vsync, so a large delta can just be a long frame, not a jump). Reus
    - default **`ChordHeading`** (see §6.2);
    - `CornerCutCorrected` only if you also **densify** internal-lane geometry (higher netconvert
      `internal-link-detail`) so the tangent stops stair-stepping — otherwise you reintroduce §6.2.
-4. Reuse the §5.4 auto-delay and §5.5 extrapolation low-pass verbatim; both are plain scalar maths.
+4. **Playout delay:** use a STABLE delay, kept **< 1 s** for a real-time feed. Do NOT auto-drive it from
+   the packet interval — that fluctuates and pulses speed (§10.1); the auto "always interpolate" now
+   defaults OFF. Error-smoothing + DR-error publishing (below) are what make a low, stable delay smooth.
+5. **Reuse the §10.2 position error-smoothing** (capped, forward-biased correction — zero lag on smooth
+   motion, absorbs a reconciliation snap as a gentle ≤50 % slowdown, never a freeze or a reverse) and the
+   §10.3 **motion-derived heading tilt** (lean into any lateral slide, both directions; ~0 on cruise and
+   turns). These REPLACE the old §5.5 low-pass — plain scalar maths, transport-agnostic.
+6. **Reuse DR-error-based PUBLISHING — the biggest lever, and it lives on the PUBLISH side, not the
+   viewer.** The publisher (`Sim.Replication`: `PublishScheduler` + `DrErrorPublishPolicy`) runs the SAME
+   `DrExtrapolation.Arc` the viewer does and emits a packet only when the true state diverges from that
+   prediction beyond a tolerance — bounding the viewer's extrapolation error at the source, so motion is
+   smooth at low delay with **no bandwidth increase** (steady vehicles go silent). A non-DDS transport
+   reuses the identical scheduler/policy — they operate on the transport-agnostic `VehicleRecord`, never a
+   DDS type. Full design + as-built: **`SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md`** (essential reading for
+   a new transport). The shared curve is `Sim.Replication.DrExtrapolation.Arc` (§10.5) — the viewer's
+   extrapolation and the publisher's prediction MUST be the same function.
 
 **3D-specific additions (not in the 2D viewers):**
 - **Elevation**: sample `LaneShapeZ`; `Pose` already carries `Z`. Interpolate Z with the same fraction.
@@ -283,12 +302,18 @@ runs have no vsync, so a large delta can just be a long frame, not a jump). Reus
   rates — it is the norm for any fast vehicle through any junction. Implement it, or turns will snap.
 - **Faceted geometry + lateral corrections** (§6.2): any position offset derived from a per-segment
   tangent will jump on coarse polylines. Smooth the tangent over a baseline, or don't apply the offset.
-- **Delay must be stable** (§6.3): treat the playout delay as a slowly-slewed, dead-banded value. A
-  per-frame recompute *is* a per-frame teleport.
+- **Publish on prediction-error, not a timer** (§10.4) — the single most important lesson: an interval
+  scheduler with delay < packet-gap *guarantees* extrapolation overshoot the moment a vehicle's accel
+  changes, and viewer-side smoothing can only repaint that as a slowdown. Fix it at the **publisher**
+  (DR-error publishing); then the viewer smoothing only mops up a sub-tolerance residual.
+- **Delay must be stable** (§10.1): a fluctuating (auto-driven) delay pulses speed — since
+  `sampleT = renderSim − delay`, a per-frame delay change *is* a per-frame teleport. Keep it fixed/off.
 - **Monotonic clock only**: never let the render clock step backward on jitter — hold (§5.1).
 - **Backward-driving guard** (§5.2): clamp decel extrapolation at the stop time.
-- **Smooth only predictions** (§5.5): low-passing exact interpolated poses just adds lag; gate the
-  filter on the `Extrapolated` flag.
+- **Correct the smoothing, don't just low-pass** (§10.2/§10.3): position — chase the target with a
+  *capped, forward-biased* correction (never freeze, never reverse), not a lag-inducing low-pass on the
+  absolute position; heading — derive the lean from *actual render motion* and **negate the `atan2`**
+  (navi is clockwise, `atan2` is CCW — adding leans the car the wrong way; this bit us).
 
 ---
 
@@ -307,3 +332,50 @@ runs have no vsync, so a large delta can just be a long frame, not a jump). Reus
 | Upcoming-lane horizon K | `Records.cs:UpcomingLanes.Count` | `4` | how far the arc-window can bridge a straddle |
 | Extrapolation clamp | `DrClock.ExtrapolateArc` | `±3` s, stop-time | bounds prediction; no backward driving |
 | Rate-fit baseline | `DrClock.Pump` | `1.0` s | when the long-baseline `simRate` goes live |
+
+## 10. As-built updates (2026-07-15) — supersedes parts of §5.4/§5.5
+
+The DR smoothing evolved substantially after the junction-turn pass (§6). The mechanisms below are the
+**shipped** state (on `main`); where they conflict with §5.4/§5.5, these win. Companion docs:
+`SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md` (the root-cause publish-side fix) and
+`SUMOSHARP-LANE-CHANGE-SMOOTHING-DESIGN.md` (the lateral-straddle reconstruction).
+
+### 10.1 Auto-delay ("always interpolate") is OFF by default — supersedes §5.4
+Auto-driving the delay from the measured packet interval made the delay **fluctuate**, and since
+`sampleT = renderSim − delay`, that visibly **pulsed** rendered vehicle speed. It now defaults **off**;
+the viewer uses a **stable manual delay** (default 1.0 s, slider-adjustable). The checkbox remains for
+the rare latency-minimising case. (`Program.cs`, both loopback + remote sites.)
+
+### 10.2 Position error-smoothing (capped correction) — supersedes the §5.5 low-pass
+Instead of an exponential low-pass on extrapolated poses, the rendered position **chases the DR target
+with a CAPPED correction speed** (netcode "projective" style), always on:
+- Smooth constant-speed motion passes through with **zero lag** (per-frame move == real travel).
+- A reconciliation **snap** (extrapolation overshoot corrected when a packet lands) is **absorbed over a
+  few frames** instead of teleporting.
+- **Forward-biased:** a backward correction (the common case) is a gentle **~50 % slowdown** (forward
+  move floored at `0.5·trueStep`, capped at `trueStep + 6 m/s`), never a freeze and never a reverse.
+  Lateral catch-up is capped (~4 m/s) both ways. A >7 m gap snaps (respawn / handle reuse).
+Decomposed in the lane-heading frame; runs in `PumpAndBuildVehicleDraws` after `Resolve`/`PoseResolver`.
+
+### 10.3 Motion-derived heading tilt — supersedes the straddle chord heading
+Heading = the lane-forward heading (`PoseResolver` `ChordHeading`, or the straddle's lane-lerp) **rotated
+by the tilt of the vehicle's ACTUAL per-frame render motion**: decompose the final render displacement in
+the lane-heading frame, `tilt = atan2(perp, along)`, **subtract** it (navi is clockwise, `atan2` is CCW —
+adding leans the wrong way), clamp ±25°, then the heading low-pass (τ = 0.18 s, >100° snaps). This makes
+the car **lean into any lateral slide uniformly** — outbound *and* return lane changes — and is ~0 on
+straight cruise and on turns (motion follows the lane, so no spurious tilt). It replaces the earlier
+straddle-only chord heading, which left the *return* change (rendered via extrapolation, not the straddle
+bracket) sliding flat.
+
+### 10.4 DR-error-based publishing is the ROOT fix for reconciliation snaps
+The frequent micro-slowdowns and the "pass hiccup" were **extrapolation overshoot**: the publisher kept a
+"steady" vehicle on a 3 s cadence, but constant-accel extrapolation overshoots when the vehicle's accel
+changes in that gap; error-smoothing (§10.2) can only convert the correction into a slowdown. The fix is
+**publish-on-prediction-error** (publisher runs the same `DrExtrapolation.Arc` the viewer does and sends
+only when the true state diverges > tolerance) — bounding the viewer's overshoot at the source so the
+motion is smooth at low delay with no bandwidth increase. Full design + as-built:
+`SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md`. With it, §10.2/§10.3 handle only the small residual.
+
+### 10.5 One source of truth for the DR curve
+`DrClock.ExtrapolateArc` now delegates to `Sim.Replication.DrExtrapolation.Arc`, so the viewer's
+extrapolation and the publisher's DR-error prediction are byte-identical.
