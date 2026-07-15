@@ -1150,7 +1150,10 @@ static void PumpAndBuildVehicleDraws(
             {
                 var tiltDeg = (float)(Math.Atan2(mPerp, mAlong) * 180.0 / Math.PI);
                 tiltDeg = Math.Clamp(tiltDeg, -25f, 25f);
-                pdeg = (pdeg + tiltDeg + 360f) % 360f;
+                // SUBTRACT: navi heading is clockwise (0=N, 90=E) but atan2 is counter-clockwise, so the
+                // lateral tilt must be negated or the lean shows the wrong way (car pointing right while
+                // sliding left, and vice versa).
+                pdeg = (pdeg - tiltDeg + 360f) % 360f;
             }
 
             // (3) heading low-pass toward the (tilt-adjusted) target: ease over ~0.18 s; a >100 deg jump snaps.
