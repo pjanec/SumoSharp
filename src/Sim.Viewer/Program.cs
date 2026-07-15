@@ -1091,25 +1091,9 @@ static void PumpAndBuildVehicleDraws(
             {
                 px = poseA.X + dxw * f;
                 py = poseA.Y + dyw * f;
-
-                // Chord-derived heading (navi deg: 0=N, clockwise) so the car leans into the change; fall
-                // back to a shortest-arc lerp of the two lane headings when the chord is too short to be
-                // meaningful (e.g. a near-stationary change).
-                if (chordLen > 0.5)
-                {
-                    var deg = 90.0 - Math.Atan2(dyw, dxw) * 180.0 / Math.PI;
-                    deg %= 360.0;
-                    if (deg < 0)
-                    {
-                        deg += 360.0;
-                    }
-
-                    pdeg = (float)deg;
-                }
-                else
-                {
-                    pdeg = LerpAngleDeg(poseA.HeadingDeg, poseB.HeadingDeg, f);
-                }
+                // Base lane heading; the motion-tilt in the smoothing block below leans it toward the actual
+                // slide direction -- uniform with the return change, which never enters this straddle branch.
+                pdeg = LerpAngleDeg(poseA.HeadingDeg, poseB.HeadingDeg, f);
             }
         }
         else
@@ -1129,42 +1113,50 @@ static void PumpAndBuildVehicleDraws(
 
         if (smoothed.TryGetValue(handle, out var prevPose))
         {
-            // Render-heading low-pass (always on): ease heading changes over ~0.18 s so a lane-change tilt
-            // (or any packet-boundary heading step) rotates continuously; shortest-arc, >100 deg snaps.
-            var aHead = 1f - MathF.Exp(-frameDt / 0.18f);
-            var dh = ((pdeg - prevPose.Deg + 540f) % 360f) - 180f;
-            pdeg = MathF.Abs(dh) > 100f ? pdeg : (prevPose.Deg + dh * aHead + 360f) % 360f;
+            var laneHr = pdeg * MathF.PI / 180f;               // lane-forward heading (PoseResolver / lane lerp)
+            float lhx = MathF.Sin(laneHr), lhy = MathF.Cos(laneHr);
 
-            // ALWAYS-ON position error-smoothing (netcode-style): the rendered position chases the DR target
-            // but its correction speed is CAPPED, so smooth constant-speed motion passes through with ZERO lag
-            // (the per-frame move equals the vehicle's real travel), while a reconciliation SNAP -- the render
-            // clock extrapolates ahead of the newest packet, then that packet lands and the resolved pos jumps
-            // (0.2 m at steady speed, 0.5-1.2 m through a speed/lane change) -- is absorbed over a few frames
-            // instead of teleporting. Forward-biased: a BACKWARD correction (resolved snapped behind us, the
-            // common case) is taken up by briefly HOLDING (along-move clamped to >=0), letting the resolved pos
-            // advance to us -- never a rendered reverse. Lateral catch-up eases both ways, capped. A >7 m gap
-            // snaps (respawn / handle reuse).
+            // (1) POSITION error-smoothing (netcode-style, capped correction): the rendered position chases the
+            // DR target but its correction speed is CAPPED, so smooth constant-speed motion passes through with
+            // ZERO lag while a reconciliation snap is absorbed over a few frames instead of teleporting. Forward-
+            // biased: a backward correction is a gentle ~50% slowdown (floor 0.5*trueStep), never a reverse or a
+            // freeze. Lateral catch-up eases both ways, capped. A >7 m gap snaps (respawn). Moved AHEAD of the
+            // heading step so the motion-tilt below sees the FINAL rendered displacement.
             var tx = (float)px - prevPose.X;
             var ty = (float)py - prevPose.Y;
             if (tx * tx + ty * ty <= 49f)
             {
-                var hr = pdeg * MathF.PI / 180f;
-                float hx = MathF.Sin(hr), hy = MathF.Cos(hr); // heading unit vector (navi: 0=N, clockwise)
-                var along = tx * hx + ty * hy;                 // longitudinal part of the needed correction
-                var perp = tx * -hy + ty * hx;                 // lateral part
+                var along = tx * lhx + ty * lhy;               // longitudinal part of the needed correction
+                var perp = tx * -lhy + ty * lhx;                // lateral part
                 var trueStep = (float)resolved.State.Speed * frameDt;
                 var fwdCap = trueStep + 6f * frameDt;          // real travel + 6 m/s catch-up
                 var latCap = 4f * frameDt;                     // 4 m/s lateral catch-up
-                // Floor the forward move at HALF the real step (not 0): a backward correction (resolved
-                // snapped behind us) is taken up by a gentle ~50% SLOWDOWN while the resolved pos advances to
-                // us, instead of a full HOLD/freeze -- a multi-frame freeze reads as the car "stopping" mid-
-                // pass (user 2026-07-15). Still never reverses; still zero lag on smooth motion (along==
-                // trueStep sits between the floor and cap). A stopped vehicle (speed 0) floors at 0, fine.
                 along = Math.Clamp(along, 0.5f * trueStep, fwdCap);
                 perp = Math.Clamp(perp, -latCap, latCap);
-                px = prevPose.X + along * hx + perp * -hy;
-                py = prevPose.Y + along * hy + perp * hx;
+                px = prevPose.X + along * lhx + perp * -lhy;
+                py = prevPose.Y + along * lhy + perp * lhx;
             }
+
+            // (2) MOTION-DERIVED heading tilt: lean toward the vehicle's ACTUAL render motion this frame, so a
+            // lane-change slide leans into the change in BOTH directions (the outbound straddle AND the return,
+            // which is rendered via extrapolation + the lateral error-smoothing above and otherwise stays pinned
+            // to the lane tangent). Decompose the final render displacement in the lane-heading frame; tilt =
+            // atan2(perp, along), capped. ~0 on straight cruise and on turns (motion follows the lane).
+            var mdx = (float)px - prevPose.X;
+            var mdy = (float)py - prevPose.Y;
+            var mAlong = mdx * lhx + mdy * lhy;
+            var mPerp = mdx * -lhy + mdy * lhx;
+            if (mAlong > 0.01f)
+            {
+                var tiltDeg = (float)(Math.Atan2(mPerp, mAlong) * 180.0 / Math.PI);
+                tiltDeg = Math.Clamp(tiltDeg, -25f, 25f);
+                pdeg = (pdeg + tiltDeg + 360f) % 360f;
+            }
+
+            // (3) heading low-pass toward the (tilt-adjusted) target: ease over ~0.18 s; a >100 deg jump snaps.
+            var aHead = 1f - MathF.Exp(-frameDt / 0.18f);
+            var dh = ((pdeg - prevPose.Deg + 540f) % 360f) - 180f;
+            pdeg = MathF.Abs(dh) > 100f ? pdeg : (prevPose.Deg + dh * aHead + 360f) % 360f;
         }
 
         smoothed[handle] = ((float)px, (float)py, pdeg);
