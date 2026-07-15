@@ -75,7 +75,8 @@ public sealed class DrClock
         public UpcomingLanes Upcoming { get; }
 
         // True if this frame extrapolated (forward past the newest packet, backward past the oldest, or
-        // because the two bracketing packets straddled a lane change) rather than interpolated exactly.
+        // because the two bracketing packets straddled a lane change too large for the arc-window) rather
+        // than interpolated exactly.
         public bool Extrapolated { get; }
     }
 
@@ -191,7 +192,7 @@ public sealed class DrClock
     // delay=0 extrapolates forward from the newest packet; delay>0 interpolates between the two buffered
     // packets bracketing (renderSim - delay), falling back to extrapolation past the newest/oldest packet
     // or across a lane change between the two bracketing packets (HtmlPage.cs's `arcInWindow` null case).
-    public Resolved Resolve(IReadOnlyList<DdsSubscriber.VehicleSample> history, double delay)
+    public Resolved Resolve(IReadOnlyList<DdsSubscriber.VehicleSample> history, double delay, ILaneShapeSource lanes)
     {
         if (history.Count == 0)
         {
@@ -256,14 +257,32 @@ public sealed class DrClock
             }
             else
             {
-                // The vehicle crossed onto a new lane between the two buffered packets -- the two arc-length
-                // values aren't directly comparable without walking the lane window (HtmlPage.cs's
-                // `arcInWindow` returns null here) -> fall back to extrapolating from `a`.
-                var dt = sampleT - a.TimestampSeconds;
-                pk = a.Record;
-                posLat = pk.PosLat;
-                arc = ExtrapolateArc(pk.Pos, pk.Speed, pk.Accel, dt);
-                extrapolated = true;
+                // The vehicle crossed onto a new lane between the two buffered packets, so `b`'s arc-length is
+                // on a different lane than `a`'s and the two can't be lerped directly. Extrapolating along
+                // `a`'s lane (the old fallback) overshoots the turn then snaps onto `b`'s lane -> the visible
+                // lateral jump through a junction. Instead, express `b`'s position as an arc offset in `a`'s
+                // FORWARD lane window (arcInWindow) and interpolate the arc there: PoseResolver then walks
+                // `a`'s upcoming lanes -- through the curved internal junction lanes -- following the real
+                // geometry (no corner-cut, no snap). This is HtmlPage.cs's `arcInWindow` interpolation, just
+                // anchored on `a` (whose window is forward-only, matching our UpcomingLanes).
+                var arcB = ArcInWindow(a.Record, b.Record.LaneHandle, lanes);
+                if (arcB is { } arcBVal)
+                {
+                    pk = a.Record;
+                    posLat = a.Record.PosLat + (b.Record.PosLat - a.Record.PosLat) * f;
+                    arc = a.Record.Pos + (arcBVal + b.Record.Pos - a.Record.Pos) * f;
+                    extrapolated = false;
+                }
+                else
+                {
+                    // `b`'s lane isn't within `a`'s forward window (crossed >K lanes in one gap) -> fall back to
+                    // extrapolating from `a` (HtmlPage.cs's `arcInWindow === null` branch).
+                    var dt = sampleT - a.TimestampSeconds;
+                    pk = a.Record;
+                    posLat = pk.PosLat;
+                    arc = ExtrapolateArc(pk.Pos, pk.Speed, pk.Accel, dt);
+                    extrapolated = true;
+                }
             }
         }
 
@@ -279,6 +298,33 @@ public sealed class DrClock
         };
 
         return new Resolved(state, pk.Upcoming, extrapolated);
+    }
+
+    // HtmlPage.cs's `arcInWindow`: express a later packet's lane position in `aRec`'s FORWARD lane-window arc
+    // frame. Walk `aRec.Upcoming` (current lane first, so its start is `aRec.Pos`'s origin) summing lane
+    // lengths; return the cumulative distance to the START of `laneB` (caller adds `laneB`'s own pos). Null if
+    // `laneB` isn't within the window (the vehicle crossed more than the K upcoming lanes between packets) ->
+    // caller extrapolates rather than interpolating across an unknown gap.
+    private static double? ArcInWindow(in VehicleRecord aRec, int laneB, ILaneShapeSource lanes)
+    {
+        var cum = 0.0;
+        for (var k = 0; k < UpcomingLanes.Count; k++)
+        {
+            var lane = aRec.Upcoming[k];
+            if (lane < 0)
+            {
+                break;
+            }
+
+            if (lane == laneB)
+            {
+                return cum;
+            }
+
+            cum += lanes.LaneLength(lane);
+        }
+
+        return null;
     }
 
     // Constant-acceleration arc-length extrapolation, guarded so a DECELERATING vehicle never drives

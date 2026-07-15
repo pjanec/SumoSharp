@@ -53,6 +53,7 @@ int? fleet = null;
 var perf = false;
 double? simRate = null;
 double? stepLen = null;
+string? traceVeh = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -98,6 +99,11 @@ for (var i = 0; i < args.Length; i++)
         case "--step":
             stepLen = double.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
+        // Diagnostic: trace one vehicle (by id) — logs its AUTHORITATIVE pose (AUTHTRACE, the smooth ground
+        // truth) and its DR-reconstructed render pose (DRTRACE) each frame, for the DR/lane-change analysis.
+        case "--trace-veh":
+            traceVeh = args[++i];
+            break;
         case "--drop-obstacle":
             var parts = args[++i].Split(',');
             dropObstacle = (
@@ -138,7 +144,7 @@ if (mode == "local")
 
 if (mode == "loopback")
 {
-    return RunLoopback(ResolveNetPath(inputPath), screenshotPath, frames, delaySeconds, dropObstacle);
+    return RunLoopback(ResolveNetPath(inputPath), screenshotPath, frames, delaySeconds, dropObstacle, traceVeh);
 }
 
 if (mode == "publish")
@@ -526,7 +532,7 @@ static int RunPublish(string netPath, double? secondsCap, int? fleet, double? st
 // and the subscriber/renderer, over DDS intra-host. Renders the DEAD-RECKONED poses coming through DDS
 // (DrClock + PoseResolver against the SUBSCRIBER's decoded geometry/history), not the local Snapshot --
 // the single-app DR test the design doc's "loopback" mode exists for.
-static int RunLoopback(string netPath, string? screenshotPath, int frames, float initialDelaySeconds, (double X, double Y)? dropObstacle)
+static int RunLoopback(string netPath, string? screenshotPath, int frames, float initialDelaySeconds, (double X, double Y)? dropObstacle, string? traceVeh = null)
 {
     using var host = new EngineHost(netPath);
     using var participant = new DdsParticipant();
@@ -589,6 +595,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
+    var delaySeeded = false;
     var smooth = false;
     // Default ON: auto-drive delaySlider from the measured DDS packet interval (see the per-frame update
     // below) so playout always interpolates instead of extrapolating, without the user having to tune the
@@ -597,6 +604,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
     var smoothed = new Dictionary<VehicleHandle, (float X, float Y, float Deg)>();
     var lastPublishedSimTime = double.NaN;
     var lastLoopSimTime = 0.0;
+    VehicleHandle? traceHandle = null; // diagnostic: resolved once from --trace-veh id
     var startWall = Stopwatch.StartNew();
 
     var vehicleDraws = new List<Renderer.DrVehicleDraw>();
@@ -638,11 +646,44 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
             lastPublishedSimTime = snapTimeNow;
         }
 
-        // "always interpolate": override the manual slider with ~1.5x the measured packet interval, so the
-        // render clock stays reliably behind the newest DDS packet and Resolve always interpolates.
+        // "always interpolate": override the manual slider so the render clock stays ~1.5 sample-intervals
+        // behind the newest DDS packet and Resolve interpolates (not extrapolates) through junctions, where
+        // the arc-window interpolation makes turns follow the real lane geometry. SLEW toward the target
+        // instead of snapping: sampleT = renderSim - delay, so a step change in delay shifts the sample point
+        // and teleports every vehicle. The small per-frame cap keeps the induced shift well under one frame of
+        // real travel (no visible jump); steady-state the target is stable, so the slew is ~0.
         if (alwaysInterpolate)
         {
-            delaySlider = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.0, 1.5);
+            var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
+            if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
+            {
+                delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
+                delaySeeded = true;
+            }
+            else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
+            {
+                delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
+            }
+        }
+
+        // Diagnostic (opt-in via --trace-veh): resolve the traced vehicle's handle by id, then log its
+        // AUTHORITATIVE pose each frame (the smooth ground truth) alongside the DR-reconstructed DRTRACE from
+        // PumpAndBuildVehicleDraws -- the harness used to diagnose junction/lane-change DR smoothness.
+        if (traceVeh is not null)
+        {
+            var authSnap = host.Snapshot;
+            if (traceHandle is null)
+            {
+                for (var ti = 0; ti < authSnap.Count; ti++)
+                {
+                    if (authSnap.VehicleId[ti] == traceVeh) { traceHandle = authSnap.Handles[ti]; break; }
+                }
+            }
+
+            if (traceHandle is { } ath && authSnap.TryGetVehicle(ath, out var avs))
+            {
+                Console.WriteLine($"AUTHTRACE t={authSnap.Time:F1} x={avs.X:F2} y={avs.Y:F2} lane={avs.LaneId} pos={avs.Pos:F2} posLat={avs.PosLat:F2} spd={avs.Speed:F1}");
+            }
         }
 
         // P3 refactor: pumping DDS + resolving each tracked vehicle's dead-reckoned draw pose doesn't
@@ -650,7 +691,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         // function shared with `--mode remote` (PumpAndBuildVehicleDraws below) -- same math, same DR
         // resolve, same smoothing, just called from one place instead of duplicated per mode.
         PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws,
-            paused: host.IsPaused);
+            paused: host.IsPaused, traceHandle: traceHandle);
 
         Raylib.BeginDrawing();
         Raylib.ClearBackground(Renderer.BackgroundColor);
@@ -801,6 +842,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
+    var delaySeeded = false;
     var smooth = false;
     // Default ON: auto-drive delaySlider from the measured DDS packet interval (see the per-frame update
     // below) so playout always interpolates instead of extrapolating, without the user having to tune the
@@ -839,11 +881,20 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
 
         lastRemoteSimTime = status.SimTime;
 
-        // "always interpolate": override the manual slider with ~1.5x the measured packet interval, so the
-        // render clock stays reliably behind the newest DDS packet and Resolve always interpolates.
+        // "always interpolate" (see the loopback site for the rationale): slew the auto delay toward ~1.5
+        // sample-intervals so Resolve interpolates through junctions, without snapping the sample point.
         if (alwaysInterpolate)
         {
-            delaySlider = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.0, 1.5);
+            var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
+            if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
+            {
+                delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
+                delaySeeded = true;
+            }
+            else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
+            {
+                delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
+            }
         }
 
         PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoothed, vehicleDraws,
@@ -954,7 +1005,8 @@ static void PumpAndBuildVehicleDraws(
     FrameStats frameStats,
     Dictionary<VehicleHandle, (float X, float Y, float Deg)> smoothed,
     List<Renderer.DrVehicleDraw> vehicleDraws,
-    bool paused)
+    bool paused,
+    VehicleHandle? traceHandle = null)
 {
     subscriber.Pump();
     drClock.Pump(subscriber.LatestVehicleSampleTime, hold: paused);
@@ -970,17 +1022,28 @@ static void PumpAndBuildVehicleDraws(
             continue;
         }
 
-        var resolved = drClock.Resolve(history, delaySeconds);
+        var resolved = drClock.Resolve(history, delaySeconds, geoSource);
         var (length, width) = subscriber.Dims.TryGetValue(handle, out var dims) ? dims : (5.0f, 1.8f);
         var state = resolved.State with { Length = length, Width = width };
 
         var upCount = resolved.Upcoming.CopyTo(upcomingScratch);
         var pose = PoseResolver.Resolve(
-            geoSource, state, upcomingScratch[..upCount], default, 0.0, RenderRealism.CornerCutCorrected);
+            geoSource, state, upcomingScratch[..upCount], default, 0.0, RenderRealism.ChordHeading);
 
         var px = pose.X;
         var py = pose.Y;
         var pdeg = pose.HeadingDeg;
+
+        // Diagnostic (opt-in via --trace-veh): dump the DR-reconstructed render pose for the traced vehicle,
+        // with the extrapolated flag, resolved lane, and the effective playout delay, to compare against the
+        // AUTHTRACE ground truth -- the harness for junction/lane-change DR smoothness analysis.
+        if (traceHandle is { } th && handle == th)
+        {
+            Console.WriteLine($"DRTRACE rsim={drClock.RenderSim:F2} x={px:F2} y={py:F2} deg={pdeg:F1} " +
+                $"laneH={resolved.State.LaneHandle} pos={resolved.State.Pos:F2} extrap={resolved.Extrapolated} " +
+                $"spd={resolved.State.Speed:F1} " +
+                $"delay={drClock.EffectiveDelay:F3} avgint={drClock.AvgSampleInterval:F3} hist={history.Count}");
+        }
 
         // Optional low-pass, extrapolation-only (HtmlPage.cs's `smooth`): interpolated poses are already
         // smooth/exact, so only extrapolated ones are filtered.
@@ -1020,7 +1083,7 @@ static void PumpAndBuildVehicleDraws(
             smoothed[handle] = ((float)px, (float)py, pdeg);
         }
 
-        vehicleDraws.Add(new Renderer.DrVehicleDraw(px, py, pdeg, length, width, state.Speed));
+        vehicleDraws.Add(new Renderer.DrVehicleDraw(px, py, pdeg, length, width, resolved.State.Speed));
     }
 }
 
