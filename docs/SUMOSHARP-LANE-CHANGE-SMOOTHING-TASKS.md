@@ -84,10 +84,15 @@ verification is via the `--trace-veh` harness on loopback (no `dotnet test` / SU
     - [ ] **07-keep-right** — startup/acceleration-dominated (veh0 departs from standstill on a single
       1000 m edge; bracketing packets ~65 m apart during accel). Not a clean steady-state lane-change
       signal; the guard snaps the large longitudinal bracket. Revisit with a mid-run change scenario.
-- [ ] **T4** *(polish, pending user call)* — reduce the extrapolation→straddle entry step (extend the
-      §5.5 low-pass to cover the lateral-straddle entry, and/or ensure interpolation-entry via delay), and
-      interactive "looks NICE" sign-off. The entry step is the same extrapolation-reconciliation family as
-      the junction pass's residual longitudinal jump — a shared DR-timing item, not lane-change-specific.
+- [ ] **T4** *(polish — NEXT, user-prioritised 2026-07-15 live review)* — the abrupt part is the
+      **initial ORIENTATION (heading) jump when the lane change STARTS**, not the position: the frame the
+      lateral straddle engages, `pdeg` snaps from the straight-lane heading to the chord tilt (~85°) in one
+      step. Fix the HEADING discontinuity first (position slide already reads fine). Candidates: low-pass the
+      lane-change heading toward the chord tilt (like the local viewer's τ≈0.25 s render-heading filter in
+      `BuildLocalVehicleDraws`), and/or ease the tilt in over the first frames of the straddle rather than
+      snapping to it, and/or ensure interpolation-entry (delay) so the prior frame isn't an extrapolated
+      straight-heading pose. Then interactive sign-off. (Position entry-step ~1.24 m is secondary — same
+      extrapolation-reconciliation family as the junction pass's residual, not the reported annoyance.)
 
 **Status:** core mechanism (T1+T2) done and visually confirmed smooth by the user on the interactive
 viewer; no regressions (44/61). Remaining work is the entry-transition polish (T4) and a cleaner
