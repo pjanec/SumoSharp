@@ -5,6 +5,12 @@
     Engine + SimulationRunner (lifted from Sim.LiveHost/SimHost.cs, minus the web/JSON/ImGui bits) so it
     can be exercised without raylib. Deliberately OUT of Traffic.sln (see the design doc); never add a
     reference to this project from anything IN Traffic.sln.
+
+    docs/SUMOSHARP-PACKAGING-DESIGN.md D5/D10 (P3.2): this is the GENERIC, packageable viewer brain:
+    it must never depend on a domain feature. A prior batch's ProjectReference to the panic-evacuation
+    domain project (for the live demo path) has been REMOVED and relocated to Sim.Viewer (the demo tool),
+    which now drives that domain scenario through EngineHost's generic CreateCustom seam + the generic
+    IRenderOverlay seam instead. Do not re-add a domain ProjectReference here.
   -->
 
   <PropertyGroup>
@@ -22,10 +28,6 @@
          hermetic gate. -->
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
     <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
-    <!-- docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §4: the live evac demo path reuses Sim.Evac's
-         EvacDirector + Evac*Scenario builders verbatim (no new evac logic). Sim.Evac is also OUT of
-         Traffic.sln, same as this project, so this reference does not touch the parity gate. -->
-    <ProjectReference Include="..\Sim.Evac\Sim.Evac.csproj" />
   </ItemGroup>
 
 </Project>

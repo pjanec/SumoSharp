@@ -1,13 +1,15 @@
-namespace Sim.Viewer.Core;
+namespace Sim.Viewer;
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §1: the single, static, data-driven place to add/curate
 // demos for the native viewer's picker. Every entry names a DemoKind (how EngineHost builds it — see
 // DemoSession.BuildHost) and a DemoCategory (how the ImGui Demos panel groups it — T5).
+// docs/SUMOSHARP-PACKAGING-DESIGN.md D5/D10 (P3.2): this catalog is demo-tool content, not part of the
+// generic packaged viewer -- it lives in Sim.Viewer (the exe/sample), not Sim.Viewer.Core.
 public enum DemoKind
 {
     Scenario, // a committed scenario dir (net + rou + sumocfg) -- EngineHost auto-detects scenario mode.
     Sandbox,  // a bare net.net.xml (no demand) -- EngineHost's runtime random-traffic spawner fills it.
-    Evac,     // a live Sim.Evac scenario -- EngineHost.CreateEvac(EvacKind, repoRoot).
+    Evac,     // a live Sim.Evac scenario, wired through EngineHost.CreateCustom + an EvacOverlay.
 }
 
 public enum DemoCategory
@@ -28,7 +30,7 @@ public enum DemoCategory
 // special-casing. It names a DIRECTORY (containing a *.net.xml, plus a *.rou.xml/*.sumocfg for Scenario
 // entries); it is never a direct file path in this catalog (EngineHost/ResolveNetPath resolve the
 // directory's *.net.xml the same way `--mode local <dir>` already does). Evac entries carry "" here --
-// their net path is derived from EvacKind by EngineHost.CreateEvac / DemoCatalog.EvacNetPath instead.
+// their net path is derived from EvacKind by EvacOverlay.NetPath / DemoCatalog.EvacNetPath instead.
 public sealed record DemoEntry(
     string Name,
     string Blurb,
@@ -117,7 +119,7 @@ public static class DemoCatalog
         new DemoEntry("Sandbox: acute", "An acute-angle junction filled with random traffic.",
             DemoCategory.Sandbox, DemoKind.Sandbox, "samples/junctions/acute"),
 
-        // -- Evacuation (live panic-evacuation -- Sim.Evac, EngineHost.CreateEvac) -----------------------
+        // -- Evacuation (live panic-evacuation -- Sim.Evac, via EngineHost.CreateCustom + EvacOverlay) ---
         new DemoEntry("Evacuation (grid TLS)",
             "Fast, legible grid net: incident -> panic -> jam -> abandon car -> foot exodus.",
             DemoCategory.Evacuation, DemoKind.Evac, "", EvacKind: "grid-tls"),
@@ -150,9 +152,9 @@ public static class DemoCatalog
         return usable;
     }
 
-    // The net path an Evac entry's EvacKind resolves to -- MUST match EngineHost.ResolveEvacProvider's
-    // own paths exactly (scenarios/evac-grid-tls, scenarios/_bench/city-organic-L2, scenarios/_bench/
-    // city-15000), since this is purely a pre-flight existence check for the same file CreateEvac reads.
+    // The net path an Evac entry's EvacKind resolves to -- MUST match EvacOverlay.NetPath's own paths
+    // exactly (scenarios/evac-grid-tls, scenarios/_bench/city-organic-L2, scenarios/_bench/city-15000),
+    // since this is purely a pre-flight existence check for the same file the overlay's Build reads.
     public static string EvacNetPath(string evacKind, string repoRoot) => evacKind switch
     {
         "grid-tls" => Path.Combine(repoRoot, "scenarios", "evac-grid-tls", "net.net.xml"),

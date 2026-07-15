@@ -225,6 +225,7 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
     var resolvedCatalog = DemoCatalog.Resolve(repoRoot);
 
     EngineHost initialHost;
+    IRenderOverlay? initialOverlay;
     DemoEntry? initialEntry;
 
     if (demoName is not null)
@@ -246,25 +247,27 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
                 $"Sim.Viewer: --demo '{demoName}' not found -- falling back to '{initialEntry.Name}'.");
         }
 
-        initialHost = DemoSession.BuildHost(initialEntry, repoRoot);
+        (initialHost, initialOverlay) = DemoSession.BuildHost(initialEntry, repoRoot);
     }
     else
     {
         initialEntry = null; // ad-hoc "(custom)" -- no catalog entry backs this host (§5)
+        initialOverlay = null; // ad-hoc paths never carry a domain overlay
         initialHost = fleet is { } fleetCap
             ? new EngineHost(netPath!, spawnCap: fleetCap, forceSandbox: true, stepLength: step)
             : new EngineHost(netPath!, stepLength: step);
     }
 
-    using var session = new DemoSession(initialHost, initialEntry, repoRoot);
+    using var session = new DemoSession(initialHost, initialOverlay, initialEntry, repoRoot);
     var host = session.Host;
 
-    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): the generic render-overlay seam. Null today except
-    // for the hidden `--overlay-test` proof; a real domain overlay (e.g. the evac layer, P3.2) plugs in
-    // here without RunLocal ever naming its concrete type.
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1/P3.2): the generic render-overlay seam. Sourced from
+    // the session's CurrentOverlay (e.g. an EvacOverlay for a Kind.Evac demo, null otherwise), except the
+    // hidden `--overlay-test` proof flag, which takes priority for its own diagnostic purpose. RunLocal
+    // never names IRenderOverlay's concrete type.
     IRenderOverlay? overlay = overlayTest
         ? new MarkerOverlay((host.MinX + host.MaxX) / 2.0, (host.MinY + host.MaxY) / 2.0)
-        : null;
+        : session.CurrentOverlay;
 
     // Default interactive speed to 1x real-time (what a viewer expects); perf runs keep the 10x fast-forward
     // so the fleet warms up quickly. Either way the panel's "speed" slider overrides live.
@@ -365,6 +368,15 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
         if (session.TryApplyPending(out var switchedHost, out _))
         {
             host = switchedHost;
+            // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): refresh the overlay from the session too --
+            // it and Host are swapped atomically by TryApplyPending, so this always matches the new host
+            // (e.g. switching INTO an evac demo installs its EvacOverlay; switching OUT of one drops it).
+            // `--overlay-test` keeps its own diagnostic marker regardless of demo switches.
+            if (!overlayTest)
+            {
+                overlay = session.CurrentOverlay;
+            }
+
             camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, screenW, screenH);
             roadLayer.Invalidate();
             renderClock = 0.0;
@@ -438,21 +450,14 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
                 if (dragging && !dragMoved)
                 {
                     // A click, not a pan -> invert the camera (then Flip) to get the WORLD point under the
-                    // cursor. docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 4: for evac demos the click
-                    // (re)places the incident instead of dropping an obstacle (evac scenarios carry their
-                    // own demand; there is no "obstacle" concept there).
-                    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): an overlay that wants clicks (e.g. the
-                    // evac layer's incident placement, P3.2) gets first refusal; otherwise fall back to
-                    // today's behaviour (evac special-case still inline here -- Commit 2 moves it into the
-                    // evac overlay and this `host.Evac` branch goes away).
+                    // cursor. docs/SUMOSHARP-PACKAGING-DESIGN.md D10: an overlay that wants clicks (e.g. the
+                    // evac layer's incident placement, via EvacOverlay.OnWorldClick) gets first refusal;
+                    // otherwise the generic default is to drop an obstacle. RunLocal never special-cases a
+                    // domain here -- the routing decision is entirely `overlay.HandlesWorldClick`.
                     var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
                     if (overlay is { HandlesWorldClick: true })
                     {
                         overlay.OnWorldClick(flipSpace.X, -flipSpace.Y);
-                    }
-                    else if (host.Evac is not null)
-                    {
-                        host.SetIncidentAtWorld(flipSpace.X, -flipSpace.Y);
                     }
                     else
                     {
@@ -522,35 +527,27 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
         // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
         // measured arrival interval.
         var actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
-        var evacSnap = host.Evac; // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: null for non-evac demos.
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): no more evac-specific `Fear` threading here --
+        // fear tinting is now the overlay's own DrawWorldOver overpaint, keyed off each vehicle's generic
+        // Handle. This just builds plain speed-coloured draw poses (+ each vehicle's Handle).
         BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex,
-            headingPrev, headingCur, Raylib.GetFrameTime(), evacSnap);
+            headingPrev, headingCur, Raylib.GetFrameTime());
         (headingPrev, headingCur) = (headingCur, headingPrev); // swap: headingCur becomes next frame's prior
 
         roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
-        // §6: boundary/incident/abandoned-cars/pushers go UNDER vehicles; pedestrians go OVER (see
-        // Renderer.DrawEvacWorld's doc comment for why this is two calls instead of one).
-        if (evacSnap is not null)
-        {
-            Renderer.DrawEvacWorld(camera, evacSnap);
-        }
 
-        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): the generic overlay's UNDER layer, immediately
-        // before the vehicles it may want to draw beneath/around.
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1/P3.2): the generic overlay's UNDER layer,
+        // immediately before the vehicles it may want to draw beneath/around (e.g. the evac layer's
+        // boundary/incident/abandoned-cars/pushers).
         overlay?.DrawWorldUnder(camera, snapshot, vehicleDraws);
 
         Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host, vehicleDraws);
 
-        // ...and its OVER layer, immediately after.
+        // ...and its OVER layer, immediately after (e.g. the evac layer's pedestrians + fear overpaint).
         overlay?.DrawWorldOver(camera, snapshot, vehicleDraws);
 
-        if (evacSnap is not null)
-        {
-            Renderer.DrawEvacPedestrians(camera, evacSnap);
-        }
-
-        Renderer.DrawDemosPanel(session, resolvedCatalog, evacSnap);
-        Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth, isEvac: evacSnap is not null);
+        DemoUi.DrawDemosPanel(session, resolvedCatalog);
+        Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth);
         overlay?.DrawUi();
         if (showDiagnostics)
         {
@@ -610,7 +607,8 @@ static int RunDemoSmoke()
         ?? throw new InvalidOperationException("DEMO-SMOKE: no Evac entry resolved.");
 
     Console.WriteLine($"DEMO-SMOKE: building '{demoA.Name}' ({demoA.Kind})...");
-    using var session = new DemoSession(DemoSession.BuildHost(demoA, repoRoot), demoA, repoRoot);
+    var (hostA, overlayA) = DemoSession.BuildHost(demoA, repoRoot);
+    using var session = new DemoSession(hostA, overlayA, demoA, repoRoot);
     Thread.Sleep(300); // let the runner/spawner actually tick at least once
     Console.WriteLine($"DEMO-SMOKE: built. edges={session.Host.Network.EdgesById.Count} snap.time={session.Host.Snapshot.Time:F2}");
 
@@ -622,7 +620,7 @@ static int RunDemoSmoke()
     Console.WriteLine($"DEMO-SMOKE: switching to evac '{demoEvac.Name}' ({demoEvac.Kind}, EvacKind={demoEvac.EvacKind})...");
     session.SwitchTo(demoEvac);
     Thread.Sleep(300);
-    Console.WriteLine($"DEMO-SMOKE: switched. current='{session.Current?.Name}' edges={session.Host.Network.EdgesById.Count} snap.time={session.Host.Snapshot.Time:F2} evac={(session.Host.Evac is not null ? "present" : "null")}");
+    Console.WriteLine($"DEMO-SMOKE: switched. current='{session.Current?.Name}' edges={session.Host.Network.EdgesById.Count} snap.time={session.Host.Snapshot.Time:F2} evac={(session.CurrentOverlay is not null ? "present" : "null")}");
 
     Console.WriteLine("DEMO-SMOKE: OK (no exception, no hang).");
     return 0;
@@ -1402,15 +1400,15 @@ static (double MinX, double MinY, double MaxX, double MaxY) ComputeGeometryBound
 // per-vehicle lookups would be O(n^2) at 10k). Reuses `outDraws`/`prevIndex` (Clear keeps capacity) so a
 // warmed steady state allocates nothing. Falls back to the raw current frame when there's no distinct prior
 // frame to blend from (first frame / just after a restart / smoothing off).
-// `evac` (docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 2) is host.Evac, or null for non-evac demos
-// -- when present, each drawn vehicle's Fear is looked up by handle.Index from evac.FearByVehicle (0 when
-// the vehicle has no entry, e.g. it hasn't been observed panicking yet); null yields Fear 0 for everyone,
-// so DrawVehicleList's speed colour is untouched on the non-evac path.
+// docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): no more evac-specific `Fear` param -- each draw pose
+// carries only its generic VehicleHandle (Commit 1's DrVehicleDraw.Handle) so a render overlay (e.g. the
+// evac layer's fear overpaint) can key its OWN per-vehicle state off it, without this generic builder
+// knowing why. This function is now domain-agnostic.
 static void BuildLocalVehicleDraws(
     SimulationSnapshot cur, SimulationSnapshot prev, double renderClock, bool smooth,
     List<Renderer.DrVehicleDraw> outDraws, Dictionary<VehicleHandle, int> prevIndex,
     Dictionary<VehicleHandle, float> headingPrev, Dictionary<VehicleHandle, float> headingCur,
-    float frameDtWall, EvacRenderSnapshot? evac)
+    float frameDtWall)
 {
     outDraws.Clear();
     headingCur.Clear(); // rebuilt from current vehicles only -> prunes despawned, stays bounded
@@ -1465,8 +1463,7 @@ static void BuildLocalVehicleDraws(
         }
 
         headingCur[handle] = deg;
-        var fear = evac is not null && evac.FearByVehicle.TryGetValue(handle.Index, out var f) ? f : 0.0;
-        outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd, fear));
+        outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd, handle));
     }
 }
 

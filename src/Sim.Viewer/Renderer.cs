@@ -31,23 +31,13 @@ public static class Renderer
     private static readonly Color LaneChevron = new(150, 170, 190, 76);
     private static readonly Color ObstacleColor = new(255, 92, 92, 255); // HtmlPage.cs: '#ff5c5c'
 
-    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: evac draw-pass colours, deliberately matching
-    // Sim.Viz.SceneGen's KindFleeing/KindEscaped/KindAbandoned/KindPushingCar hex constants so the live
-    // view and the offline HTML replay read identically.
-    private static readonly Color EvacBoundaryColor = new(120, 130, 140, 140); // muted grey
-    private static readonly Color EvacIncidentFillColor = new(245, 158, 11, 45); // translucent amber
-    private static readonly Color EvacIncidentRingColor = new(245, 158, 11, 210); // safe-radius ring
-    private static readonly Color EvacIncidentPendingColor = new(245, 158, 11, 100); // before StartTime
-    private static readonly Color EvacAbandonedColor = new(185, 28, 28, 255); // #b91c1c KindAbandoned
-    private static readonly Color EvacPedFleeingColor = new(56, 189, 248, 255); // #38bdf8 KindFleeing
-    private static readonly Color EvacPedEscapedColor = new(52, 211, 153, 255); // #34d399 KindEscaped
-    private static readonly Color EvacPusherColor = new(251, 146, 60, 255); // #fb923c KindPushingCar
-    private static readonly Color FearAlarmColor = new(220, 38, 38, 255); // alarm red, fear=1 tint target
-
     public static Color BackgroundColor => Background;
 
     // HtmlPage.cs draw()'s speedColor(s): 0 = stopped (red) .. free-flow 13.9 m/s (~50 km/h) = green.
-    private static Color SpeedColor(double speedExact)
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): `internal` (not `private`) so a same-assembly render
+    // overlay (e.g. EvacOverlay's fear overpaint) can reproduce the EXACT plain speed colour it is
+    // blending toward alarm-red, without Renderer knowing why.
+    internal static Color SpeedColor(double speedExact)
     {
         var t = Math.Clamp(speedExact / 13.9, 0.0, 1.0);
         var r = (int)Math.Round(230 * (1 - t) + 40 * t);
@@ -66,7 +56,9 @@ public static class Renderer
     };
 
     // World (x,y, SUMO Y-up) -> the Y-negated space fed to every raylib draw call under BeginMode2D.
-    private static Vector2 Flip(double x, double y) => new((float)x, (float)-y);
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): `internal` so a same-assembly render overlay can
+    // draw in the exact same world<->screen convention as every generic draw call in this file.
+    internal static Vector2 Flip(double x, double y) => new((float)x, (float)-y);
 
     // Fit a Camera2D to the network bounds with a margin, exactly like HtmlPage.cs's `fit(b)`. Target and
     // Offset are expressed in the SAME Y-negated space `Flip` produces, so the Y-flip lives entirely in
@@ -221,105 +213,14 @@ public static class Renderer
         Raylib.EndMode2D();
     }
 
-    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: the evac world-draw pass, split into two calls so the
-    // caller (Program.cs's RunLocal) can layer correctly against DrawDynamicWorld's vehicles -- boundary,
-    // incident zone, abandoned cars and pushers go UNDER vehicles (call this BEFORE DrawDynamicWorld);
-    // pedestrians go OVER vehicles (call DrawEvacPedestrians AFTER DrawDynamicWorld). Both open/close their
-    // own BeginMode2D, matching every other draw method in this file. `evac` is host.Evac -- null for
-    // non-evac demos, in which case neither method is called at all (no overlay, pure speed colouring).
-    public static void DrawEvacWorld(Camera2D camera, EvacRenderSnapshot evac)
-    {
-        Raylib.BeginMode2D(camera);
-
-        // 1. Known-world boundary: a dashed rectangle through the hard NavMesh edge.
-        var (minX, minY, maxX, maxY) = evac.Boundary;
-        var boundaryShape = new (double X, double Y)[]
-        {
-            (minX, minY), (maxX, minY), (maxX, maxY), (minX, maxY), (minX, minY),
-        };
-        var dashOn = 6f / camera.Zoom;
-        var dashOff = 5f / camera.Zoom;
-        var dashThick = Math.Max(1.5f / camera.Zoom, 0.1f);
-        DrawDashedPolyline(boundaryShape, dashOn, dashOff, dashThick, EvacBoundaryColor);
-
-        // 2. Incident zone: filled translucent amber disc once live (Time >= StartTime) plus a thin ring
-        // at the safe radius pedestrians must clear to count as Escaped; before StartTime, just a faint
-        // outline at the incident radius so the user can see where it will fire.
-        var (ix, iy, radius, startTime, safeRadius) = evac.Incident;
-        var center = Flip(ix, iy);
-        if (evac.Time >= startTime)
-        {
-            Raylib.DrawCircleV(center, (float)radius, EvacIncidentFillColor);
-            Raylib.DrawCircleLinesV(center, (float)safeRadius, EvacIncidentRingColor);
-        }
-        else
-        {
-            Raylib.DrawCircleLinesV(center, (float)radius, EvacIncidentPendingColor);
-        }
-
-        // 3. Abandoned cars: filled dark-red discs (KindAbandoned). Under vehicles -- a car that has been
-        // abandoned sits still on the road, so a moving vehicle drawn on top of it reads correctly.
-        foreach (var (x, y, r) in evac.AbandonedCars)
-        {
-            Raylib.DrawCircleV(Flip(x, y), (float)r, EvacAbandonedColor);
-        }
-
-        // 4. Pushers: oriented ~5.0x1.8 m rectangles (KindPushingCar), rotated by HeadingRad. HeadingRad is
-        // "math radians, 0 = +x, CCW" (Sim.Viz.SceneGen's own comment on ActivePushersWithHandle) -- rotate
-        // the LOCAL rectangle corners in WORLD space by that heading, then Flip each corner to screen space,
-        // exactly mirroring SceneGen/template.js's drawShaped (world-space rotate -> worldToScreen) so the
-        // live orientation matches the offline HTML replay.
-        foreach (var (x, y, headingRad) in evac.Pushers)
-        {
-            DrawOrientedRectWorld(x, y, headingRad, halfLen: 2.5f, halfWid: 0.9f, EvacPusherColor);
-        }
-
-        Raylib.EndMode2D();
-    }
-
-    // Pedestrians: small discs, cyan while fleeing, green once Escaped (KindFleeing/KindEscaped). Drawn
-    // separately from DrawEvacWorld so the caller can put this pass AFTER DrawDynamicWorld (over vehicles).
-    public static void DrawEvacPedestrians(Camera2D camera, EvacRenderSnapshot evac)
-    {
-        Raylib.BeginMode2D(camera);
-
-        const float pedRadius = 1.0f;
-        foreach (var (x, y, escaped) in evac.Peds)
-        {
-            Raylib.DrawCircleV(Flip(x, y), pedRadius, escaped ? EvacPedEscapedColor : EvacPedFleeingColor);
-        }
-
-        Raylib.EndMode2D();
-    }
-
-    // Rotates a `halfLen`x`halfWid` rectangle centred at world (x,y) by a WORLD-space heading (math
-    // radians, 0=+x, CCW) and fills it as two triangles in screen space -- see DrawEvacWorld's pusher
-    // comment for why this mirrors SceneGen/drawShaped's world-rotate-then-flip instead of trying to derive
-    // an equivalent DrawRectanglePro screen-rotation angle (a Y-flip is a reflection, not a pure rotation).
-    private static void DrawOrientedRectWorld(double x, double y, double headingRad, float halfLen, float halfWid, Color color)
-    {
-        var hx = (float)Math.Cos(headingRad);
-        var hy = (float)Math.Sin(headingRad);
-
-        Span<float> along = stackalloc float[] { halfLen, halfLen, -halfLen, -halfLen };
-        Span<float> perp = stackalloc float[] { halfWid, -halfWid, -halfWid, halfWid };
-        Span<Vector2> corners = stackalloc Vector2[4];
-        for (var i = 0; i < 4; i++)
-        {
-            var wx = x + along[i] * hx + perp[i] * -hy;
-            var wy = y + along[i] * hy + perp[i] * hx;
-            corners[i] = Flip(wx, wy);
-        }
-
-        Raylib.DrawTriangle(corners[0], corners[1], corners[2], color);
-        Raylib.DrawTriangle(corners[0], corners[2], corners[3], color);
-    }
-
     // Dashed stroke along a polyline's arc length -- ported from HtmlPage.cs draw()'s
     // `ctx.setLineDash([6,7])` centreline pass. The dash phase resets to "on" at the start of each lane
     // (canvas resets phase per beginPath(), and each lane is stroked as its own path there), so this
     // walks `shape` fresh with a local on/off counter rather than a running counter across lanes.
-    private static void DrawDashedPolyline(IReadOnlyList<(double X, double Y)> shape, float dashOn, float dashOff, float thick, Color color)
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): `internal` (not `private`) so a same-assembly render
+    // overlay (e.g. EvacOverlay's dashed boundary rect) can reuse this generic drawing primitive instead
+    // of duplicating it.
+    internal static void DrawDashedPolyline(IReadOnlyList<(double X, double Y)> shape, float dashOn, float dashOff, float thick, Color color)
     {
         var onPhase = true;
         var remaining = dashOn;
@@ -394,98 +295,19 @@ public static class Renderer
     private static Vector2 Rotate(Vector2 v, float cosA, float sinA) =>
         new(v.X * cosA - v.Y * sinA, v.X * sinA + v.Y * cosA);
 
-    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 / -TASKS.md T5: the ImGui "Demos" picker, always
-    // present. Groups `resolved` (DemoCatalog.Resolve's output) into a collapsing header per DemoCategory
-    // that has at least one entry; each entry is a Selectable row (blurb on hover) that queues a switch via
-    // `session.RequestSwitch` -- the actual dispose-old/build-new work happens at the top of the next frame
-    // via DemoSession.TryApplyPending (already wired in Batch 2's RunLocal), so this method never touches
-    // EngineHost lifetime itself. `evac` (host.Evac, or null) additionally renders the colour legend + live
-    // counters + the incident-placement hint for evac demos only -- absent entirely for pure-SUMO demos.
-    public static void DrawDemosPanel(DemoSession session, IReadOnlyList<DemoEntry> resolved, EvacRenderSnapshot? evac = null)
-    {
-        ImGui.SetNextWindowPos(new Vector2(900, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(370, 760), ImGuiCond.FirstUseEver);
-        ImGui.Begin("SumoSharp - demos");
-
-        var current = session.Current;
-        ImGui.Text(current is not null ? $"current: {current.Name}" : "current: (custom)");
-        ImGui.Separator();
-
-        foreach (var category in Enum.GetValues<DemoCategory>())
-        {
-            var hasEntries = false;
-            foreach (var e in resolved)
-            {
-                if (e.Category == category)
-                {
-                    hasEntries = true;
-                    break;
-                }
-            }
-
-            if (!hasEntries)
-            {
-                continue;
-            }
-
-            if (ImGui.CollapsingHeader(category.ToString(), ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                foreach (var entry in resolved)
-                {
-                    if (entry.Category != category)
-                    {
-                        continue;
-                    }
-
-                    var isCurrent = current is not null && ReferenceEquals(entry, current);
-                    if (ImGui.Selectable(entry.Name, isCurrent))
-                    {
-                        session.RequestSwitch(entry);
-                    }
-
-                    if (ImGui.IsItemHovered())
-                    {
-                        ImGui.SetTooltip(entry.Blurb);
-                    }
-                }
-            }
-        }
-
-        if (evac is { } ev)
-        {
-            ImGui.Separator();
-            ImGui.Text("evac legend:");
-            LegendLine(EvacIncidentRingColor, "incident");
-            LegendLine(EvacPedFleeingColor, "fleeing");
-            LegendLine(EvacPedEscapedColor, "escaped");
-            LegendLine(EvacAbandonedColor, "abandoned");
-            LegendLine(EvacPusherColor, "shoulder-push");
-            ImGui.Separator();
-            ImGui.Text($"panicked: {ev.Panicked}   converted: {ev.Converted}");
-            ImGui.Text($"escaped: {ev.Escaped}   abandoned: {ev.Abandoned}");
-            ImGui.TextWrapped("click a road to (re)place the incident");
-        }
-
-        ImGui.End();
-    }
-
-    // One legend row: a coloured swatch glyph + label, for DrawDemosPanel's evac legend.
-    private static void LegendLine(Color c, string label)
-    {
-        ImGui.TextColored(new Vector4(c.R / 255f, c.G / 255f, c.B / 255f, 1f), $"■ {label}");
-    }
-
     // P1 controls panel (SUMOSHARP-NATIVE-VIEWER.md P1): mode label, restart, clear obstacles, and the
     // random-traffic toggle. Sized explicitly (SetNextWindowSize) so its text is never clipped -- P0's HUD
     // was cut off at the default auto-size. Must be called between rlImGui.Begin()/End() (see Program.cs).
     // `fpsCap` is the render frame-rate cap in fps, with 0 meaning "unlimited"; the radio here mutates it and
     // pushes the change straight to Raylib.SetTargetFPS so the choice takes effect on the next frame. It's a
     // ref because Program.cs owns the value (it sets the initial cap before the loop) -- see RunLocal.
-    // `isEvac` (docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6): evac demos carry their own committed demand
-    // and repurpose the world click for incident placement, so the "inject random traffic" checkbox and
-    // the obstacle-drop hint are hidden/swapped for them. Defaults false so this stays source-compatible
-    // for any caller that hasn't been updated to pass it.
-    public static void DrawControlsPanel(EngineHost host, ref int fpsCap, ref bool smooth, bool isEvac = false)
+    // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): the "inject random traffic" checkbox is shown only for
+    // a SANDBOX host (`!host.ScenarioMode`) -- a scenario/custom-source host carries its own committed
+    // demand, so there is no random-traffic knob to offer. This replaces the old evac-specific `isEvac`
+    // param: the generic renderer decides purely from EngineHost's own generic `ScenarioMode`, never from
+    // a domain flag. The obstacle-drop hint is unconditional (a domain overlay that wants clicks routes
+    // them away in Program.cs's click handler before InjectObstacleAtWorld is ever called).
+    public static void DrawControlsPanel(EngineHost host, ref int fpsCap, ref bool smooth)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
         ImGui.SetNextWindowSize(new Vector2(360, 390), ImGuiCond.FirstUseEver);
@@ -509,7 +331,7 @@ public static class Renderer
             host.SetPaused(!host.IsPaused);
         }
 
-        if (!isEvac)
+        if (!host.ScenarioMode)
         {
             var randomTraffic = host.RandomTraffic;
             if (ImGui.Checkbox("inject random traffic", ref randomTraffic))
@@ -559,9 +381,7 @@ public static class Renderer
         ImGui.SameLine();
         if (ImGui.RadioButton("unlimited", fpsCap == 0)) { fpsCap = 0; Raylib.SetTargetFPS(0); }
 
-        ImGui.TextWrapped(isEvac
-            ? "click a road to (re)place the incident - drag to pan - wheel to zoom - 'd' toggles diagnostics"
-            : "click a road to drop an obstacle - drag to pan - wheel to zoom - 'd' toggles diagnostics");
+        ImGui.TextWrapped("click a road to drop an obstacle - drag to pan - wheel to zoom - 'd' toggles diagnostics");
         ImGui.End();
     }
 
@@ -598,14 +418,13 @@ public static class Renderer
     // DrClock.Resolve + PoseResolver.Resolve(dt=0) before calling DrawWorldDds; this method only draws.
     public readonly struct DrVehicleDraw
     {
-        // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: `fear` is an OPTIONAL trailing param (default 0) so
-        // every existing call site (DDS loopback/remote, and local's non-evac path) keeps compiling and
-        // rendering byte-identically -- fear 0 must yield the EXACT current speed colour (see DrawVehicleList).
-        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): `handle` is a further OPTIONAL trailing param
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1/P3.2): `handle` is an OPTIONAL trailing param
         // (default `default(VehicleHandle)`, i.e. VehicleHandle.None) -- generic vehicle identity, for a
-        // render-overlay (e.g. the evac fear overpaint, P3.2) to key its own per-vehicle state off the SAME
-        // handle the engine uses, without the renderer knowing why. Every existing call site keeps compiling.
-        public DrVehicleDraw(double frontX, double frontY, float headingDeg, float length, float width, double speedExact, double fear = 0.0, VehicleHandle handle = default)
+        // render-overlay (e.g. the evac layer's fear overpaint) to key its own per-vehicle state off the
+        // SAME handle the engine uses, without the renderer knowing why. Every existing call site keeps
+        // compiling. (The evac-specific `fear` param this struct briefly carried is gone -- fear tinting
+        // is now the overlay's own DrawWorldOver overpaint, drawn on top of this plain speed-coloured rect.)
+        public DrVehicleDraw(double frontX, double frontY, float headingDeg, float length, float width, double speedExact, VehicleHandle handle = default)
         {
             FrontX = frontX;
             FrontY = frontY;
@@ -613,7 +432,6 @@ public static class Renderer
             Length = length;
             Width = width;
             SpeedExact = speedExact;
-            Fear = fear;
             Handle = handle;
         }
 
@@ -623,7 +441,6 @@ public static class Renderer
         public float Length { get; }
         public float Width { get; }
         public double SpeedExact { get; }
-        public double Fear { get; }
         public VehicleHandle Handle { get; }
     }
 
@@ -726,17 +543,18 @@ public static class Renderer
 
             var rec = new Rectangle(front.X, front.Y, length, width);
             var origin = new Vector2(length, width / 2f);
-            // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 3: tint toward alarm red by fear (0 =
-            // unchanged speed colour -- non-evac demos, whose DrVehicleDraw.Fear is always the ctor default
-            // 0, take this branch and are pixel-identical to before this feature).
-            var baseColor = SpeedColor(v.SpeedExact);
-            var color = v.Fear > 0.0 ? LerpColor(baseColor, FearAlarmColor, v.Fear) : baseColor;
+            // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): plain speed colour -- no domain tint here.
+            // A domain overlay that wants to highlight a vehicle (e.g. the evac layer's fear overpaint)
+            // redraws on top in its own DrawWorldOver, after this generic pass.
+            var color = SpeedColor(v.SpeedExact);
             Raylib.DrawRectanglePro(rec, origin, rotationDeg, color);
         }
     }
 
-    // Per-channel colour lerp for the fear tint (t clamped to [0,1]; alpha always opaque).
-    private static Color LerpColor(Color a, Color b, double t)
+    // Per-channel colour lerp (t clamped to [0,1]; alpha always opaque). `internal` so a same-assembly
+    // render overlay (e.g. the evac layer's fear overpaint) can blend toward its own tint colour using
+    // this generic primitive instead of duplicating it.
+    internal static Color LerpColor(Color a, Color b, double t)
     {
         var clamped = Math.Clamp(t, 0.0, 1.0);
         return new Color(

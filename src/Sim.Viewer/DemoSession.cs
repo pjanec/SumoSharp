@@ -1,10 +1,17 @@
-namespace Sim.Viewer.Core;
+using Sim.Viewer.Core;
+
+namespace Sim.Viewer;
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: the swappable session the native viewer's render loop
-// reads through, so a demo switch never lets the render loop observe a half-built host. Deliberately
-// Raylib-free (lives in Sim.Viewer.Core, not Sim.Viewer) -- Camera2D re-fit and the RoadLayerCache
-// invalidation are Raylib-side concerns and stay in Program.cs's RunLocal, which reacts to a switch this
-// class reports.
+// reads through, so a demo switch never lets the render loop observe a half-built host.
+//
+// docs/SUMOSHARP-PACKAGING-DESIGN.md D5/D10 (P3.2): this class now lives in Sim.Viewer (the demo tool),
+// not Sim.Viewer.Core (the generic viewer brain) -- it is demo-tool wiring (DemoEntry -> host + overlay),
+// not part of the packageable seam. It now also carries the IRenderOverlay a Kind.Evac entry's host
+// pairs with (built via EngineHost.CreateCustom + EvacOverlay, §G of the packaging refactor), so a
+// switch swaps BOTH atomically -- the render loop must never see a host from one demo paired with an
+// overlay from another. Camera2D re-fit and the RoadLayerCache invalidation are Raylib-side concerns and
+// stay in Program.cs's RunLocal, which reacts to a switch this class reports.
 //
 // Two switch APIs, per §5's "simple lock or a queued top-of-frame latch" guard:
 //   * RequestSwitch(entry) + TryApplyPending(...) -- queue-then-apply, safe to call RequestSwitch from
@@ -20,14 +27,21 @@ public sealed class DemoSession : IDisposable
 {
     private readonly object _lock = new();
     private EngineHost _host;
+    private IRenderOverlay? _overlay;
     private DemoEntry? _current;
     private DemoEntry? _pending;
 
     public string RepoRoot { get; }
 
     public DemoSession(EngineHost initialHost, DemoEntry? initialEntry, string repoRoot)
+        : this(initialHost, null, initialEntry, repoRoot)
+    {
+    }
+
+    public DemoSession(EngineHost initialHost, IRenderOverlay? initialOverlay, DemoEntry? initialEntry, string repoRoot)
     {
         _host = initialHost;
+        _overlay = initialOverlay;
         _current = initialEntry;
         RepoRoot = repoRoot;
     }
@@ -37,6 +51,13 @@ public sealed class DemoSession : IDisposable
     public EngineHost Host
     {
         get { lock (_lock) return _host; }
+    }
+
+    // The overlay paired with the current Host (null for a Scenario/Sandbox demo, or an ad-hoc path --
+    // only a Kind.Evac entry has one today). Always consistent with Host: both are swapped together.
+    public IRenderOverlay? CurrentOverlay
+    {
+        get { lock (_lock) return _overlay; }
     }
 
     // The DemoEntry that produced the current Host, or null for an ad-hoc "(custom)" `--mode local <path>`
@@ -57,10 +78,11 @@ public sealed class DemoSession : IDisposable
     }
 
     // Apply a queued switch, if any. Call this ONCE, at the very top of the render loop's frame (before
-    // reading Host/Snapshot/camera for that frame). Builds the new EngineHost, disposes the OLD one, and
-    // swaps Current/Host in atomically. Returns true (with the new host + entry) iff a switch was applied
-    // this call -- the caller MUST then re-fit its camera to the new host's bounds and invalidate its
-    // static road-layer cache (both Raylib-side; see Program.cs's RunLocal), and should reset any
+    // reading Host/Snapshot/camera for that frame). Builds the new EngineHost (+ overlay), disposes the
+    // OLD host, and swaps Current/Host/CurrentOverlay in atomically. Returns true (with the new host +
+    // entry) iff a switch was applied this call -- the caller MUST then re-fit its camera to the new
+    // host's bounds, invalidate its static road-layer cache (both Raylib-side; see Program.cs's
+    // RunLocal), refresh its local `overlay` variable from CurrentOverlay, and should reset any
     // render-behind interpolation state that assumed continuity with the OLD host's timeline.
     public bool TryApplyPending(out EngineHost host, out DemoEntry? entry)
     {
@@ -78,16 +100,17 @@ public sealed class DemoSession : IDisposable
             return false;
         }
 
-        var newHost = BuildHost(toApply, RepoRoot);
+        var (newHost, newOverlay) = BuildHost(toApply, RepoRoot);
         EngineHost old;
         lock (_lock)
         {
             old = _host;
             _host = newHost;
+            _overlay = newOverlay;
             _current = toApply;
         }
 
-        old.Dispose();
+        old.Dispose(); // overlays need no disposal (they own no unmanaged/engine resources of their own)
         host = newHost;
         entry = toApply;
         return true;
@@ -102,29 +125,40 @@ public sealed class DemoSession : IDisposable
         return host;
     }
 
-    // The DemoEntry -> EngineHost factory (§5):
+    // The DemoEntry -> (EngineHost, IRenderOverlay?) factory (§5, extended by the D10 overlay seam):
     //   * Scenario -- the resolved net path in that dir; EngineHost auto-detects scenario mode from the
-    //     adjacent *.rou.xml/*.sumocfg.
+    //     adjacent *.rou.xml/*.sumocfg. No overlay.
     //   * Sandbox -- the net path, forced into sandbox mode with SandboxFleet as the spawn cap (falling
     //     back to EngineHost's own default of 80 when SandboxFleet is 0, i.e. not raised by the entry).
-    //   * Evac -- EngineHost.CreateEvac(EvacKind, repoRoot), which resolves its own net path internally.
-    public static EngineHost BuildHost(DemoEntry entry, string repoRoot) => entry.Kind switch
+    //     No overlay.
+    //   * Evac -- an EvacOverlay (the ONLY place in the demo tool that names Sim.Evac) drives its own
+    //     engine + per-step hook through EngineHost.CreateCustom, then is Bind()-ed to the host it just
+    //     produced so its OnWorldClick can call host.Rebuild(). Sim.Viewer.Core never sees any of this.
+    public static (EngineHost Host, IRenderOverlay? Overlay) BuildHost(DemoEntry entry, string repoRoot)
     {
-        DemoKind.Evac => EngineHost.CreateEvac(
-            entry.EvacKind ?? throw new InvalidOperationException($"Demo '{entry.Name}' has Kind.Evac but no EvacKind."),
-            repoRoot),
-        DemoKind.Sandbox => new EngineHost(
-            ResolveNetPath(Path.Combine(repoRoot, entry.PathRelToRepo)),
-            spawnCap: entry.SandboxFleet > 0 ? entry.SandboxFleet : 80,
-            forceSandbox: true),
-        DemoKind.Scenario => new EngineHost(ResolveNetPath(Path.Combine(repoRoot, entry.PathRelToRepo))),
-        _ => throw new ArgumentOutOfRangeException(nameof(entry), entry.Kind, "Unknown DemoKind."),
-    };
+        switch (entry.Kind)
+        {
+            case DemoKind.Evac:
+                var evacKind = entry.EvacKind
+                    ?? throw new InvalidOperationException($"Demo '{entry.Name}' has Kind.Evac but no EvacKind.");
+                var overlay = new EvacOverlay(evacKind, repoRoot);
+                var host = EngineHost.CreateCustom(overlay.NetPath, overlay.Build);
+                overlay.Bind(host);
+                return (host, overlay);
+            case DemoKind.Sandbox:
+                return (new EngineHost(
+                    ResolveNetPath(Path.Combine(repoRoot, entry.PathRelToRepo)),
+                    spawnCap: entry.SandboxFleet > 0 ? entry.SandboxFleet : 80,
+                    forceSandbox: true), null);
+            case DemoKind.Scenario:
+                return (new EngineHost(ResolveNetPath(Path.Combine(repoRoot, entry.PathRelToRepo))), null);
+            default:
+                throw new ArgumentOutOfRangeException(nameof(entry), entry.Kind, "Unknown DemoKind.");
+        }
+    }
 
     // Mirrors Program.cs's local ResolveNetPath helper (accept either a *.net.xml file directly, or a
-    // directory containing exactly one) -- duplicated rather than shared because Program.cs's copy is a
-    // top-level local function in the Raylib-referencing Sim.Viewer project, and this class must stay
-    // Raylib-free in Sim.Viewer.Core.
+    // directory containing exactly one).
     private static string ResolveNetPath(string path)
     {
         if (Directory.Exists(path))

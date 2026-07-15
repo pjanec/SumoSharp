@@ -1,4 +1,4 @@
-namespace Sim.Viewer.Core;
+namespace Sim.Viewer;
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §3: an immutable per-tick capture of the evac layer's
 // public read surface (Sim.Evac.EvacDirector), taken on the ENGINE thread inside
