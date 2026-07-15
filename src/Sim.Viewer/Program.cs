@@ -46,7 +46,9 @@ string? inputPath = null;
 string? screenshotPath = null;
 string? selftestPath = null;
 var frames = 150;
-var delaySeconds = 0.0f;
+var delaySeconds = 1.0f; // default DR playout delay (s). The auto "always interpolate" delay is OFF by
+                         // default -- it fluctuated and made rendered speed visibly pulse; a stable manual
+                         // delay reads far smoother (user 2026-07-15). Override with --delay / the slider.
 (double X, double Y)? dropObstacle = null;
 double? secondsCap = null;
 int? fleet = null;
@@ -602,10 +604,11 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
     var delaySlider = initialDelaySeconds;
     var delaySeeded = false;
     var smooth = false;
-    // Default ON: auto-drive delaySlider from the measured DDS packet interval (see the per-frame update
-    // below) so playout always interpolates instead of extrapolating, without the user having to tune the
-    // slider by hand.
-    var alwaysInterpolate = true;
+    // Default OFF: auto-driving delaySlider from the measured packet interval makes the delay FLUCTUATE,
+    // which shifts sampleT and visibly pulses rendered vehicle speed (user 2026-07-15: "definitely a bad
+    // idea"). A stable manual delay reads far smoother. Still available via the checkbox for the rare case
+    // where minimising latency matters more than steadiness.
+    var alwaysInterpolate = false;
     var smoothed = new Dictionary<VehicleHandle, (float X, float Y, float Deg)>();
     var lastPublishedSimTime = double.NaN;
     var lastGeneration = host.Generation;
@@ -854,10 +857,11 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     var delaySlider = initialDelaySeconds;
     var delaySeeded = false;
     var smooth = false;
-    // Default ON: auto-drive delaySlider from the measured DDS packet interval (see the per-frame update
-    // below) so playout always interpolates instead of extrapolating, without the user having to tune the
-    // slider by hand.
-    var alwaysInterpolate = true;
+    // Default OFF: auto-driving delaySlider from the measured packet interval makes the delay FLUCTUATE,
+    // which shifts sampleT and visibly pulses rendered vehicle speed (user 2026-07-15: "definitely a bad
+    // idea"). A stable manual delay reads far smoother. Still available via the checkbox for the rare case
+    // where minimising latency matters more than steadiness.
+    var alwaysInterpolate = false;
     var smoothed = new Dictionary<VehicleHandle, (float X, float Y, float Deg)>();
     var startWall = Stopwatch.StartNew();
 
@@ -1143,9 +1147,15 @@ static void PumpAndBuildVehicleDraws(
                 float hx = MathF.Sin(hr), hy = MathF.Cos(hr); // heading unit vector (navi: 0=N, clockwise)
                 var along = tx * hx + ty * hy;                 // longitudinal part of the needed correction
                 var perp = tx * -hy + ty * hx;                 // lateral part
-                var fwdCap = (float)resolved.State.Speed * frameDt + 6f * frameDt; // real travel + 6 m/s catch-up
+                var trueStep = (float)resolved.State.Speed * frameDt;
+                var fwdCap = trueStep + 6f * frameDt;          // real travel + 6 m/s catch-up
                 var latCap = 4f * frameDt;                     // 4 m/s lateral catch-up
-                along = Math.Clamp(along, 0f, fwdCap);         // never reverse; cap forward catch-up
+                // Floor the forward move at HALF the real step (not 0): a backward correction (resolved
+                // snapped behind us) is taken up by a gentle ~50% SLOWDOWN while the resolved pos advances to
+                // us, instead of a full HOLD/freeze -- a multi-frame freeze reads as the car "stopping" mid-
+                // pass (user 2026-07-15). Still never reverses; still zero lag on smooth motion (along==
+                // trueStep sits between the floor and cap). A stopped vehicle (speed 0) floors at 0, fine.
+                along = Math.Clamp(along, 0.5f * trueStep, fwdCap);
                 perp = Math.Clamp(perp, -latCap, latCap);
                 px = prevPose.X + along * hx + perp * -hy;
                 py = prevPose.Y + along * hy + perp * hx;
