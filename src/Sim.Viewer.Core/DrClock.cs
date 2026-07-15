@@ -8,8 +8,9 @@ namespace Sim.Viewer.Core;
 // Sim.LiveHost/HtmlPage.cs's dead-reckoning pacing: `ingestFrame`'s long-baseline wall<->sim rate fit, the
 // render loop's continuous strictly-monotonic `renderSim`, and `resolvePose`'s interpolate/extrapolate
 // switch on the `delay` knob. Transport-agnostic: `Pump` is fed whatever "sim-axis" timestamp the newest
-// DDS vehicle sample carries (DdsSubscriber.LatestVehicleSampleTime) and supplies its OWN real wall-clock
-// reading (a Stopwatch) for the other side of the fit — mirroring HtmlPage.cs's split between
+// vehicle sample carries (the transport's newest-per-vehicle-sample timestamp, e.g. a DDS reader's
+// LatestVehicleSampleTime) and supplies its OWN real wall-clock reading (a Stopwatch) for the other side of
+// the fit — mirroring HtmlPage.cs's split between
 // `performance.now()` (local wall clock) and `m.time` (the server-sent sample time). No rendering here.
 public sealed class DrClock
 {
@@ -22,8 +23,8 @@ public sealed class DrClock
 
     // HtmlPage.cs: `let simRate = 2;` — a placeholder until the long-baseline fit (baseSec > 1.0) kicks in.
     // Ported value is 2 there because the demo's "sim" axis is genuine sim-seconds at a roughly-2 Hz step
-    // rate; here the "sim" axis fed to Pump is whatever DdsSubscriber.LatestVehicleSampleTime carries
-    // (usually the DDS SourceTimestamp, i.e. real wall-clock seconds), which advances 1:1 with wall time
+    // rate; here the "sim" axis fed to Pump is whatever the transport's newest-per-vehicle-sample timestamp
+    // carries (usually the DDS SourceTimestamp, i.e. real wall-clock seconds), which advances 1:1 with wall time
     // by construction — 1.0 is the correct placeholder for that axis and avoids an initial-guess
     // overshoot (see Pump's pre-baseline guard below) that would otherwise register spurious back-steps.
     private double _simRate = 1.0;
@@ -120,8 +121,8 @@ public sealed class DrClock
     }
 
     // Call once per app frame (regardless of whether new DDS data arrived this frame). `newestSampleTime`
-    // is the newest per-vehicle DDS sample timestamp seen so far (DdsSubscriber.LatestVehicleSampleTime);
-    // repeated/unchanged values between DDS arrivals are ignored for the rate fit (mirrors HtmlPage.cs
+    // is the newest per-vehicle sample timestamp seen so far (the transport's own LatestVehicleSampleTime
+    // reading); repeated/unchanged values between DDS arrivals are ignored for the rate fit (mirrors HtmlPage.cs
     // ingestFrame's `if(m.step === lastStep) return` dedupe) but the render clock still advances every call.
     // `hold` (the sim is paused): freeze the render clock -- do NOT advance renderSim past the newest sample,
     // so a paused publisher's vehicles stop immediately instead of coasting on extrapolation for ~3s. The
@@ -226,12 +227,13 @@ public sealed class DrClock
         }
     }
 
-    // Resolve one vehicle's render-time DrState from its buffered history (newest last, capped by
-    // DdsSubscriber.HistoryCap) + the interactive playout `delay` seconds (HtmlPage.cs's resolvePose):
-    // delay=0 extrapolates forward from the newest packet; delay>0 interpolates between the two buffered
-    // packets bracketing (renderSim - delay), falling back to extrapolation past the newest/oldest packet
-    // or across a lane change between the two bracketing packets (HtmlPage.cs's `arcInWindow` null case).
-    public Resolved Resolve(IReadOnlyList<DdsSubscriber.VehicleSample> history, double delay, ILaneShapeSource lanes)
+    // Resolve one vehicle's render-time DrState from its buffered history (newest last, capped by the
+    // history's own capacity -- e.g. Sim.Replication.VehicleSampleHistory) + the interactive playout `delay`
+    // seconds (HtmlPage.cs's resolvePose): delay=0 extrapolates forward from the newest packet; delay>0
+    // interpolates between the two buffered packets bracketing (renderSim - delay), falling back to
+    // extrapolation past the newest/oldest packet or across a lane change between the two bracketing packets
+    // (HtmlPage.cs's `arcInWindow` null case).
+    public Resolved Resolve(IReadOnlyList<TimestampedSample> history, double delay, ILaneShapeSource lanes)
     {
         if (history.Count == 0)
         {

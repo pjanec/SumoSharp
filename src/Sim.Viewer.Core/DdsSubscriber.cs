@@ -16,24 +16,14 @@ public sealed class DdsSubscriber : IDisposable
 {
     private const int HistoryCap = 8;
 
-    // One decoded per-vehicle sample, timestamped with the DDS sample's own source timestamp when the
-    // reader exposes one (CycloneDDS.NET's DdsSampleInfo.SourceTimestamp, nanoseconds since the Unix
-    // epoch); falls back to the frame's own sim-time field on the (untested-in-practice) chance the
-    // timestamp comes back <= 0. This is what a later DrClock paces its render clock off (§8 of
-    // SUMOSHARP-DEADRECKONING.md): wall-clock arrival time, not sim time, is what a REMOTE subscriber
-    // actually has to reconstruct a rate from.
-    public readonly struct VehicleSample
-    {
-        public VehicleSample(double timestampSeconds, VehicleRecord record)
-        {
-            TimestampSeconds = timestampSeconds;
-            Record = record;
-        }
-
-        public double TimestampSeconds { get; }
-        public VehicleRecord Record { get; }
-    }
-
+    // Per-vehicle sample timestamped with the DDS sample's own source timestamp when the reader exposes one
+    // (CycloneDDS.NET's DdsSampleInfo.SourceTimestamp, nanoseconds since the Unix epoch); falls back to the
+    // frame's own sim-time field on the (untested-in-practice) chance the timestamp comes back <= 0. This is
+    // what a later DrClock paces its render clock off (§8 of SUMOSHARP-DEADRECKONING.md): wall-clock arrival
+    // time, not sim time, is what a REMOTE subscriber actually has to reconstruct a rate from. Packaging P2-B
+    // (docs/SUMOSHARP-PACKAGING-DESIGN.md §5): this is now the transport-neutral Sim.Replication.
+    // TimestampedSample (identical field-for-field, same ctor order) rather than a DDS-local type, so DrClock
+    // no longer needs to know this class exists.
     private readonly DdsReader<DdsWireFrame> _vehicleReader;
     private readonly DdsReader<DdsNetworkGeometry> _geometryReader;
     private readonly DdsReader<DdsVehicleLifecycle> _lifecycleReader;
@@ -43,9 +33,50 @@ public sealed class DdsSubscriber : IDisposable
     private readonly HashSet<int> _geometryChunksReceived = new();
     private int _geometryTotalChunks = -1;
 
-    private readonly Dictionary<VehicleHandle, List<VehicleSample>> _history = new();
+    private readonly Dictionary<VehicleHandle, VehicleSampleHistory> _history = new();
     private readonly Dictionary<VehicleHandle, (float Length, float Width)> _dims = new();
     private readonly Dictionary<int, byte> _tlState = new();
+
+    // Read-only adapter presenting `_history` (concrete VehicleSampleHistory values, needed internally for
+    // Append) as the transport-neutral IReadOnlyDictionary<VehicleHandle, IVehicleSampleHistory> a consumer
+    // (DrClock, LoopbackSelfTest) sees via the `History` property below. Thin forwarding wrapper -- no
+    // copying, so it stays cheap to read every render frame.
+    private sealed class HistoryView : IReadOnlyDictionary<VehicleHandle, IVehicleSampleHistory>
+    {
+        private readonly Dictionary<VehicleHandle, VehicleSampleHistory> _inner;
+
+        public HistoryView(Dictionary<VehicleHandle, VehicleSampleHistory> inner) => _inner = inner;
+
+        public IVehicleSampleHistory this[VehicleHandle key] => _inner[key];
+        public IEnumerable<VehicleHandle> Keys => _inner.Keys;
+        public IEnumerable<IVehicleSampleHistory> Values => _inner.Values;
+        public int Count => _inner.Count;
+        public bool ContainsKey(VehicleHandle key) => _inner.ContainsKey(key);
+
+        public bool TryGetValue(VehicleHandle key, out IVehicleSampleHistory value)
+        {
+            if (_inner.TryGetValue(key, out var v))
+            {
+                value = v;
+                return true;
+            }
+
+            value = default!;
+            return false;
+        }
+
+        public IEnumerator<KeyValuePair<VehicleHandle, IVehicleSampleHistory>> GetEnumerator()
+        {
+            foreach (var kv in _inner)
+            {
+                yield return new KeyValuePair<VehicleHandle, IVehicleSampleHistory>(kv.Key, kv.Value);
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private readonly HistoryView _historyView;
 
     private byte[] _vehicleBytes = new byte[DdsWire.MaxPayload];
     private VehicleRecord[] _vehicleRecs = new VehicleRecord[2048];
@@ -60,6 +91,7 @@ public sealed class DdsSubscriber : IDisposable
         _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
         _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
+        _historyView = new HistoryView(_history);
     }
 
     // Drop all per-vehicle state (history + dims + latest-sample-time) so it rebuilds from the live stream.
@@ -82,8 +114,9 @@ public sealed class DdsSubscriber : IDisposable
     public bool GeometryComplete => _geometryTotalChunks >= 0 && _geometryChunksReceived.Count >= _geometryTotalChunks;
 
     // Per-vehicle history, newest sample last, capped at HistoryCap -- the raw material a later DR/
-    // interpolation consumer (P2b) walks.
-    public IReadOnlyDictionary<VehicleHandle, List<VehicleSample>> History => _history;
+    // interpolation consumer (P2b/DrClock) walks. Exposed as the transport-neutral IVehicleSampleHistory
+    // (Sim.Replication) so a consumer never needs this class's concrete type.
+    public IReadOnlyDictionary<VehicleHandle, IVehicleSampleHistory> History => _historyView;
 
     // Dims announced over the lifecycle topic (spawn), removed on despawn.
     public IReadOnlyDictionary<VehicleHandle, (float Length, float Width)> Dims => _dims;
@@ -92,7 +125,7 @@ public sealed class DdsSubscriber : IDisposable
     public IReadOnlyDictionary<int, byte> TlStateByLane => _tlState;
 
     // P2b (DrClock) — the newest per-vehicle sample timestamp seen so far across every decoded vehicle
-    // frame (max of VehicleSample.TimestampSeconds); null until the first vehicle frame arrives. All
+    // frame (max of TimestampedSample.TimestampSeconds); null until the first vehicle frame arrives. All
     // vehicle records decoded from the SAME DDS sample share one timestamp, so this is exactly the
     // "current frame's sim-axis time" DrClock.Pump paces its render clock off.
     public double? LatestVehicleSampleTime { get; private set; }
@@ -108,11 +141,11 @@ public sealed class DdsSubscriber : IDisposable
     // CurrentCount drop back to 0 here even though TotalVehicleSamplesReceived stays nonzero.
     public bool Connected => _vehicleReader.CurrentStatus.CurrentCount > 0;
 
-    public bool TryGetLatest(VehicleHandle handle, out VehicleSample sample)
+    public bool TryGetLatest(VehicleHandle handle, out TimestampedSample sample)
     {
-        if (_history.TryGetValue(handle, out var list) && list.Count > 0)
+        if (_history.TryGetValue(handle, out var hist) && hist.Count > 0)
         {
-            sample = list[^1];
+            sample = hist[^1];
             return true;
         }
 
@@ -204,17 +237,13 @@ public sealed class DdsSubscriber : IDisposable
             for (var i = 0; i < count; i++)
             {
                 var rec = _vehicleRecs[i];
-                if (!_history.TryGetValue(rec.Handle, out var list))
+                if (!_history.TryGetValue(rec.Handle, out var hist))
                 {
-                    list = new List<VehicleSample>(HistoryCap);
-                    _history[rec.Handle] = list;
+                    hist = new VehicleSampleHistory(HistoryCap);
+                    _history[rec.Handle] = hist;
                 }
 
-                list.Add(new VehicleSample(timestampSeconds, rec));
-                if (list.Count > HistoryCap)
-                {
-                    list.RemoveAt(0);
-                }
+                hist.Append(new TimestampedSample(timestampSeconds, rec));
             }
 
             TotalVehicleSamplesReceived += count;
