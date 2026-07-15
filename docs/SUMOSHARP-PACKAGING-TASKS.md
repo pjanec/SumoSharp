@@ -4,8 +4,9 @@ Work breakdown for the packaging rethink. **Design reference:** `SUMOSHARP-PACKA
 (sections/decisions cited per task — not restated here). **Tracker:** `SUMOSHARP-PACKAGING-TRACKER.md`.
 
 **Global invariants (every task must hold these):**
-- **G1 — Parity iron law.** `dotnet test` stays green and native-free (baseline **440 passed,
-  0 failed, 3 skipped**; `Sim.Bench` determinism anchor unchanged). No simulation trajectory moves.
+- **G1 — Parity iron law.** `dotnet test` stays green and native-free (baseline, post-main-rebase:
+  **446 passed, 0 failed, 3 skipped**; `Sim.Bench` determinism anchor unchanged). No simulation
+  trajectory moves.
 - **G2 — No native leak into the portable tier.** Nothing in `Ingest`/`Core`/`Replication`/
   `Viewer.Motion` may `PackageReference` a native dep (CycloneDDS, raylib, rlImgui) or
   `ProjectReference` a project that does.
@@ -53,11 +54,15 @@ prerequisite for the motion package (which consumes the sample defined here).*
 - **Design ref:** §3 (D9), §5.
 - **Files:** new `TimestampedSample` (a `VehicleRecord` + sim/arrival time) and
   `IVehicleSampleHistory` (newest-last, capacity-bounded) in `src/Sim.Replication/`.
+- **Shape constraint:** use the **same field set the publish side already stores** in
+  `PublishScheduler`'s per-vehicle reference (`pos, speed, accel, posLat, latSpeed, laneHandle,
+  time`) so publisher and subscriber share one sample shape — do not invent a parallel definition.
 - **Success:**
   1. Both types live in `Sim.Replication` and build for net8.0 + ns2.1.
   2. A unit test round-trips a small history (append past cap, read newest-last, bracket a query
      time) and asserts ordering + cap eviction.
-  3. **G1** holds.
+  3. The sample's fields match the `PublishScheduler` reference-state fields (one shape).
+  4. **G1** holds.
 
 ### P1.3 — Refactor `Sim.Replication.Dds` to *implement* the contract
 - **Design ref:** §3 (D8, D8-note on `DdsF32Col`).
@@ -105,6 +110,9 @@ prerequisite for the motion package (which consumes the sample defined here).*
 - **Files:** new `src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj` + moved `DrClock.cs` and the
   DR-pipeline scalar helpers (auto-delay §5.4, extrapolation low-pass §5.5) extracted from
   `Program.cs`; `Traffic.sln`; `Sim.Viewer.Core`/`Sim.Viewer` references.
+- **Do NOT re-extract arc extrapolation:** `DrExtrapolation.Arc` already lives in `Sim.Replication`
+  and `DrClock` already delegates to it (landed with DR-error publishing). `Viewer.Motion` depends on
+  `Sim.Replication` for it — keep one source of truth.
 - **csproj shape:** `<TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>`, `IsPackable=true`,
   `PackageId=SumoSharp.Viewer.Motion`, `ProjectReference` → `Sim.Core`, `Sim.Ingest`,
   `Sim.Replication` **only**; link `src/Shared/NetstandardPolyfills.cs`; `System.Memory` on ns2.1.

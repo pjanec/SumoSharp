@@ -36,6 +36,15 @@ bundled), an optional `SumoSharp.Runtime`, and a dev-time `SumoSharp.Tools`. Sin
    Core seams. Not packaged.
 6. **`SumoSharp.Runtime` never split out.** The async `SimulationRunner` lives in `Sim.Core` today
    and carries no extra dependencies. This doc **retires** the separate-Runtime idea (see §3, D3).
+7. **Dead-reckoning-error publishing landed** (`SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md`), and it
+   already put the **DR math** (`DrExtrapolation`) and the **publish-decision principle**
+   (`DrErrorPublishPolicy`, `PublishScheduler` per-vehicle reference state) into `Sim.Replication`,
+   operating on `VehicleRecord` fields and **never a DDS type**. Its §8 states the same layering the
+   user set for this rethink — *"the data model + messages are the transport-agnostic API;
+   `Sim.Replication` owns them + the DR math + the publish-decision principle; the DDS layer is just a
+   transport; `Sim.Core` stays network-agnostic."* So D8/D9 below are **extending an already-adopted
+   principle to the subscribe/transport side**, not introducing a new one — and part of the motion
+   extraction (the shared arc extrapolation) is **already done**.
 
 The user's ask names all of these: viewer tools as (maybe standalone) packages, and a
 reimplementation guide for dead-reckoning/smoothing across viewers. So the packaging surface has to
@@ -163,7 +172,11 @@ sample shell). These demonstrate; they are not the product.
   DR clock reads) are part of the data-model API, not a render-side detail. They live in
   `Sim.Replication`; `DrClock` (in `Viewer.Motion`) consumes the **API** sample type, and each
   transport (DDS today) *fills* it. This is what removes `DrClock`'s coupling to
-  `DdsSubscriber.VehicleSample` (§5).
+  `DdsSubscriber.VehicleSample` (§5). **Align the shape with the precedent already in
+  `PublishScheduler`:** the publish side already stores a per-vehicle DR reference `{ pos, speed,
+  accel, posLat, latSpeed, laneHandle, time }`. The subscribe-side timestamped sample should be the
+  same field set (it *is* the DR state the viewer predicts from), so publisher and subscriber share
+  one sample shape — not two parallel definitions.
 - **D5 — Ship the raylib viewer as a *package* (`SumoSharp.Viewer.Raylib`), not only a sample.**
   The user explicitly wants "viewer tools (maybe standalone nugets)". The reusable brain is already
   split into `Sim.Viewer.Core`; this doc extends that split so the render component is consumable,
@@ -209,16 +222,19 @@ history now live in the **`Replication` API** (D9), not in `Viewer.Motion`:
 SumoSharp.Replication  (net8.0;netstandard2.1)  — the data-model API
   ├─ VehicleRecord, LaneGeo, TlEntry, UpcomingLanes, FrameHeader   (data model — existing)
   ├─ FrameCodec / GeometryCodec / TlCodec / FrameChunker           (codec — existing)
-  ├─ IPublishPolicy / PublishScheduler                             (policy — existing)
+  ├─ IPublishPolicy / PublishScheduler / DrErrorPublishPolicy      (policy — existing; DR-error landed)
+  ├─ DrExtrapolation.Arc(...)                                      (DR math — EXISTING; shared pub+view)
   ├─ IReplicationSink / IReplicationSource                         (NEW — the 4-channel contract, D8)
-  ├─ TimestampedSample    (NEW — VehicleRecord + sim/arrival time, D9)
+  ├─ TimestampedSample    (NEW — VehicleRecord + sim/arrival time, D9; same shape as sched. ref)
   └─ IVehicleSampleHistory (NEW — transport-neutral newest-last per-vehicle buffer, D9)
 
 SumoSharp.Viewer.Motion  (net8.0;netstandard2.1, NO raylib, NO DDS)
-  ├─ DrClock                 (moved from Sim.Viewer.Core; consumes Replication's sample + history)
-  ├─ DrPipeline helpers      (auto-delay §5.4, extrapolation low-pass §5.5 — plain scalar maths)
+  ├─ DrClock                 (moved from Sim.Viewer.Core; consumes Replication's sample + history;
+  │                           already delegates arc extrapolation to Replication.DrExtrapolation)
+  ├─ DrPipeline helpers      (auto-delay §5.4, extrapolation low-pass §5.5 — plain scalar maths;
+  │                           arc extrapolation is NOT re-extracted — it lives in Replication)
   └─ (re-exports) PoseResolver, ILaneShapeSource, Pose, DrState   [these stay defined in Core]
-      depends on → SumoSharp.Core (PoseResolver), SumoSharp.Replication (data model + sample + history)
+      depends on → SumoSharp.Core (PoseResolver), SumoSharp.Replication (data model + DR math + sample)
 
 SumoSharp.Replication.Dds  (net8.0, native)  — one binding of the contract
   └─ implements IReplicationSink/Source over DDS topics; adapts DDS samples → TimestampedSample
@@ -266,8 +282,8 @@ raylib/ImGui rendering + the DDS subscriber adapter; the `Sim.Viewer` exe become
 ## 7. Parity & packaging guard (success bar)
 
 - **Offline parity unchanged.** `dotnet test` must stay green and native-free after every packaging
-  step (baseline at time of writing: **440 passed, 0 failed, 3 skipped**; determinism anchor per
-  `Sim.Bench` unchanged).
+  step (baseline at time of writing, post-main-rebase: **446 passed, 0 failed, 3 skipped**;
+  determinism anchor per `Sim.Bench` unchanged).
 - **Extend the packaging guard test.** `RungB13PackagingTargetsTests` already pins that Core/Ingest
   multi-target net8+ns2.1 and keep the polyfills. Add assertions that:
   - `Sim.Replication` and the new `Sim.Viewer.Motion` also `<TargetFrameworks>` net8+ns2.1 and are

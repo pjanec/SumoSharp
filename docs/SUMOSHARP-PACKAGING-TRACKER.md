@@ -10,7 +10,13 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
       ChordHeading, auto-delay, extrapolation low-pass) + **docs**.
 - [x] DR/smoothing reimplementation guide present: `SUMOSHARP-VIEWER-DR-SMOOTHING.md` (+ lane-change
       design/tasks, DR-motion-jitter investigation).
-- [x] Offline parity gate green after integration: **440 passed, 0 failed, 3 skipped**.
+- [x] Rebased onto updated `main` (main + gpu branch converged; +11 commits): brings the
+      **DR-error-based publishing** feature — `Sim.Replication` now owns `DrExtrapolation` (shared DR
+      math), `DrErrorPublishPolicy`, and `PublishScheduler` per-vehicle reference state. Its design
+      (`SUMOSHARP-DR-ERROR-PUBLISHING-DESIGN.md §8`) already adopts the "data model is the API"
+      layering → reinforces D8/D9; part of the motion extraction (arc extrapolation) is already done.
+- [x] Offline parity gate green after rebase: **446 passed, 0 failed, 3 skipped** (was 440; +6 from
+      the new DR-error tests).
 
 ## Stage P0 — Reconcile docs with reality
 - [x] P0.1 — Packaging design/tasks/tracker docs landed.
