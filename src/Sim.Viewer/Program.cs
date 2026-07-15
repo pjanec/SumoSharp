@@ -1118,31 +1118,37 @@ static void PumpAndBuildVehicleDraws(
         var (_, avgFrame, _) = frameStats.Compute();
         var frameDt = avgFrame > 0f ? avgFrame : 1f / 60f;
 
-        // Render-heading low-pass (ALWAYS on -- NOT gated on the `smooth` toggle, which controls only the
-        // extrapolation POSITION filter below): ease EVERY heading change over ~0.18 s so a lane-change
-        // entry/exit tilt (or any packet-boundary heading step) rotates continuously instead of snapping in
-        // one frame (the abrupt orientation twitch). Mirrors the local viewer's heading filter. Runs for ALL
-        // vehicles every frame -- a lane-change straddle is interpolated (extrap=False), so the
-        // extrapolation-only position block would never catch its heading snap. Shortest-arc; a >100 deg jump
-        // (handle reuse / opposite-direction respawn) snaps rather than spins.
         if (smoothed.TryGetValue(handle, out var prevPose))
         {
+            // Render-heading low-pass (always on): ease heading changes over ~0.18 s so a lane-change tilt
+            // (or any packet-boundary heading step) rotates continuously; shortest-arc, >100 deg snaps.
             var aHead = 1f - MathF.Exp(-frameDt / 0.18f);
             var dh = ((pdeg - prevPose.Deg + 540f) % 360f) - 180f;
             pdeg = MathF.Abs(dh) > 100f ? pdeg : (prevPose.Deg + dh * aHead + 360f) % 360f;
 
-            // Optional POSITION low-pass, extrapolation-only (interpolated poses are already smooth): filter
-            // only extrapolated positions; a >7 m jump snaps (leave raw).
-            if (smooth && resolved.Extrapolated)
+            // ALWAYS-ON position error-smoothing (netcode-style): the rendered position chases the DR target
+            // but its correction speed is CAPPED, so smooth constant-speed motion passes through with ZERO lag
+            // (the per-frame move equals the vehicle's real travel), while a reconciliation SNAP -- the render
+            // clock extrapolates ahead of the newest packet, then that packet lands and the resolved pos jumps
+            // (0.2 m at steady speed, 0.5-1.2 m through a speed/lane change) -- is absorbed over a few frames
+            // instead of teleporting. Forward-biased: a BACKWARD correction (resolved snapped behind us, the
+            // common case) is taken up by briefly HOLDING (along-move clamped to >=0), letting the resolved pos
+            // advance to us -- never a rendered reverse. Lateral catch-up eases both ways, capped. A >7 m gap
+            // snaps (respawn / handle reuse).
+            var tx = (float)px - prevPose.X;
+            var ty = (float)py - prevPose.Y;
+            if (tx * tx + ty * ty <= 49f)
             {
-                var aPos = 1f - MathF.Exp(-frameDt / 0.07f);
-                var ex = (float)px - prevPose.X;
-                var ey = (float)py - prevPose.Y;
-                if (ex * ex + ey * ey <= 49f)
-                {
-                    px = prevPose.X + ex * aPos;
-                    py = prevPose.Y + ey * aPos;
-                }
+                var hr = pdeg * MathF.PI / 180f;
+                float hx = MathF.Sin(hr), hy = MathF.Cos(hr); // heading unit vector (navi: 0=N, clockwise)
+                var along = tx * hx + ty * hy;                 // longitudinal part of the needed correction
+                var perp = tx * -hy + ty * hx;                 // lateral part
+                var fwdCap = (float)resolved.State.Speed * frameDt + 6f * frameDt; // real travel + 6 m/s catch-up
+                var latCap = 4f * frameDt;                     // 4 m/s lateral catch-up
+                along = Math.Clamp(along, 0f, fwdCap);         // never reverse; cap forward catch-up
+                perp = Math.Clamp(perp, -latCap, latCap);
+                px = prevPose.X + along * hx + perp * -hy;
+                py = prevPose.Y + along * hy + perp * hx;
             }
         }
 
