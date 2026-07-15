@@ -209,13 +209,17 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
 {
     var step = stepLen ?? 1.0;
     var repoRoot = DemoCatalog.RepoRoot();
+    // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 / -TASKS.md T5: resolved ONCE, up front, so both the
+    // initial `--demo` lookup below and the ImGui Demos panel (drawn every frame) share the same list
+    // instead of re-walking the filesystem per frame.
+    var resolvedCatalog = DemoCatalog.Resolve(repoRoot);
 
     EngineHost initialHost;
     DemoEntry? initialEntry;
 
     if (demoName is not null)
     {
-        var catalog = DemoCatalog.Resolve(repoRoot);
+        var catalog = resolvedCatalog;
         initialEntry = catalog.FirstOrDefault(e => e.Name.Contains(demoName, StringComparison.OrdinalIgnoreCase))
             ?? catalog.FirstOrDefault(e => e.Category == DemoCategory.Junctions)
             ?? catalog.FirstOrDefault();
@@ -417,9 +421,18 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
                 if (dragging && !dragMoved)
                 {
                     // A click, not a pan -> invert the camera (then Flip) to get the WORLD point under the
-                    // cursor and inject an obstacle there.
+                    // cursor. docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 4: for evac demos the click
+                    // (re)places the incident instead of dropping an obstacle (evac scenarios carry their
+                    // own demand; there is no "obstacle" concept there).
                     var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
-                    host.InjectObstacleAtWorld(flipSpace.X, -flipSpace.Y);
+                    if (host.Evac is not null)
+                    {
+                        host.SetIncidentAtWorld(flipSpace.X, -flipSpace.Y);
+                    }
+                    else
+                    {
+                        host.InjectObstacleAtWorld(flipSpace.X, -flipSpace.Y);
+                    }
                 }
 
                 dragging = false;
@@ -484,14 +497,28 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
         // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
         // measured arrival interval.
         var actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
+        var evacSnap = host.Evac; // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6: null for non-evac demos.
         BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex,
-            headingPrev, headingCur, Raylib.GetFrameTime());
+            headingPrev, headingCur, Raylib.GetFrameTime(), evacSnap);
         (headingPrev, headingCur) = (headingCur, headingPrev); // swap: headingCur becomes next frame's prior
 
         roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
+        // §6: boundary/incident/abandoned-cars/pushers go UNDER vehicles; pedestrians go OVER (see
+        // Renderer.DrawEvacWorld's doc comment for why this is two calls instead of one).
+        if (evacSnap is not null)
+        {
+            Renderer.DrawEvacWorld(camera, evacSnap);
+        }
+
         Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host, vehicleDraws);
 
-        Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth);
+        if (evacSnap is not null)
+        {
+            Renderer.DrawEvacPedestrians(camera, evacSnap);
+        }
+
+        Renderer.DrawDemosPanel(session, resolvedCatalog, evacSnap);
+        Renderer.DrawControlsPanel(host, ref fpsCap, ref smooth, isEvac: evacSnap is not null);
         if (showDiagnostics)
         {
             Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, actualSpeed, host.StepLength);
@@ -1342,11 +1369,15 @@ static (double MinX, double MinY, double MaxX, double MaxY) ComputeGeometryBound
 // per-vehicle lookups would be O(n^2) at 10k). Reuses `outDraws`/`prevIndex` (Clear keeps capacity) so a
 // warmed steady state allocates nothing. Falls back to the raw current frame when there's no distinct prior
 // frame to blend from (first frame / just after a restart / smoothing off).
+// `evac` (docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §6 point 2) is host.Evac, or null for non-evac demos
+// -- when present, each drawn vehicle's Fear is looked up by handle.Index from evac.FearByVehicle (0 when
+// the vehicle has no entry, e.g. it hasn't been observed panicking yet); null yields Fear 0 for everyone,
+// so DrawVehicleList's speed colour is untouched on the non-evac path.
 static void BuildLocalVehicleDraws(
     SimulationSnapshot cur, SimulationSnapshot prev, double renderClock, bool smooth,
     List<Renderer.DrVehicleDraw> outDraws, Dictionary<VehicleHandle, int> prevIndex,
     Dictionary<VehicleHandle, float> headingPrev, Dictionary<VehicleHandle, float> headingCur,
-    float frameDtWall)
+    float frameDtWall, EvacRenderSnapshot? evac)
 {
     outDraws.Clear();
     headingCur.Clear(); // rebuilt from current vehicles only -> prunes despawned, stays bounded
@@ -1401,7 +1432,8 @@ static void BuildLocalVehicleDraws(
         }
 
         headingCur[handle] = deg;
-        outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd));
+        var fear = evac is not null && evac.FearByVehicle.TryGetValue(handle.Index, out var f) ? f : 0.0;
+        outDraws.Add(new Renderer.DrVehicleDraw(fx, fy, deg, cur.Length[i], cur.Width[i], spd, fear));
     }
 }
 

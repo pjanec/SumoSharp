@@ -15,8 +15,8 @@ Standing gate on every tick: `dotnet test Traffic.sln` = 446/3/0 · `Sim.Bench` 
 - [x] **T4** live demo switching + `--demo` — Opus-verified first-hand: --demo-smoke (Priority→Traffic-light→Evac, distinct edge counts, evac present, clean) + Xvfb `--demo "Roundabout"` screenshot renders the net + vehicle + HUD; ad-hoc `--mode local <path>` path preserved.
 
 ## Stage C — rendering + UI
-- [ ] **T5** ImGui "Demos" picker + non-evac polish
-- [ ] **T6** evac draw pass (incident zone / peds / abandoned / pushers / fear tint) + place-incident click
+- [x] **T5** ImGui "Demos" picker + non-evac polish — Opus-verified: categorized picker with current-highlight + evac legend/counters; DrawControlsPanel hides random-traffic + swaps the click hint for evac demos.
+- [x] **T6** evac draw pass + place-incident click — Opus-verified first-hand (Xvfb screenshots + exact-color pixel scans): amber incident zone+ring, dashed boundary, fear-tinted vehicles, and peds/abandoned cars render (organic: cyan-fleeing=1, escaped-green=223, abandoned-red=56; grid-tls: green=24, red=98). Pure-SUMO demos carry 0 evac-color pixels (unchanged); left-click places the incident in evac demos.
 
 ## Stage D — close-out
 - [ ] **T7** docs (native-viewer doc + README) + final gate re-confirm + screenshots attached
