@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
     <PackageReference Include="CycloneDDS.NET" Version="0.3.2" />
+    <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
   </ItemGroup>
 
 </Project>
