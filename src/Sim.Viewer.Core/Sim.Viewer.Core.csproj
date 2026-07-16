@@ -28,6 +28,9 @@
          hermetic gate. -->
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
     <ProjectReference Include="..\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
+    <!-- docs/DEMO-CITY3D-DESIGN.md "DRY rewire": DdsPublisher composes Sim.Host.ReplicationPublisher
+         (the transport-neutral snapshot -> wire-record translation) with a DdsReplicationSink. -->
+    <ProjectReference Include="..\Sim.Host\Sim.Host.csproj" />
   </ItemGroup>
 
 </Project>

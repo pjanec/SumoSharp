@@ -10,7 +10,7 @@ the first `src/` task and repeat them here as each box is ticked.
 
 ## Stage 0 — Foundations (publisher package + local feed)
 - [x] **T0.1** `SumoSharp.Host` (`ReplicationPublisher`) — Opus-verified first-hand: 1:1 port of `DdsPublisher`'s snapshot→record half (scheduler tol, `LaneWindow` offset, spawn/despawn, 1s TL gate all match), only ns2.1 array-copy deviation; builds both TFMs; packs `SumoSharp.Host.0.1.0.nupkg`; non-vacuous test (multi-sample guard) 1/1; full gate **465/0/3 unchanged**; hash **909605E965BFFE59** single+parallel unchanged.
-- [ ] **T0.2** DRY rewire: `DdsReplicationSink` → `Replication.Dds`, `DdsPublisher` delegates — loopback self-test green, no duplicated publisher, gate unchanged *(fallback: ship T0.1 alone if risky)*
+- [x] **T0.2** DRY rewire — Opus-verified first-hand: DDS-write half moved verbatim to `Sim.Replication.Dds.DdsReplicationSink` (same writers/QoS/chunking/bytes); `DdsPublisher` now a 46-line delegator over `ReplicationPublisher` (323→46 lines, no leftover translation logic, public surface intact). `LoopbackSelfTest` PASS with identical numbers (3 lanes / 1 veh / 1 TL); main gate 465/0/3 + hash `909605E965BFFE59` unchanged. Escape hatch not needed.
 - [x] **T0.3** local feed — Opus-verified first-hand: `build.sh --pack-only` packs 5 pure-C# packages into `local-nuget/`; probe resolves `SumoSharp.Host` **from the local feed**; with feed emptied + global cache purged, restore fails `NU1101 … PackageSourceMapping is enabled, the following source(s) were not considered: nuget.org` (no nuget.org fallback proven); `local-nuget/` git-ignored (after a `.gitignore` inline-comment fix).
 
 ## Stage 1 — Local single-viewport demo (M1, public-facing) — no `src/` changes
@@ -33,4 +33,4 @@ the first `src/` task and repeat them here as each box is ticked.
 ## Stage 4 — Close-out
 - [ ] **T4.1** demo README + `PACKAGES.md`/`DEMOS.md`/root README wiring + fresh-clone dry run + final gate
 
-Status: **DESIGN DRAFTED — awaiting sign-off. No code yet.**
+Status: **Stage 0 COMPLETE (T0.1–T0.3, all Opus-verified). Fresh gate baseline: 465 passed / 0 failed / 3 skipped; determinism hash `909605E965BFFE59` (single + parallel). Next: Stage 1 (local viewer), structured CityLib-first so the data path + procedural math are headless-testable — the Godot engine binary is egress-blocked here, so `godot --headless` + on-screen visuals are desktop-only checks.**
