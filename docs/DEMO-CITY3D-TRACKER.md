@@ -16,9 +16,9 @@ the first `src/` task and repeat them here as each box is ticked.
 ## Stage 1 — Local single-viewport demo (M1, public-facing) — no `src/` changes
 > Structure: logic in `CityLib` (headless-testable), Godot `Viewer` is thin glue. Godot engine binary is
 > egress-blocked here → `godot --headless` runs + visuals are desktop-only checks.
-- [ ] **T1.0** `CityLib` classlib + `CityLib.Tests`, consuming `SumoSharp.*` from the local feed
+- [x] **T1.0** `CityLib` + `CityLib.Tests` — Opus-verified: consumes `SumoSharp.*` 0.1.0 from the local feed (NU1101 without it, proven); not in `Traffic.sln`; tests build+run.
 - [ ] **T1.1** Godot `Viewer` skeleton (thin glue over `CityLib`) — `dotnet build` here; `--headless` smoke = desktop
-- [ ] **T1.2** in-proc engine → `InMemoryReplicationBus` → DR reconstruction (in `CityLib`); `ReplicationLaneShapeSource`; local↔remote seam + coord/yaw transform proven headlessly
+- [x] **T1.2** data path in `CityLib` — Opus-verified first-hand (CityLib.Tests **11/11**): `SimSource` (Engine+Runner+ReplicationPublisher→InMemoryReplicationBus), `Reconstructor` (DrClock→PoseResolver→DrPoseSmoother→Godot coords), `CoordinateTransform` (SUMO→Godot `(x,z,-y)`, navi→yaw), `ReplicationLaneShapeSource`. Asserts: monotonic X advance / no >0.5 m back-jump / net progress through red-light hold→green; local(Z-aware)↔wire lane-source seam agrees ≤0.05 m; reconstructed yaw matches **engine** heading <1°. *(wire `LaneGeo` is 2-D — elevation over the wire needs a future `GeometryCodec` Z-extension; local uses Z-aware `NetworkLaneSource`.)*
 - [ ] **T1.3** procedural roads (width-accurate, `LaneShapeZ`) — *desktop: looks right*
 - [ ] **T1.4** procedural buildings (deterministic, believable heights, set-back) — *desktop: box-city*
 - [ ] **T1.5** cars (MultiMesh, true vType dims, heading yaw, smooth) — *desktop: true-size & smooth*
