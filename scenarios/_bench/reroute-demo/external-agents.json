@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {
+      "id": "blocker",
+      "kind": "pedestrian",
+      "laneId": "BD_0",
+      "startPos": 250,
+      "length": 5,
+      "width": 0
+    }
+  ]
+}

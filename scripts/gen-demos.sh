@@ -97,11 +97,39 @@ demo_run() {
   rm -f "$d/engine.fcd.xml"
 }
 
+# demo_run_warmup <scenarioDir> <slug> <warmupSteps>
+# Same as demo_run, but passes --warmup N to Sim.Run first: the recorded FCD's frame 0 starts from
+# an already-populated timeline (Engine.WarmUp -- see src/Sim.Run/Program.cs) instead of ramping up
+# from empty.
+demo_run_warmup() {
+  local d="$1" slug="$2" warmup="$3"
+  run src/Sim.Run "$d" --warmup "$warmup"
+  run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
+  cp "$d/replay.html" "$SITE/$slug.html"
+  restore_replay "$d"
+  rm -f "$d/engine.fcd.xml"
+}
+
 # demo_ext <scenarioDir> <slug>
 # Sim.ExtDemo generates a combined (engine + external-agent) engine.fcd.xml, then Sim.Viz renders it.
 demo_ext() {
   local d="$1" slug="$2"
   run src/Sim.ExtDemo "$d"
+  run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
+  cp "$d/replay.html" "$SITE/$slug.html"
+  restore_replay "$d"
+  rm -f "$d/engine.fcd.xml" "$d/combined.fcd.xml" "$d/playwright_screenshot.png"
+}
+
+# demo_ext_args <scenarioDir> <slug> [extra Sim.ExtDemo args...]
+# Same as demo_ext, but forwards extra CLI flags to Sim.ExtDemo -- e.g. --reroute-threshold N to
+# opt the B3 live-reroute trigger in for a scenario whose external-agents.json places a persistent
+# obstacle on the vehicle's nominal route (the flag is additive/CLI-only, see Sim.ExtDemo/Program.cs;
+# omitting it reproduces demo_ext's own inert-by-default behavior).
+demo_ext_args() {
+  local d="$1" slug="$2"
+  shift 2
+  run src/Sim.ExtDemo "$d" "$@"
   run src/Sim.Viz "$d" --fcd "$d/engine.fcd.xml"
   cp "$d/replay.html" "$SITE/$slug.html"
   restore_replay "$d"
@@ -157,6 +185,9 @@ try multilane-keep-right "Multilane keep-right on arrival" \
 try sublane-mixed "Sublane / laneless mixed" \
   "Sublane and laneless vehicles share the same road, each governed by its own lateral-motion model." \
   "Lane changing & overtaking" demo_golden scenarios/65-mixed-sublane sublane-mixed
+try overtake-opposite "Opposite-direction overtaking (lcOpposite)" \
+  "A fast lcOpposite vehicle held up by a slow leader spills across the road centerline into the oncoming lane, passes it, and returns -- overtaking via oncoming traffic's lane rather than a same-direction second lane." \
+  "Lane changing & overtaking" demo_run scenarios/_bench/overtake-opposite-demo overtake-opposite
 
 # Junctions & right-of-way
 try priority-junction "Priority junction" \
@@ -234,6 +265,12 @@ try dawdle-stochastic "Dawdle / sigma stochasticity" \
 try probabilistic-flow "Probabilistic flow insertion" \
   "Vehicles are inserted stochastically by per-step probability instead of on a fixed period." \
   "Integration & driver behavior" demo_run scenarios/58-flow-probability probabilistic-flow
+try reroute "Rerouting around a blockage" \
+  "A vehicle's routing device detects a persistent obstacle ahead on its assigned route and recomputes a different path around it (diamond detour), instead of queuing behind it forever." \
+  "Integration & driver behavior" demo_ext_args scenarios/_bench/reroute-demo reroute --reroute-threshold 5
+try warm-start "Warm-start snapshot" \
+  "A scaled town rendered from an already-populated timeline (Engine.WarmUp) so frame 0 shows dozens of vehicles already moving, instead of ramping up from an empty network." \
+  "Integration & driver behavior" demo_run_warmup scenarios/_bench/city-30 warm-start 60
 
 # City scale
 try city-town "Scaled town (~30 vehicles)" \

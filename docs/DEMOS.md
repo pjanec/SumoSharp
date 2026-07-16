@@ -25,6 +25,7 @@ One demo per feature, grouped by category (the gallery's landing page uses the s
 | Lane changing & overtaking | Continuous lane change | Sublane-resolution continuous lateral motion during a lane change, instead of an instantaneous lane snap. |
 | Lane changing & overtaking | Multilane keep-right on arrival | Vehicles across several lanes converge toward the right-hand lane as they approach their arrival edge. |
 | Lane changing & overtaking | Sublane / laneless mixed | Sublane and laneless vehicles share the same road, each governed by its own lateral-motion model. |
+| Lane changing & overtaking | Opposite-direction overtaking (lcOpposite) | A fast lcOpposite vehicle held up by a slow leader spills across the road centerline into the oncoming lane, passes it, and returns — overtaking via oncoming traffic's lane rather than a same-direction second lane. |
 | Junctions & right-of-way | Priority junction | Right-of-way negotiation at an unsignalized priority junction. |
 | Junctions & right-of-way | Right-before-left | An unsignalized junction resolved by the right-before-left rule instead of an explicit priority road. |
 | Junctions & right-of-way | All-way stop | Every approach yields in turn at an all-way-stop-controlled junction. |
@@ -46,19 +47,14 @@ One demo per feature, grouped by category (the gallery's landing page uses the s
 | Integration & driver behavior | Reaction time (actionStepLength) | A driver re-evaluates its car-following decision only every actionStepLength seconds instead of every simulation step. |
 | Integration & driver behavior | Dawdle / sigma stochasticity | Krauss's sigma-driven random dawdle perturbs following speed from step to step. |
 | Integration & driver behavior | Probabilistic flow insertion | Vehicles are inserted stochastically by per-step probability instead of on a fixed period. |
+| Integration & driver behavior | Rerouting around a blockage | A vehicle's routing device detects a persistent obstacle ahead on its assigned route and recomputes a different path around it (diamond detour), instead of queuing behind it forever. |
+| Integration & driver behavior | Warm-start snapshot | A scaled town rendered from an already-populated timeline (`Engine.WarmUp`) so frame 0 shows dozens of vehicles already moving, instead of ramping up from an empty network. |
 | City scale | Scaled town (~30 vehicles) | A 3x3-grid town at ~30 concurrent vehicles — engine run rendered against the SUMO aggregate-parity reference. |
 | City scale | Large multilane city (~400 vehicles) | A larger organic multilane city network under ~400 concurrent vehicles. |
 | City scale | Signalized city (~1000 vehicles) | A mixed signalized city network at ~1000 concurrent vehicles, exercising traffic lights at city scale. |
 
 The curated set is defined in `scripts/gen-demos.sh`; only demos that actually generate are listed
 on the gallery's landing page (a broken demo is skipped and logged, never faked).
-
-### Not yet in the gallery (needs a dedicated scenario)
-
-- **Opposite-direction overtaking** — overtaking via a lane belonging to oncoming traffic (as
-  opposed to the same-direction multi-lane overtake already covered above).
-- **Rerouting** — a vehicle re-routing mid-trip in response to a rerouter/closure.
-- **Warm-start snapshot** — engine state save/restore; API-only today, no visual replay to render.
 
 ## Run the demos locally
 

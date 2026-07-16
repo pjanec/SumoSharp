@@ -13,12 +13,22 @@ using Sim.Ingest;
 // script instead of hardcoded test values. Mirrors src/Sim.Run/Program.cs's shape.
 //
 // Usage:
-//   dotnet run --project src/Sim.ExtDemo -- <scenarioDir> [--agents PATH] [--fcd-out PATH] [--steps N]
+//   dotnet run --project src/Sim.ExtDemo -- <scenarioDir> [--agents PATH] [--fcd-out PATH] [--steps N] [--reroute-threshold SECONDS]
 //
 // Defaults: agents = <scenarioDir>/external-agents.json (missing file => zero agents, which is
 // exactly the "WITHOUT" half of the behavioral-proof pair -- see the scenario's NOTES.md);
 // fcd-out = <scenarioDir>/engine.fcd.xml; steps = round((end-begin)/step-length) from the
-// scenario's *.sumocfg (matches Sim.Run's own default).
+// scenario's *.sumocfg (matches Sim.Run's own default); reroute-threshold = unset, i.e. Engine's
+// own default (+infinity -- B3 reroute stays inert, byte-identical to every demo predating this
+// flag; see Engine.RerouteThresholdSeconds's doc comment).
+//
+// --reroute-threshold SECONDS (additive, CLI-only): sets Engine.RerouteThresholdSeconds before
+// Run, the SAME opt-in B3 knob RungB3RerouteTests sets directly in-process (there is no sumocfg/
+// config-file surface for it -- it is deliberately code-only, DESIGN.md's "live-reactivity is
+// opt-in"). Exposing it here lets a committed external-agents.json obstacle (a persistent
+// "pedestrian" blocker on a vehicle's route) demonstrate MSDevice_Routing-style rerouting purely
+// from CLI args, with no other engine/parity-path change. Omitting the flag reproduces prior
+// Sim.ExtDemo behavior byte-for-byte (reroute stays inert, exactly as before this flag existed).
 internal static class Program
 {
     private static int Main(string[] args)
@@ -26,7 +36,7 @@ internal static class Program
         if (args.Length == 0 || args[0] is "-h" or "--help")
         {
             Console.Error.WriteLine(
-                "usage: Sim.ExtDemo <scenarioDir> [--agents PATH] [--fcd-out PATH] [--steps N]");
+                "usage: Sim.ExtDemo <scenarioDir> [--agents PATH] [--fcd-out PATH] [--steps N] [--reroute-threshold SECONDS]");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -40,6 +50,7 @@ internal static class Program
         string? agentsPathOverride = null;
         string? fcdOut = null;
         int? stepsOverride = null;
+        double? rerouteThreshold = null;
         for (var i = 1; i < args.Length; i++)
         {
             switch (args[i])
@@ -52,6 +63,9 @@ internal static class Program
                     break;
                 case "--steps" when i + 1 < args.Length:
                     stepsOverride = int.Parse(args[++i], CultureInfo.InvariantCulture);
+                    break;
+                case "--reroute-threshold" when i + 1 < args.Length:
+                    rerouteThreshold = double.Parse(args[++i], CultureInfo.InvariantCulture);
                     break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
@@ -80,6 +94,11 @@ internal static class Program
 
         var engine = new Engine();
         engine.LoadScenario(net, rou, cfg);
+
+        if (rerouteThreshold is { } threshold)
+        {
+            engine.RerouteThresholdSeconds = threshold;
+        }
 
         foreach (var agent in agents)
         {
@@ -125,7 +144,8 @@ internal static class Program
 
         Console.WriteLine(
             $"wrote {fcdOut}  ({steps} steps, [{config.Begin}, {config.End}] @ {config.StepLength}s, " +
-            $"agents={agents.Count} from {(agents.Count > 0 ? agentsPath : "(none found)")})");
+            $"agents={agents.Count} from {(agents.Count > 0 ? agentsPath : "(none found)")}" +
+            (rerouteThreshold is { } t ? $", reroute-threshold={t}s" : string.Empty) + ")");
         return 0;
     }
 

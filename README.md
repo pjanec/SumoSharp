@@ -41,6 +41,22 @@ doesn't have. Highlights below; precise scope after that.
   stream over DDS** (RTPS pub/sub, durable network geometry + low-rate traffic-light topics, view-only
   late-joining remote clients).
 
+## Documentation & live demos
+
+- **▶ Live demo gallery — interactive, in-browser, zero install:** **https://pjanec.github.io/SumoSharp/**
+  — 38 self-contained replays, **one per feature** (car-following, same- & opposite-direction
+  overtaking, roundabouts, traffic lights, emergency vehicles, rail, rerouting, panic evacuation,
+  city-scale, …). One click each; regenerated automatically by CI. Index + local-run script
+  (`scripts/gen-demos.sh`): [`docs/DEMOS.md`](docs/DEMOS.md).
+- **📦 The NuGet packages & how they fit together:** [`docs/PACKAGES.md`](docs/PACKAGES.md) — the
+  à-la-carte package map, "which packages do I install?", and composition diagrams. Runnable
+  consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
+  `MotionReconstruction`, `EvacDemo`, `GameHostSample`).
+- **📐 Design of record:** [`docs/DESIGN.md`](docs/DESIGN.md) (engine & parity) ·
+  [`docs/SUMOSHARP-PACKAGING-DESIGN.md`](docs/SUMOSHARP-PACKAGING-DESIGN.md) (packaging) ·
+  [`docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md`](docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md) (dead-reckoning &
+  smoothing for custom/3D viewers).
+
 ## Scope
 
 - **What it ports:** the per-step simulation algorithms (car-following, lane-changing, junction
@@ -445,9 +461,10 @@ true-size oriented vehicle boxes colored by vClass; play/pause/scrub/speed, zoom
 
 ### Live demos
 
-A curated, auto-generated gallery of these replays is deployed to GitHub Pages — see
-[`docs/DEMOS.md`](docs/DEMOS.md) for the link and the demo list. Generate it locally with
-`scripts/gen-demos.sh`, then open `site/index.html`.
+A curated, auto-generated gallery of these replays — **one per feature, 38 in all** — is deployed to
+GitHub Pages: **https://pjanec.github.io/SumoSharp/**. CI regenerates it on every change to the
+scenarios or the engine (`src/**`). The full categorized list is in [`docs/DEMOS.md`](docs/DEMOS.md);
+generate the same gallery locally with `scripts/gen-demos.sh`, then open `site/index.html`.
 
 > **Phone caveat:** opening a local `replay.html` from the iOS Files app runs it with **no JavaScript**
 > (black canvas). On a phone, serve it over **https** (e.g. a hosted artifact URL), not `file://`.
