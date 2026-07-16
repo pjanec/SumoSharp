@@ -60,7 +60,11 @@ public partial class Main : Node3D
             return;
         }
 
-        var scenarioDir = Path.Combine(repoRoot, "scenarios", "09-traffic-light");
+        // `--scenario=<rel>` (a path under scenarios/, e.g. "09-traffic-light" or "_bench/city-organic"),
+        // default the tiny signalized dev scenario. A minimal precursor to T1.7's full scenario switch --
+        // enough to render a real multi-road network for the screenshot.
+        var scenarioRel = ParseScenarioArg();
+        var scenarioDir = Path.Combine(repoRoot, "scenarios", scenarioRel);
         var netPath = Path.Combine(scenarioDir, "net.net.xml");
         var rouPath = Path.Combine(scenarioDir, "rou.rou.xml");
         var cfgPath = Path.Combine(scenarioDir, "config.sumocfg");
@@ -68,7 +72,7 @@ public partial class Main : Node3D
         if (!File.Exists(netPath) || !File.Exists(rouPath) || !File.Exists(cfgPath))
         {
             GD.PrintErr(
-                $"Main: scenario 'scenarios/09-traffic-light' not found under repo root '{repoRoot}' " +
+                $"Main: scenario 'scenarios/{scenarioRel}' not found under repo root '{repoRoot}' " +
                 $"(expected {netPath}, {rouPath}, {cfgPath}).");
             GetTree().Quit(1);
             return;
@@ -86,7 +90,7 @@ public partial class Main : Node3D
         }
 
         _reconstructor = new Reconstructor();
-        GD.Print($"Main: loaded scenario '09-traffic-light' from '{scenarioDir}'.");
+        GD.Print($"Main: loaded scenario '{scenarioRel}' from '{scenarioDir}'.");
 
         var bbox = BuildRoadMeshes(_sim.Network);
         BuildCameraAndLight(bbox);
@@ -298,6 +302,26 @@ public partial class Main : Node3D
         }
 
         return null;
+    }
+
+    // `--scenario=<rel>` USER cmdline arg (path under scenarios/); defaults to the tiny signalized
+    // dev scenario. Same OS.GetCmdlineUserArgs() mechanism as --shot.
+    private static string ParseScenarioArg()
+    {
+        const string prefix = "--scenario=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                var v = arg[prefix.Length..].Trim();
+                if (v.Length > 0)
+                {
+                    return v;
+                }
+            }
+        }
+
+        return "09-traffic-light";
     }
 
     // Waits a couple of real rendered frames (so the just-built meshes/camera/light are actually on
