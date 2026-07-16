@@ -41,12 +41,17 @@ verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md a
 - [x] P3.2 — demo/evac relocated out of `Sim.Viewer.Core`; `→ Sim.Evac` edge moved to the demo layer;
       evac drawn via the seam (`187f57d`). `Sim.Viewer.Core` is generic again (no `Sim.Evac` ref,
       verified).
-- [ ] P3.3 — package the **generic** viewer as `SumoSharp.Viewer.Raylib` (native leaf; NO evac/demo);
-      demo tool stays a sample. **(OUTSTANDING — the ONLY remaining stage.)** Needs the raylib render
-      code split out of the `Sim.Viewer` exe into a packable library + native runtime assets. Best
-      done by the viewer session: it requires **GUI runtime verification** (the raylib window must
-      still render), which the headless packaging environment cannot do — so it's a handoff, not a
-      first-hand-verifiable autonomous step here.
+- [x] P3.3 — packaged the **generic** viewer as `SumoSharp.Viewer.Raylib` (native leaf, net8.0;
+      Renderer/RoadLayerCache/FrameStats/IRenderOverlay/MarkerOverlay/DdsSubscriber/
+      DdsGeometryLaneSource + `RenderHelpers`, → `Viewer.Motion` + `Replication.Dds` only; TTF + README
+      packed). `DdsQos` → `Replication.Dds`; `LoopbackSelfTest` → demo exe; the EngineHost/DDS-command
+      control panels → demo (`ViewerControlsPanels`); `DrawDynamicWorld` takes obstacle points, not
+      `EngineHost`, so the package carries **no** `Sim.Viewer.Core`/evac/demo dependency. `dotnet pack`
+      → `SumoSharp.Viewer.Raylib.0.1.0.nupkg` (lib/net8.0 + font + README; deps = Motion/Replication.Dds/
+      Raylib-cs/rlImgui-cs). `dotnet test` 465/0, bench hash unchanged; publish.yml packs it; guard fact
+      added. **GPU-verified the raylib window renders** (local scenario, loopback DR, evac demo via the
+      overlay seam, DemoCatalog picker) — the handoff step the headless session couldn't do. (`b4f69a2`.)
+      Follow-up (Option A, own stage): extract the generic render *loop* into a reusable `ViewerHost` API.
 
 ## Stage P4 — Dev-time & domain packages  ✅ COMPLETE
 - [x] P4.1 — `SumoSharp.Testing` from `Sim.Harness` (packs lib/net8.0 + README).
