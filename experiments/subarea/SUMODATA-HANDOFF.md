@@ -240,7 +240,12 @@ Keep large generated files gitignored.
 Copy the whole `experiments/subarea/` directory from the SumoSharp branch
 `claude/sumo-subarea-pipeline-gaps-erjqo3` (on `pjanec/SumoSharp`) into the SumoData repo, OR recreate
 from the appendix below. Key files:
-- `run-experiment.sh` — the synthetic L1+L2 driver (adapt paths; drop its final C#-port step).
+- `run-experiment-sumo-only.sh` — **the drop-in driver for this session.** Pure SUMO (no C# port),
+  self-contained (auto-installs/detects SUMO, sets its own env), runs the whole synthetic pipeline
+  (L1 demo → L2 crop → cut → parking sinks → no-cheating audit) and prints PASS/FAIL. Verified green.
+  Run: `bash run-experiment-sumo-only.sh` (override scratch dir with `SCRATCH=/path`). Needs
+  `auto_parking.py` beside it. Use it as the template to adapt for the real net.
+- `run-experiment.sh` — the older synthetic L1+L2 driver that ends by running the C# port (ignore here).
 - `auto_parking.py` — the parking-sink generator (full source in §10; the one essential novel artifact).
 - `landuse/{landuse_zones.py,gen_weights.py,measure.py}` — synthetic land-use weighting + A/B measure.
 - `halo/{compute_inner_edges.py,fcd_distinct.py}` — halo-convergence tooling.
