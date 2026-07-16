@@ -280,60 +280,33 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
         host.InjectObstacleAtWorld(drop.X, drop.Y);
     }
 
-    var screenW = 1280;
-    var screenH = 800;
-
-    Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
-    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow); // user-resizable (docs/testing handoff request)
-    Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (local)");
-    if (!Raylib.IsWindowReady())
-    {
-        Console.Error.WriteLine("Sim.Viewer: window not ready (no display?).");
-        return 1;
-    }
-
-    // Cap the draw loop at 60 fps. EngineHost's SimulationRunner ticks on its own real-time-paced background
-    // thread (targetHz 10) and the random-traffic spawner fires on a real wall-clock Timer (dueTime 500ms,
-    // period 900ms) -- an unthrottled headless draw loop can blast through `--frames` in well under a second
-    // under Xvfb/software GL, finishing before either has had a chance to run even once. Pacing the render
-    // loop to a real frame rate gives both wall-clock-driven systems time to actually produce traffic before
-    // the screenshot is taken.
     // Render FPS cap, live-adjustable from the controls panel (30 / 60 / unlimited). Default 60 -- rendering
     // at the hundreds of fps the GPU allows for a 10 Hz sim is wasted work. `--perf` starts unlimited (0) so
     // the measurement sees the true render frame time instead of a flat 16.6 ms. 0 = no cap.
     var fpsCap = perf ? 0 : 60;
-    Raylib.SetTargetFPS(fpsCap);
-
-    rlImGui.Setup(darkTheme: true, enableDocking: false);
-    var io = ImGui.GetIO();
-    io.Fonts.Clear();
-    var fontPath = Path.Combine(AppContext.BaseDirectory, "assets", "DejaVuSans.ttf");
-    io.Fonts.AddFontFromFileTTF(fontPath, 18f);
-    rlImGui.ReloadFonts();
-
-    var camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, screenW, screenH);
 
     // TASK 1: cache the static road layer in a RenderTexture, re-baked only on camera change (see
-    // RoadLayerCache) -- the ~13k-edge net is otherwise re-stroked every frame.
-    using var roadLayer = new RoadLayerCache(screenW, screenH);
+    // RoadLayerCache) -- the ~13k-edge net is otherwise re-stroked every frame. RoadLayerCache's constructor
+    // calls Raylib.LoadRenderTexture, which needs a live GL context -- ViewerHost.Run doesn't create the
+    // window (InitWindow) until inside Run(cfg), so this can't be constructed here (before the call) like the
+    // pre-refactor code did; it's lazily constructed on DrawWorld's first invocation instead (which always
+    // runs after the window/context exist), sized off the actual framebuffer, and disposed in the `finally`
+    // below since ViewerHost.Run's own return is this method's last statement.
+    RoadLayerCache? roadLayer = null;
 
-    var headless = screenshotPath is not null;
-    var frameCount = 0;
     var frameStats = new FrameStats();
-    var showDiagnostics = true; // P1: diagnostics panel default ON, toggled with 'd'
     var perfWall = Stopwatch.StartNew();
     var lastPerfLog = 0.0;
 
     // Render-behind interpolation state. renderClock is a sim-time cursor kept ~one sim-step behind the
     // newest snapshot so each frame blends the two latest authoritative frames (10 Hz sim -> 60 Hz render
-    // without teleporting). vehicleDraws/prevIndex are reused every frame (Clear keeps capacity) so the
-    // smoothing adds no steady-state allocation. `smooth` is the panel toggle (default on).
+    // without teleporting). prevIndex is reused every frame (Clear keeps capacity) so the smoothing adds no
+    // steady-state allocation. `smooth` is the panel toggle (default on).
     var renderClock = 0.0;
     var smooth = true;
-    // Pre-size to the fleet so neither grows (and reallocates) while the sim warms up from 0 to ~10k -- that
-    // per-warmup-frame growth was itself a source of early allocations/stutter.
+    // Pre-size the reused draw list to the fleet so it neither grows (and reallocates) while the sim warms up
+    // from 0 to ~10k -- that per-warmup-frame growth was itself a source of early allocations/stutter.
     var interpCap = Math.Max(fleet ?? 0, 256);
-    var vehicleDraws = new List<Renderer.DrVehicleDraw>(interpCap);
     var prevIndex = new Dictionary<VehicleHandle, int>(interpCap);
     // Per-vehicle rendered-heading low-pass state, double-buffered (swapped each frame) so it prunes
     // despawned vehicles and stays bounded. Smooths the ~5 discrete headings of a junction's coarse internal
@@ -348,248 +321,203 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
     var lastSnapWall = 0.0;
     var intervalEma = 0.0;
 
-    // P1 drag-vs-click bookkeeping for the world camera (Camera2D pan/zoom/pick -- see Renderer.Flip's
-    // doc comment for the world<->screen convention this camera operates in).
-    var dragging = false;
-    var dragMoved = false;
-    var dragStartMouse = Vector2.Zero;
-    var dragStartTarget = Vector2.Zero;
-    const float DragMoveThreshold = 3f; // px: below this, mouseup is a CLICK (pick), not a pan.
+    // Set by PumpFrame the first time it runs, so OnFrameStart (a demo switch) can clear the SAME reused draw
+    // list ViewerHost owns and passes into PumpFrame/DrawWorld each frame.
+    List<Renderer.DrVehicleDraw>? sharedDraws = null;
 
-    while (!Raylib.WindowShouldClose())
+    // Written by PumpFrame, read by DrawWorld/DrawImGui -- must be method-scope so the callbacks share them.
+    SimulationSnapshot snapshot = host.Snapshot;
+    var prevSnapshot = snapshot;
+    var actualSpeed = host.Speed;
+
+    var cfg = new ViewerHostConfig
     {
-        frameStats.Add(Raylib.GetFrameTime());
+        WindowTitle = "SumoSharp - native viewer (local)",
+        TargetFps = fpsCap,
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
+        DrawCapacity = interpCap,
+        ResizableWindow = true,
 
-        // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: apply a queued demo switch (T5's ImGui picker will
-        // call session.RequestSwitch(entry) from inside the frame below; this batch has no UI yet, so
-        // nothing queues one interactively -- but the mechanism is wired here now) at the TOP of the frame,
-        // before anything this frame reads `host`. On a switch: re-fit the camera to the new host's bounds,
-        // force the static road-layer cache to re-bake (it is keyed on the OLD host.Network -- without this
-        // it keeps drawing the old net's roads, per the design doc's explicit warning), and reset the
-        // render-behind interpolation/heading state so it doesn't blend across the switch's timeline jump.
-        if (session.TryApplyPending(out var switchedHost, out _))
+        InitialCameraBounds = () => (host.MinX, host.MinY, host.MaxX, host.MaxY),
+
+        // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: apply a queued demo switch (T5's ImGui picker calls
+        // session.RequestSwitch(entry) from inside DrawImGui below) at the TOP of the frame, before anything
+        // this frame reads `host`. On a switch: re-fit the camera to the new host's bounds (via the returned
+        // bounds -- ViewerHost does the FitCamera), force the static road-layer cache to re-bake (it is keyed
+        // on the OLD host.Network -- without this it keeps drawing the old net's roads, per the design doc's
+        // explicit warning), and reset the render-behind interpolation/heading state so it doesn't blend
+        // across the switch's timeline jump.
+        OnFrameStart = () =>
         {
-            host = switchedHost;
-            // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): refresh the overlay from the session too --
-            // it and Host are swapped atomically by TryApplyPending, so this always matches the new host
-            // (e.g. switching INTO an evac demo installs its EvacOverlay; switching OUT of one drops it).
-            // `--overlay-test` keeps its own diagnostic marker regardless of demo switches.
-            if (!overlayTest)
+            if (session.TryApplyPending(out var switchedHost, out _))
             {
-                overlay = session.CurrentOverlay;
-            }
-
-            camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, screenW, screenH);
-            roadLayer.Invalidate();
-            renderClock = 0.0;
-            lastSnapSimTime = double.NaN;
-            lastSnapWall = 0.0;
-            intervalEma = 0.0;
-            vehicleDraws.Clear();
-            prevIndex.Clear();
-            headingPrev.Clear();
-            headingCur.Clear();
-            host.SetSpeed(simRate ?? (perf ? 10.0 : 1.0));
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.D))
-        {
-            showDiagnostics = !showDiagnostics;
-        }
-
-        // Window resized: match the offscreen road layer to the new framebuffer and re-centre the camera
-        // offset so the current view stays put (pan/zoom otherwise unchanged). Guard against a minimized /
-        // degenerate 0-size framebuffer -- LoadRenderTexture(0,0) segfaults the GL driver.
-        if (Raylib.IsWindowResized() && !Raylib.IsWindowMinimized())
-        {
-            var w = Raylib.GetScreenWidth();
-            var h = Raylib.GetScreenHeight();
-            if (w > 0 && h > 0)
-            {
-                screenW = w;
-                screenH = h;
-                roadLayer.Resize(w, h);
-                camera.Offset = new Vector2(w / 2f, h / 2f);
-            }
-        }
-
-        Raylib.BeginDrawing();
-        Raylib.ClearBackground(Renderer.BackgroundColor);
-
-        // rlImGui.Begin() (ImGui NewFrame) must run before reading io.WantCaptureMouse for this frame's
-        // world-input gate (an ImGui window/button under the cursor should eat clicks/drags/wheel rather
-        // than also panning/picking the world underneath it).
-        rlImGui.Begin();
-        var wantMouse = ImGui.GetIO().WantCaptureMouse;
-
-        if (!wantMouse)
-        {
-            var mouse = Raylib.GetMousePosition();
-
-            if (Raylib.IsMouseButtonPressed(MouseButton.Left))
-            {
-                dragging = true;
-                dragMoved = false;
-                dragStartMouse = mouse;
-                dragStartTarget = camera.Target;
-            }
-
-            if (dragging && Raylib.IsMouseButtonDown(MouseButton.Left))
-            {
-                var delta = mouse - dragStartMouse;
-                if (delta.Length() > DragMoveThreshold)
+                host = switchedHost;
+                // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): refresh the overlay from the session too --
+                // it and Host are swapped atomically by TryApplyPending, so this always matches the new host
+                // (e.g. switching INTO an evac demo installs its EvacOverlay; switching OUT of one drops it).
+                // `--overlay-test` keeps its own diagnostic marker regardless of demo switches.
+                if (!overlayTest)
                 {
-                    dragMoved = true;
+                    overlay = session.CurrentOverlay;
                 }
 
-                // Pan: drag the WORLD with the cursor (moving the mouse right reveals content to the
-                // left), so Target moves opposite the screen-space drag delta, scaled back to world units.
-                camera.Target = dragStartTarget - delta / camera.Zoom;
+                roadLayer?.Invalidate();
+                renderClock = 0.0;
+                lastSnapSimTime = double.NaN;
+                lastSnapWall = 0.0;
+                intervalEma = 0.0;
+                sharedDraws?.Clear();
+                prevIndex.Clear();
+                headingPrev.Clear();
+                headingCur.Clear();
+                host.SetSpeed(simRate ?? (perf ? 10.0 : 1.0));
+                return (host.MinX, host.MinY, host.MaxX, host.MaxY);
             }
 
-            if (Raylib.IsMouseButtonReleased(MouseButton.Left))
-            {
-                if (dragging && !dragMoved)
-                {
-                    // A click, not a pan -> invert the camera (then Flip) to get the WORLD point under the
-                    // cursor. docs/SUMOSHARP-PACKAGING-DESIGN.md D10: an overlay that wants clicks (e.g. the
-                    // evac layer's incident placement, via EvacOverlay.OnWorldClick) gets first refusal;
-                    // otherwise the generic default is to drop an obstacle. RunLocal never special-cases a
-                    // domain here -- the routing decision is entirely `overlay.HandlesWorldClick`.
-                    var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
-                    if (overlay is { HandlesWorldClick: true })
-                    {
-                        overlay.OnWorldClick(flipSpace.X, -flipSpace.Y);
-                    }
-                    else
-                    {
-                        host.InjectObstacleAtWorld(flipSpace.X, -flipSpace.Y);
-                    }
-                }
+            return null;
+        },
 
-                dragging = false;
-            }
-
-            var wheel = Raylib.GetMouseWheelMove();
-            if (wheel != 0f)
-            {
-                // Zoom about the cursor: the world point under the cursor (in Flip-space) must land back
-                // under the cursor after the zoom, so re-derive Target from the pre-zoom world point.
-                var beforeZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                var zoomFactor = wheel > 0 ? 1.1f : 1f / 1.1f;
-                camera.Zoom *= zoomFactor;
-                var afterZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                camera.Target += beforeZoom - afterZoom;
-            }
-        }
+        OnResize = (w, h) => roadLayer?.Resize(w, h),
 
         // Atomic (cur, prev) pair. Interpolate by the fraction of the measured snapshot-arrival interval
         // elapsed since `cur` arrived -> the render pose sweeps prev->cur at constant velocity over the
         // interval, matching however fast the engine is actually producing frames. (Estimating an
         // instantaneous rate from the impulsive per-frame sim-time deltas produced a sawtooth: race to the
         // newest frame then freeze until the next arrived.)
-        var (snapshot, prevSnapshot) = host.SnapshotPair;
-        var wallClock = perfWall.Elapsed.TotalSeconds;
+        PumpFrame = (dt, draws) =>
+        {
+            frameStats.Add(dt);
+            sharedDraws = draws;
 
-        if (double.IsNaN(lastSnapSimTime) || snapshot.Time < lastSnapSimTime)
-        {
-            // first frame, or a restart / step-length rebuild reset the timeline
-            lastSnapSimTime = snapshot.Time;
-            lastSnapWall = wallClock;
-            intervalEma = 0.0;
-        }
-        else if (snapshot.Time > lastSnapSimTime)
-        {
-            var interval = wallClock - lastSnapWall;
-            if (interval > 1e-4)
+            (snapshot, prevSnapshot) = host.SnapshotPair;
+            var wallClock = perfWall.Elapsed.TotalSeconds;
+
+            if (double.IsNaN(lastSnapSimTime) || snapshot.Time < lastSnapSimTime)
             {
-                intervalEma = intervalEma <= 0.0 ? interval : intervalEma + (interval - intervalEma) * 0.2;
+                // first frame, or a restart / step-length rebuild reset the timeline
+                lastSnapSimTime = snapshot.Time;
+                lastSnapWall = wallClock;
+                intervalEma = 0.0;
+            }
+            else if (snapshot.Time > lastSnapSimTime)
+            {
+                var interval = wallClock - lastSnapWall;
+                if (interval > 1e-4)
+                {
+                    intervalEma = intervalEma <= 0.0 ? interval : intervalEma + (interval - intervalEma) * 0.2;
+                }
+
+                lastSnapSimTime = snapshot.Time;
+                lastSnapWall = wallClock;
             }
 
-            lastSnapSimTime = snapshot.Time;
-            lastSnapWall = wallClock;
-        }
-
-        var span = snapshot.Time - prevSnapshot.Time;
-        if (smooth && span > 1e-9 && intervalEma > 1e-6)
-        {
-            // frac past 1.0 means the next snapshot is running late (variable per-tick compute time). Rather
-            // than freeze at `cur` until it lands (a once-per-snapshot stall), allow a small bounded
-            // extrapolation beyond it (frac up to 1.25 => 0.25 step ahead) to bridge the gap smoothly; it
-            // only engages when the sim is late, so on-time frames (incl. turns) never extrapolate.
-            var frac = (wallClock - lastSnapWall) / intervalEma;
-            if (frac < 0.0) frac = 0.0; else if (frac > 1.25) frac = 1.25;
-            renderClock = prevSnapshot.Time + frac * span;
-        }
-        else
-        {
-            renderClock = snapshot.Time; // smoothing off / not enough info yet -> draw the newest frame
-        }
-
-        // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
-        // measured arrival interval.
-        var actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
-        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): no more evac-specific `Fear` threading here --
-        // fear tinting is now the overlay's own DrawWorldOver overpaint, keyed off each vehicle's generic
-        // Handle. This just builds plain speed-coloured draw poses (+ each vehicle's Handle).
-        RenderHelpers.BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, vehicleDraws, prevIndex,
-            headingPrev, headingCur, Raylib.GetFrameTime());
-        (headingPrev, headingCur) = (headingCur, headingPrev); // swap: headingCur becomes next frame's prior
-
-        roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
-
-        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1/P3.2): the generic overlay's UNDER layer,
-        // immediately before the vehicles it may want to draw beneath/around (e.g. the evac layer's
-        // boundary/incident/abandoned-cars/pushers).
-        overlay?.DrawWorldUnder(camera, snapshot, vehicleDraws);
-
-        Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host.ObstaclePoints, vehicleDraws);
-
-        // ...and its OVER layer, immediately after (e.g. the evac layer's pedestrians + fear overpaint).
-        overlay?.DrawWorldOver(camera, snapshot, vehicleDraws);
-
-        DemoUi.DrawDemosPanel(session, resolvedCatalog);
-        ViewerControlsPanels.DrawControlsPanel(host, ref fpsCap, ref smooth);
-        overlay?.DrawUi();
-        if (showDiagnostics)
-        {
-            Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, actualSpeed, host.StepLength);
-        }
-
-        rlImGui.End();
-
-        Raylib.EndDrawing();
-
-        frameCount++;
-        if (headless && frameCount >= frames)
-        {
-            ExportScreenshot(screenshotPath!);
-            break;
-        }
-
-        if (perf)
-        {
-            var wall = perfWall.Elapsed.TotalSeconds;
-            if (wall - lastPerfLog >= 1.0)
+            var span = snapshot.Time - prevSnapshot.Time;
+            if (smooth && span > 1e-9 && intervalEma > 1e-6)
             {
-                var (min, avg, p99) = frameStats.Compute();
-                var snap = host.Snapshot;
-                Console.WriteLine(
-                    $"PERF wall={wall,6:F1}s sim={snap.Time,6:F1}s veh={snap.Count,6} " +
-                    $"fps={Raylib.GetFPS(),4} ms[min={min * 1000f,6:F2} avg={avg * 1000f,6:F2} p99={p99 * 1000f,6:F2}]");
-                lastPerfLog = wall;
+                // frac past 1.0 means the next snapshot is running late (variable per-tick compute time).
+                // Rather than freeze at `cur` until it lands (a once-per-snapshot stall), allow a small
+                // bounded extrapolation beyond it (frac up to 1.25 => 0.25 step ahead) to bridge the gap
+                // smoothly; it only engages when the sim is late, so on-time frames (incl. turns) never
+                // extrapolate.
+                var frac = (wallClock - lastSnapWall) / intervalEma;
+                if (frac < 0.0) frac = 0.0; else if (frac > 1.25) frac = 1.25;
+                renderClock = prevSnapshot.Time + frac * span;
+            }
+            else
+            {
+                renderClock = snapshot.Time; // smoothing off / not enough info yet -> draw the newest frame
             }
 
-            if (secondsCap is { } capS && wall >= capS)
+            // Actual delivered speed (x real-time) for the diagnostics readout: span (== step length) per
+            // measured arrival interval.
+            actualSpeed = intervalEma > 1e-6 ? span / intervalEma : host.Speed;
+            // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.2): no more evac-specific `Fear` threading here --
+            // fear tinting is now the overlay's own DrawWorldOver overpaint, keyed off each vehicle's generic
+            // Handle. This just builds plain speed-coloured draw poses (+ each vehicle's Handle).
+            RenderHelpers.BuildLocalVehicleDraws(snapshot, prevSnapshot, renderClock, smooth, draws, prevIndex,
+                headingPrev, headingCur, dt);
+            (headingPrev, headingCur) = (headingCur, headingPrev); // swap: headingCur becomes next frame's prior
+        },
+
+        DrawWorld = (camera, draws) =>
+        {
+            // Lazily constructed here (see the declaration above): this is the first callback guaranteed to
+            // run after ViewerHost has created the window/GL context, sized off the actual framebuffer.
+            roadLayer ??= new RoadLayerCache(Raylib.GetScreenWidth(), Raylib.GetScreenHeight());
+            roadLayer.EnsureAndBlit(camera, cam => Renderer.DrawStaticWorld(cam, host.Network));
+
+            // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1/P3.2): the generic overlay's UNDER layer,
+            // immediately before the vehicles it may want to draw beneath/around (e.g. the evac layer's
+            // boundary/incident/abandoned-cars/pushers).
+            overlay?.DrawWorldUnder(camera, snapshot, draws);
+
+            Renderer.DrawDynamicWorld(camera, host.Network, snapshot, host.ObstaclePoints, draws);
+
+            // ...and its OVER layer, immediately after (e.g. the evac layer's pedestrians + fear overpaint).
+            overlay?.DrawWorldOver(camera, snapshot, draws);
+        },
+
+        // docs/SUMOSHARP-PACKAGING-DESIGN.md D10: an overlay that wants clicks (e.g. the evac layer's
+        // incident placement, via EvacOverlay.OnWorldClick) gets first refusal; otherwise the generic default
+        // is to drop an obstacle. RunLocal never special-cases a domain here -- the routing decision is
+        // entirely `overlay.HandlesWorldClick`.
+        OnWorldClick = (wx, wy) =>
+        {
+            if (overlay is { HandlesWorldClick: true })
             {
-                break;
+                overlay.OnWorldClick(wx, wy);
             }
-        }
+            else
+            {
+                host.InjectObstacleAtWorld(wx, wy);
+            }
+        },
+
+        DrawImGui = showDiagnostics =>
+        {
+            DemoUi.DrawDemosPanel(session, resolvedCatalog);
+            ViewerControlsPanels.DrawControlsPanel(host, ref fpsCap, ref smooth);
+            overlay?.DrawUi();
+            if (showDiagnostics)
+            {
+                Renderer.DrawDiagnosticsPanel(snapshot, frameStats, host.Speed, actualSpeed, host.StepLength);
+            }
+        },
+
+        OnFrameEnd = () =>
+        {
+            if (perf)
+            {
+                var wall = perfWall.Elapsed.TotalSeconds;
+                if (wall - lastPerfLog >= 1.0)
+                {
+                    var (min, avg, p99) = frameStats.Compute();
+                    var snap = host.Snapshot;
+                    Console.WriteLine(
+                        $"PERF wall={wall,6:F1}s sim={snap.Time,6:F1}s veh={snap.Count,6} " +
+                        $"fps={Raylib.GetFPS(),4} ms[min={min * 1000f,6:F2} avg={avg * 1000f,6:F2} p99={p99 * 1000f,6:F2}]");
+                    lastPerfLog = wall;
+                }
+
+                if (secondsCap is { } capS && wall >= capS)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        },
+    };
+
+    try
+    {
+        return ViewerHost.Run(cfg);
     }
-
-    rlImGui.Shutdown();
-    Raylib.CloseWindow();
-    return 0;
+    finally
+    {
+        roadLayer?.Dispose();
+    }
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5 / -TASKS.md T4 success condition: a HEADLESS (no window,
@@ -754,41 +682,7 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
         Thread.Sleep(20);
     }
 
-    var screenW = 1280;
-    var screenH = 800;
-
-    Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
-    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow);
-    Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (loopback DR)");
-    if (!Raylib.IsWindowReady())
-    {
-        Console.Error.WriteLine("Sim.Viewer: window not ready (no display?).");
-        return 1;
-    }
-
-    Raylib.SetTargetFPS(60);
-
-    rlImGui.Setup(darkTheme: true, enableDocking: false);
-    var io = ImGui.GetIO();
-    io.Fonts.Clear();
-    var fontPath = Path.Combine(AppContext.BaseDirectory, "assets", "DejaVuSans.ttf");
-    io.Fonts.AddFontFromFileTTF(fontPath, 18f);
-    rlImGui.ReloadFonts();
-
-    // Same net -> same bounds whether read locally (EngineHost.Network) or over DDS; local bounds are
-    // already available without waiting on the subscriber, so the camera fit doesn't need to block further.
-    var camera = Renderer.FitCamera(host.MinX, host.MinY, host.MaxX, host.MaxY, screenW, screenH);
-
-    var headless = screenshotPath is not null;
-    var frameCount = 0;
     var frameStats = new FrameStats();
-    var showDiagnostics = true;
-
-    var dragging = false;
-    var dragMoved = false;
-    var dragStartMouse = Vector2.Zero;
-    var dragStartTarget = Vector2.Zero;
-    const float DragMoveThreshold = 3f;
 
     var drClock = new DrClock();
     var delaySlider = initialDelaySeconds;
@@ -805,174 +699,120 @@ static int RunLoopback(string netPath, string? screenshotPath, int frames, float
     VehicleHandle? traceHandle = null; // diagnostic: resolved once from --trace-veh id
     var startWall = Stopwatch.StartNew();
 
-    var vehicleDraws = new List<Renderer.DrVehicleDraw>();
+    // Set at the end of PumpFrame each frame so DrawImGui's diagnostics panel can report the draw count
+    // without the reused `draws` list being in its own scope.
+    var lastDrawCount = 0;
 
-    while (!Raylib.WindowShouldClose())
+    var cfg = new ViewerHostConfig
     {
-        frameStats.Add(Raylib.GetFrameTime());
+        WindowTitle = "SumoSharp - native viewer (loopback DR)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
 
-        if (Raylib.IsKeyPressed(KeyboardKey.D))
-        {
-            showDiagnostics = !showDiagnostics;
-        }
+        // Same net -> same bounds whether read locally (EngineHost.Network) or over DDS; local bounds are
+        // already available without waiting on the subscriber, so the camera fit doesn't need to block
+        // further.
+        InitialCameraBounds = () => (host.MinX, host.MinY, host.MaxX, host.MaxY),
 
-        if (Raylib.IsWindowResized() && !Raylib.IsWindowMinimized())
+        PumpFrame = (dt, draws) =>
         {
-            var w = Raylib.GetScreenWidth();
-            var h = Raylib.GetScreenHeight();
-            if (w > 0 && h > 0) { screenW = w; screenH = h; camera.Offset = new Vector2(w / 2f, h / 2f); }
-        }
+            frameStats.Add(dt);
 
-        // Publish at the SIM cadence (gated on the snapshot's own Time advancing), not the 60 Hz render
-        // cadence -- EngineHost's SimulationRunner ticks in the background at its own targetHz, so most
-        // render frames see an unchanged snapshot and would otherwise re-publish identical state.
-        var snapTimeNow = host.Snapshot.Time;
-        // Restart detection: a bumped EngineHost.Generation means Restart rebuilt the sim at t=0. This is
-        // DETERMINISTIC -- the old heuristic (a >2 s backward jump in Snapshot.Time) silently missed when the
-        // pre-restart sim time was small, leaving the publish gate wedged (`> lastPublishedSimTime` forever
-        // false) so nothing republished: the "restart does nothing / no cars re-appear" bug. On a restart:
-        // drop stale vehicle state, re-anchor the DR clock, reset the publish gate so the fresh timeline
-        // republishes from t=0, and re-seed the auto-delay for the new stream.
-        if (host.Generation != lastGeneration)
-        {
-            lastGeneration = host.Generation;
-            publisher.Reset();
-            subscriber.ResetVehicles();
-            drClock.Reset();
-            lastPublishedSimTime = double.NaN;
-            delaySeeded = false;
-        }
-
-        if (double.IsNaN(lastPublishedSimTime) || snapTimeNow > lastPublishedSimTime)
-        {
-            publisher.PublishStep();
-            lastPublishedSimTime = snapTimeNow;
-        }
-
-        // "always interpolate": override the manual slider so the render clock stays ~1.5 sample-intervals
-        // behind the newest DDS packet and Resolve interpolates (not extrapolates) through junctions, where
-        // the arc-window interpolation makes turns follow the real lane geometry. SLEW toward the target
-        // instead of snapping: sampleT = renderSim - delay, so a step change in delay shifts the sample point
-        // and teleports every vehicle. The small per-frame cap keeps the induced shift well under one frame of
-        // real travel (no visible jump); steady-state the target is stable, so the slew is ~0.
-        if (alwaysInterpolate)
-        {
-            var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
-            if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
+            // Publish at the SIM cadence (gated on the snapshot's own Time advancing), not the 60 Hz render
+            // cadence -- EngineHost's SimulationRunner ticks in the background at its own targetHz, so most
+            // render frames see an unchanged snapshot and would otherwise re-publish identical state.
+            var snapTimeNow = host.Snapshot.Time;
+            // Restart detection: a bumped EngineHost.Generation means Restart rebuilt the sim at t=0. This is
+            // DETERMINISTIC -- the old heuristic (a >2 s backward jump in Snapshot.Time) silently missed when
+            // the pre-restart sim time was small, leaving the publish gate wedged (`> lastPublishedSimTime`
+            // forever false) so nothing republished: the "restart does nothing / no cars re-appear" bug. On a
+            // restart: drop stale vehicle state, re-anchor the DR clock, reset the publish gate so the fresh
+            // timeline republishes from t=0, and re-seed the auto-delay for the new stream.
+            if (host.Generation != lastGeneration)
             {
-                delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
-                delaySeeded = true;
+                lastGeneration = host.Generation;
+                publisher.Reset();
+                subscriber.ResetVehicles();
+                drClock.Reset();
+                lastPublishedSimTime = double.NaN;
+                delaySeeded = false;
             }
-            else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
-            {
-                delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
-            }
-        }
 
-        // Diagnostic (opt-in via --trace-veh): resolve the traced vehicle's handle by id, then log its
-        // AUTHORITATIVE pose each frame (the smooth ground truth) alongside the DR-reconstructed DRTRACE from
-        // PumpAndBuildVehicleDraws -- the harness used to diagnose junction/lane-change DR smoothness.
-        if (traceVeh is not null)
-        {
-            var authSnap = host.Snapshot;
-            if (traceHandle is null)
+            if (double.IsNaN(lastPublishedSimTime) || snapTimeNow > lastPublishedSimTime)
             {
-                for (var ti = 0; ti < authSnap.Count; ti++)
+                publisher.PublishStep();
+                lastPublishedSimTime = snapTimeNow;
+            }
+
+            // "always interpolate": override the manual slider so the render clock stays ~1.5 sample-intervals
+            // behind the newest DDS packet and Resolve interpolates (not extrapolates) through junctions, where
+            // the arc-window interpolation makes turns follow the real lane geometry. SLEW toward the target
+            // instead of snapping: sampleT = renderSim - delay, so a step change in delay shifts the sample
+            // point and teleports every vehicle. The small per-frame cap keeps the induced shift well under one
+            // frame of real travel (no visible jump); steady-state the target is stable, so the slew is ~0.
+            if (alwaysInterpolate)
+            {
+                var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
+                if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
                 {
-                    if (authSnap.VehicleId[ti] == traceVeh) { traceHandle = authSnap.Handles[ti]; break; }
+                    delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
+                    delaySeeded = true;
+                }
+                else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
+                {
+                    delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
                 }
             }
 
-            if (traceHandle is { } ath && authSnap.TryGetVehicle(ath, out var avs))
+            // Diagnostic (opt-in via --trace-veh): resolve the traced vehicle's handle by id, then log its
+            // AUTHORITATIVE pose each frame (the smooth ground truth) alongside the DR-reconstructed DRTRACE
+            // from PumpAndBuildVehicleDraws -- the harness used to diagnose junction/lane-change DR smoothness.
+            if (traceVeh is not null)
             {
-                Console.WriteLine($"AUTHTRACE t={authSnap.Time:F1} x={avs.X:F2} y={avs.Y:F2} lane={avs.LaneId} pos={avs.Pos:F2} posLat={avs.PosLat:F2} spd={avs.Speed:F1}");
-            }
-        }
-
-        // P3 refactor: pumping DDS + resolving each tracked vehicle's dead-reckoned draw pose doesn't
-        // depend on this frame's camera input, so it's hoisted before the input/drawing block into a
-        // function shared with `--mode remote` (PumpAndBuildVehicleDraws below) -- same math, same DR
-        // resolve, same smoothing, just called from one place instead of duplicated per mode.
-        RenderHelpers.PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoother, vehicleDraws,
-            paused: host.IsPaused, traceHandle: traceHandle);
-
-        Raylib.BeginDrawing();
-        Raylib.ClearBackground(Renderer.BackgroundColor);
-
-        rlImGui.Begin();
-        var wantMouse = ImGui.GetIO().WantCaptureMouse;
-
-        if (!wantMouse)
-        {
-            var mouse = Raylib.GetMousePosition();
-
-            if (Raylib.IsMouseButtonPressed(MouseButton.Left))
-            {
-                dragging = true;
-                dragMoved = false;
-                dragStartMouse = mouse;
-                dragStartTarget = camera.Target;
-            }
-
-            if (dragging && Raylib.IsMouseButtonDown(MouseButton.Left))
-            {
-                var delta = mouse - dragStartMouse;
-                if (delta.Length() > DragMoveThreshold)
+                var authSnap = host.Snapshot;
+                if (traceHandle is null)
                 {
-                    dragMoved = true;
+                    for (var ti = 0; ti < authSnap.Count; ti++)
+                    {
+                        if (authSnap.VehicleId[ti] == traceVeh) { traceHandle = authSnap.Handles[ti]; break; }
+                    }
                 }
 
-                camera.Target = dragStartTarget - delta / camera.Zoom;
-            }
-
-            if (Raylib.IsMouseButtonReleased(MouseButton.Left))
-            {
-                if (dragging && !dragMoved)
+                if (traceHandle is { } ath && authSnap.TryGetVehicle(ath, out var avs))
                 {
-                    var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
-                    host.InjectObstacleAtWorld(flipSpace.X, -flipSpace.Y);
+                    Console.WriteLine($"AUTHTRACE t={authSnap.Time:F1} x={avs.X:F2} y={avs.Y:F2} lane={avs.LaneId} pos={avs.Pos:F2} posLat={avs.PosLat:F2} spd={avs.Speed:F1}");
                 }
-
-                dragging = false;
             }
 
-            var wheel = Raylib.GetMouseWheelMove();
-            if (wheel != 0f)
+            // P3 refactor: pumping DDS + resolving each tracked vehicle's dead-reckoned draw pose doesn't
+            // depend on this frame's camera input, so it's hoisted before the input/drawing block into a
+            // function shared with `--mode remote` (PumpAndBuildVehicleDraws below) -- same math, same DR
+            // resolve, same smoothing, just called from one place instead of duplicated per mode.
+            RenderHelpers.PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoother, draws,
+                paused: host.IsPaused, traceHandle: traceHandle);
+            lastDrawCount = draws.Count;
+        },
+
+        DrawWorld = (camera, draws) => Renderer.DrawWorldDds(camera, subscriber.Geometry, subscriber.TlStateByLane, draws),
+
+        OnWorldClick = (wx, wy) => host.InjectObstacleAtWorld(wx, wy),
+
+        DrawImGui = showDiagnostics =>
+        {
+            ViewerControlsPanels.DrawLoopbackControlsPanel(host, ref delaySlider, ref smooth, ref alwaysInterpolate);
+            if (showDiagnostics)
             {
-                var beforeZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                var zoomFactor = wheel > 0 ? 1.1f : 1f / 1.1f;
-                camera.Zoom *= zoomFactor;
-                var afterZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                camera.Target += beforeZoom - afterZoom;
+                var wallElapsed = startWall.Elapsed.TotalSeconds;
+                var ddsSamplesPerSecond = wallElapsed > 0 ? subscriber.TotalVehicleSamplesReceived / wallElapsed : 0.0;
+                Renderer.DrawDdsDiagnosticsPanel(frameStats, drClock, ddsSamplesPerSecond, lastDrawCount);
             }
-        }
+        },
 
-        Renderer.DrawWorldDds(camera, subscriber.Geometry, subscriber.TlStateByLane, vehicleDraws);
+        OnHeadlessExit = () =>
+            Console.WriteLine($"DRCLOCK: renderSim={drClock.RenderSim:F3} simRate={drClock.SimRate:F3} backSteps={drClock.BackSteps}"),
+    };
 
-        ViewerControlsPanels.DrawLoopbackControlsPanel(host, ref delaySlider, ref smooth, ref alwaysInterpolate);
-        if (showDiagnostics)
-        {
-            var wallElapsed = startWall.Elapsed.TotalSeconds;
-            var ddsSamplesPerSecond = wallElapsed > 0 ? subscriber.TotalVehicleSamplesReceived / wallElapsed : 0.0;
-            Renderer.DrawDdsDiagnosticsPanel(frameStats, drClock, ddsSamplesPerSecond, vehicleDraws.Count);
-        }
-
-        rlImGui.End();
-
-        Raylib.EndDrawing();
-
-        frameCount++;
-        if (headless && frameCount >= frames)
-        {
-            ExportScreenshot(screenshotPath!);
-            Console.WriteLine($"DRCLOCK: renderSim={drClock.RenderSim:F3} simRate={drClock.SimRate:F3} backSteps={drClock.BackSteps}");
-            break;
-        }
-    }
-
-    rlImGui.Shutdown();
-    Raylib.CloseWindow();
-    return 0;
+    return ViewerHost.Run(cfg);
 }
 
 // docs/SUMOSHARP-NATIVE-VIEWER.md P3 ("remote mode + QoS") — the subscribe/render HALF of loopback, split
@@ -997,45 +837,7 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     // playout when the host is paused (no coast).
     using var statusReader = new DdsStatusReader(participant);
 
-    var screenW = 1280;
-    var screenH = 800;
-
-    Raylib.SetTraceLogLevel(TraceLogLevel.Warning);
-    Raylib.SetConfigFlags(ConfigFlags.ResizableWindow);
-    Raylib.InitWindow(screenW, screenH, "SumoSharp - native viewer (remote)");
-    if (!Raylib.IsWindowReady())
-    {
-        Console.Error.WriteLine("Sim.Viewer: window not ready (no display?).");
-        return 1;
-    }
-
-    Raylib.SetTargetFPS(60);
-
-    rlImGui.Setup(darkTheme: true, enableDocking: false);
-    var io = ImGui.GetIO();
-    io.Fonts.Clear();
-    var fontPath = Path.Combine(AppContext.BaseDirectory, "assets", "DejaVuSans.ttf");
-    io.Fonts.AddFontFromFileTTF(fontPath, 18f);
-    rlImGui.ReloadFonts();
-
-    // No local NetworkModel to size the camera from (unlike loopback's host.MinX/MinY/MaxX/MaxY, read
-    // straight off EngineHost) -- start on an arbitrary placeholder view and re-fit ONCE from the received
-    // geometry's own bounds the first time it arrives; pan/zoom after that is left to the user.
-    var camera = Renderer.FitCamera(-50, -50, 50, 50, screenW, screenH);
-    var cameraFitted = false;
-
-    var headless = screenshotPath is not null;
-    var frameCount = 0;
     var frameStats = new FrameStats();
-    var showDiagnostics = true;
-
-    // With the reverse command channel, a plain click now commands the publisher to drop an obstacle at that
-    // world point, so (like local/loopback) a click must be distinguished from a pan-drag.
-    var dragging = false;
-    var dragMoved = false;
-    var dragStartMouse = Vector2.Zero;
-    var dragStartTarget = Vector2.Zero;
-    const float DragMoveThreshold = 3f;
 
     // Optimistic local mirror of the commanded engine state (a view-only remote gets no state feedback, so
     // the control widgets reflect what we've SENT). Initialised to the publisher's own interactive defaults.
@@ -1055,161 +857,110 @@ static int RunRemote(string? screenshotPath, int frames, float initialDelaySecon
     var smoother = new DrPoseSmoother();
     var startWall = Stopwatch.StartNew();
 
-    var vehicleDraws = new List<Renderer.DrVehicleDraw>();
+    // No local NetworkModel to size the camera from (unlike loopback's host.MinX/MinY/MaxX/MaxY, read
+    // straight off EngineHost) -- ViewerHost falls back to an arbitrary placeholder view and this refits
+    // ONCE from the received geometry's own bounds the first time it arrives; pan/zoom after that is left to
+    // the user.
+    var cameraFitted = false;
 
-    while (!Raylib.WindowShouldClose())
+    // ViewerStatus is a readonly struct -- default is Present=false, which is exactly the "no status sample
+    // yet" state DrawImGui/PumpFrame already treat correctly.
+    var status = default(ViewerStatus);
+
+    // Set at the end of PumpFrame each frame so DrawImGui's diagnostics panel can report the draw count
+    // without the reused `draws` list being in its own scope.
+    var lastDrawCount = 0;
+
+    var cfg = new ViewerHostConfig
     {
-        frameStats.Add(Raylib.GetFrameTime());
+        WindowTitle = "SumoSharp - native viewer (remote)",
+        ScreenshotPath = screenshotPath,
+        Frames = frames,
 
-        if (Raylib.IsKeyPressed(KeyboardKey.D))
+        InitialCameraBounds = () => null,
+
+        PumpFrame = (dt, draws) =>
         {
-            showDiagnostics = !showDiagnostics;
-        }
+            frameStats.Add(dt);
 
-        if (Raylib.IsWindowResized() && !Raylib.IsWindowMinimized())
-        {
-            var w = Raylib.GetScreenWidth();
-            var h = Raylib.GetScreenHeight();
-            if (w > 0 && h > 0) { screenW = w; screenH = h; camera.Offset = new Vector2(w / 2f, h / 2f); }
-        }
-
-        statusReader.Pump();
-        var status = statusReader.Current;
-        // Restart detection: the host's sim time jumping backward means it rebuilt at t=0. Sim time is
-        // authoritative and monotonic WITHIN a run, so any real decrease is a restart -- a small threshold
-        // (0.5 s, tolerating only minor DDS status reordering) catches restarts from a short-running sim too,
-        // where the old 2 s threshold missed. Drop stale vehicle state (reused handles would otherwise mix
-        // old + new timelines), re-anchor the DR clock, and re-seed the auto-delay.
-        if (status.Present && status.SimTime < lastRemoteSimTime - 0.5)
-        {
-            subscriber.ResetVehicles();
-            drClock.Reset();
-            delaySeeded = false;
-        }
-
-        lastRemoteSimTime = status.SimTime;
-
-        // "always interpolate" (see the loopback site for the rationale): slew the auto delay toward ~1.5
-        // sample-intervals so Resolve interpolates through junctions, without snapping the sample point.
-        if (alwaysInterpolate)
-        {
-            var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
-            if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
+            statusReader.Pump();
+            status = statusReader.Current;
+            // Restart detection: the host's sim time jumping backward means it rebuilt at t=0. Sim time is
+            // authoritative and monotonic WITHIN a run, so any real decrease is a restart -- a small threshold
+            // (0.5 s, tolerating only minor DDS status reordering) catches restarts from a short-running sim
+            // too, where the old 2 s threshold missed. Drop stale vehicle state (reused handles would
+            // otherwise mix old + new timelines), re-anchor the DR clock, and re-seed the auto-delay.
+            if (status.Present && status.SimTime < lastRemoteSimTime - 0.5)
             {
-                delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
-                delaySeeded = true;
-            }
-            else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
-            {
-                delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
-            }
-        }
-
-        RenderHelpers.PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoother, vehicleDraws,
-            paused: status.Paused);
-
-        if (!cameraFitted && subscriber.Geometry.Count > 0)
-        {
-            var (minX, minY, maxX, maxY) = RenderHelpers.ComputeGeometryBounds(subscriber.Geometry);
-            camera = Renderer.FitCamera(minX, minY, maxX, maxY, screenW, screenH);
-            cameraFitted = true;
-        }
-
-        Raylib.BeginDrawing();
-        Raylib.ClearBackground(Renderer.BackgroundColor);
-
-        rlImGui.Begin();
-        var wantMouse = ImGui.GetIO().WantCaptureMouse;
-
-        if (!wantMouse)
-        {
-            var mouse = Raylib.GetMousePosition();
-
-            if (Raylib.IsMouseButtonPressed(MouseButton.Left))
-            {
-                dragging = true;
-                dragMoved = false;
-                dragStartMouse = mouse;
-                dragStartTarget = camera.Target;
+                subscriber.ResetVehicles();
+                drClock.Reset();
+                delaySeeded = false;
             }
 
-            if (dragging && Raylib.IsMouseButtonDown(MouseButton.Left))
+            lastRemoteSimTime = status.SimTime;
+
+            // "always interpolate" (see the loopback site for the rationale): slew the auto delay toward ~1.5
+            // sample-intervals so Resolve interpolates through junctions, without snapping the sample point.
+            if (alwaysInterpolate)
             {
-                var delta = mouse - dragStartMouse;
-                if (delta.Length() > DragMoveThreshold)
+                var target = (float)Math.Clamp(drClock.AvgSampleInterval * 1.5, 0.3, 2.0);
+                if (!delaySeeded && drClock.AvgSampleInterval > 0.0)
                 {
-                    dragMoved = true;
+                    delaySlider = target; // snap once at startup (nothing is moving yet) to skip the slew ramp
+                    delaySeeded = true;
                 }
-
-                camera.Target = dragStartTarget - delta / camera.Zoom;
-            }
-
-            if (Raylib.IsMouseButtonReleased(MouseButton.Left))
-            {
-                if (dragging && !dragMoved)
+                else if (Math.Abs(target - delaySlider) > 0.05f) // dead-band: ignore EMA jitter, slew real drift
                 {
-                    // Click (not a pan) -> command the publisher to drop an obstacle at this world point.
-                    var flipSpace = Raylib.GetScreenToWorld2D(mouse, camera);
-                    commandWriter.Send(ViewerCommandKind.InjectObstacle, x: flipSpace.X, y: -flipSpace.Y);
+                    delaySlider += Math.Clamp(target - delaySlider, -0.008f, 0.008f);
                 }
-
-                dragging = false;
             }
 
-            var wheel = Raylib.GetMouseWheelMove();
-            if (wheel != 0f)
+            RenderHelpers.PumpAndBuildVehicleDraws(subscriber, drClock, delaySlider, smooth, frameStats, smoother, draws,
+                paused: status.Paused);
+            lastDrawCount = draws.Count;
+        },
+
+        RefitCameraBounds = () =>
+        {
+            if (!cameraFitted && subscriber.Geometry.Count > 0)
             {
-                var beforeZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                var zoomFactor = wheel > 0 ? 1.1f : 1f / 1.1f;
-                camera.Zoom *= zoomFactor;
-                var afterZoom = Raylib.GetScreenToWorld2D(mouse, camera);
-                camera.Target += beforeZoom - afterZoom;
+                cameraFitted = true;
+                return RenderHelpers.ComputeGeometryBounds(subscriber.Geometry);
             }
-        }
 
-        Renderer.DrawWorldDds(camera, subscriber.Geometry, subscriber.TlStateByLane, vehicleDraws);
+            return null;
+        },
 
-        if (!subscriber.GeometryComplete)
+        DrawWorld = (camera, draws) =>
         {
-            Renderer.DrawWaitingOverlay(screenW, screenH, "waiting for publisher... (no geometry yet)");
-        }
+            Renderer.DrawWorldDds(camera, subscriber.Geometry, subscriber.TlStateByLane, draws);
 
-        ViewerControlsPanels.DrawRemoteControlsPanel(commandWriter, status, ref remoteSpeed, ref remoteRandom,
-            ref delaySlider, ref smooth, ref alwaysInterpolate, subscriber.Connected, subscriber.GeometryComplete);
-        if (showDiagnostics)
+            if (!subscriber.GeometryComplete)
+            {
+                Renderer.DrawWaitingOverlay(Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), "waiting for publisher... (no geometry yet)");
+            }
+        },
+
+        // Click (not a pan) -> command the publisher to drop an obstacle at this world point. With the
+        // reverse command channel, a plain click now commands the publisher, so (like local/loopback) a
+        // click must be distinguished from a pan-drag -- ViewerHost already does that distinguishing.
+        OnWorldClick = (wx, wy) => commandWriter.Send(ViewerCommandKind.InjectObstacle, x: wx, y: wy),
+
+        DrawImGui = showDiagnostics =>
         {
-            var wallElapsed = startWall.Elapsed.TotalSeconds;
-            var ddsSamplesPerSecond = wallElapsed > 0 ? subscriber.TotalVehicleSamplesReceived / wallElapsed : 0.0;
-            Renderer.DrawDdsDiagnosticsPanel(frameStats, drClock, ddsSamplesPerSecond, vehicleDraws.Count);
-        }
+            ViewerControlsPanels.DrawRemoteControlsPanel(commandWriter, status, ref remoteSpeed, ref remoteRandom,
+                ref delaySlider, ref smooth, ref alwaysInterpolate, subscriber.Connected, subscriber.GeometryComplete);
+            if (showDiagnostics)
+            {
+                var wallElapsed = startWall.Elapsed.TotalSeconds;
+                var ddsSamplesPerSecond = wallElapsed > 0 ? subscriber.TotalVehicleSamplesReceived / wallElapsed : 0.0;
+                Renderer.DrawDdsDiagnosticsPanel(frameStats, drClock, ddsSamplesPerSecond, lastDrawCount);
+            }
+        },
 
-        rlImGui.End();
+        OnHeadlessExit = () =>
+            Console.WriteLine($"DRCLOCK: renderSim={drClock.RenderSim:F3} simRate={drClock.SimRate:F3} backSteps={drClock.BackSteps}"),
+    };
 
-        Raylib.EndDrawing();
-
-        frameCount++;
-        if (headless && frameCount >= frames)
-        {
-            ExportScreenshot(screenshotPath!);
-            Console.WriteLine($"DRCLOCK: renderSim={drClock.RenderSim:F3} simRate={drClock.SimRate:F3} backSteps={drClock.BackSteps}");
-            break;
-        }
-    }
-
-    rlImGui.Shutdown();
-    Raylib.CloseWindow();
-    return 0;
-}
-
-// NOT Raylib.TakeScreenshot(path): raylib's TakeScreenshot silently drops the directory portion of `path`
-// (it saves GetFileName(path) under its internal storage/base path, i.e. the process's working directory
-// at InitWindow time) -- confirmed experimentally: an absolute path like "/tmp/p0-cross.png" landed at
-// "<cwd>/p0-cross.png" instead. LoadImageFromScreen + ExportImage writes to the exact path given, honoring
-// an absolute `--screenshot` path as the CLI promises.
-static void ExportScreenshot(string screenshotPath)
-{
-    var absolutePath = Path.GetFullPath(screenshotPath);
-    var screenImage = Raylib.LoadImageFromScreen();
-    Raylib.ExportImage(screenImage, absolutePath);
-    Raylib.UnloadImage(screenImage);
+    return ViewerHost.Run(cfg);
 }
