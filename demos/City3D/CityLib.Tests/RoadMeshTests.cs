@@ -167,6 +167,38 @@ public class RoadMeshTests
         Assert.Equal(8.0f, mesh.Vertices[^2], 1e-3f);
     }
 
+    // ---- 5: T2.2b (docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode") -- the geometry-dictionary
+    // overload a remote (no-NetworkModel) viewer uses must build the SAME meshes (modulo the wire's float32
+    // quantization and its lack of elevation, both already-documented asymmetries) as the NetworkModel
+    // overload the local viewer uses. Drives a real SimSource so sim.Source.Geometry is the actual wire
+    // payload (GeometryCodec.LaneGeo per lane), not a hand-built dictionary.
+    [Fact]
+    public void BuildAll_FromWireGeometry_MatchesNetworkOverload_PerLaneAreaWithinTolerance()
+    {
+        var scenarioDir = Path.Combine(RepoRoot(), "scenarios", "09-traffic-light");
+        using var sim = new SimSource(
+            Path.Combine(scenarioDir, "net.net.xml"),
+            Path.Combine(scenarioDir, "rou.rou.xml"),
+            Path.Combine(scenarioDir, "config.sumocfg"));
+        sim.Tick(); // publishes geometry once
+
+        Assert.True(sim.Source.GeometryComplete);
+
+        var fromNetwork = RoadMeshBuilder.BuildAll(sim.Network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var fromWire = RoadMeshBuilder.BuildAll(sim.Source.Geometry, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+
+        Assert.Equal(fromNetwork.Count, fromWire.Count);
+        foreach (var (handle, netMesh) in fromNetwork)
+        {
+            Assert.True(fromWire.TryGetValue(handle, out var wireMesh), $"lane handle {handle} missing from wire-built meshes");
+
+            // float32 wire quantization -> a small relative tolerance rather than exact equality.
+            var pctDiff = netMesh.Area > 1e-9 ? Math.Abs(wireMesh.Area - netMesh.Area) / netMesh.Area * 100.0 : 0.0;
+            Assert.True(pctDiff <= 1.0, $"lane {handle}: area diff {pctDiff:F3}% (network={netMesh.Area:F3}, wire={wireMesh.Area:F3})");
+            Assert.Equal(netMesh.Vertices.Length, wireMesh.Vertices.Length);
+        }
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

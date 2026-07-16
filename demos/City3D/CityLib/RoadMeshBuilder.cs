@@ -1,4 +1,5 @@
 using Sim.Ingest;
+using Sim.Replication;
 
 namespace CityLib;
 
@@ -186,6 +187,37 @@ public static class RoadMeshBuilder
             }
 
             yield return (lane.Handle, Build(lane.Shape, lane.ShapeZ, lane.Width));
+        }
+    }
+
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b: the REMOTE-shaped counterpart of
+    // BuildAll(NetworkModel, ...) above -- a remote viewer never parses a .net.xml, so it cannot build a
+    // NetworkModel; the only geometry it has is the RECEIVED wire geometry
+    // (IReplicationSource.Geometry, GeometryCodec.LaneGeo per lane handle -- the same dictionary
+    // ReplicationLaneShapeSource itself wraps). This overload feeds the identical Build(...) ribbon math
+    // from that dictionary instead, so the local and remote viewers build byte-for-byte the same kind of
+    // RibbonMesh from whichever geometry source they actually have -- only the INPUT shape differs
+    // (LaneGeo.Points, float, no elevation) never the ribbon algorithm itself.
+    public static IEnumerable<(int Handle, RibbonMesh Mesh)> BuildAll(
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry, bool includeInternal = true)
+    {
+        foreach (var lane in geometry.Values)
+        {
+            if (!includeInternal && lane.IsInternal)
+            {
+                continue;
+            }
+
+            var shape = new (double X, double Y)[lane.Points.Length];
+            for (var i = 0; i < shape.Length; i++)
+            {
+                shape[i] = (lane.Points[i].X, lane.Points[i].Y);
+            }
+
+            // The wire never carries elevation (GeometryCodec.LaneGeo has no z field -- see
+            // ReplicationLaneShapeSource's own doc comment on this asymmetry), so shapeZ is always null
+            // here; Build(...) already treats a null shapeZ as flat (Y=0), same as any 2-D local net.
+            yield return (lane.Handle, Build(shape, shapeZ: null, lane.Width));
         }
     }
 

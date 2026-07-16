@@ -3,7 +3,13 @@ using System.Collections.Generic;
 using System.IO;
 using CityLib;
 using Godot;
+using Sim.Core;
 using Sim.Ingest;
+using Sim.Replication;
+#if CITY3D_REMOTE
+using CycloneDDS.Runtime;
+using Sim.Replication.Dds;
+#endif
 
 namespace Viewer;
 
@@ -102,6 +108,32 @@ public partial class Main : Node3D
     private (Vector3 Min, Vector3 Max) _sceneBbox;
     private Camera3D? _closeCamera;
 
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- `--transport=local|dds`.
+    // "local" (default) preserves today's behavior byte-for-byte. "dds" only works in a build compiled
+    // with -p:City3DRemote=true (see the non-remote-build guard in _Ready).
+    private string _transport = "local";
+
+    // The transport-neutral read side RenderFrame() (below) is written against -- design tenet 3: "only
+    // the IReplicationSource + the ILaneShapeSource differ" between local and remote. ReadyLocal() points
+    // these at `_sim.Source` / `_sim.LocalLanes`; ReadyRemote()/BuildRemoteScene() point them at the
+    // DdsSubscriber + a wire-fed ReplicationLaneShapeSource (the latter only once geometry has arrived --
+    // `_lanes` stays null until then, which _Process treats as "nothing to reconstruct/render yet").
+    private IReplicationSource? _source;
+    private ILaneShapeSource? _lanes;
+
+    // The one placement lookup TrafficLightPlacer needs beyond ILaneShapeSource (per-lane Width;
+    // ILaneShapeSource doesn't expose it) -- supplied as a closure over whichever per-lane data this
+    // transport actually has (NetworkModel locally, the wire's LaneGeo dictionary remotely,
+    // CityLib.TrafficLightPlacer's two Place(...) overloads) so RenderFrame's TL-build call never needs to
+    // branch on `_transport` itself.
+    private Func<IEnumerable<int>, IReadOnlyList<SignalHead>>? _placeSignalHeads;
+
+#if CITY3D_REMOTE
+    private DdsParticipant? _ddsParticipant;
+    private DdsSubscriber? _ddsSource;
+    private bool _remoteSceneBuilt;
+#endif
+
     // Task T1.6 Part B -- built LAZILY on the first _Process frame `sim.Source.TlStateByLane` is
     // non-empty (design: geometry+TL state only exist once the bus has been pumped at least once), then
     // reused every frame after -- only each head's material colour is rewritten per frame (design
@@ -118,6 +150,40 @@ public partial class Main : Node3D
     private MultiMesh? _carMultiMesh;
 
     public override void _Ready()
+    {
+        _transport = ParseTransportArg();
+
+        switch (_transport)
+        {
+            case "local":
+                ReadyLocal();
+                return;
+
+            case "dds":
+#if CITY3D_REMOTE
+                ReadyRemote();
+#else
+                GD.PrintErr(
+                    "Main: --transport=dds requires a build with DDS support -- rebuild with " +
+                    "-p:City3DRemote=true (adds SumoSharp.Replication.Dds; see demos/City3D/run-remote.sh).");
+                GetTree().Quit(2);
+#endif
+                return;
+
+            default:
+                GD.PrintErr($"Main: unknown --transport '{_transport}' (expected local|dds).");
+                GetTree().Quit(2);
+                return;
+        }
+    }
+
+    // docs/DEMO-CITY3D-DESIGN.md "Data path" LOCAL half -- today's pre-T2.2b _Ready body, unchanged logic,
+    // just pulled into its own method so _Ready can dispatch on --transport. Builds the in-process
+    // SimSource and the whole static scene (roads+buildings+camera; NetworkModel is known upfront locally,
+    // unlike dds), then points the transport-neutral _source/_lanes/_placeSignalHeads fields at the local
+    // implementations -- everything from here on (RenderFrame, UpdateCars, UpdateTrafficLights) runs
+    // through those same fields regardless of transport.
+    private void ReadyLocal()
     {
         string repoRoot;
         try
@@ -161,7 +227,11 @@ public partial class Main : Node3D
         }
 
         _reconstructor = new Reconstructor();
-        GD.Print($"Main: loaded scenario '{scenarioRel}' from '{scenarioDir}'.");
+        _source = _sim.Source;
+        _lanes = _sim.LocalLanes;
+        var sim = _sim;
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(sim.Network, keys);
+        GD.Print($"Main: loaded scenario '{scenarioRel}' from '{scenarioDir}' (transport=local).");
 
         _cameraMode = ParseCameraArg();
 
@@ -194,30 +264,166 @@ public partial class Main : Node3D
         }
     }
 
+#if CITY3D_REMOTE
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- the REMOTE half. No
+    // SimSource/Engine is ever created here (design: "do NOT create a SimSource/engine"); the only source
+    // of truth is a DdsSubscriber reading whatever a separate `Sim.Host.App --transport dds` process
+    // publishes. The static scene (roads/camera; buildings are skipped, see BuildRemoteScene) and the
+    // wire-fed lane source can't be built yet -- there is no geometry until the wire delivers it -- so
+    // `_lanes` is left null here and set once by BuildRemoteScene, called lazily from _Process the first
+    // frame `_ddsSource.GeometryComplete` goes true.
+    private void ReadyRemote()
+    {
+        _cameraMode = ParseCameraArg();
+
+        _ddsParticipant = new DdsParticipant();
+        _ddsSource = new DdsSubscriber(_ddsParticipant);
+        _reconstructor = new Reconstructor();
+        _source = _ddsSource;
+        var ddsSource = _ddsSource;
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(ddsSource.Geometry, keys);
+
+        _carMultiMesh = BuildCarMultiMesh();
+
+        GD.Print("Main: --transport=dds active; waiting for a Sim.Host.App publisher (geometry + frames)...");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // Lazily builds the static scene from the RECEIVED wire geometry, once complete. A remote viewer never
+    // has a NetworkModel, so roads come from RoadMeshBuilder's geometry-dictionary overload
+    // (CityLib/RoadMeshBuilder.cs). Buildings are SKIPPED, not silently wrong: BuildingPlacer needs
+    // edge-level lane grouping (Sim.Ingest.NetworkModel.Edges) the wire does not carry (design T2.2b:
+    // "buildings need widths/edges the wire may not carry ... SKIP buildings if the data isn't available
+    // (log it)").
+    private void BuildRemoteScene()
+    {
+        var geometry = _ddsSource!.Geometry;
+        _lanes = new ReplicationLaneShapeSource(geometry);
+
+        var roadBbox = BuildRoadMeshesFromGeometry(geometry);
+        GD.Print(
+            $"Main: --transport=dds received geometry ({geometry.Count} lane(s)); SKIPPING buildings " +
+            "(the wire's LaneGeo carries no edge/lane grouping for BuildingPlacer to march along -- " +
+            "roads/cars/traffic-lights still render).");
+
+        _sceneBbox = roadBbox;
+        BuildCameraAndLight(roadBbox, makeCurrent: _cameraMode != "close");
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+    }
+#endif
+
     public override void _Process(double delta)
     {
-        if (_sim is null || _reconstructor is null)
+        if (_reconstructor is null || _source is null)
         {
-            // _Ready already reported the error and requested quit; nothing more to do this frame.
+            // _Ready already reported the error (or the wrong-build --transport=dds guard already
+            // requested quit); nothing more to do this frame.
             return;
         }
 
-        // Fixed sim-cadence accumulator: advance the sim in whole SimStepSeconds increments regardless of
-        // the (headless-dummy-renderer) frame rate, while reconstruction still runs every _Process call.
+        if (_transport == "local")
+        {
+            AdvanceLocalSim(delta);
+        }
+#if CITY3D_REMOTE
+        else if (_transport == "dds")
+        {
+            AdvanceRemoteSim();
+        }
+#endif
+
+        if (_lanes is not null)
+        {
+            // The ONE per-frame reconstruction+render body -- identical whether _source/_lanes are the
+            // local in-process pair or the remote DDS pair (design tenet 3 / T2.2b).
+            RenderFrame();
+        }
+
+        _frame++;
+
+        // Skip the frame-count auto-quit while a screenshot capture is pending: CaptureScreenshotAsync
+        // owns quitting in that case (docs/DEMO-CITY3D-DESIGN.md task T1.5 part C -- a real `--shot-delay`
+        // lets enough WALL-CLOCK time pass for the DrClock-driven sim/render to actually populate the
+        // roads with cars before the shot is taken; without this guard, a delay longer than
+        // QuitAfterFrames' own real-time span at an uncapped frame rate would race the engine into
+        // quitting before the delayed capture ever fires).
+        //
+        // LOCAL ONLY (task T2.2b finding): a headless dummy-render loop burns through QuitAfterFrames
+        // (200) in well under a real wall-clock second (measured: ~0.6s including engine startup) --
+        // that's a fine proxy for "enough sim ticks happened" locally, since the in-process bus has zero
+        // IPC latency. Over DDS, a separate Sim.Host.App process paces itself in REAL time (its own
+        // --hz step interval, plus ~500ms of post-geometry discovery settling) that this frame counter
+        // knows nothing about, so quitting on frame count alone would very likely fire before any packet
+        // ever arrives -- a false "no vehicles" failure that has nothing to do with DDS actually working.
+        // The dds transport therefore relies entirely on an EXTERNAL wall-clock bound (run-remote.sh runs
+        // the process under `timeout`) instead.
+        if (_transport == "local" && _frame >= QuitAfterFrames && _shotPath is null)
+        {
+            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+
+    // Fixed sim-cadence accumulator: advance the sim in whole SimStepSeconds increments regardless of the
+    // (headless-dummy-renderer) frame rate, while reconstruction still runs every _Process call.
+    private void AdvanceLocalSim(double delta)
+    {
         _accumulator += delta;
         while (_accumulator >= SimStepSeconds)
         {
-            _sim.Tick();
+            _sim!.Tick();
             _accumulator -= SimStepSeconds;
         }
+    }
 
-        var vehicles = _reconstructor.Reconstruct(_sim.Source, _sim.LocalLanes, PlayoutDelaySeconds);
+#if CITY3D_REMOTE
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode": "Each frame: source.Pump(); once
+    // source.GeometryComplete, lazily build the road/building meshes...". Reconstructor.Reconstruct
+    // (called from RenderFrame) also calls source.Pump() internally, so this extra Pump() only matters for
+    // the geometry-completeness check itself running BEFORE reconstruction on the very frame it completes.
+    private void AdvanceRemoteSim()
+    {
+        _ddsSource!.Pump();
+
+        if (!_remoteSceneBuilt && _ddsSource.GeometryComplete)
+        {
+            BuildRemoteScene();
+            _remoteSceneBuilt = true;
+        }
+    }
+#endif
+
+    // docs/DEMO-CITY3D-DESIGN.md tenet 3 / task T2.2b: the ONE per-frame reconstruction+render body, run
+    // UNCHANGED whether `_source`/`_lanes` are the local in-process bus + NetworkLaneSource or the remote
+    // DdsSubscriber + wire-fed ReplicationLaneShapeSource -- only those fields (plus `_placeSignalHeads`,
+    // the one TL-placement lookup ILaneShapeSource itself doesn't carry) differ per transport; this method
+    // never branches on `_transport`.
+    private void RenderFrame()
+    {
+        var vehicles = _reconstructor!.Reconstruct(_source!, _lanes!, PlayoutDelaySeconds);
         UpdateCars(vehicles);
 
-        var tlStateByLane = _sim.Source.TlStateByLane;
-        if (!_signalHeadsBuilt && tlStateByLane.Count > 0)
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
         {
-            BuildTrafficLights(_sim.Network, tlStateByLane);
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
             _signalHeadsBuilt = true;
         }
 
@@ -231,33 +437,44 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, vehicles);
         }
 
+        var simTimeLabel = SimTimeLabel();
         if (vehicles.Count > 0)
         {
             var v = vehicles[0];
             GD.Print(
-                $"Main: frame={_frame} simTime={_sim.Time:F2} vehicles={vehicles.Count} cars={vehicles.Count} " +
+                $"Main: frame={_frame} simTime={simTimeLabel} vehicles={vehicles.Count} cars={vehicles.Count} " +
                 $"v0=(x={v.X:F2}, z={v.Z:F2}, yaw={v.YawRad:F3})");
         }
         else
         {
-            GD.Print($"Main: frame={_frame} simTime={_sim.Time:F2} vehicles=0 cars=0");
+            GD.Print($"Main: frame={_frame} simTime={simTimeLabel} vehicles=0 cars=0");
         }
+    }
 
-        _frame++;
-
-        // Skip the frame-count auto-quit while a screenshot capture is pending: CaptureScreenshotAsync
-        // owns quitting in that case (docs/DEMO-CITY3D-DESIGN.md task T1.5 part C -- a real `--shot-delay`
-        // lets enough WALL-CLOCK time pass for the DrClock-driven sim/render to actually populate the
-        // roads with cars before the shot is taken; without this guard, a delay longer than
-        // QuitAfterFrames' own real-time span at an uncapped frame rate would race the engine into
-        // quitting before the delayed capture ever fires).
-        if (_frame >= QuitAfterFrames && _shotPath is null)
+    // "simTime" means the local sim-cadence clock (SimSource.Time) for the local transport, unchanged from
+    // before T2.2b. A remote viewer has no local sim clock of its own -- the closest analogue is the
+    // wire's own newest sample timestamp (IReplicationSource.LatestVehicleSampleTime) -- logged instead so
+    // the dds heartbeat line still carries a meaningful time axis without pretending to be sim time.
+    private string SimTimeLabel()
+    {
+        if (_transport == "local")
         {
-            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
-            _sim.Dispose();
-            _sim = null;
-            GetTree().Quit();
+            return $"{_sim?.Time ?? 0.0:F2}";
         }
+
+        return _source?.LatestVehicleSampleTime is { } t ? $"{t:F2}(wire)" : "?";
+    }
+
+    private void DisposeSources()
+    {
+        _sim?.Dispose();
+        _sim = null;
+#if CITY3D_REMOTE
+        _ddsSource?.Dispose();
+        _ddsSource = null;
+        _ddsParticipant?.Dispose();
+        _ddsParticipant = null;
+#endif
     }
 
     // Resolve the repo root by searching upward from this project's own directory for Traffic.sln --
@@ -281,12 +498,32 @@ public partial class Main : Node3D
             "walked up from '" + ProjectSettings.GlobalizePath("res://") + "' without finding Traffic.sln");
     }
 
-    // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Roads" / task T1.3. Static geometry, built
-    // ONCE at load (design: "two clocks: static geometry ... built once at load"). CityLib.RoadMeshBuilder
-    // does all the math (segment normals, miter offsets, triangulation, the SUMO->Godot transform); this
-    // method only converts its plain float[]/int[] arrays into a Godot ArrayMesh per lane. Returns the
-    // Godot-space bounding box of every emitted vertex, so the camera can frame the whole network.
+    // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Roads" / task T1.3 -- the LOCAL entry
+    // point. CityLib.RoadMeshBuilder does all the math (segment normals, miter offsets, triangulation, the
+    // SUMO->Godot transform) from a NetworkModel; BuildRoadMeshesFromRibbons below does the shared
+    // ArrayMesh construction.
     private (Vector3 Min, Vector3 Max) BuildRoadMeshes(NetworkModel network)
+        => BuildRoadMeshesFromRibbons(
+            RoadMeshBuilder.BuildAll(network, includeInternal: true), network.LanesByHandle.Count);
+
+#if CITY3D_REMOTE
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- the REMOTE entry point: builds
+    // the identical ribbon meshes from the RECEIVED wire geometry (CityLib.RoadMeshBuilder's
+    // geometry-dictionary overload) instead of a NetworkModel. BuildRoadMeshesFromRibbons below (the actual
+    // ArrayMesh/MeshInstance3D construction) is untouched -- only the RibbonMesh SOURCE differs.
+    private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometry(
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry)
+        => BuildRoadMeshesFromRibbons(RoadMeshBuilder.BuildAll(geometry, includeInternal: true), geometry.Count);
+#endif
+
+    // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Roads" / task T1.3 (and T2.2b's remote
+    // extension). Static geometry, built ONCE at load (design: "two clocks: static geometry ... built once
+    // at load"). SHARED between local and remote: turns whatever per-lane RibbonMesh sequence the caller
+    // computed (from a NetworkModel locally, from received wire geometry remotely -- see the two callers
+    // above) into Godot ArrayMesh/MeshInstance3D nodes. Returns the Godot-space bounding box of every
+    // emitted vertex, so the camera can frame the whole network.
+    private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromRibbons(
+        IEnumerable<(int Handle, RibbonMesh Mesh)> perLane, int totalLaneCount)
     {
         var material = new StandardMaterial3D
         {
@@ -299,7 +536,7 @@ public partial class Main : Node3D
         var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
         var laneCount = 0;
 
-        foreach (var (handle, mesh) in RoadMeshBuilder.BuildAll(network, includeInternal: true))
+        foreach (var (handle, mesh) in perLane)
         {
             if (mesh.Vertices.Length == 0)
             {
@@ -345,7 +582,7 @@ public partial class Main : Node3D
             laneCount++;
         }
 
-        GD.Print($"Main: built {laneCount} road ribbon mesh(es) from {network.LanesByHandle.Count} lane(s).");
+        GD.Print($"Main: built {laneCount} road ribbon mesh(es) from {totalLaneCount} lane(s).");
 
         if (laneCount == 0)
         {
@@ -560,17 +797,17 @@ public partial class Main : Node3D
         GD.Print($"Main: camera framing bbox min={min} max={max}, positioned at {camPos} looking at {center}.");
     }
 
-    // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Traffic lights" / task T1.6 Part B.
-    // Called ONCE (lazily, the first _Process frame `sim.Source.TlStateByLane` is non-empty --
-    // geometry/TL state only exist once the in-process bus has been pumped at least once, see
-    // CityLib.SimSource.Tick). CityLib.TrafficLightPlacer does all the placement math (downstream-end +
-    // right-edge nudge + the SUMO->Godot transform); this method only turns each plain SignalHead struct
-    // into a pole MeshInstance3D + a head MeshInstance3D with its OWN StandardMaterial3D (one per head,
-    // not shared -- each head's emissive colour is rewritten independently every frame in
-    // UpdateTrafficLights, unlike the shared asphalt/building/car materials which never change per-instance).
-    private void BuildTrafficLights(Sim.Ingest.NetworkModel network, IReadOnlyDictionary<int, byte> tlStateByLane)
+    // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Traffic lights" / task T1.6 Part B (and
+    // T2.2b's remote extension). Called ONCE (lazily, from RenderFrame the first frame TlStateByLane is
+    // non-empty). SHARED between local and remote: `heads` is already placed by the caller via
+    // `_placeSignalHeads` (a closure over either TrafficLightPlacer.Place(NetworkModel, ...) locally or its
+    // geometry-dictionary overload remotely -- CityLib/TrafficLightPlacer.cs); this method only turns each
+    // plain SignalHead struct into a pole MeshInstance3D + a head MeshInstance3D with its OWN
+    // StandardMaterial3D (one per head, not shared -- each head's emissive colour is rewritten
+    // independently every frame in UpdateTrafficLights, unlike the shared asphalt/building/car materials
+    // which never change per-instance).
+    private void BuildTrafficLights(IReadOnlyList<SignalHead> heads)
     {
-        var heads = TrafficLightPlacer.Place(network, tlStateByLane.Keys);
         var poleMaterial = new StandardMaterial3D { AlbedoColor = TlPoleColor, Roughness = 0.8f };
 
         foreach (var head in heads)
@@ -789,6 +1026,28 @@ public partial class Main : Node3D
         }
 
         return "09-traffic-light";
+    }
+
+    // `--transport=<local|dds>` USER cmdline arg (task T2.2b): default "local" (today's in-process
+    // behavior, byte-for-byte unchanged). "dds" only actually works in a build compiled with
+    // -p:City3DRemote=true (see the non-remote-build guard in _Ready) -- same OS.GetCmdlineUserArgs()
+    // mechanism as --scenario/--camera/--shot.
+    private static string ParseTransportArg()
+    {
+        const string prefix = "--transport=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                var v = arg[prefix.Length..].Trim().ToLowerInvariant();
+                if (v is "local" or "dds")
+                {
+                    return v;
+                }
+            }
+        }
+
+        return "local";
     }
 
     // `--shot-delay=<seconds>` USER cmdline arg: extra REAL wall-clock seconds to wait, after the scene is
