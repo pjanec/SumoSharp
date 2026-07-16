@@ -1,10 +1,15 @@
 using CycloneDDS.Runtime;
 using Sim.Core;
 using Sim.Replication;
-using Sim.Replication.Dds;
 
-namespace Sim.Viewer.Raylib;
+namespace Sim.Replication.Dds;
 
+// docs/DEMO-CITY3D-DESIGN.md "DRY rewire (parity-neutral)": the DDS binding's own IReplicationSource,
+// moved here verbatim from src/Sim.Viewer.Raylib/DdsSubscriber.cs -- the read-side counterpart of
+// DdsReplicationSink (this file's sibling), so both halves of the DDS transport live in the one binding
+// package instead of the read half sitting in the heavy raylib viewer package. Nothing about topics, QoS,
+// decode logic, or public surface changed by this move.
+//
 // docs/SUMOSHARP-NATIVE-VIEWER.md P2 — the read side of the native viewer's DDS data path. Decodes the four
 // topics DdsPublisher writes into plain in-memory state a renderer (P2b) or this phase's LoopbackSelfTest
 // can inspect: static lane geometry (once), a short per-vehicle history (newest last, for later

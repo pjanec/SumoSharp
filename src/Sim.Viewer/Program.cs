@@ -8,6 +8,7 @@ using rlImGui_cs;
 using ImGuiNET;
 using Sim.Core;
 using Sim.Replication;
+using Sim.Replication.Dds;
 using Sim.Viewer;
 using Sim.Viewer.Core;
 using Sim.Viewer.Motion;
