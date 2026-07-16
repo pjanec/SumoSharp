@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using CityLib;
 using Godot;
@@ -89,6 +90,13 @@ public partial class Main : Node3D
     // camera" framing (closer to a real traffic-cam mount) without reopening the sideways
     // look-through-the-building-wall problem a full 90deg offset has.
     private const float CloseCameraLateralMeters = 12f;
+
+    // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
+    // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
+    // aspect from the geometry itself; offset+fov mode uses WallDefaultAspect below), never distorted/
+    // stretched to fit a fixed box.
+    private const int WallTileHeightPx = 480;
+    private const double WallDefaultAspect = 4.0 / 3.0;
 
     // Task T1.6 -- emissive colours the signal head material is set to each frame, keyed off
     // CityLib.TrafficLightPlacer.ColorFor's colour bucket (design "Traffic lights": "each frame set the
@@ -239,13 +247,32 @@ public partial class Main : Node3D
         var buildingBbox = BuildBuildings(_sim.Network);
         var bbox = CombineBbox(roadBbox, buildingBbox);
         _sceneBbox = bbox;
+
+        // Task T3.1 ("Multi-channel video wall", user-refined to CLI-only channels, no screen
+        // autodetection): ONE shared scene (built above, exactly as before) + ONE shared replication
+        // source (SimSource/_sim, also unchanged) + N cameras, each a possibly off-axis
+        // OffAxisFrustum.FrustumSpec computed from its own `--channel=...` arg. Parsed here, BEFORE the
+        // camera/light setup below, purely to decide whether the default single overview/close camera
+        // should be Current -- when in wall mode, NONE of the whole-network framing camera / --camera=close
+        // camera become Current (BuildVideoWallChannels below supplies every Current camera instead), so a
+        // run with no --channel is byte-identical to the pre-T3.1 behavior (the `!wallMode &&` term below
+        // is the ONLY change to this condition).
+        var channels = ParseChannelArgs();
+        var wallMode = channels.Count > 0;
+
         // The overview camera is still always built (env + light + the default whole-network framing
-        // run-smoke.sh relies on) -- `--camera=close` just leaves it non-Current in favour of the close
-        // camera built below, rather than forking the environment/light setup.
-        BuildCameraAndLight(bbox, makeCurrent: _cameraMode != "close");
+        // run-smoke.sh relies on) -- `--camera=close`/wall mode just leave it non-Current in favour of the
+        // close camera / video-wall channel cameras built below, rather than forking the
+        // environment/light setup.
+        BuildCameraAndLight(bbox, makeCurrent: !wallMode && _cameraMode != "close");
         _carMultiMesh = BuildCarMultiMesh();
 
-        if (_cameraMode == "close")
+        if (wallMode)
+        {
+            BuildVideoWallChannels(channels);
+            GD.Print($"Main: video wall — {channels.Count} channel(s).");
+        }
+        else if (_cameraMode == "close")
         {
             _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
             AddChild(_closeCamera);
@@ -1070,6 +1097,298 @@ public partial class Main : Node3D
         }
 
         return 0.0;
+    }
+
+    // Task T3.1 -- one `--channel=...` arg, parsed. Either `HasScreen` (the explicit off-axis corners form,
+    // `screen=ax,ay,az,bx,by,bz,cx,cy,cz`) or the offset+look-angles+FOV form (`look=`/`fov=`) is populated;
+    // `Off` (the eye position) and `Near`/`Far` apply to both forms.
+    private sealed record ChannelConfig(
+        double EyeX, double EyeY, double EyeZ,
+        bool HasScreen,
+        double PaX, double PaY, double PaZ,
+        double PbX, double PbY, double PbZ,
+        double PcX, double PcY, double PcZ,
+        double YawDeg, double PitchDeg, double FovDeg,
+        double Near, double Far);
+
+    // `--channel="off=x,y,z;look=yaw,pitch;fov=60"` and/or
+    // `--channel="off=x,y,z;screen=ax,ay,az,bx,by,bz,cx,cy,cz"` (repeatable -- one video-wall channel per
+    // occurrence). Same OS.GetCmdlineUserArgs() mechanism as --scenario/--camera/--shot; a malformed or
+    // incomplete channel (missing the required `off=`) is REPORTED and skipped rather than failing the
+    // whole run, so one typo'd channel doesn't take down an otherwise-good wall.
+    private static List<ChannelConfig> ParseChannelArgs()
+    {
+        var result = new List<ChannelConfig>();
+        const string prefix = "--channel=";
+
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (!arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var spec = arg[prefix.Length..].Trim();
+            if (spec.Length >= 2 && spec[0] == '"' && spec[^1] == '"')
+            {
+                spec = spec[1..^1]; // tolerate a shell/quoting layer leaving the quotes in place
+            }
+
+            var fields = new Dictionary<string, string>();
+            foreach (var part in spec.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var eq = part.IndexOf('=');
+                if (eq <= 0)
+                {
+                    continue;
+                }
+
+                fields[part[..eq].Trim().ToLowerInvariant()] = part[(eq + 1)..].Trim();
+            }
+
+            if (!fields.TryGetValue("off", out var offStr) || !TryParseTriple(offStr, out var off))
+            {
+                GD.PrintErr($"Main: --channel '{arg}' missing/invalid required 'off=x,y,z'; skipping this channel.");
+                continue;
+            }
+
+            var near = fields.TryGetValue("near", out var nearStr) && TryParseDouble(nearStr, out var nearVal)
+                ? nearVal
+                : OffAxisFrustum.DefaultNear;
+            var far = fields.TryGetValue("far", out var farStr) && TryParseDouble(farStr, out var farVal)
+                ? farVal
+                : OffAxisFrustum.DefaultFar;
+
+            if (fields.TryGetValue("screen", out var screenStr))
+            {
+                if (!TryParseNine(screenStr, out var s))
+                {
+                    GD.PrintErr($"Main: --channel '{arg}' has an invalid 'screen=...' (need 9 comma-separated numbers: ax,ay,az,bx,by,bz,cx,cy,cz); skipping this channel.");
+                    continue;
+                }
+
+                result.Add(new ChannelConfig(
+                    off.X, off.Y, off.Z, HasScreen: true,
+                    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8],
+                    YawDeg: 0, PitchDeg: 0, FovDeg: 0, near, far));
+                continue;
+            }
+
+            var look = fields.TryGetValue("look", out var lookStr) && TryParsePair(lookStr, out var lookPair)
+                ? lookPair
+                : (Yaw: 0.0, Pitch: 0.0);
+            var fov = fields.TryGetValue("fov", out var fovStr) && TryParseDouble(fovStr, out var fovVal)
+                ? fovVal
+                : 60.0;
+
+            result.Add(new ChannelConfig(
+                off.X, off.Y, off.Z, HasScreen: false,
+                0, 0, 0, 0, 0, 0, 0, 0, 0,
+                look.Yaw, look.Pitch, fov, near, far));
+        }
+
+        return result;
+    }
+
+    private static bool TryParseDouble(string s, out double value)
+        => double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    private static bool TryParseTriple(string s, out (double X, double Y, double Z) value)
+    {
+        value = default;
+        var parts = s.Split(',');
+        if (parts.Length != 3
+            || !TryParseDouble(parts[0], out var x)
+            || !TryParseDouble(parts[1], out var y)
+            || !TryParseDouble(parts[2], out var z))
+        {
+            return false;
+        }
+
+        value = (x, y, z);
+        return true;
+    }
+
+    private static bool TryParsePair(string s, out (double Yaw, double Pitch) value)
+    {
+        value = default;
+        var parts = s.Split(',');
+        if (parts.Length != 2 || !TryParseDouble(parts[0], out var a) || !TryParseDouble(parts[1], out var b))
+        {
+            return false;
+        }
+
+        value = (a, b);
+        return true;
+    }
+
+    private static bool TryParseNine(string s, out double[] value)
+    {
+        value = Array.Empty<double>();
+        var parts = s.Split(',');
+        if (parts.Length != 9)
+        {
+            return false;
+        }
+
+        var result = new double[9];
+        for (var i = 0; i < 9; i++)
+        {
+            if (!TryParseDouble(parts[i], out result[i]))
+            {
+                return false;
+            }
+        }
+
+        value = result;
+        return true;
+    }
+
+    // Task T3.1 Part B -- the video-wall renderer. ONE shared scene (already built by the time this is
+    // called) + ONE shared replication source (_sim, untouched) is rendered by N channels: each channel is
+    // a `SubViewport` (default `OwnWorld3D = false`, so it inherits the SAME World3D as Main's own
+    // (root-window) viewport -- i.e. the SubViewport shows the identical roads/buildings/cars/lights
+    // without a second copy of anything) holding its own `Camera3D`, whose position/orientation/asymmetric
+    // projection come straight from an `OffAxisFrustum.FrustumSpec`. The N tiles are then composited into
+    // ONE window via a `CanvasLayer` of `TextureRect`s reading each SubViewport's texture, laid out in a
+    // horizontal strip left-to-right -- so a single screenshot of the root viewport shows the whole wall
+    // (this is also, not coincidentally, exactly a single wide-desktop wall). Real per-monitor OS `Window`s
+    // are a desktop-only variant of this same per-channel Camera3D/FrustumSpec math; this headless-safe
+    // strip is the one actually exercised/screenshotted here.
+    private void BuildVideoWallChannels(List<ChannelConfig> channels)
+    {
+        var canvas = new CanvasLayer { Name = "VideoWall" };
+        AddChild(canvas);
+
+        var xOffset = 0;
+        for (var i = 0; i < channels.Count; i++)
+        {
+            var cfg = channels[i];
+            OffAxisFrustum.FrustumSpec spec;
+            int tileWidth;
+            const int tileHeight = WallTileHeightPx;
+
+            if (cfg.HasScreen)
+            {
+                var pe = (cfg.EyeX, cfg.EyeY, cfg.EyeZ);
+                var pa = (cfg.PaX, cfg.PaY, cfg.PaZ);
+                var pb = (cfg.PbX, cfg.PbY, cfg.PbZ);
+                var pc = (cfg.PcX, cfg.PcY, cfg.PcZ);
+                spec = OffAxisFrustum.OffAxis(pe, pa, pb, pc, cfg.Near, cfg.Far);
+                var aspect = (spec.Right - spec.Left) / (spec.Top - spec.Bottom);
+                tileWidth = Math.Max(1, (int)Math.Round(tileHeight * aspect));
+            }
+            else
+            {
+                var (right, up, normal) = BasisFromYawPitch(cfg.YawDeg, cfg.PitchDeg);
+                spec = OffAxisFrustum.SymmetricFromFov(
+                    cfg.FovDeg, WallDefaultAspect, cfg.Near, cfg.Far,
+                    eye: (cfg.EyeX, cfg.EyeY, cfg.EyeZ), right, up, normal);
+                tileWidth = Math.Max(1, (int)Math.Round(tileHeight * WallDefaultAspect));
+            }
+
+            var subViewport = new SubViewport
+            {
+                Name = $"WallChannel{i}",
+                Size = new Vector2I(tileWidth, tileHeight),
+                RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+                HandleInputLocally = false,
+                // OwnWorld3D defaults to false -- deliberately left unset: this SubViewport must inherit
+                // Main's World3D (walked up via Viewport.FindWorld3D) so it renders the SAME shared scene,
+                // not a second private copy of it (design: "ONE shared 3D scene").
+            };
+            AddChild(subViewport);
+
+            var camera = new Camera3D
+            {
+                Name = $"WallCamera{i}",
+                Current = true,
+                Position = new Vector3((float)spec.EyeX, (float)spec.EyeY, (float)spec.EyeZ),
+                Basis = new Basis(
+                    new Vector3((float)spec.RightX, (float)spec.RightY, (float)spec.RightZ),
+                    new Vector3((float)spec.UpX, (float)spec.UpY, (float)spec.UpZ),
+                    new Vector3((float)spec.NormalX, (float)spec.NormalY, (float)spec.NormalZ)),
+            };
+            subViewport.AddChild(camera);
+
+            // Camera3D.SetFrustum(size, offset, zNear, zFar) mapping (verified against Godot's
+            // core/math/projection.cpp Projection::set_frustum(size, aspect, offset, near, far,
+            // flip_fov=false), which the engine calls with `aspect = viewport_size.aspect()` (this
+            // SubViewport's OWN pixel size, hence tileWidth/tileHeight are chosen to already match `spec`'s
+            // aspect above) and the default KeepAspect=KEEP_HEIGHT (flip_fov=false):
+            //   effective width  = size * aspect, effective height = size
+            //   left/right  = +-width/2  + offset.x  =>  size = Top-Bottom, offset.x = (Left+Right)/2
+            //   bottom/top  = +-height/2 + offset.y  =>                    offset.y = (Bottom+Top)/2
+            // i.e. size = the near-plane's VERTICAL extent, offset = the near-plane rect's CENTER -- an
+            // asymmetric (off-axis) rect is exactly "a centered symmetric rect of that size, recentered by
+            // offset", which is what SetFrustum's (size, offset) pair encodes once the SubViewport's own
+            // aspect ratio matches (Right-Left)/(Top-Bottom).
+            var size = (float)(spec.Top - spec.Bottom);
+            var offset = new Vector2((float)((spec.Left + spec.Right) / 2.0), (float)((spec.Bottom + spec.Top) / 2.0));
+            camera.SetFrustum(size, offset, (float)spec.Near, (float)spec.Far);
+
+            var textureRect = new TextureRect
+            {
+                Name = $"WallView{i}",
+                Texture = subViewport.GetTexture(),
+                Position = new Vector2(xOffset, 0),
+                Size = new Vector2(tileWidth, tileHeight),
+            };
+            canvas.AddChild(textureRect);
+
+            GD.Print(
+                $"Main: video-wall channel {i}: eye=({spec.EyeX:F1},{spec.EyeY:F1},{spec.EyeZ:F1}) " +
+                $"L={spec.Left:F3} R={spec.Right:F3} B={spec.Bottom:F3} T={spec.Top:F3} " +
+                $"tile={tileWidth}x{tileHeight} at x={xOffset}.");
+
+            xOffset += tileWidth;
+        }
+    }
+
+    // `look=yawDeg,pitchDeg` -> the (Right, Up, Normal) axis triple OffAxisFrustum.SymmetricFromFov expects.
+    // yaw is a rotation about world +Y (0 = looking down -Z, matching Godot's own default Node3D
+    // orientation); pitch tilts up (+) / down (-) from there. Normal = -Forward per FrustumSpec's own
+    // convention (the screen's toward-the-eye normal, not the look direction -- see OffAxisFrustum.cs).
+    private static (
+        (double X, double Y, double Z) Right,
+        (double X, double Y, double Z) Up,
+        (double X, double Y, double Z) Normal) BasisFromYawPitch(double yawDeg, double pitchDeg)
+    {
+        var yawRad = yawDeg * Math.PI / 180.0;
+        var pitchRad = pitchDeg * Math.PI / 180.0;
+        var forward = (
+            X: -Math.Sin(yawRad) * Math.Cos(pitchRad),
+            Y: Math.Sin(pitchRad),
+            Z: -Math.Cos(yawRad) * Math.Cos(pitchRad));
+
+        var worldUp = (X: 0.0, Y: 1.0, Z: 0.0);
+        var right = CrossNormalized(forward, worldUp);
+        if (right is null)
+        {
+            // Forward is (near-)parallel to world up (looking straight up/down) -- fall back to a
+            // yaw-only reference so Right is still well-defined instead of NaN.
+            var fallbackUp = (X: 0.0, Y: 0.0, Z: -1.0);
+            right = CrossNormalized(forward, fallbackUp) ?? (1.0, 0.0, 0.0);
+        }
+
+        var r = right.Value;
+        var up = (
+            X: r.Y * forward.Z - r.Z * forward.Y,
+            Y: r.Z * forward.X - r.X * forward.Z,
+            Z: r.X * forward.Y - r.Y * forward.X);
+        var normal = (X: -forward.X, Y: -forward.Y, Z: -forward.Z);
+
+        return (r, up, normal);
+    }
+
+    private static (double X, double Y, double Z)? CrossNormalized(
+        (double X, double Y, double Z) a, (double X, double Y, double Z) b)
+    {
+        var cx = a.Y * b.Z - a.Z * b.Y;
+        var cy = a.Z * b.X - a.X * b.Z;
+        var cz = a.X * b.Y - a.Y * b.X;
+        var len = Math.Sqrt(cx * cx + cy * cy + cz * cz);
+        return len < 1e-9 ? null : (cx / len, cy / len, cz / len);
     }
 
     // Waits `delaySeconds` of real wall-clock time (a no-op when 0, the default), then a couple more real
