@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/DEMO-CITY3D-DESIGN.md "SumoSharp.Host — the missing reusable publisher": the transport-neutral
+    half of the engine-to-wire publisher, extracted from src/Sim.Viewer.Core/DdsPublisher.cs (which stays
+    hardwired to DDS + EngineHost). ReplicationPublisher depends only on Core (plus Ingest, transitively)
+    and Replication, with no DDS and no Sim.Viewer.Core, so it is packable and consumable by any host
+    (in-process, a future Sim.Host.App, Unity/Godot).
+  -->
+
+  <PropertyGroup>
+    <!-- net8.0 + netstandard2.1 (Unity/Godot can consume it, like Viewer.Motion). -->
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <!-- NuGet: the reusable, transport-neutral engine-to-wire publisher (docs/DEMO-CITY3D-DESIGN.md
+         "SumoSharp.Host"). ReplicationPublisher drives ANY SumoSharp.Replication.IReplicationSink from a
+         SimulationSnapshot + NetworkModel, the same translation src/Sim.Viewer.Core/DdsPublisher.cs does
+         today, minus the DDS write and the EngineHost coupling. IsPackable defaults to false repo-wide
+         (Directory.Build.props); set true explicitly here, like Sim.Viewer.Motion does. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>SumoSharp.Host</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>SumoSharp — transport-neutral engine-to-wire publisher: ReplicationPublisher drives any IReplicationSink (SumoSharp.Replication) from a running engine's SimulationSnapshot + NetworkModel, with no DDS or transport dependency. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
+    <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
+    <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+</Project>
