@@ -1,5 +1,6 @@
 using Sim.Core;
 using Sim.Replication;
+using Sim.Replication.Dds;
 using Sim.Viewer.Motion;
 
 namespace Sim.Viewer.Raylib;
