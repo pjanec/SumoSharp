@@ -1,0 +1,78 @@
+# Pack-check: prove the CI can BUILD + PACK every shipped NuGet package, with NO publish.
+# Unlike publish.yml (tag-triggered, pushes to nuget.org), this never pushes anywhere — it packs all
+# packages and uploads them as a build artifact only. Use it to exercise packaging end-to-end
+# (including the native Sim.Replication.Dds / Sim.Viewer.Raylib packages, which restore CycloneDDS.NET
+# and Raylib-cs on the runner) before cutting a real release tag.
+name: pack-check
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["**"]
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "tests/**"
+      - "Directory.Build.props"
+      - ".github/workflows/pack-check.yml"
+
+jobs:
+  pack-all:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so SourceLink can pin the commit
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Traffic.sln
+
+      - name: Build (Release)
+        run: dotnet build Traffic.sln -c Release --no-restore
+
+      # Never pack a red build: keep the hermetic parity gate as a precondition.
+      - name: Test (offline parity gate)
+        run: dotnet test Traffic.sln -c Release --no-build
+
+      - name: Pack all packages (NO publish)
+        run: |
+          echo "packing at Directory.Build.props version (no tag override — this is a build check)"
+          # Portable + managed packages (all in Traffic.sln, already built above -> --no-build):
+          for proj in \
+            src/Sim.Core/Sim.Core.csproj \
+            src/Sim.Ingest/Sim.Ingest.csproj \
+            src/Sim.Replication/Sim.Replication.csproj \
+            src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj \
+            src/Sim.Harness/Sim.Harness.csproj \
+            src/Sim.Evac/Sim.Evac.csproj \
+            packaging/SumoSharp.Meta/SumoSharp.Meta.csproj ; do
+            dotnet pack "$proj" -c Release --no-build -o ./nupkgs
+          done
+          # Native packages (NOT in Traffic.sln): build+pack standalone (restores CycloneDDS.NET /
+          # Raylib-cs / rlImgui-cs on the runner — this is the part that proves CI can build them).
+          dotnet pack src/Sim.Replication.Dds/Sim.Replication.Dds.csproj -c Release -o ./nupkgs
+          dotnet pack src/Sim.Viewer.Raylib/Sim.Viewer.Raylib.csproj     -c Release -o ./nupkgs
+          echo "=== packed ==="
+          ls -l ./nupkgs
+
+      - name: Assert all 9 packages were produced
+        run: |
+          count="$(ls ./nupkgs/*.nupkg 2>/dev/null | wc -l)"
+          echo "nupkg count: $count"
+          for id in SumoSharp SumoSharp.Core SumoSharp.Ingest SumoSharp.Replication \
+                    SumoSharp.Replication.Dds SumoSharp.Viewer.Motion SumoSharp.Viewer.Raylib \
+                    SumoSharp.Testing SumoSharp.Evac ; do
+            ls ./nupkgs/${id}.*.nupkg >/dev/null 2>&1 || { echo "::error::missing package $id"; exit 1; }
+          done
+          echo "all 9 shipped packages packed OK"
+
+      - name: Upload packages as build artifact (not published)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: ./nupkgs/*
