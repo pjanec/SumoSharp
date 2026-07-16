@@ -67,3 +67,4 @@ scenarios/**/combined.fcd.xml
 imgui.ini
 # CycloneDDS writes a runtime log to the CWD on viewer DDS runs (loopback/publish/remote); local-only.
 cyclonedds.log
+experiments/subarea/scratch/
