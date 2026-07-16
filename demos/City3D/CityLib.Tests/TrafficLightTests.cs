@@ -131,6 +131,45 @@ public class TrafficLightTests
         Assert.True(everSawGreen, "expected the light to also reach Green over the run (proves it actually changes, not stuck red)");
     }
 
+    // ---- 4: T2.2b (docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode") -- the geometry-dictionary
+    // overload a remote (no-NetworkModel) viewer uses must place the SAME heads (modulo the wire's float32
+    // quantization) as the NetworkModel overload the local viewer uses.
+    [Fact]
+    public void Place_FromWireGeometry_MatchesNetworkOverload()
+    {
+        var scenarioDir = Path.Combine(RepoRoot(), "scenarios", "09-traffic-light");
+        using var sim = new SimSource(
+            Path.Combine(scenarioDir, "net.net.xml"),
+            Path.Combine(scenarioDir, "rou.rou.xml"),
+            Path.Combine(scenarioDir, "config.sumocfg"));
+
+        IReadOnlyDictionary<int, byte>? tlStateByLane = null;
+        for (var tick = 0; tick < 45 && (tlStateByLane is null || tlStateByLane.Count == 0); tick++)
+        {
+            sim.Tick();
+            tlStateByLane = sim.Source.TlStateByLane;
+        }
+
+        Assert.NotNull(tlStateByLane);
+        Assert.True(tlStateByLane!.Count > 0, "TlStateByLane never became non-empty");
+        Assert.True(sim.Source.GeometryComplete);
+
+        var fromNetwork = TrafficLightPlacer.Place(sim.Network, tlStateByLane.Keys);
+        var fromWire = TrafficLightPlacer.Place(sim.Source.Geometry, tlStateByLane.Keys);
+
+        Assert.Equal(fromNetwork.Count, fromWire.Count);
+
+        var wireByLane = fromWire.ToDictionary(h => h.LaneHandle);
+        const float tol = 1e-2f; // float32 wire quantization
+        foreach (var netHead in fromNetwork)
+        {
+            Assert.True(wireByLane.TryGetValue(netHead.LaneHandle, out var wireHead), $"lane {netHead.LaneHandle} missing from wire-built heads");
+            Assert.Equal(netHead.HeadX, wireHead.HeadX, tol);
+            Assert.Equal(netHead.HeadZ, wireHead.HeadZ, tol);
+            Assert.Equal(netHead.HeadY, wireHead.HeadY, tol); // both flat-net (groundZ==0) here
+        }
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

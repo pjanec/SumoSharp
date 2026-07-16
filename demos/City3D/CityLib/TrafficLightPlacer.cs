@@ -1,4 +1,5 @@
 using Sim.Ingest;
+using Sim.Replication;
 
 namespace CityLib;
 
@@ -119,6 +120,59 @@ public static class TrafficLightPlacer
             // RoadMeshBuilder/BuildingPlacer both use for a 2-D (ShapeZ == null) lane.
             var lastIndex = shape.Count - 1;
             var groundZ = lane.ShapeZ is not null && lastIndex < lane.ShapeZ.Count ? lane.ShapeZ[lastIndex] : 0.0;
+
+            var (poleX, poleY, poleZ) = CoordinateTransform.SumoToGodot(baseX, baseY, groundZ);
+
+            result.Add(new SignalHead(handle, poleX, poleY, poleZ, poleX, poleY + HeadHeightMeters, poleZ));
+        }
+
+        return result;
+    }
+
+    // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b: the REMOTE-shaped counterpart of
+    // Place(NetworkModel, ...) above. A remote viewer never has a NetworkModel (no .net.xml parse), only
+    // the received wire geometry (IReplicationSource.Geometry, GeometryCodec.LaneGeo per lane handle) --
+    // which DOES carry everything this placement math actually needs (Points, Width), so the identical
+    // downstream-end + right-edge-nudge recipe below runs unchanged; only the per-lane lookup source
+    // differs (a LaneGeo dictionary vs NetworkModel.LanesByHandle), same asymmetry
+    // ReplicationLaneShapeSource already documents for elevation (the wire carries no shapeZ, so groundZ
+    // is always the flat-net fallback of 0 here).
+    public static IReadOnlyList<SignalHead> Place(
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry, IEnumerable<int> controlledLaneHandles)
+    {
+        var result = new List<SignalHead>();
+
+        foreach (var handle in controlledLaneHandles)
+        {
+            if (!geometry.TryGetValue(handle, out var lane) || lane.Points.Length == 0)
+            {
+                continue;
+            }
+
+            var shape = lane.Points;
+            var (endX, endY) = shape[^1];
+
+            double nx = 0.0, ny = 0.0;
+            if (shape.Length >= 2)
+            {
+                var (prevX, prevY) = shape[^2];
+                var dx = endX - prevX;
+                var dy = endY - prevY;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len > 1e-9)
+                {
+                    nx = -dy / len;
+                    ny = dx / len;
+                }
+            }
+
+            var halfWidth = lane.Width / 2.0;
+            var baseX = endX - nx * halfWidth;
+            var baseY = endY - ny * halfWidth;
+
+            // The wire carries no elevation (GeometryCodec.LaneGeo has no z field) -- groundZ is always the
+            // flat-net fallback of 0, same convention RoadMeshBuilder's geometry-dictionary overload uses.
+            const double groundZ = 0.0;
 
             var (poleX, poleY, poleZ) = CoordinateTransform.SumoToGodot(baseX, baseY, groundZ);
 

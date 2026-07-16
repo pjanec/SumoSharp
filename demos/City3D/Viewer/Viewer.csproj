@@ -6,6 +6,14 @@
     CityLib's plain arrays/structs into Godot nodes/meshes. No SumoSharp.* PackageReference lives here
     directly — CityLib owns that boundary; this project only needs the Godot SDK from nuget.org plus a
     ProjectReference to CityLib (repo-checkout demo, not a package: IsPackable=false).
+
+    docs/DEMO-CITY3D-DESIGN.md "Data path to Remote mode" / task T2.2b: the LOCAL viewer must stay PURE
+    C# (no native DDS dependency), which is the deliberate, non-negotiable split (design non-goal "No DDS
+    in the local viewer"). The default build (no -p:City3DRemote=true) therefore carries NO
+    SumoSharp.Replication.Dds reference and NO CITY3D_REMOTE define at all; `dotnet build` with no
+    property set is byte-identical to the pre-T2.2b local-only build. Only an explicit
+    `dotnet build -p:City3DRemote=true` (what run-remote.sh passes) adds the native package plus the
+    compile-time symbol every DDS code path in Main.cs is guarded by (`#if CITY3D_REMOTE`).
   -->
 
   <PropertyGroup>
@@ -20,5 +28,14 @@
   <ItemGroup>
     <ProjectReference Include="..\CityLib\CityLib.csproj" />
   </ItemGroup>
+
+  <!-- Remote/DDS path ONLY; see the design-contract comment above. -->
+  <ItemGroup Condition="'$(City3DRemote)'=='true'">
+    <PackageReference Include="SumoSharp.Replication.Dds" Version="0.1.0" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(City3DRemote)'=='true'">
+    <DefineConstants>$(DefineConstants);CITY3D_REMOTE</DefineConstants>
+  </PropertyGroup>
 
 </Project>
