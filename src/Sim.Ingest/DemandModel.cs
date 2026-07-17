@@ -90,13 +90,23 @@ public sealed record VTypeDistributionMember(string VTypeId, double Probability)
 public sealed record VTypeDistribution(string Id, IReadOnlyList<VTypeDistributionMember> Members);
 
 // A scheduled <stop> child of <vehicle> (rung 5). Only the non-waypoint lane-stop subset is
-// modeled (lane/startPos/endPos/duration) -- busStop/parkingArea/triggered/until/waypoint
-// (speed>0) stops are Sim.Ingest's future-scenario surface, not this rung's.
+// modeled (lane/startPos/endPos/duration) -- busStop/triggered/until/waypoint (speed>0) stops are
+// Sim.Ingest's future-scenario surface, not this rung's.
+//
+// P0-C2 (parkingArea stops): a `<stop parkingArea="X"/>` carries only `ParkingAreaId` at parse
+// time -- its LaneId/StartPos/EndPos are left at their empty/zero placeholders because DemandParser
+// (route-files) has no visibility of the additional-files that declare the parkingArea. The
+// concrete lane + lot-0 position are resolved LATER, in Engine.LoadScenario, once the parkingArea
+// registry has been built from the additional-files (see Engine.ResolveParkingAreaStops). After
+// resolution a parkingArea stop is byte-identical to a plain lane <stop>: LaneId=pa.lane,
+// StartPos=pa.startPos, EndPos=lot-0 position. `ParkingAreaId` is null for every plain lane stop,
+// so nothing about the lane-stop path changes.
 public sealed record StopDef(
     string LaneId,
     double StartPos,
     double EndPos,
-    double Duration);
+    double Duration,
+    string? ParkingAreaId = null);
 
 public sealed record VehicleDef(
     string Id,

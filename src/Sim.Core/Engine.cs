@@ -1091,20 +1091,129 @@ public sealed partial class Engine : IEngine
         _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
         _demand = DemandParser.Parse(_config.RouteFiles.Select(Resolve).ToArray());
 
-        // P0-A scope: additional-files only need to LOAD without error (e.g. a defined-but-unused
-        // parkingArea) -- their behavioural semantics (parkingArea stops for departPos="stop",
-        // vTypeDistribution resolution) are P0-C/P0-B concerns, not this task's. We don't yet have
-        // an additional-file parser, so tolerate/skip: just verify the file exists and is
-        // well-formed XML with a root element, then discard the content.
+        // P0-C2: parse <parkingArea> declarations out of the additional-files into a small registry.
+        // Every OTHER additional-file element is still tolerated/discarded (the pre-P0-C2 load-and-
+        // discard contract); only a missing root element is an error, exactly as before. An
+        // additional-file with no <parkingArea> yields an empty registry, so a scenario without
+        // parkingAreas takes the byte-identical no-op resolution path below.
+        var parkingAreas = new Dictionary<string, ParkingArea>(StringComparer.Ordinal);
         foreach (var additionalFile in _config.AdditionalFiles)
         {
             var path = Resolve(additionalFile);
             using var stream = File.OpenRead(path);
-            _ = System.Xml.Linq.XDocument.Load(stream).Root
+            var root = System.Xml.Linq.XDocument.Load(stream).Root
                 ?? throw new InvalidDataException($"additional-file '{path}' has no root element.");
+
+            foreach (var pa in AdditionalFileParser.ParseParkingAreas(root, LaneLengthById))
+            {
+                if (!parkingAreas.TryAdd(pa.Id, pa))
+                {
+                    throw new InvalidDataException($"duplicate <parkingArea id='{pa.Id}'>.");
+                }
+            }
         }
 
+        // P0-C2: resolve every `<stop parkingArea="X"/>` to a concrete lane stop now that both the
+        // demand (route-files) and the parkingArea registry (additional-files) are known. No-op --
+        // returns the demand unchanged, byte-identical -- when nothing references a parkingArea.
+        _demand = ResolveParkingAreaStops(_demand, parkingAreas);
+
         InitializeLoaded();
+    }
+
+    // P0-C2: lane-length lookup used only for a <parkingArea>'s endPos default (SUMO defaults endPos
+    // to the lane's length when the attribute is absent). Throws a clear error for an unknown lane,
+    // rather than a raw KeyNotFoundException.
+    private double LaneLengthById(string laneId) =>
+        _network!.LanesById.TryGetValue(laneId, out var lane)
+            ? lane.Length
+            : throw new InvalidDataException($"<parkingArea> references unknown lane '{laneId}'.");
+
+    // P0-C2: rewrite every `<stop parkingArea="X"/>` (carrying only a ParkingAreaId placeholder from
+    // DemandParser) into a concrete lane stop -- LaneId=pa.lane, StartPos=pa.startPos, EndPos=lot-0
+    // position (see ParkingArea.Lot0Position). After this, departPos="stop" (Engine.cs:~2833) and
+    // ProcessNextStop consume the stop exactly like a plain lane <stop>, unchanged. Fast path: if no
+    // vehicle references a parkingArea, the demand is returned untouched (byte-identical), so any
+    // scenario without parkingArea stops is unaffected.
+    private static DemandModel ResolveParkingAreaStops(
+        DemandModel demand,
+        IReadOnlyDictionary<string, ParkingArea> parkingAreas)
+    {
+        var hasParkingStop = false;
+        foreach (var v in demand.Vehicles)
+        {
+            foreach (var s in v.Stops)
+            {
+                if (s.ParkingAreaId is not null)
+                {
+                    hasParkingStop = true;
+                    break;
+                }
+            }
+
+            if (hasParkingStop)
+            {
+                break;
+            }
+        }
+
+        if (!hasParkingStop)
+        {
+            return demand;
+        }
+
+        var newVehicles = new List<VehicleDef>(demand.Vehicles.Count);
+        foreach (var v in demand.Vehicles)
+        {
+            var needsResolve = false;
+            foreach (var s in v.Stops)
+            {
+                if (s.ParkingAreaId is not null)
+                {
+                    needsResolve = true;
+                    break;
+                }
+            }
+
+            if (!needsResolve)
+            {
+                newVehicles.Add(v);
+                continue;
+            }
+
+            var resolvedStops = new List<StopDef>(v.Stops.Count);
+            foreach (var s in v.Stops)
+            {
+                resolvedStops.Add(ResolveParkingAreaStop(s, parkingAreas));
+            }
+
+            newVehicles.Add(v with { Stops = resolvedStops });
+        }
+
+        return demand with { Vehicles = newVehicles };
+    }
+
+    private static StopDef ResolveParkingAreaStop(StopDef stop, IReadOnlyDictionary<string, ParkingArea> parkingAreas)
+    {
+        if (stop.ParkingAreaId is null)
+        {
+            return stop;
+        }
+
+        if (!parkingAreas.TryGetValue(stop.ParkingAreaId, out var pa))
+        {
+            throw new InvalidDataException(
+                $"<stop parkingArea='{stop.ParkingAreaId}'> references a parkingArea that is not " +
+                "declared in any additional-file.");
+        }
+
+        // Lot0Position throws a clear error if pa.RoadsideCapacity < 1 (out-of-scope SUMO branch).
+        return stop with
+        {
+            LaneId = pa.LaneId,
+            StartPos = pa.StartPos,
+            EndPos = pa.Lot0Position(),
+        };
     }
 
     // SUMOSHARP-API.md §9: load a network WITHOUT any demand -- the "start empty and spawn everything at

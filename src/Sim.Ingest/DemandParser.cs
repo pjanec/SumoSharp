@@ -213,11 +213,7 @@ public static class DemandParser
             var vehId = RequireAttribute(vehicleEl, "id");
 
             var stops = vehicleEl.Elements("stop")
-                .Select(stopEl => new StopDef(
-                    LaneId: RequireAttribute(stopEl, "lane"),
-                    StartPos: ParseNullableDouble(stopEl, "startPos") ?? 0.0,
-                    EndPos: ParseNullableDouble(stopEl, "endPos") ?? 0.0,
-                    Duration: ParseNullableDouble(stopEl, "duration") ?? 0.0))
+                .Select(ParseStop)
                 .ToList();
 
             // C2-iv: a vehicle's route is either a `route=` reference to a top-level <route id=...>
@@ -581,6 +577,40 @@ public static class DemandParser
 
         throw new InvalidDataException(
             $"{ownerDesc} has unsupported departPos=\"{value}\" (only a numeric literal or \"stop\" is supported).");
+    }
+
+    // Rung 5 + P0-C2: a <stop> is EITHER a plain lane stop (`lane=` with startPos/endPos/duration)
+    // OR a parkingArea stop (`parkingArea=` with NO lane -- the lane/endPos are resolved later from
+    // the parkingArea registry, in Engine.LoadScenario). A <stop> with neither `lane=` nor
+    // `parkingArea=` is rejected loudly (SUMO likewise requires a stopping-place reference).
+    private static StopDef ParseStop(XElement stopEl)
+    {
+        var parkingAreaId = stopEl.Attribute("parkingArea")?.Value;
+        if (parkingAreaId is not null)
+        {
+            // Placeholder lane/pos: DemandParser (route-files) can't see the additional-file that
+            // declares the parkingArea. Engine.ResolveParkingAreaStops fills LaneId/StartPos/EndPos
+            // from the registry after both are parsed.
+            return new StopDef(
+                LaneId: string.Empty,
+                StartPos: 0.0,
+                EndPos: 0.0,
+                Duration: ParseNullableDouble(stopEl, "duration") ?? 0.0,
+                ParkingAreaId: parkingAreaId);
+        }
+
+        if (stopEl.Attribute("lane")?.Value is null)
+        {
+            throw new InvalidDataException(
+                "<stop> requires either a 'lane' attribute (lane stop) or a 'parkingArea' attribute " +
+                "(parkingArea stop); neither was present.");
+        }
+
+        return new StopDef(
+            LaneId: RequireAttribute(stopEl, "lane"),
+            StartPos: ParseNullableDouble(stopEl, "startPos") ?? 0.0,
+            EndPos: ParseNullableDouble(stopEl, "endPos") ?? 0.0,
+            Duration: ParseNullableDouble(stopEl, "duration") ?? 0.0);
     }
 
     private static string RequireAttribute(XElement element, string name) =>

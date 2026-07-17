@@ -235,7 +235,7 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
 - [ ] **STEP 3 — owner steer received (Q1–Q5)** ← WE ARE HERE
 - [x] P0-A multi-file cfg  ·  scenarios/41-multifile-cfg + SUMO 1.20.0 golden  ·  parity green (474)
 - [x] P0-C1 symbolic departs (max/best + lane-stop)  ·  scenarios/42-symbolic-depart  ·  parity green (497)
-- [ ] P0-C2 parkingArea departPos=stop  ·  scenario + golden  ·  parity green
+- [x] P0-C2 parkingArea departPos=stop  ·  scenarios/48-parking-depart (parked-origin @198.0)  ·  parity green (556)
 - [x] P0-B vTypeDistribution  ·  scenarios/43-vtypedist + statistical test  ·  parity green (507)
 - [x] P0-D summary/statistic writers + harness parsers + comparator  ·  scenarios/44-summary-output  ·  parity green (521)
 - [ ] P1-E device.rerouting (design: docs/HIGH-DENSITY-P1E-DESIGN.md; owner-approved +jitter/behavioural-accept/route-slot)
