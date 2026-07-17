@@ -193,6 +193,16 @@ loses to per-item dispatch overhead, so **chunk over contiguous SoA ranges**, no
 decomposition (the `ComputeLaneRegions` analog, `docs/DOMAIN-DECOMP.md`) is a later lever once the flat
 parallel `Step` plateaus.
 
+**(d) Efficient agent add/remove for LOD churn.** *(Verified in POC-3.)* `OrcaCrowd` has no public
+agent-removal — only `RemoveOnArrival` deactivation — so a `PedLodManager` that promotes/demotes agents
+every step cannot add/remove them in place. POC-3 worked around this by **rebuilding the high-power crowd
+on any membership-change step** (carrying each surviving agent's position + velocity), which is correct and
+deterministic but O(high-power count) per change. At the ~10k high-power target with a moving interest
+source churning membership continuously, that rebuild is a real cost. Production needs either a genuine
+`Add`/`Remove` (free-list + generation, like the lane engine's slot recycling) on the crowd store, or a
+stable-slot crowd where demotion just deactivates. This is a POC-7 concern; the POC-3 rebuild is the
+interim.
+
 **Believability (Req 2).** Pure ORCA is inherently laneless; emergent bidirectional lane-formation is
 *realistic*, not a defect. Do **not** pre-build a density model. Measure a dense corridor + a bottleneck
 first (POC-4); add a density/pressure term (a speed–density fundamental-diagram relation on `maxSpeed`)
@@ -275,8 +285,12 @@ two decisions are made independently.
 Thresholds are on frozen distances with fixed tie-breaks → deterministic.
 
 On promotion, the agent is `Add`-ed to the high-power `OrcaCrowd` at its current path position and
-velocity; on demotion it is removed and re-attached to its path. Both are command-buffer transitions plus
-a DR-model lifecycle event (§7: `PathArc ↔ FreeKinematic`).
+velocity; on demotion it is removed and **re-routed a fresh path from its current (ORCA-drifted) position
+to its destination** — resuming the old polyline is wrong once avoidance has moved it off-path (verified in
+POC-3; re-query the navmesh instead). Both are command-buffer transitions plus a DR-model lifecycle event
+(§7: `PathArc ↔ FreeKinematic`). *(POC-3 note: promotion hysteresis used a single `dwell` knob covering
+both "minimum time in state" and "time outside all demote radii"; a production version may split them. The
+DR-switch event also carries the switch `time` so the IG applies it at the right instant.)*
 
 **Cost model:** compute scales with the high-power population, not the total — precisely the locality
 `Sim.Evac` already exploits, where the evac layer attaches only to vehicles inside a working region and
