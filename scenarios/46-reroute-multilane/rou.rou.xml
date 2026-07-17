@@ -1,0 +1,5 @@
+<routes>
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="viaShort" edges="e_src e_short e_dest"/>
+    <flow id="f" type="car" route="viaShort" begin="0" end="120" vehsPerHour="1200" departLane="0" departSpeed="0" departPos="0"/>
+</routes>

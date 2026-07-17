@@ -1,0 +1,25 @@
+<configuration>
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="300"/>
+        <step-length value="1"/>
+    </time>
+    <processing>
+        <step-method.ballistic value="false"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0"/>
+        <collision.action value="none"/>
+        <device.rerouting.probability value="1.0"/>
+        <device.rerouting.period value="30"/>
+        <device.rerouting.adaptation-steps value="18"/>
+        <routing-algorithm value="astar"/>
+    </processing>
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+</configuration>
