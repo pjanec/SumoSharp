@@ -239,9 +239,9 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
 - [x] P0-B vTypeDistribution  ·  scenarios/43-vtypedist + statistical test  ·  parity green (507)
 - [x] P0-D summary/statistic writers + harness parsers + comparator  ·  scenarios/44-summary-output  ·  parity green (521)
 - [ ] P1-E device.rerouting (design: docs/HIGH-DENSITY-P1E-DESIGN.md; owner-approved +jitter/behavioural-accept/route-slot)
-  - [ ] P1E-1 config keys (+gated jitter flag)
-  - [ ] P1E-2 edge-weight aggregation (ring-buffer moving average, isDelayed latch)
-  - [ ] P1E-3 A* router + effort fn (== Dijkstra on fixed weights)
+  - [x] P1E-1 config keys (+gated jitter flag) ✅
+  - [x] P1E-2 edge-weight aggregation (ring-buffer moving average, isDelayed latch) ✅
+  - [x] P1E-3 A* router + effort fn (== Dijkstra on fixed weights) ✅ (533 green)
   - [ ] P1E-4 periodic reroute trigger + parallel batch + route-slot recycling + jitter + integration
   - [ ] P1E-5 scenarios/NN-reroute-congestion (faithful anchor) + behavioural test
 - [ ] P1-F teleport valve  ·  `scenarios/NN-teleport-jam`  ·  parity green

@@ -45,7 +45,16 @@ public static class ScenarioConfigParser
             LateralResolution: ParseDouble(processingEl, "lateral-resolution", 0.0),
             NetFile: inputEl?.Element("net-file")?.Attribute("value")?.Value,
             RouteFiles: ParseFileList(inputEl, "route-files"),
-            AdditionalFiles: ParseFileList(inputEl, "additional-files"));
+            AdditionalFiles: ParseFileList(inputEl, "additional-files"),
+            // P1E-1: <processing><device.rerouting.*>/<routing-algorithm> -- absent for every
+            // pre-P1E-1 scenario, so every default below is "rerouting inert" (see ScenarioConfig's
+            // own header comment for what each key means and its SUMO/non-SUMO provenance).
+            RerouteProbability: ParseDouble(processingEl, "device.rerouting.probability", 0.0),
+            ReroutePeriod: ParseDouble(processingEl, "device.rerouting.period", 0.0),
+            RerouteAdaptationSteps: ParseInt(processingEl, "device.rerouting.adaptation-steps", 180),
+            RerouteAdaptationInterval: ParseDouble(processingEl, "device.rerouting.adaptation-interval", 1.0),
+            RoutingAlgorithm: processingEl?.Element("routing-algorithm")?.Attribute("value")?.Value ?? "dijkstra",
+            RerouteJitter: ParseBool(processingEl, "device.rerouting.jitter", defaultValue: false));
     }
 
     // P0-A: SUMO's <route-files value="a.rou.xml,b.rou.xml"/> / <additional-files value="..."/>
