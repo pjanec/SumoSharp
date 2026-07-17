@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- POC-1b (docs/PEDESTRIAN-POC-PLAN.md POC-1; docs/PEDESTRIAN-DESIGN.md §4, §10): the DotRecast
+         navmesh navigation provider, behind the SAME IWalkableSpace / IPedNavigation seam the
+         SUMO-geometry-bake provider (Sim.Pedestrians/Navigation/Bake) implements. Deliberately kept in
+         its OWN project so the DotRecast dependency stays off Sim.Pedestrians and the hermetic
+         `dotnet test` core: a caller who never references this project never pulls DotRecast in. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reuse Sim.Core's Vec2 and Sim.Pedestrians' WalkablePolygonBaker / BakedPolygon / INavigation
+         seam: this project supplies a second implementation of that seam, not a new one. -->
+    <ProjectReference Include="..\Sim.Pedestrians\Sim.Pedestrians.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Prefer the pure-managed DotRecast.Recast + DotRecast.Detour packages over
+         DotRecast.Recast.Toolset: the Toolset package drags in Detour.Crowd / Detour.Dynamic /
+         Detour.Extras / Detour.TileCache we don't need. DotRecast.Core is pulled in transitively by
+         both. All three restore with no native runtime asset and no Newtonsoft.Json dependency. -->
+    <PackageReference Include="DotRecast.Recast" Version="2024.4.1" />
+    <PackageReference Include="DotRecast.Detour" Version="2024.4.1" />
+  </ItemGroup>
+
+</Project>
