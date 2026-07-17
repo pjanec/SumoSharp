@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Platoon shockwave (rung 7). Five passenger vehicles (sigma=0) enter FIFO on one
+         single lane and form a platoon cruising at the limit. The lead vehicle (veh0) has a
+         scheduled <stop> at endPos=500 (duration 15 s): it brakes to a halt, and the
+         deceleration propagates backward one vehicle at a time (a shockwave), then a forward
+         acceleration wave follows when veh0 resumes. Pure composition of leader-following
+         (rung 4) + stop (rung 5) + gap-gated insertion (rung 6); no emergency braking (max
+         1-step deceleration is exactly the 4.5 m/s^2 bound). This is a strong test of the
+         plan/execute double buffer: the wave speed depends on each follower reacting to its
+         leader's START-OF-STEP state, not its updated-this-step state. -->
+    <vType id="passenger0" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="veh0" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0">
+        <stop lane="e0_0" startPos="495" endPos="500" duration="15"/>
+    </vehicle>
+    <vehicle id="veh1" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="veh2" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="veh3" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="veh4" type="passenger0" route="r0" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+</routes>
