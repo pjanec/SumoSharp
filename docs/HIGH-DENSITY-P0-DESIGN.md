@@ -168,7 +168,7 @@ meanSpeed= meanSpeedRelative= .../>`; `--statistic-output` writes a `<statistics
 ---
 
 ## Tracker (P0)
-- [ ] P0-A multi-file cfg — parser + DemandParser merge + LoadScenario(cfg) + Sim.Run + scenario 41
+- [x] P0-A multi-file cfg — parser + DemandParser merge + LoadScenario(cfg) + Sim.Run + scenario 41 ✅ (474 green)
 - [ ] P0-C symbolic departs — specs + insertion resolution + scenario 42
 - [ ] P0-B vTypeDistribution — parse + deterministic parity 43 + statistical sampling test
 - [ ] P0-D summary/statistic writers + harness parsers + comparator + scenario 44

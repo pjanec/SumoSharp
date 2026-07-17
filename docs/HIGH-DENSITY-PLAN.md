@@ -233,7 +233,7 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
 - [x] STEP 2 — P2-G/H evidence gathered (P2-H confirmed; P2-G likely; live dense run blocked pre-P0)
 - [x] STEP 3 — this plan written
 - [ ] **STEP 3 — owner steer received (Q1–Q5)** ← WE ARE HERE
-- [ ] P0-A multi-file cfg  ·  scenario + golden  ·  parity green
+- [x] P0-A multi-file cfg  ·  scenarios/41-multifile-cfg + SUMO 1.20.0 golden  ·  parity green (474)
 - [ ] P0-C symbolic departs  ·  scenario + golden  ·  parity green
 - [ ] P0-B vTypeDistribution  ·  scenario + golden  ·  parity green
 - [ ] P0-D summary/statistic writers  ·  scenario + golden  ·  parity green
