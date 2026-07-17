@@ -18,6 +18,10 @@ public static class DemandParser
     // <vehicle> with no type= falls back to.
     private const string DefaultVehTypeId = "DEFAULT_VEHTYPE";
 
+    // P0-B: whitespace separators accepted by SUMO's StringTokenizer for vTypeDistribution's
+    // vTypes=/probabilities= attribute lists.
+    private static readonly char[] WhitespaceChars = { ' ', '\t', '\n', '\r' };
+
     public static DemandModel Parse(string path) => Parse(new[] { path });
 
     public static DemandModel ParseXml(string xml) => ParseDocument(XDocument.Parse(xml));
@@ -58,6 +62,7 @@ public static class DemandParser
         public readonly Dictionary<string, Route> RoutesById = new();
         public readonly List<VehicleDef> Vehicles = new();
         public readonly List<ProbabilisticFlow> ProbFlows = new();
+        public readonly Dictionary<string, VTypeDistribution> VTypeDistributionsById = new();
         public bool NeedsDefaultVehType;
     }
 
@@ -69,58 +74,7 @@ public static class DemandParser
         var vTypesById = acc.VTypesById;
         foreach (var vTypeEl in root.Elements("vType"))
         {
-            var vType = new VType(
-                Id: RequireAttribute(vTypeEl, "id"),
-                VClass: vTypeEl.Attribute("vClass")?.Value,
-                Sigma: ParseNullableDouble(vTypeEl, "sigma"),
-                MaxSpeed: ParseNullableDouble(vTypeEl, "maxSpeed"),
-                Accel: ParseNullableDouble(vTypeEl, "accel"),
-                Decel: ParseNullableDouble(vTypeEl, "decel"),
-                Tau: ParseNullableDouble(vTypeEl, "tau"),
-                MinGap: ParseNullableDouble(vTypeEl, "minGap"),
-                Length: ParseNullableDouble(vTypeEl, "length"),
-                EmergencyDecel: ParseNullableDouble(vTypeEl, "emergencyDecel"),
-                SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"),
-                // Rung A3: a vType ATTRIBUTE, not a <param> child -- SUMO's getJMParam reads the
-                // attribute map (SUMOVTypeParameter's map of junction-model params populated
-                // straight from the <vType>'s own XML attributes for jm* names).
-                JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"),
-                // Rung ER2: emergency ignore-FOE junction-model attributes, read from the <vType>'s
-                // own XML attribute map exactly like jmDriveAfterRedTime (SUMO's getJMParam).
-                JmIgnoreFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreFoeProb"),
-                JmIgnoreFoeSpeed: ParseNullableDouble(vTypeEl, "jmIgnoreFoeSpeed"),
-                JmIgnoreJunctionFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreJunctionFoeProb"),
-                // Rung ER3 (give-way): whether this vType carries an active blue-light siren (our
-                // opt-in model of SUMO's MSDevice_Bluelight assignment, `has.bluelight.device`).
-                // Default false -> no give-way is ever induced, so every existing scenario (incl.
-                // the emergency-privilege scenarios 16/50/51/52, whose EVs set NO bluelight) is
-                // byte-identical. Read as a vType attribute `hasBluelight="true"`.
-                HasBluelight: ParseNullableBool(vTypeEl, "hasBluelight"),
-                // Rung OV1: opt-in opposite-direction overtaking (SUMO's lcOpposite analog).
-                LcOpposite: ParseNullableBool(vTypeEl, "lcOpposite"),
-                // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
-                // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
-                CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value,
-                // Rung R6: MSCFModel_Rail cf-params, read straight from the <vType> attributes (the
-                // same attribute map SUMO's getCFParam/getCFParamString reads). Absent for every
-                // non-Rail vType.
-                TrainType: vTypeEl.Attribute("trainType")?.Value,
-                MaxPower: ParseNullableDouble(vTypeEl, "maxPower"),
-                MaxTraction: ParseNullableDouble(vTypeEl, "maxTraction"),
-                ResCoefConstant: ParseNullableDouble(vTypeEl, "resCoef_constant"),
-                ResCoefLinear: ParseNullableDouble(vTypeEl, "resCoef_linear"),
-                ResCoefQuadratic: ParseNullableDouble(vTypeEl, "resCoef_quadratic"),
-                MassFactor: ParseNullableDouble(vTypeEl, "massFactor"),
-                Mass: ParseNullableDouble(vTypeEl, "mass"),
-                // Phase 2 (sublane): SUMO's maxSpeedLat / latAlignment vType attributes. Absent
-                // for every phase-1 vType -> resolve to SUMO defaults (1.0 / "center") in
-                // VTypeDefaults.Resolve; inert unless the scenario sets lateral-resolution > 0.
-                MaxSpeedLat: ParseNullableDouble(vTypeEl, "maxSpeedLat"),
-                LatAlignment: vTypeEl.Attribute("latAlignment")?.Value,
-                // Rung P2-core (keepLatGap): SUMO's minGapLat vType attribute. Absent for every
-                // pre-existing vType -> resolves to SUMO's 0.6 default in VTypeDefaults.Resolve;
-                // inert unless lateral-resolution > 0.
-                MinGapLat: ParseNullableDouble(vTypeEl, "minGapLat"));
+            var vType = ParseVTypeElement(vTypeEl);
 
             // P0-A: SUMO errors on a duplicate vType id -- whether the duplicate comes from the
             // same file or a second route-file in a multi-file <route-files> list, since both
@@ -131,6 +85,108 @@ public static class DemandParser
             }
 
             vTypes.Add(vType);
+        }
+
+        // P0-B: <vTypeDistribution id="..."> -- either the ATTRIBUTE form (`vTypes="a:0.7 b:0.3"`,
+        // referencing vTypes declared elsewhere) or the NESTED form (child <vType probability=.../>
+        // elements, which are ALSO folded into the same vTypesById set above so they resolve by id
+        // like any other vType). Both forms normalise their raw weights to sum to 1 -- see
+        // DemandModel.VTypeDistributionMember's own comment for why Probability is always
+        // pre-normalised here rather than left as a raw SUMO weight.
+        var vTypeDistributionsById = acc.VTypeDistributionsById;
+        foreach (var vTypeDistEl in root.Elements("vTypeDistribution"))
+        {
+            var distId = RequireAttribute(vTypeDistEl, "id");
+            var rawMembers = new List<VTypeDistributionMember>();
+
+            var vTypesAttr = vTypeDistEl.Attribute("vTypes")?.Value;
+            if (vTypesAttr is not null)
+            {
+                // REAL SUMO syntax (verified against the vendored source,
+                // sumo/src/microsim/MSRouteHandler.cpp:246-288 openVehicleTypeDistribution):
+                // `vTypes` is a whitespace-separated list of PLAIN ids; a separate, OPTIONAL
+                // `probabilities` attribute carries the parallel whitespace-separated weight list,
+                // index-aligned with vTypes (a vTypes entry past the end of a shorter/absent
+                // probabilities list defaults to weight 1 -- MSRouteHandler.cpp:266,277's
+                // `probs.size() > probIndex ? probs[probIndex] : 1.` fallback). We ALSO accept an
+                // "id:weight" colon-embedded token as a harmless convenience extension (NOT itself
+                // SUMO syntax) when no `probabilities` attribute is present, so either authoring
+                // style parses.
+                var vTypeTokens = vTypesAttr.Split(WhitespaceChars, StringSplitOptions.RemoveEmptyEntries);
+                var probsAttr = vTypeDistEl.Attribute("probabilities")?.Value;
+                if (probsAttr is not null)
+                {
+                    var probTokens = probsAttr.Split(WhitespaceChars, StringSplitOptions.RemoveEmptyEntries);
+                    for (var i = 0; i < vTypeTokens.Length; i++)
+                    {
+                        var weight = i < probTokens.Length
+                            ? double.Parse(probTokens[i], CultureInfo.InvariantCulture)
+                            : 1.0;
+                        rawMembers.Add(new VTypeDistributionMember(vTypeTokens[i], weight));
+                    }
+                }
+                else
+                {
+                    foreach (var token in vTypeTokens)
+                    {
+                        var colonIdx = token.IndexOf(':');
+                        if (colonIdx < 0)
+                        {
+                            rawMembers.Add(new VTypeDistributionMember(token, 1.0));
+                        }
+                        else
+                        {
+                            var memberId = token[..colonIdx];
+                            var weight = double.Parse(token[(colonIdx + 1)..], CultureInfo.InvariantCulture);
+                            rawMembers.Add(new VTypeDistributionMember(memberId, weight));
+                        }
+                    }
+                }
+            }
+
+            // Nested form: <vType .../ probability="w"> children -- full vType parsing (same
+            // attributes a top-level <vType> accepts), added to vTypesById/vTypes so a plain
+            // direct-lookup by member id also works, plus its own probability= weight.
+            foreach (var nestedVTypeEl in vTypeDistEl.Elements("vType"))
+            {
+                var nestedVType = ParseVTypeElement(nestedVTypeEl);
+                if (!vTypesById.TryAdd(nestedVType.Id, nestedVType))
+                {
+                    throw new InvalidDataException($"duplicate <vType id='{nestedVType.Id}'>.");
+                }
+
+                vTypes.Add(nestedVType);
+                var weight = ParseNullableDouble(nestedVTypeEl, "probability") ?? 1.0;
+                rawMembers.Add(new VTypeDistributionMember(nestedVType.Id, weight));
+            }
+
+            if (rawMembers.Count == 0)
+            {
+                throw new InvalidDataException(
+                    $"<vTypeDistribution id='{distId}'> has no members (neither vTypes= nor a nested <vType>).");
+            }
+
+            var totalWeight = 0.0;
+            foreach (var m in rawMembers)
+            {
+                totalWeight += m.Probability;
+            }
+
+            if (!(totalWeight > 0.0))
+            {
+                throw new InvalidDataException($"<vTypeDistribution id='{distId}'> total weight must be > 0.");
+            }
+
+            var normalisedMembers = new List<VTypeDistributionMember>(rawMembers.Count);
+            foreach (var m in rawMembers)
+            {
+                normalisedMembers.Add(new VTypeDistributionMember(m.VTypeId, m.Probability / totalWeight));
+            }
+
+            if (!vTypeDistributionsById.TryAdd(distId, new VTypeDistribution(distId, normalisedMembers)))
+            {
+                throw new InvalidDataException($"duplicate <vTypeDistribution id='{distId}'>.");
+            }
         }
 
         var routes = acc.Routes;
@@ -361,8 +417,67 @@ public static class DemandParser
             acc.VTypesById[DefaultVehTypeId] = defaultVehType;
         }
 
-        return new DemandModel(acc.VTypes, acc.VTypesById, acc.Routes, acc.RoutesById, acc.Vehicles, acc.ProbFlows);
+        return new DemandModel(
+            acc.VTypes, acc.VTypesById, acc.Routes, acc.RoutesById, acc.Vehicles, acc.ProbFlows,
+            acc.VTypeDistributionsById);
     }
+
+    // Extracted so P0-B's nested <vTypeDistribution><vType probability=.../></vTypeDistribution>
+    // members parse through the EXACT same attribute set as a top-level <vType> (the only
+    // difference is the caller: the top-level loop above, or the nested-vType loop inside the
+    // vTypeDistribution loop below).
+    private static VType ParseVTypeElement(XElement vTypeEl) => new(
+        Id: RequireAttribute(vTypeEl, "id"),
+        VClass: vTypeEl.Attribute("vClass")?.Value,
+        Sigma: ParseNullableDouble(vTypeEl, "sigma"),
+        MaxSpeed: ParseNullableDouble(vTypeEl, "maxSpeed"),
+        Accel: ParseNullableDouble(vTypeEl, "accel"),
+        Decel: ParseNullableDouble(vTypeEl, "decel"),
+        Tau: ParseNullableDouble(vTypeEl, "tau"),
+        MinGap: ParseNullableDouble(vTypeEl, "minGap"),
+        Length: ParseNullableDouble(vTypeEl, "length"),
+        EmergencyDecel: ParseNullableDouble(vTypeEl, "emergencyDecel"),
+        SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"),
+        // Rung A3: a vType ATTRIBUTE, not a <param> child -- SUMO's getJMParam reads the
+        // attribute map (SUMOVTypeParameter's map of junction-model params populated
+        // straight from the <vType>'s own XML attributes for jm* names).
+        JmDriveAfterRedTime: ParseNullableDouble(vTypeEl, "jmDriveAfterRedTime"),
+        // Rung ER2: emergency ignore-FOE junction-model attributes, read from the <vType>'s
+        // own XML attribute map exactly like jmDriveAfterRedTime (SUMO's getJMParam).
+        JmIgnoreFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreFoeProb"),
+        JmIgnoreFoeSpeed: ParseNullableDouble(vTypeEl, "jmIgnoreFoeSpeed"),
+        JmIgnoreJunctionFoeProb: ParseNullableDouble(vTypeEl, "jmIgnoreJunctionFoeProb"),
+        // Rung ER3 (give-way): whether this vType carries an active blue-light siren (our
+        // opt-in model of SUMO's MSDevice_Bluelight assignment, `has.bluelight.device`).
+        // Default false -> no give-way is ever induced, so every existing scenario (incl.
+        // the emergency-privilege scenarios 16/50/51/52, whose EVs set NO bluelight) is
+        // byte-identical. Read as a vType attribute `hasBluelight="true"`.
+        HasBluelight: ParseNullableBool(vTypeEl, "hasBluelight"),
+        // Rung OV1: opt-in opposite-direction overtaking (SUMO's lcOpposite analog).
+        LcOpposite: ParseNullableBool(vTypeEl, "lcOpposite"),
+        // C11-i: SUMOVTypeParameter.cpp's carFollowModel="..." vType attribute (a plain
+        // string tag name -- "Krauss", "IDM", etc. -- SUMOXMLDefinitions::CarFollowModels).
+        CarFollowModel: vTypeEl.Attribute("carFollowModel")?.Value,
+        // Rung R6: MSCFModel_Rail cf-params, read straight from the <vType> attributes (the
+        // same attribute map SUMO's getCFParam/getCFParamString reads). Absent for every
+        // non-Rail vType.
+        TrainType: vTypeEl.Attribute("trainType")?.Value,
+        MaxPower: ParseNullableDouble(vTypeEl, "maxPower"),
+        MaxTraction: ParseNullableDouble(vTypeEl, "maxTraction"),
+        ResCoefConstant: ParseNullableDouble(vTypeEl, "resCoef_constant"),
+        ResCoefLinear: ParseNullableDouble(vTypeEl, "resCoef_linear"),
+        ResCoefQuadratic: ParseNullableDouble(vTypeEl, "resCoef_quadratic"),
+        MassFactor: ParseNullableDouble(vTypeEl, "massFactor"),
+        Mass: ParseNullableDouble(vTypeEl, "mass"),
+        // Phase 2 (sublane): SUMO's maxSpeedLat / latAlignment vType attributes. Absent
+        // for every phase-1 vType -> resolve to SUMO defaults (1.0 / "center") in
+        // VTypeDefaults.Resolve; inert unless the scenario sets lateral-resolution > 0.
+        MaxSpeedLat: ParseNullableDouble(vTypeEl, "maxSpeedLat"),
+        LatAlignment: vTypeEl.Attribute("latAlignment")?.Value,
+        // Rung P2-core (keepLatGap): SUMO's minGapLat vType attribute. Absent for every
+        // pre-existing vType -> resolves to SUMO's 0.6 default in VTypeDefaults.Resolve;
+        // inert unless lateral-resolution > 0.
+        MinGapLat: ParseNullableDouble(vTypeEl, "minGapLat"));
 
     private static double? ParseNullableDouble(XElement element, string name)
     {

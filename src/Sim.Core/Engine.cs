@@ -762,6 +762,16 @@ public sealed partial class Engine : IEngine
     // salt would do).
     private const ulong ProbFlowRngSalt = 0x466C6F32526E6720UL;
 
+    // P0-B (vTypeDistribution resolution, owner Q1b): a distinct salt so the once-at-creation
+    // <vTypeDistribution> member draw (BuildRuntime/ResolveEffectiveTypeId) gets its OWN
+    // per-entity RNG stream, seeded off (Seed, entityIndex) via VehicleRng.SeedFor's 3-arg
+    // overload -- same independence argument as SpeedFactorRngSalt/ProbFlowRngSalt: never shares
+    // state with RngState (the dawdle stream) or the SpeedFactor stream, so the draw is a pure,
+    // deterministic function of (Seed, entityIndex, distribution) -- independent of thread/
+    // scheduling order and of how many other vehicles exist. ("VTypeDis" packed big-endian; any
+    // distinct nonzero salt would do.)
+    private const ulong VTypeDistRngSalt = 0x5654797065446973UL;
+
     // D9 (FastDataPlane ECS readiness -- info/replication export SEAM, TASKS.md line ~651):
     // the registered `ISimExportObserver`s notified once per active vehicle, once per
     // Export-phase frame, from EmitTrajectory below. Empty by default -- with no observer
@@ -1171,13 +1181,70 @@ public sealed partial class Engine : IEngine
     // depart time. Also (re)initialises the idx-keyed side tables for this slot, so a RECYCLED slot never
     // inherits the previous occupant's stops or reroute-avoid set; on a fresh slot the removes are no-ops,
     // keeping the append path byte-identical.
+    // P0-B (vTypeDistribution resolution, owner Q1b -- HIGH-DENSITY-P0-DESIGN.md "P0-B"):
+    // `typeId` is a vehicle/flow's raw type= string. If it already names a declared <vType>, it is
+    // returned AS-IS -- this is the byte-identical fast path every pre-P0-B scenario (and every
+    // plain, non-distribution type= after P0-B) takes, with no RNG draw at all. Only a name that is
+    // NOT a known vType, but IS a known <vTypeDistribution> id, draws a concrete member.
+    //
+    // Determinism/parallel-safety: the draw uses a per-entity SALTED VehicleRng
+    // (VehicleRng.SeedFor(Seed, entityIndex, VTypeDistRngSalt)) -- a fresh, throwaway RNG built
+    // from ONLY (Seed, entityIndex), drawn from exactly once, then discarded (never stored on
+    // VehicleRuntime, never advanced again) -- the SAME one-shot-local-RNG pattern the speedFactor
+    // draw above already establishes. So the result is a pure function of (Seed, entityIndex,
+    // distribution): independent of thread/scheduling order, of insertion order, and of how many
+    // other vehicles exist or which other distributions they draw from (NEVER System.Random, NEVER
+    // a shared/global stream -- CLAUDE.md's determinism rule).
+    //
+    // Sampling: standard cumulative-probability selection over `dist.Members` (already normalised
+    // to sum to 1 by DemandParser) -- draw one uniform double in [0,1), walk the members in their
+    // parsed order accreting a running sum, and return the first member whose cumulative bound
+    // exceeds the draw. The final member is a floating-point safety-net fallback (normalised
+    // weights sum to 1 exactly in exact arithmetic, but the last cumulative bound can land a hair
+    // below 1.0 after repeated float addition) -- never an out-of-range throw.
+    private string ResolveEffectiveTypeId(string typeId, int entityIndex)
+    {
+        if (_vTypesById.ContainsKey(typeId))
+        {
+            return typeId;
+        }
+
+        if (_demand!.VTypeDistributions.TryGetValue(typeId, out var dist))
+        {
+            var rng = VehicleRng.SeedFor(Seed, entityIndex, VTypeDistRngSalt);
+            var draw = rng.NextDouble();
+            var cumulative = 0.0;
+            foreach (var member in dist.Members)
+            {
+                cumulative += member.Probability;
+                if (draw < cumulative)
+                {
+                    return member.VTypeId;
+                }
+            }
+
+            return dist.Members[^1].VTypeId;
+        }
+
+        // Neither a known vType nor a known distribution -- fall through unchanged so the caller's
+        // direct `_vTypesById[...]` indexer throws the SAME KeyNotFoundException (and message) a
+        // pre-P0-B unknown type= always threw, rather than a new/different error shape here.
+        return typeId;
+    }
+
     private VehicleRuntime BuildRuntime(VehicleDef def, int entityIndex)
     {
         // Clear any stale idx-keyed side state (only non-empty when recycling a freed slot).
         _stopsByEntity.Remove(entityIndex);
         _avoidedByEntity.Remove(entityIndex);
 
-        var rawVType = _vTypesById[def.TypeId];
+        // P0-B: resolve def.TypeId to a concrete vType id FIRST -- a plain vType id (every
+        // pre-P0-B scenario, and the overwhelming majority even after P0-B) is returned unchanged,
+        // so this indexer lookup is byte-identical to the pre-P0-B direct `_vTypesById[def.TypeId]`
+        // call. Only a name that is NOT itself a known vType, but IS a known <vTypeDistribution>
+        // id, takes the new per-entity weighted-draw path. See ResolveEffectiveTypeId's own
+        // comment for the determinism argument.
+        var rawVType = _vTypesById[ResolveEffectiveTypeId(def.TypeId, entityIndex)];
         // vType defaults resolver (CLAUDE.md rule 6: match vType/init first): only vClass
         // and any explicit overrides (e.g. rou.xml's sigma="0") come from the raw parse;
         // everything else is a resolved SUMO vClass default (VTypeDefaults.Resolve).
@@ -1522,7 +1589,12 @@ public sealed partial class Engine : IEngine
                     : -1;
             }
 
-            _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.Def.TypeId,
+            // P0-B: the RESOLVED concrete vType id (v.VType.Id), not the raw v.Def.TypeId -- for a
+            // plain (non-distribution) type= these are identical, so every pre-P0-B read is
+            // byte-identical; for a <vTypeDistribution> id, this publishes the drawn MEMBER's id
+            // (matching real SUMO, which exposes the concrete resolved vType, never the
+            // distribution name, once a vehicle is built).
+            _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
                 (byte)RegimeOf(v), v.LateralManoeuvre);
@@ -8640,7 +8712,9 @@ public sealed partial class Engine : IEngine
                 entity: v.Entity,
                 entityIndex: v.EntityIndex,
                 vehicleId: v.Def.Id,
-                vehicleType: v.Def.TypeId,
+                // P0-B: resolved concrete vType id -- see the read-buffer Add call's own comment
+                // above (same reasoning, same byte-identical-for-non-distribution guarantee).
+                vehicleType: v.VType.Id,
                 time: time,
                 lane: v.LaneId,
                 pos: v.Kinematics.Pos,

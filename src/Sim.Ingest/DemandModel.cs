@@ -75,6 +75,20 @@ public sealed record Route(
     string Id,
     IReadOnlyList<string> Edges);
 
+// P0-B (vTypeDistribution resolution): one normalised member of a <vTypeDistribution> --
+// `VTypeId` names a concrete <vType> (declared either at top level, for the attribute form's
+// `vTypes="id:weight"` tokens, or inline as a nested <vType probability=...> child -- both are
+// folded into the SAME vTypesById set by DemandParser). `Probability` is the NORMALISED weight
+// (DemandParser divides every raw weight by the distribution's weight sum, so a distribution's
+// members always sum to 1.0) -- never a raw, un-normalised SUMO weight.
+public sealed record VTypeDistributionMember(string VTypeId, double Probability);
+
+// P0-B: the parsed <vTypeDistribution id="..."> registry entry -- `Members` is ordered exactly
+// as encountered in the source XML (attribute-form tokens left-to-right, or nested <vType>
+// children in document order), which is also the order Engine's cumulative-probability draw
+// walks (see Engine.ResolveEffectiveTypeId).
+public sealed record VTypeDistribution(string Id, IReadOnlyList<VTypeDistributionMember> Members);
+
 // A scheduled <stop> child of <vehicle> (rung 5). Only the non-waypoint lane-stop subset is
 // modeled (lane/startPos/endPos/duration) -- busStop/parkingArea/triggered/until/waypoint
 // (speed>0) stops are Sim.Ingest's future-scenario surface, not this rung's.
@@ -135,9 +149,17 @@ public sealed record DemandModel(
     IReadOnlyList<Route> Routes,
     IReadOnlyDictionary<string, Route> RoutesById,
     IReadOnlyList<VehicleDef> Vehicles,
-    IReadOnlyList<ProbabilisticFlow>? ProbabilisticFlows = null)
+    IReadOnlyList<ProbabilisticFlow>? ProbabilisticFlows = null,
+    // P0-B: id -> normalised distribution, additive/optional (every pre-P0-B caller omits it and
+    // gets an empty registry -- see the ctor-default pattern note on ProbabilisticFlows above).
+    IReadOnlyDictionary<string, VTypeDistribution>? VTypeDistributions = null)
 {
     // Same "records can't default a reference-type param to an allocated empty collection" pattern
     // as VehicleDef.Stops: callers that predate F2 omit the arg and get an empty list, never null.
     public IReadOnlyList<ProbabilisticFlow> ProbabilisticFlows { get; init; } = ProbabilisticFlows ?? Array.Empty<ProbabilisticFlow>();
+
+    // P0-B: same pattern -- callers that predate vTypeDistribution support omit the arg and get an
+    // empty (never null) registry, so `_demand.VTypeDistributions.TryGetValue(...)` is always safe.
+    public IReadOnlyDictionary<string, VTypeDistribution> VTypeDistributions { get; init; } =
+        VTypeDistributions ?? new Dictionary<string, VTypeDistribution>(StringComparer.Ordinal);
 }
