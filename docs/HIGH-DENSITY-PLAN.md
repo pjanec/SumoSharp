@@ -245,6 +245,9 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
   - [x] P1E-4 periodic reroute trigger + parallel batch + route-slot recycling + jitter + integration
   - [x] P1E-5 scenarios/45-reroute-congestion faithful anchor (EXACT parity, all-single-lane) + jitter/recycling tests (539 green)
   - [x] P1E-6 pre-insertion rerouting -> multi-lane route split exact (scenarios/46, behavioural; 543 green). Residual multi-lane pos/speed divergence = pre-existing P2-G gap (confirmed: identical without rerouting), tracked separately.
-- [ ] P1-F teleport valve  ·  `scenarios/NN-teleport-jam`  ·  parity green
+- [ ] P1-F teleport valve (design: docs/HIGH-DENSITY-P1F-DESIGN.md)
+  - [ ] P1F-1 config (time-to-teleport.remove) + WaitingTime !isStopped guard
+  - [ ] P1F-2 jam detection + CommandBuffer.Teleport + transfer queue/virtual-proceed + counter
+  - [ ] P1F-3 scenarios/47-teleport-jam + golden (FCD + teleports=1)
 - [ ] P2-G/H verify-then-fix (after P0, real dense config)
 - [ ] X1 attention-aware popping (functional/statistical tests, no parity)
