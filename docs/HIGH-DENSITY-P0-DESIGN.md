@@ -155,27 +155,44 @@ it at the same position and reproduces the trajectory. Full suite green.
 `<vType .../>` with `probability=`). A `<vehicle type="civ_vehicle">` gets a member vType sampled
 by probability. SUMO samples from its RNG per vehicle.
 
-**Design (owner Q1b — RNG-insensitive).**
-1. Parse `<vTypeDistribution>` (in route-files or additional-files) into a distribution registry:
-   id → [(vTypeId, probability)], normalised.
-2. Resolution: when a vehicle's `type=` names a distribution, assign a member.
-   - **Parity gate scenario uses a single-member or `probability`-degenerate distribution**
-     (or an assignment rule we can match deterministically) so the golden's type-per-vehicle is
-     reproducible **without** cloning SUMO's PRNG stream — this is the RNG-insensitive gate.
-   - **Sampling correctness** (multi-member weighted draw) is validated in a **separate
-     statistical** test (`parityMode:"statistical"`): over many vehicles the assigned-type
-     histogram matches the declared probabilities within tolerance — not vehicle-for-vehicle.
-   - Seed via per-entity hashed RNG (never `System.Random`), per DESIGN.md.
+**SUMO syntax (both forms must parse):**
+- Attribute form: `<vTypeDistribution id="civ" vTypes="car:0.7 van:0.3"/>` — members reference
+  vTypes declared elsewhere; weights after the colon (a member without `:w` defaults weight 1).
+- Nested form: `<vTypeDistribution id="civ"> <vType id="car" .../ probability="0.7"> ... </>` —
+  members are inline vType definitions carrying a `probability=` attribute.
+A `<vehicle type="civ">`/`<flow type="civ">` whose `type=` names a distribution id draws a member.
 
-**Files touched:** new `VTypeDistribution` parse in ingest, demand model, `Engine`/type resolution.
+**Design (owner Q1b — RNG-insensitive).**
+1. Parse `<vTypeDistribution>` (in route-files or additional-files) into a registry:
+   id → normalised [(vTypeId, probability)]. Nested inline vTypes are also added to the vType set.
+2. **Resolution timing.** Keep the distribution in the demand model; resolve a vehicle's concrete
+   member vType **at vehicle-creation time in `Engine`** (where the per-entity seeded RNG lives),
+   drawing from a **per-entity hashed RNG** (hash of entity id / vehicle id — never `System.Random`,
+   never a shared stream), so the assignment is independent of thread/scheduling order (DESIGN.md).
+3. **RNG-insensitive parity gate (the key trick).** The parity comparator compares only
+   `(lane, pos, speed)` (per `tolerance.json` `comparedAttributes`), **not** the FCD `type=`
+   attribute. So a distribution whose members are **behaviourally identical** (same accel/decel/tau/
+   maxSpeed/length/minGap; different ids only) yields a golden trajectory that is **invariant to
+   which member each vehicle draws** — SumoSharp matches the golden without reproducing SUMO's PRNG
+   draw. The scenario also asserts (functionally) that every vehicle resolved to *a* declared member.
+4. **Sampling correctness** is a separate statistical/functional test: a multi-member *weighted*
+   distribution, 500+ draws via SumoSharp's own seeded RNG, assert the member-frequency histogram
+   matches the declared weights within tolerance. (Not a SUMO golden comparison — different RNG.)
+
+**Files touched:** new `VTypeDistribution` type + parse in `DemandParser`/`DemandModel`, distribution
+registry on `DemandModel`, `Engine` type-resolution at vehicle creation (survey the existing
+per-entity dawdle-RNG seeding to reuse its hashing).
 
 **Success conditions (P0-B):**
-- Unit test: parse a `<vTypeDistribution>` with weights → normalised registry.
-- Parity scenario `scenarios/43-vtypedist` with a degenerate/deterministic distribution: golden
-  type assignment + trajectory reproduced exactly.
-- Statistical test: 500+ vehicles over a weighted distribution → member-type frequencies within
-  statistical tolerance of the declared weights.
-- `dotnet test` green.
+- Unit tests: parse both the attribute (`vTypes="a:0.7 b:0.3"`) and nested (`<vType probability=>`)
+  forms → normalised registry; a member without an explicit weight defaults to 1.
+- Parity scenario `scenarios/43-vtypedist`: several vehicles with `type="<distId>"` over a
+  **behaviourally-identical 2-member** distribution; golden from SUMO 1.20.0; SumoSharp reproduces
+  `(lane,pos,speed)` within tolerance AND every vehicle's resolved type ∈ the members.
+- Statistical test: 500+ vehicles over a weighted (e.g. 0.7/0.3) distribution → frequencies within
+  statistical tolerance of the weights.
+- `dotnet test` green; all prior goldens byte-identical (a plain `type=` that is NOT a distribution
+  id keeps the exact direct-lookup path).
 
 ---
 
