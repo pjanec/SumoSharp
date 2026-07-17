@@ -270,7 +270,17 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     DiscardedDepartureCount) + scenarios/50-max-depart-delay BIT-EXACT anchor (blocker stops the
     insertion zone; SUMO drops 9 of 13 followers past the 5 s delay, inserts 4 -- incl. v10/v12 on
     their exact eviction step, proving attempt-before-evict order); 561 green, byte-identical ✅
-- [ ] X1 attention-aware popping (functional/statistical tests, no parity) -- DESIGNED
-  (docs/HIGH-DENSITY-X1-DESIGN.md): RealismMask (immutable snapshot + volatile swap) gating the
-  teleport action (CheckJamTeleports) + on-lane spawn (InsertDepartingVehicles); inert-by-default.
-  Awaiting owner sign-off on scope before implementation.
+- [x] X1 attention-aware popping (functional/statistical tests, no parity) -- IMPLEMENTED
+  (docs/HIGH-DENSITY-X1-DESIGN.md) ✅
+  - [x] X1-1 RealismMask (immutable snapshot + volatile lock-free swap, per-step captured) +
+    Engine.SetVisibleEdges/ClearVisibleEdges; gates the jam teleport (CheckJamTeleports) and on-lane
+    spawn (InsertDepartingVehicles) on MayTeleport/MayPop; inert when no mask set (byte-identical).
+  - [x] X1-2 off-camera de-jam despawn action (DejamDespawn phase, DejamDespawnTime/BudgetPerStep/Count
+    runtime props, not sumocfg) -- removes off-camera jam blockers before time-to-teleport; held on
+    visible edges; disabled by default. Owner-requested inclusion.
+  - [x] X1-3 functional tests (RungHDx1RealismMaskTests, 10 tests on scenarios/47-teleport-jam +
+    a unit test): teleport held on visible edge, pop migrates once off-camera, de-jam
+    off-camera/held-on-camera/disabled-inert/budget-capped, spawn held on visible edge. 571 green,
+    all prior goldens byte-identical.
+  - Deferred (measurement, not a gate): the dense moving-camera "visible density exceeds the global
+    knee" statistical report (design §4.3) -- a host-side measurement, not a unit assertion.

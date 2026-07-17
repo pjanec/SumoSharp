@@ -41,13 +41,34 @@ are pushed off-camera, so the <1% pops that buy density become invisible. (Full 
    keeps a vehicle from popping into the middle of a visible lane; it may still enter once off-camera or at
    a fringe edge that is never in the visible set.
 
-### 2.3 Deferred within X1 (see §5)
-- A dedicated **off-camera aggressive de-jam despawn** action (removing a mid-route vehicle to relieve
-  density) — the engine has no such cheating-removal action yet (only the host `Despawn` API + arrival).
-  The mask is wired so it CAN gate one, but the action itself is a follow-up (teleport already provides the
-  off-camera relief valve for the first cut).
-- **Pop budget accounting** (bounded + logged off-camera popping) — optional per the spec; add if a test
-  needs it.
+### 2.3 Off-camera de-jam despawn action (IN SCOPE — owner-requested)
+A dedicated **aggressive off-camera de-jam**: remove the frontmost jam blocker on an off-camera lane
+*before* it reaches the (global) `time-to-teleport` threshold, so off-camera regions never build standing
+jams and the visible area stays fed/drained. Distinct from the P1-F teleport (which fires at
+`time-to-teleport` and jumps the vehicle downstream / removes it): de-jam despawn is a MORE eager,
+off-camera-only, plain removal.
+
+- **Controls are runtime Engine properties, NOT sumocfg** (X1 is a host capability, not a parity scenario —
+  it must never touch the parser or add a golden surface):
+  - `Engine.DejamDespawnTime { get; set; } = 0.0;` — seconds a frontmost blocker may wait on an off-camera
+    lane before it is despawned. **`<= 0` disables the action entirely (default) → inert.**
+  - `Engine.DejamDespawnBudgetPerStep { get; set; } = int.MaxValue;` — cap on despawns per step (the pop
+    budget accounting; unlimited by default).
+  - `Engine.DejamDespawnCount { get; }` — running tally (observability / tests).
+- **Mechanism** — a new serial phase `DejamDespawn(time)`, called right after `CheckJamTeleports` in
+  `Step()`, guarded by `if (DejamDespawnTime <= 0) return;` (so inert unless enabled):
+  1. Reuse the frontmost-non-stopped-per-lane scan (the same `_jamFrontmost` machinery `CheckJamTeleports`
+     builds) — or a private copy — to find each lane's frontmost blocker.
+  2. For each blocker whose `WaitingTime > DejamDespawnTime` AND whose edge is off-camera
+     (`mask is null || mask.MayPop(edgeHandle)`), despawn it (the existing pending/active removal idiom:
+     `Inserted = Arrived = true`, generation bump), in ascending `EntityIndex` order, up to
+     `DejamDespawnBudgetPerStep` this step; increment `DejamDespawnCount`.
+  3. On a VISIBLE lane a blocker is never despawned (no-cheating) — it is held, exactly like the teleport
+     gate. With no mask set, every edge is off-camera (permissive), so the action still requires
+     `DejamDespawnTime > 0` to do anything.
+- **Determinism:** serial phase (like `CheckJamTeleports`/insertion), ascending-EntityIndex order, reads
+  the once-captured mask + immutable network; writes only each despawned vehicle's own fields. Inert unless
+  `DejamDespawnTime > 0`, so byte-identical for every committed golden.
 
 ## 3. Determinism / parity argument (additive · inert-by-default · byte-identical)
 
@@ -70,6 +91,10 @@ are pushed off-camera, so the <1% pops that buy density become invisible. (Full 
      → the teleport fires (`TeleportCount == 1`). Same scenario, only the mask differs.
    - Spawn gate: a vehicle whose depart edge is visible is NOT inserted while visible; once the edge is
      cleared from the mask it inserts. Assert via `GetLifecycle` / trajectory presence.
+   - De-jam despawn: with `DejamDespawnTime` set below `time-to-teleport`, a frontmost blocker on an
+     OFF-camera jammed lane is despawned (`DejamDespawnCount` increments, vehicle leaves the trajectory)
+     before it would teleport; the SAME jam on a VISIBLE lane is NOT despawned (held); `DejamDespawnTime <= 0`
+     despawns nothing (inert). `DejamDespawnBudgetPerStep` caps despawns per step.
 2. **Inert-by-default:** full suite stays green + byte-identical (561 → 561 + new X1 unit tests); no golden
    changes. `Sim.Bench` hash unchanged.
 3. **Statistical dense-run (functional test, scripted moving camera):** on a dense scenario with teleport
@@ -83,7 +108,6 @@ are pushed off-camera, so the <1% pops that buy density become invisible. (Full 
 
 ## 5. Explicitly deferred
 
-- Off-camera de-jam despawn action + pop-budget accounting (see §2.3) — add on evidence/owner steer.
 - Per-zone rerouting aggressiveness (spec X2) — out of scope for X1.
 - Camera-frustum geometry (world box → visible edge set) lives in the HOST, not the engine; the engine's
   contract is the edge-id set. A test-side helper builds the set from a moving box for the statistical test.

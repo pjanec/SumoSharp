@@ -925,6 +925,39 @@ public sealed partial class Engine : IEngine
     // P2-H: read-only accessor for the discarded-departure tally (see _discardedDepartures).
     public int DiscardedDepartureCount => _discardedDepartures;
 
+    // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): the attention-aware realism mask. The host publishes a fresh
+    // immutable snapshot via SetVisibleEdges (volatile ref swap, lock-free); AdvanceOneStep captures it
+    // ONCE into _activeMask so it cannot change mid-step. null = no camera = fully permissive = inert,
+    // so every committed golden is byte-identical (the gates are all `mask is null || mask.MayX(...)`).
+    private volatile RealismMask? _realismMask;
+    private RealismMask? _activeMask;
+
+    // X1: set the on-camera / high-realism edge set (where cheating is forbidden). Thread-safe: builds
+    // an immutable RealismMask and publishes it with a single volatile assignment. Pass an empty set or
+    // call ClearVisibleEdges() to return to fully-permissive. `forbidTeleport`/`forbidPop` choose which
+    // cheating actions the visible zone forbids (both default true = strict no-cheating on camera).
+    public void SetVisibleEdges(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true)
+        => _realismMask = new RealismMask(visibleEdgeIds, forbidTeleport, forbidPop);
+
+    // X1: clear the mask -> fully permissive (every edge off-camera). Inert-equivalent for the gates.
+    public void ClearVisibleEdges() => _realismMask = null;
+
+    // X1: aggressive OFF-CAMERA de-jam despawn. A frontmost jam blocker on an off-camera lane whose
+    // WaitingTime exceeds this (seconds) is DESPAWNED before it would reach time-to-teleport, so
+    // off-camera regions never build standing jams. <= 0 disables the action entirely (default) -> the
+    // DejamDespawn phase returns immediately, byte-identical for every scenario. Runtime host property,
+    // never a sumocfg key (X1 is a non-parity capability, not a scenario config surface).
+    public double DejamDespawnTime { get; set; }
+
+    // X1: pop-budget accounting -- cap on off-camera de-jam despawns performed per step (unlimited by
+    // default). Bounds and makes measurable the invisible popping.
+    public int DejamDespawnBudgetPerStep { get; set; } = int.MaxValue;
+
+    // X1: running tally of off-camera de-jam despawns (observability / tests). 0 unless DejamDespawnTime
+    // > 0 has actually fired. Reset per LoadScenario.
+    private int _dejamDespawnCount;
+    public int DejamDespawnCount => _dejamDespawnCount;
+
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
     public int GetLane(string laneId) =>
@@ -1370,6 +1403,7 @@ public sealed partial class Engine : IEngine
         TeleportCount = 0;
         TeleportCountJam = 0;
         _discardedDepartures = 0; // P2-H: reset the max-depart-delay eviction tally per scenario
+        _dejamDespawnCount = 0;   // X1: reset the off-camera de-jam despawn tally per scenario
         _laneSource = null; // §6.3: rebuild the render lane-source lazily for the new network
         _bestLanesCache.Clear(); // L0b: route/edge-keyed memo is scenario-specific
         _insertRouteSeqCache.Clear(); // insert route-resolution memo is scenario-specific
@@ -2421,6 +2455,12 @@ public sealed partial class Engine : IEngine
             // (SystemPhase.cs). CLAUDE.md rule 2 / the D6 briefing: preserve calculation order
             // EXACTLY -- this reorganizes how the loop reads, never what runs or when.
 
+            // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): capture the realism mask ONCE per step from the
+            // volatile field the host writes, so every gated phase this step (insertion, teleport,
+            // de-jam despawn) reads a single consistent snapshot even if the camera thread swaps it
+            // concurrently. null (the default, no camera) leaves every gate fully permissive -> inert.
+            _activeMask = _realismMask;
+
             // [SystemPhase.Input] F2 (probabilistic flow): materialize any <flow probability=>
             // arrivals decided by this step's Bernoulli draw as depart-now VehicleDefs BEFORE the
             // insertion pass below picks them up -- mirrors SUMO's MSInsertionControl generating flow
@@ -2603,6 +2643,16 @@ public sealed partial class Engine : IEngine
             if (_config!.TimeToTeleport > 0.0)
             {
                 CheckJamTeleports(time, dt);
+            }
+
+            // [SystemPhase.PostSimulation] X1 (docs/HIGH-DENSITY-X1-DESIGN.md): the aggressive
+            // off-camera de-jam despawn. Runs right after the teleport phase (same post-move,
+            // WaitingTime-settled state) and is gated OFF by default (DejamDespawnTime <= 0), so it is a
+            // no-op / byte-identical for every committed scenario. When enabled it removes off-camera
+            // jam blockers before they would reach time-to-teleport.
+            if (DejamDespawnTime > 0.0)
+            {
+                DejamDespawn();
             }
 
             // [SystemPhase.PostSimulation] Rung A2 (speed-gain/overtaking lane change): SUMO's
@@ -2886,6 +2936,17 @@ public sealed partial class Engine : IEngine
                     laneHandle = edge.Lanes[li].Handle;
                     break;
                 }
+            }
+
+            // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): the on-lane spawn gate. A vehicle whose depart edge
+            // is VISIBLE (on-camera) is NOT inserted -- nothing pops into the middle of a visible lane;
+            // it is held (skipped this step, retried next) until the edge leaves the visible zone. The
+            // hold is NOT a max-depart-delay eviction (that is for real insertion failure, not a
+            // deliberate mask hold), so `continue` bypasses both the insert attempt and the eviction
+            // below. Inert when _activeMask is null (MayPop always true).
+            if (_activeMask is not null && !_activeMask.MayPop(edge.Id))
+            {
+                continue;
             }
 
             // A candidate is "not inserted this step" if it is FIFO-blocked behind an earlier
@@ -9413,6 +9474,16 @@ public sealed partial class Engine : IEngine
         {
             if (kv.Value.WaitingTime > ttt)
             {
+                // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): the teleport gate. A jam blocker on a VISIBLE
+                // (on-camera) edge is NOT teleported -- strict no-cheating in the high-realism zone; it
+                // is simply held (stays jammed, keeps accumulating WaitingTime). Off-camera / no-mask
+                // edges teleport as before. Inert when _activeMask is null (every gate permissive).
+                if (_activeMask is not null
+                    && !_activeMask.MayTeleport(_network!.LanesByHandle[kv.Value.LaneHandle].EdgeId))
+                {
+                    continue;
+                }
+
                 _jamCandidates.Add(kv.Value);
             }
         }
@@ -9433,6 +9504,72 @@ public sealed partial class Engine : IEngine
         // Apply removals recorded above (remove-variant / past-last-edge). The lift-into-transfer
         // path mutates InTransfer directly (serial phase, like InsertDepartingVehicles), so it
         // needs no flush.
+        _commandBuffer.Flush();
+    }
+
+    // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): aggressive OFF-CAMERA de-jam despawn. For each lane's
+    // frontmost non-stopped blocker that has waited longer than DejamDespawnTime AND sits on an
+    // off-camera (MayPop) edge, DESPAWN it (remove entirely, _commandBuffer.Destroy -- the same removal
+    // the teleport remove-variant uses) -- a more eager, off-camera-only sibling of the jam teleport, so
+    // hidden regions never build standing jams. A VISIBLE-edge blocker is never despawned (strict
+    // no-cheating; it is held). Reuses the frontmost-non-stopped-per-lane scan (skipping parked blockers
+    // via IsStoppedAtStop, ties by lowest EntityIndex), removes in ascending EntityIndex order, capped at
+    // DejamDespawnBudgetPerStep. Serial PostSimulation phase (like CheckJamTeleports). Gated OFF by the
+    // caller unless DejamDespawnTime > 0, so byte-identical for every committed scenario.
+    private void DejamDespawn()
+    {
+        _jamFrontmost.Clear();
+        foreach (var v in ActiveVehicles())
+        {
+            if (IsStoppedAtStop(v))
+            {
+                continue;
+            }
+
+            if (!_jamFrontmost.TryGetValue(v.LaneHandle, out var cur) || v.Kinematics.Pos > cur.Kinematics.Pos)
+            {
+                _jamFrontmost[v.LaneHandle] = v;
+            }
+        }
+
+        _jamCandidates.Clear();
+        foreach (var kv in _jamFrontmost)
+        {
+            var v = kv.Value;
+            if (v.WaitingTime <= DejamDespawnTime)
+            {
+                continue;
+            }
+
+            // Off-camera only: a blocker on a VISIBLE (pop-forbidden) edge is held, never despawned.
+            // Inert when _activeMask is null (MayPop always true -> every edge treated off-camera).
+            if (_activeMask is not null && !_activeMask.MayPop(_network!.LanesByHandle[v.LaneHandle].EdgeId))
+            {
+                continue;
+            }
+
+            _jamCandidates.Add(v);
+        }
+
+        if (_jamCandidates.Count == 0)
+        {
+            return;
+        }
+
+        _jamCandidates.Sort(static (a, b) => a.EntityIndex.CompareTo(b.EntityIndex));
+        var remaining = DejamDespawnBudgetPerStep;
+        foreach (var v in _jamCandidates)
+        {
+            if (remaining <= 0)
+            {
+                break;
+            }
+
+            _commandBuffer.Destroy(v);
+            _dejamDespawnCount++;
+            remaining--;
+        }
+
         _commandBuffer.Flush();
     }
 
