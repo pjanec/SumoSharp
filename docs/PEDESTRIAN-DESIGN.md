@@ -24,9 +24,13 @@ principle wins.
 2. **One state machine, many regimes.** Cars entering a car park, drivers becoming pedestrians, ambient
    walkers waking up into full agents — these are *the same event*: a deferred structural transition
    through the command buffer that emits a network lifecycle event. Build it once.
-3. **LOD is two axes, not one.** *Compute* fidelity (low/high power) and *network* fidelity (per-channel
-   area-of-interest) are independent. Conflating them wastes either CPU or bandwidth. The whole scale
-   argument rests on keeping them separate.
+3. **One LOD axis pays off twice.** A pedestrian's sim-LOD (low/high power) decides *both* its compute cost
+   (path-follow vs full ORCA) *and* its wire record type (`PathArc` vs `FreeKinematic`). *(Originally
+   framed as two independent axes — compute and a per-channel network AoI. The owner's transport is **DDS
+   multicast**: every IG channel consumes one shared stream, so there is **no per-channel sending** and no
+   per-camera net-LOD to build. Cameras still matter, but only as sim-LOD **interest sources** that promote
+   nearby peds for believability — §5 — not as network filters.)* The scale argument rests on the one axis:
+   keep the ambient bulk low-power so it is cheap on both CPU and the single shared wire.
 4. **Cheap must be deterministic-from-its-input.** A low-power pedestrian is only cheap on the wire if the
    IG can reproduce it from data sent once (its path). That forbids neighbor-dependent behavior in
    low-power mode — which is exactly why low-power agents must be *promotable* the instant they matter.
@@ -61,18 +65,23 @@ layers are the primary gap. The tactical layer's output is precisely the `pref` 
 input the ORCA solver already consumes (`OrcaCrowd.Plan`, `OrcaCrowd.cs:293`) — so the seam between "what
 we build" and "what exists" is clean and already defined.
 
-### The two LOD axes (Principle 3)
+### The LOD axis (Principle 3)
 
-- **Sim-LOD (compute) — global, server-decided.** A pedestrian is either **low-power** (a deterministic
-  path/flow-field follower: O(1) per step, no neighbor queries, no reactive avoidance) or **high-power**
-  (a full `OrcaCrowd` agent: routing + reciprocal avoidance). This decides *how much CPU* the agent costs.
-- **Net-LOD (bandwidth) — per-IG-channel.** Independently, each IG channel only needs detail for the
-  pedestrians in *its* camera's area of interest. This decides *how many bytes* the agent costs *that
-  channel*.
+- **Sim-LOD (global, server-decided)** is the one axis. A pedestrian is either **low-power** (a
+  deterministic path/flow-field follower: O(1) per step, no neighbor queries, no reactive avoidance) or
+  **high-power** (a full `OrcaCrowd` agent: routing + reciprocal avoidance). This one bit decides *both*
+  the agent's CPU cost *and* its wire record type: a low-power ped is a `PathArc` record (path sent once,
+  then silent) and a high-power ped is a streamed `FreeKinematic` record (§7).
+- **No per-channel network LOD.** The transport is **DDS multicast** — one shared stream for all IG
+  channels, no per-channel sending — so there is nothing to cull per camera. A camera is a sim-LOD
+  **interest source** (it promotes nearby peds to high-power so they render believably under inspection,
+  §5); it is *not* a network filter. Every channel receives the same records and renders what it can see
+  locally.
 
-These are orthogonal. A pedestrian near an incident is high-power (must react) even if no camera sees it;
-a pedestrian strolling a distant sidewalk is low-power but, if a channel's camera points at it, that
-channel still renders it — from its path, sent once, for almost no bytes. The 10k-high / 100k-total
+A pedestrian near an incident (or any interest source, including a camera) is high-power — it costs CPU
+*and* a streamed record — whether or not a given channel is looking at it; a pedestrian on a distant
+sidewalk is low-power — near-zero CPU, near-zero wire — and every channel reconstructs it identically from
+its one-time path. The 10k-high / 100k-total
 budget is only reachable because these two are decoupled: **CPU scales with the high-power set (~10k),
 bytes scale with each camera's view, and the 90k ambient bulk is cheap on both axes.**
 
@@ -394,21 +403,31 @@ reverses it (and re-sends the resumed path).
 on the existing lifecycle topic. The IG renders "ped walks to car and vanishes" (despawn) and "ped appears
 beside car" (spawn) with no new mechanism.
 
-**Net-LOD / per-channel AoI (NEW).** Each IG channel's camera frustum determines which high-power peds it
-receives at full rate. Once `PathArc` handles the ambient bulk, AoI is less bandwidth-critical but still
-governs the interactive set. The publisher today knows no camera; the seam is the pluggable
-`IPublishPolicy` (`src/Sim.Replication/PublishPolicy.cs`), which a per-camera/bandwidth-governor policy
-extends. Open question (§11): does the server cull per channel, or does each channel subscribe to spatial
-partitions (DDS content-filtered topics / per-region topics)?
+**One multicast stream, no per-channel culling.** The publisher emits a single DDS-multicast stream every
+IG channel subscribes to; there is no per-camera area-of-interest filtering to build. Bandwidth is
+therefore a single global figure (not ×N channels), and the only levers on it are the record *type*
+(sim-LOD: `PathArc` vs `FreeKinematic`), quantization, and DR-error-gated adaptive rate — all global, all
+already in the design. The pluggable `IPublishPolicy` (`src/Sim.Replication/PublishPolicy.cs`) still
+governs *when* a high-power record is sent (a global bandwidth governor can throttle under spike load), but
+it is not a per-channel filter.
 
-### Bandwidth math (order-of-magnitude; true figures are UNMEASURED — POC-7 must produce them)
+### Bandwidth budget (target: 1 Gbit link, keep ≥ 50 % headroom → ~500 Mbit/s usable)
 
-- Naive all-`FreeKinematic`: 100k × 32 B × 10 Hz ≈ **32 MB/s** — untenable.
-- With the LOD split: ~90k ambient `PathArc` ≈ paths sent once (a few hundred B each, amortized) + a
-  sub-1 Hz heartbeat ≈ **tens of KB/s ongoing**; ~10k high-power × ~16 B (quantized) × adaptive (< 10 Hz,
-  DR-error-gated) × per-channel AoI ≈ **low single-digit MB/s**; + the existing ~10k cars. That is the
-  difference between "impossible" and "fits a channel's budget." The numbers above are estimates; the
-  design is not accepted until POC-7 measures them at true scale.
+The owner's constraint: one 1 Gbit link carries 10k vehicles + all pedestrians and must leave ~50 % free
+for spikes, so the steady-state budget is **~500 Mbit/s (~62 MB/s)** on the single multicast stream.
+
+- **The honest finding: with multicast + quantization, bandwidth is not the hard wall.** Even the
+  *pessimistic* case — 100k peds *all* high-power, unquantized `FreeKinematic` (32 B) at 10 Hz — is
+  ~256 Mbit/s; quantized (16 B) it is ~**128 Mbit/s**. Plus ~10k cars (quantized `LaneArc`, DR-error-gated)
+  ≈ 10–20 Mbit/s. Both fit under 500 Mbit/s *without even relying on the LOD split*.
+- **What the LOD split actually buys is CPU + spike headroom, not survival.** The ambient ~90k low-power
+  peds are `PathArc` (path sent once + a sub-1 Hz heartbeat ≈ single-digit Mbit/s total), so the *typical*
+  steady stream is a few tens of Mbit/s — leaving the whole 50 % spike margin genuinely free for a mass
+  promotion event (an incident waking thousands of peds at once), which even at its worst stays under
+  budget. The dominant reason low-power exists is that you cannot run 100k full-ORCA solves per step (§9),
+  not that you cannot send 100k records.
+- **POC-7 still measures the real single-stream figure** at 10k cars + 100k peds (typical mix and a
+  worst-case all-high-power spike) to confirm the headroom empirically; the numbers above are estimates.
 
 ---
 
@@ -468,8 +487,8 @@ partitions (DDS content-filtered topics / per-region topics)?
    separations but not a continuous guarantee at extreme close range (the still-unbuilt unified solver,
    `docs/UNIFIED-SOLVER.md`). Is rule-gate + avoidance sufficient for crosswalks, or is a hard stop-line
    interlock needed? (POC-2.)
-5. **Net-LOD architecture** — server-side per-channel culling vs. per-region DDS topics the channel
-   subscribes to. Affects who knows camera state.
+5. ~~**Net-LOD architecture**~~ — *RESOLVED (owner): DDS multicast, one shared stream, no per-channel
+   culling. Cameras are sim-LOD interest sources only, never network filters. See §1/§7.*
 6. **Quantization tolerance for peds** — cm is fine for cars; confirm for dense crowds where relative
    position reads more.
 7. **DotRecast native/CI story** — keep it out of the hermetic gate; confirm the dev provider degrades to
