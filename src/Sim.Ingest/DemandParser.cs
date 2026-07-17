@@ -14,20 +14,55 @@ public static class DemandParser
     // <vehicle> with no type= falls back to.
     private const string DefaultVehTypeId = "DEFAULT_VEHTYPE";
 
-    public static DemandModel Parse(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return ParseDocument(XDocument.Load(stream));
-    }
+    public static DemandModel Parse(string path) => Parse(new[] { path });
 
     public static DemandModel ParseXml(string xml) => ParseDocument(XDocument.Parse(xml));
 
+    // P0-A: multi-file <route-files>. Each path is parsed and its <vType>/<route>/<vehicle>/<flow>
+    // elements are accumulated into ONE shared set of collections (mirroring SUMO's own behaviour
+    // of loading all route-files into a single demand universe), and the DEFAULT_VEHTYPE synthesis
+    // + final DemandModel assembly happen ONCE, after every file has been folded in. The single-
+    // path case (`paths.Count == 1`) walks the exact same accumulate-then-assemble path as before
+    // this rung, so it stays byte-identical.
+    public static DemandModel Parse(IReadOnlyList<string> paths)
+    {
+        var acc = new Accumulator();
+        foreach (var path in paths)
+        {
+            using var stream = File.OpenRead(path);
+            AccumulateDocument(XDocument.Load(stream), acc);
+        }
+
+        return Assemble(acc);
+    }
+
     private static DemandModel ParseDocument(XDocument doc)
+    {
+        var acc = new Accumulator();
+        AccumulateDocument(doc, acc);
+        return Assemble(acc);
+    }
+
+    // Shared mutable state folded into across one or more source documents. Kept as one small
+    // class (rather than threading five separate ref/out params through AccumulateDocument) purely
+    // for readability; it is never exposed outside this file.
+    private sealed class Accumulator
+    {
+        public readonly List<VType> VTypes = new();
+        public readonly Dictionary<string, VType> VTypesById = new();
+        public readonly List<Route> Routes = new();
+        public readonly Dictionary<string, Route> RoutesById = new();
+        public readonly List<VehicleDef> Vehicles = new();
+        public readonly List<ProbabilisticFlow> ProbFlows = new();
+        public bool NeedsDefaultVehType;
+    }
+
+    private static void AccumulateDocument(XDocument doc, Accumulator acc)
     {
         var root = doc.Root ?? throw new InvalidDataException("rou.xml has no root element.");
 
-        var vTypes = new List<VType>();
-        var vTypesById = new Dictionary<string, VType>();
+        var vTypes = acc.VTypes;
+        var vTypesById = acc.VTypesById;
         foreach (var vTypeEl in root.Elements("vType"))
         {
             var vType = new VType(
@@ -83,25 +118,36 @@ public static class DemandParser
                 // inert unless lateral-resolution > 0.
                 MinGapLat: ParseNullableDouble(vTypeEl, "minGapLat"));
 
+            // P0-A: SUMO errors on a duplicate vType id -- whether the duplicate comes from the
+            // same file or a second route-file in a multi-file <route-files> list, since both
+            // land in the same shared vTypesById the parser assembles into one DemandModel.
+            if (!vTypesById.TryAdd(vType.Id, vType))
+            {
+                throw new InvalidDataException($"duplicate <vType id='{vType.Id}'>.");
+            }
+
             vTypes.Add(vType);
-            vTypesById[vType.Id] = vType;
         }
 
-        var routes = new List<Route>();
-        var routesById = new Dictionary<string, Route>();
+        var routes = acc.Routes;
+        var routesById = acc.RoutesById;
         foreach (var routeEl in root.Elements("route"))
         {
             var route = new Route(
                 Id: RequireAttribute(routeEl, "id"),
                 Edges: RequireAttribute(routeEl, "edges").Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
+            // P0-A: same duplicate-id treatment as vType (see above), across the merged set.
+            if (!routesById.TryAdd(route.Id, route))
+            {
+                throw new InvalidDataException($"duplicate <route id='{route.Id}'>.");
+            }
+
             routes.Add(route);
-            routesById[route.Id] = route;
         }
 
-        var vehicles = new List<VehicleDef>();
-        var probFlows = new List<ProbabilisticFlow>();
-        var needsDefaultVehType = false;
+        var vehicles = acc.Vehicles;
+        var probFlows = acc.ProbFlows;
         foreach (var vehicleEl in root.Elements("vehicle"))
         {
             var vehId = RequireAttribute(vehicleEl, "id");
@@ -139,7 +185,7 @@ public static class DemandParser
             if (typeId is null)
             {
                 typeId = DefaultVehTypeId;
-                needsDefaultVehType = true;
+                acc.NeedsDefaultVehType = true;
             }
 
             vehicles.Add(new VehicleDef(
@@ -181,7 +227,7 @@ public static class DemandParser
                 var t = flowEl.Attribute("type")?.Value;
                 if (t is null)
                 {
-                    needsDefaultVehType = true;
+                    acc.NeedsDefaultVehType = true;
                     return DefaultVehTypeId;
                 }
 
@@ -293,19 +339,25 @@ public static class DemandParser
                     DepartLaneIndex: flowDepartLane));
             }
         }
+    }
 
+    // Runs ONCE, after every source document has been folded into `acc` -- the DEFAULT_VEHTYPE
+    // synthesis and the final DemandModel construction must not repeat per file (that would, e.g.,
+    // re-add DEFAULT_VEHTYPE or duplicate it across a multi-file merge).
+    private static DemandModel Assemble(Accumulator acc)
+    {
         // C2-iv: synthesize DEFAULT_VEHTYPE when referenced-but-undeclared -- SUMOVTypeParameter's
         // built-in default (vClass passenger, every param at its class default incl. sigma 0.5;
         // VTypeDefaults.Resolve fills the nulls). If the user DID declare their own DEFAULT_VEHTYPE,
         // that one is already in the map and wins.
-        if (needsDefaultVehType && !vTypesById.ContainsKey(DefaultVehTypeId))
+        if (acc.NeedsDefaultVehType && !acc.VTypesById.ContainsKey(DefaultVehTypeId))
         {
             var defaultVehType = new VType(Id: DefaultVehTypeId, VClass: null, Sigma: null);
-            vTypes.Add(defaultVehType);
-            vTypesById[DefaultVehTypeId] = defaultVehType;
+            acc.VTypes.Add(defaultVehType);
+            acc.VTypesById[DefaultVehTypeId] = defaultVehType;
         }
 
-        return new DemandModel(vTypes, vTypesById, routes, routesById, vehicles, probFlows);
+        return new DemandModel(acc.VTypes, acc.VTypesById, acc.Routes, acc.RoutesById, acc.Vehicles, acc.ProbFlows);
     }
 
     private static double? ParseNullableDouble(XElement element, string name)

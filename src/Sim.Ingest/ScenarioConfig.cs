@@ -17,6 +17,13 @@ namespace Sim.Ingest;
 // (every phase-1 scenario), so the engine's lateral state stays lane-centred and byte-identical.
 // > 0 activates the continuous-lateral / sublane model (MSLCM_SL2015); it is the single global
 // master switch, exactly as in SUMO, not a per-vType flag.
+// P0-A: NetFile/RouteFiles/AdditionalFiles are the sumocfg's <input> section (net-file,
+// route-files, additional-files), resolved by ScenarioConfigParser but left as bare (unresolved)
+// paths here -- resolving them against the cfg's directory is Engine.LoadScenario(cfgPath)'s job
+// (SUMO resolves <input> paths relative to the cfg, not the CWD). Every pre-P0-A scenario omits
+// <input> entirely (it is driven by the existing LoadScenario(net, rou, cfg) 3-arg overload /
+// Sim.Run's glob), so NetFile stays null and RouteFiles/AdditionalFiles stay empty -- unchanged
+// behaviour.
 public sealed record ScenarioConfig(
     double Begin,
     double End,
@@ -27,4 +34,14 @@ public sealed record ScenarioConfig(
     double SpeedDev,
     int Seed,
     double LaneChangeDuration = 0.0,
-    double LateralResolution = 0.0);
+    double LateralResolution = 0.0,
+    string? NetFile = null,
+    IReadOnlyList<string>? RouteFiles = null,
+    IReadOnlyList<string>? AdditionalFiles = null)
+{
+    // Same "records can't default a reference-type param to an allocated empty collection" pattern
+    // as VehicleDef.Stops / DemandModel.ProbabilisticFlows: callers that omit these (i.e. every
+    // pre-P0-A scenario) get null, and readers see an empty list instead.
+    public IReadOnlyList<string> RouteFiles { get; init; } = RouteFiles ?? Array.Empty<string>();
+    public IReadOnlyList<string> AdditionalFiles { get; init; } = AdditionalFiles ?? Array.Empty<string>();
+}

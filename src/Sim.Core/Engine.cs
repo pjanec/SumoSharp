@@ -930,6 +930,44 @@ public sealed partial class Engine : IEngine
         InitializeLoaded();
     }
 
+    // P0-A: SUMO-faithful `sumo -c config.sumocfg` -- the cfg alone names its own net-file /
+    // route-files / additional-files via <input>, so the caller does not pass them separately (in
+    // contrast to the 3-arg LoadScenario above, which stays untouched for every existing
+    // call-site). SUMO resolves every <input> path RELATIVE TO THE CFG'S DIRECTORY, not the
+    // process CWD -- so a scenario dir can be run from anywhere.
+    public void LoadScenario(string sumocfgPath)
+    {
+        _config = ScenarioConfigParser.Parse(sumocfgPath);
+        if (_config.NetFile is null || _config.RouteFiles.Count == 0)
+        {
+            throw new InvalidDataException(
+                $"'{sumocfgPath}' has no <input><net-file>/<route-files> -- use the 3-arg " +
+                "LoadScenario(net, rou, cfg) overload for a cfg without an <input> section.");
+        }
+
+        var cfgDir = Path.GetDirectoryName(Path.GetFullPath(sumocfgPath)) ?? string.Empty;
+        string Resolve(string relative) => Path.Combine(cfgDir, relative);
+
+        _network = NetworkParser.Parse(Resolve(_config.NetFile));
+        _lanesByHandle = _network.LanesByHandle as Lane[] ?? System.Linq.Enumerable.ToArray(_network.LanesByHandle);
+        _demand = DemandParser.Parse(_config.RouteFiles.Select(Resolve).ToArray());
+
+        // P0-A scope: additional-files only need to LOAD without error (e.g. a defined-but-unused
+        // parkingArea) -- their behavioural semantics (parkingArea stops for departPos="stop",
+        // vTypeDistribution resolution) are P0-C/P0-B concerns, not this task's. We don't yet have
+        // an additional-file parser, so tolerate/skip: just verify the file exists and is
+        // well-formed XML with a root element, then discard the content.
+        foreach (var additionalFile in _config.AdditionalFiles)
+        {
+            var path = Resolve(additionalFile);
+            using var stream = File.OpenRead(path);
+            _ = System.Xml.Linq.XDocument.Load(stream).Root
+                ?? throw new InvalidDataException($"additional-file '{path}' has no root element.");
+        }
+
+        InitializeLoaded();
+    }
+
     // SUMOSHARP-API.md §9: load a network WITHOUT any demand -- the "start empty and spawn everything at
     // runtime" entry point (games, digital-twins). Optional sumocfg supplies the timeline/flags; absent,
     // a deterministic default is synthesized (Euler, teleport off, step 1s, sigma-neutral). The host then

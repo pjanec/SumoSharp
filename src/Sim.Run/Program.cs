@@ -63,14 +63,11 @@ internal static class Program
             }
         }
 
-        var net = SingleFile(scenarioDir, "*.net.xml");
-        var rou = SingleFile(scenarioDir, "*.rou.xml");
         var cfg = SingleFile(scenarioDir, "*.sumocfg");
-        if (net is null || rou is null || cfg is null)
+        if (cfg is null)
         {
             Console.Error.WriteLine(
-                $"error: scenario dir must contain exactly one each of *.net.xml, *.rou.xml, " +
-                $"*.sumocfg (found net={net}, rou={rou}, cfg={cfg})");
+                "error: scenario dir must contain exactly one *.sumocfg");
             return 2;
         }
 
@@ -79,7 +76,28 @@ internal static class Program
         fcdOut ??= Path.Combine(scenarioDir, "engine.fcd.xml");
 
         var engine = new Engine();
-        engine.LoadScenario(net, rou, cfg);
+        // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
+        // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
+        // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)
+        // fall back to the original glob-based single-file discovery for back-compat.
+        if (config.RouteFiles.Count > 0)
+        {
+            engine.LoadScenario(cfg);
+        }
+        else
+        {
+            var net = SingleFile(scenarioDir, "*.net.xml");
+            var rou = SingleFile(scenarioDir, "*.rou.xml");
+            if (net is null || rou is null)
+            {
+                Console.Error.WriteLine(
+                    $"error: scenario dir must contain exactly one each of *.net.xml, *.rou.xml " +
+                    $"(found net={net}, rou={rou})");
+                return 2;
+            }
+
+            engine.LoadScenario(net, rou, cfg);
+        }
 
         if (warmupSteps > 0)
         {

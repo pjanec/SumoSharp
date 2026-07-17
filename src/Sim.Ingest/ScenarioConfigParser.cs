@@ -3,9 +3,11 @@ using System.Xml.Linq;
 
 namespace Sim.Ingest;
 
-// Parses the rung-1 subset of .sumocfg: <time> and <processing>. Defaults mirror SUMO's own
-// (ballistic=false => Euler; time-to-teleport=-1 => teleport off) so a scenario that omits an
-// attribute still behaves as SUMO would.
+// Parses the rung-1 subset of .sumocfg: <time> and <processing>, plus (P0-A) the <input> section
+// (net-file / route-files / additional-files). Defaults mirror SUMO's own (ballistic=false =>
+// Euler; time-to-teleport=-1 => teleport off; <input> absent => NetFile null, RouteFiles/
+// AdditionalFiles empty) so a scenario that omits an attribute -- or the whole <input> section,
+// as every pre-P0-A scenario does -- still behaves as SUMO would / as before.
 public static class ScenarioConfigParser
 {
     public static ScenarioConfig Parse(string path)
@@ -24,6 +26,9 @@ public static class ScenarioConfigParser
         var processingEl = root.Element("processing");
         // C1-i: SUMO's <random_number> section (see ScenarioConfig.Seed's own comment).
         var randomEl = root.Element("random_number");
+        // P0-A: SUMO's <input> section -- net-file/route-files/additional-files. Absent for every
+        // pre-P0-A scenario (they're driven by the 3-arg LoadScenario / Sim.Run's glob instead).
+        var inputEl = root.Element("input");
 
         return new ScenarioConfig(
             Begin: ParseDouble(timeEl, "begin", 0.0),
@@ -37,7 +42,30 @@ public static class ScenarioConfigParser
             // C10-i: SUMO's <processing><lanechange.duration> (default 0 = instant snap).
             LaneChangeDuration: ParseDouble(processingEl, "lanechange.duration", 0.0),
             // Phase 2: SUMO's <processing><lateral-resolution> (default 0 = sublane model OFF).
-            LateralResolution: ParseDouble(processingEl, "lateral-resolution", 0.0));
+            LateralResolution: ParseDouble(processingEl, "lateral-resolution", 0.0),
+            NetFile: inputEl?.Element("net-file")?.Attribute("value")?.Value,
+            RouteFiles: ParseFileList(inputEl, "route-files"),
+            AdditionalFiles: ParseFileList(inputEl, "additional-files"));
+    }
+
+    // P0-A: SUMO's <route-files value="a.rou.xml,b.rou.xml"/> / <additional-files value="..."/>
+    // -- a list of paths, SUMO accepts both a comma-list and a whitespace-list (and mixtures), so
+    // split on either, trim, and drop empties. Returns null when the section/attribute is absent
+    // so ScenarioConfig's Array.Empty<string>() default applies (rather than an empty-but-non-null
+    // list carrying no signal difference either way -- kept null here for symmetry with NetFile).
+    private static IReadOnlyList<string>? ParseFileList(XElement? inputEl, string name)
+    {
+        var value = inputEl?.Element(name)?.Attribute("value")?.Value;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value
+            .Split(new[] { ',', ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .ToArray();
     }
 
     private static double ParseDouble(XElement? parent, string name, double defaultValue)
