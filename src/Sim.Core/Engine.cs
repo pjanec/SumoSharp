@@ -8636,8 +8636,9 @@ public sealed partial class Engine : IEngine
     // cooperative LC blocks all pass through as non-binding and only the keep-right accumulator
     // drives the decision. NOT built (scoped out): strategic/cooperative blocks, general
     // best-lanes (neighDist here is simply the right lane's own length, not a computed
-    // continuation distance), continuous lateral (SL2015), lanechange.duration>0, safety/blocker
-    // vetoes against neighbors, and multi-edge route lane continuity. `checkOverTakeRight`
+    // continuation distance), continuous lateral (SL2015), lanechange.duration>0, and multi-edge
+    // route lane continuity. (P2-G: the target-lane safety/blocker veto against neighbors IS now
+    // ported at the fire site below -- see that comment.) `checkOverTakeRight`
     // (:1750-1758) stays unported: it requires lcOvertakeRight=true (non-default, off here) AND
     // ego's OWN-lane leader to be slow, which is never the case in any scenario reachable by this
     // engine today.
@@ -8762,31 +8763,63 @@ public sealed partial class Engine : IEngine
 
         if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
         {
-            // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change requested, accumulator resets
-            // to 0 on change (changed()/resetState()). No safety/blocker veto ported here -- every
-            // scenario reaching this fire has an empty target (right) lane; a real blocker veto
-            // wants its own scenario with target-lane traffic on the RIGHT side (mirrors A2-iii's
-            // scope note for the LEFT side).
+            // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change REQUESTED, then subject to the
+            // same target-lane safety block every change goes through.
             //
-            // D5: deliberately kept INLINE, NOT routed through the command buffer. The caller
-            // (DecideSpeedGainChanges) re-reads `v.LaneHandle` immediately after this call
-            // returns ("ApplyKeepRightDecision above may have just changed v.LaneHandle;
-            // re-read") to pick the left-neighbor lane for THIS SAME vehicle's speed-gain
-            // decision this SAME phase -- a genuine same-vehicle, same-iteration
-            // read-after-write. A command buffer flushed at the phase barrier (end of
-            // DecideSpeedGainChanges) would leave that re-read seeing the STALE pre-swap lane,
-            // changing which lane the speed-gain decision runs against (verified needed by rung
-            // A2's scenario 12, see DecideSpeedGainChanges' CORRECTED-ORDERING comment) --
-            // exactly the CLAUDE.md rule 4 / this rung's briefing exception: "a command buffer
-            // flushed at a phase barrier is only valid where no same-phase reader depends on the
-            // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
-            // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
-            // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
-            v.LaneId = rightLane.Id;
-            // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
-            v.LaneHandle = rightLane.Handle;
-            v.KeepRightProbability = 0.0;
-            return;
+            // P2-G (docs/HIGH-DENSITY-P2G-DESIGN.md): target-lane LEADER safety veto. SUMO's
+            // MSLaneChanger::checkChange (MSLaneChanger.cpp:744-935) blocks a change on the target
+            // lane's LEADER secure gap (:843-870) and FOLLOWER secure gap (:798-837) -- a change
+            // executes only if (state & LCA_BLOCKED) == 0 (:430) -- so a keep-right (RIGHT change) is
+            // subject to the same secure-gap block as a speed-gain (LEFT change). Without ANY veto the
+            // engine fired a keep-right that lands unsafely behind the right lane's leader and forces
+            // a brake -- the ~7 m/2.6 m/s dense multi-lane divergence (empirically: a vehicle SUMO
+            // keeps on the left lane that the pre-fix engine wrongly keep-rights, cutting in and
+            // braking 13.89->11.52 m/s). Adding the LEADER veto collapses that divergence (a straight
+            // 2-lane control: max pos error 82.28 m -> 2.37 m; first divergence t=8 s -> t=72 s).
+            //
+            // DELIBERATE SCOPE (documented deviation, CLAUDE.md rule 4): the FOLLOWER half of
+            // checkChange is NOT applied here, only the leader half. In SUMO a change blocked by the
+            // target-lane follower is resolved by COOPERATIVE lane-changing (MSLCM_LC2013's
+            // informBlocker/saveBlockerLength -- the follower slows to make room), which this engine
+            // does not model. Porting the follower block WITHOUT its cooperative counterpart is LESS
+            // faithful to SUMO's flow, not more: it over-brakes into gridlock a saturated -L2 grid
+            // that SUMO (and this engine) otherwise drain to 0 stuck (verified: the both-halves veto
+            // regressed scenarios/_diag/willpass-saturation from 0 to 30 stuck; the leader-only veto
+            // keeps it at 0). The follower block + cooperative LC is the evidence-gated follow-up
+            // (docs/HIGH-DENSITY-P2G-DESIGN.md §7); the residual it leaves (a keep-right SUMO blocks on
+            // the follower, ~2.4 m on the control) is accepted behaviourally per the owner steer.
+            //
+            // `neighLead` is already fetched above (the keep-right incentive read); pass it with a null
+            // follower so IsTargetLaneSafe evaluates the leader gap only.
+            if (IsTargetLaneSafe(v, neighLead, null, dt))
+            {
+                // D5: deliberately kept INLINE, NOT routed through the command buffer. The caller
+                // (DecideSpeedGainChanges) re-reads `v.LaneHandle` immediately after this call
+                // returns ("ApplyKeepRightDecision above may have just changed v.LaneHandle;
+                // re-read") to pick the left-neighbor lane for THIS SAME vehicle's speed-gain
+                // decision this SAME phase -- a genuine same-vehicle, same-iteration
+                // read-after-write. A command buffer flushed at the phase barrier (end of
+                // DecideSpeedGainChanges) would leave that re-read seeing the STALE pre-swap lane,
+                // changing which lane the speed-gain decision runs against (verified needed by rung
+                // A2's scenario 12, see DecideSpeedGainChanges' CORRECTED-ORDERING comment) --
+                // exactly the CLAUDE.md rule 4 / this rung's briefing exception: "a command buffer
+                // flushed at a phase barrier is only valid where no same-phase reader depends on the
+                // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
+                // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
+                // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
+                v.LaneId = rightLane.Id;
+                // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
+                v.LaneHandle = rightLane.Handle;
+                v.KeepRightProbability = 0.0; // resetState() on a COMMITTED change (:1063/1080).
+                return;
+            }
+
+            // BLOCKED: like the LEFT/speed-gain veto, a vetoed change does NOT reset the accumulator
+            // (SUMO resets only on a committed change) -- fall through to store the decremented
+            // keepRightProbability, keep the lane, and retry next step, so the vehicle keeps right the
+            // instant the leader gap opens. Byte-identical for every committed scenario: each one
+            // reaching this fire has an empty right lane, so IsTargetLaneSafe is true and the swap
+            // still happens (single-lane scenarios never reach here at all -- RightNeighbor < 0).
         }
 
         v.KeepRightProbability = keepRightProbability;

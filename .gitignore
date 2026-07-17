@@ -61,6 +61,8 @@ scaling-results.csv
 # are committed intentionally; everything these scripts regenerate is local-only).
 scenarios/**/replay.html
 scenarios/**/engine.fcd.xml
+scenarios/**/engine.tripinfo.xml
+scenarios/**/engine.summary.xml
 scenarios/**/combined.fcd.xml
 
 # Dear ImGui writes its window layout here (native viewer, Sim.Viewer); local-only.
