@@ -203,3 +203,42 @@ genuine float-order divergence is observed. (This resolves Q2 toward the two-tie
 - **`pre-period` / pre-insertion rerouting** (`device.rerouting.pre-period`, default 60): **DEFER +
   document.** Our config doesn't set it; port only if the anchor scenario's golden shows it affects the
   result. Recorded here so it's not silently forgotten.
+
+---
+
+## 11. P1E-6 — pre-insertion rerouting (multi-lane faithfulness) [owner-approved follow-up]
+
+**Why.** SUMO's `device.rerouting` reroutes each equipped vehicle **at departure** (pre-insertion,
+`MSDevice_Routing::preInsertionReroute`, `MSDevice_Routing.cpp:240-274`, gated by `pre-period`,
+default 60), not only periodically. Consequences we must match for real (multi-lane) SumoData nets:
+1. On a **multi-lane** road the vehicle's strategic lane choice depends on its route (which turn it
+   is heading for). A vehicle that only reroutes periodically (from `depart+period`) pre-positions
+   for its *initial* route until then, landing in a different lane than SUMO's already-rerouted
+   vehicle — the exact divergence observed on the 2-lane `45-reroute-congestion` variant (lane index
+   differed; pos/speed were bit-identical).
+2. Pre-insertion route choice is load-bearing for the doc's "~25% lower concurrent load" benefit
+   (vehicles pick a better route *at departure* based on current congestion).
+
+**Design.** At a vehicle's insertion (when `time >= depart`, before it is placed on a lane), if
+equipped and `ReroutePeriod>0`: run ONE reroute from the departure edge (`route.Edges[0]`) to the
+destination edge on the **current** `_edgeWeights` snapshot (same A*/Dijkstra + effort as the
+periodic pass), and install it (route-slot recycling + lane-sequence re-resolve) BEFORE the
+insertion path reads the vehicle's lane sequence — so the vehicle inserts and pre-positions on the
+rerouted route. The periodic schedule (`NextRerouteTime = depart+period`) is unchanged (SUMO does
+both). Reuse the periodic machinery; parallelise the route computation over the due-to-insert batch
+(the herd applies here too), then serial install. Deterministic: pure function of settled prev-step
+weights + A*.
+
+**Faithfulness note.** SUMO's `pre-period` schedules pre-insertion within a horizon and can reroute a
+still-waiting vehicle repeatedly; we do a single reroute at actual insertion (the common case with
+`pre-period` ≥ typical wait). If a scenario shows this matters, revisit. Gate identical-list
+short-circuit as in periodic (§1B).
+
+**Acceptance (P1E-6):**
+- Restore/duplicate `45-reroute-congestion` as a **multi-lane** net (2-lane prefix + detour); golden
+  from vanilla SUMO 1.20.0; SumoSharp reproduces `(lane,pos,speed)` within tolerance — i.e. the
+  lane-index divergence is gone. (Keep a single-lane variant too if useful for isolating the
+  mechanism.)
+- Functional test: an equipped vehicle's effective route at insertion reflects a pre-insertion
+  reroute when the departure-time weights favour an alternate (distinct from the periodic path).
+- Full suite green; inert (byte-identical) when `ReroutePeriod<=0`.
