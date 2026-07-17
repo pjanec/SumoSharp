@@ -61,6 +61,22 @@ public sealed class PedLodManager
 
     private OrcaCrowd _highCrowd;
     private PedRouteController _highController;
+    private bool _useParallelHighCrowd;
+
+    // Additive POC-7c wiring: forwards OrcaCrowd.UseParallelStep (POC-7a, bit-identical to serial) onto
+    // whichever OrcaCrowd currently backs the high-power set -- both the live one and, since
+    // RebuildHighCrowd (a real design gap -- see class remarks) replaces it wholesale on every
+    // membership change, every crowd created afterwards. Default false, matching OrcaCrowd's own
+    // default, so no existing caller's behavior changes.
+    public bool UseParallelHighCrowd
+    {
+        get => _useParallelHighCrowd;
+        set
+        {
+            _useParallelHighCrowd = value;
+            _highCrowd.UseParallelStep = value;
+        }
+    }
 
     public PedLodManager(
         IPedNavigation navigation,
@@ -259,7 +275,7 @@ public sealed class PedLodManager
         _ = now; // kept for symmetry/future use (e.g. time-stamped diagnostics); not needed today
 
         var oldCrowd = _highCrowd;
-        var newCrowd = new OrcaCrowd();
+        var newCrowd = new OrcaCrowd { UseParallelStep = _useParallelHighCrowd };
         var newController = new PedRouteController(newCrowd, _steering, _arriveRadius);
 
         var ids = new List<int>(_peds.Keys);
