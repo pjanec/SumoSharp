@@ -201,7 +201,14 @@ deterministic but O(high-power count) per change. At the ~10k high-power target 
 source churning membership continuously, that rebuild is a real cost. Production needs either a genuine
 `Add`/`Remove` (free-list + generation, like the lane engine's slot recycling) on the crowd store, or a
 stable-slot crowd where demotion just deactivates. This is a POC-7 concern; the POC-3 rebuild is the
-interim.
+interim. **POC-6 added two more entries to this same crowd-API backlog:** (i) `MixedTrafficCrowd` has
+**no dynamic external-disc input** — only permanent `AddWall`/`AddBlock` — so POC-6b makes a maneuvering
+car avoid moving pedestrians by *rebuilding its crowd every step*, replaying parked boxes as walls and
+injecting each ped as a per-step full-yield `AddBlock`; a `SetExternalObstacles`-equivalent (as
+`OrcaCrowd` already has) would make car-avoids-crowd cheap and velocity-aware. (ii) `OrcaCrowd` has no
+`MaxSpeed(i)`/`Goal`-less getter, so the LOD/parking controllers cache per-agent kinematics outside the
+crowd. All three are small, additive Core conveniences — deferred here to keep the parity core untouched
+and out of the parallel session's way, and collected for the POC-7 perf pass.
 
 **Believability (Req 2).** Pure ORCA is inherently laneless; emergent bidirectional lane-formation is
 *realistic*, not a defect. Do **not** pre-build a density model. Measure a dense corridor + a bottleneck
