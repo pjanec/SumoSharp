@@ -123,6 +123,7 @@ internal static class SceneGen
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var pedNetwork = PedNetworkParser.Load(netPath);
+        network = WithCrossings(network, pedNetwork, netPath);
         var westCrossing = pedNetwork.Crossings.Single(c => c.Id == ":c_c3_0");
         var signal = CrossingSignalFactory.ForCrossing(netPath, westCrossing);
 
@@ -314,6 +315,7 @@ internal static class SceneGen
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        network = WithCrossings(network, pedNetwork, netPath);
         var polygons = WalkablePolygonBaker.Bake(pedNetwork);
         var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
 
@@ -620,6 +622,7 @@ internal static class SceneGen
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        network = WithCrossings(network, pedNetwork, netPath);
         var polygons = WalkablePolygonBaker.Bake(pedNetwork);
         var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
 
@@ -659,6 +662,15 @@ internal static class SceneGen
 
         var snapshots = new List<List<(string Key, double[] Disc)>>();
 
+        // Fix "O-D peds stack on top of each other" (low-power PathArc peds walk exact centrelines,
+        // so concurrent peds on the same sidewalk/crossing literally coincide): a deterministic
+        // per-ped lateral offset, perpendicular to the ped's own heading, spreads them into a loose
+        // band instead. Heading is finite-differenced against the ped's own PREVIOUS RECORDED-FRAME
+        // position (last-recorded-pos dictionary below); a ped with no recorded history yet (just
+        // spawned) or ~zero displacement (arrived, idling) gets zero offset so it still spawns/arrives
+        // exactly on its O/D point -- only rendering is perturbed, never the sim position itself.
+        var lastRecordedPos = new Dictionary<int, Vec2>();
+
         var now = 0.0;
         for (var step = 0; step < steps; step++)
         {
@@ -674,7 +686,18 @@ internal static class SceneGen
             foreach (var id in demand.LiveIds)
             {
                 var pos = manager.PositionOf(id, now);
-                discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), 0.3, (double)KindPedestrian }));
+                var heading = lastRecordedPos.TryGetValue(id, out var prev) ? pos - prev : Vec2.Zero;
+                lastRecordedPos[id] = pos;
+
+                var rendered = pos;
+                if (heading.Abs > 1e-6)
+                {
+                    var headingUnit = heading.Normalized();
+                    var perp = new Vec2(-headingUnit.Y, headingUnit.X);
+                    rendered += perp * OdLateralOffsetMeters(id);
+                }
+
+                discs.Add(($"ped{id}", new[] { R(rendered.X), R(rendered.Y), 0.3, (double)KindPedestrian }));
             }
 
             snapshots.Add(discs);
@@ -742,6 +765,7 @@ internal static class SceneGen
         var network = BuildNetwork(NetworkParser.Parse(netPath));
 
         var pedNetwork = PedNetworkParser.Load(netPath, walkableAddPath);
+        network = WithCrossings(network, pedNetwork, netPath);
         var polygons = WalkablePolygonBaker.Bake(pedNetwork);
         var space = new SumoWalkableSpace(polygons);
         var nav = new SumoNavMesh(polygons, space);
@@ -2264,5 +2288,15 @@ internal static class SceneGen
 
             frames[f] = frames[f] with { D = d };
         }
+    }
+
+    // Deterministic per-ped lateral-offset amplitude for BuildOdRouting's overlap fix, in metres,
+    // range approx [-0.5, +0.5). A cheap integer hash (Knuth's multiplicative constant, NOT
+    // System.Random -- CLAUDE.md forbids it for determinism) so the same ped id always renders on
+    // the same side/offset of its centreline on every run (same bytes on re-run).
+    private static double OdLateralOffsetMeters(int id)
+    {
+        var h = unchecked((uint)id * 2654435761u) >> 8;
+        return (h % 1000) / 1000.0 - 0.5;
     }
 }
