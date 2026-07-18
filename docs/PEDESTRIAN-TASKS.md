@@ -126,15 +126,25 @@ Design ref: `PEDESTRIAN-DESIGN.md` §3(d), `PEDESTRIAN-POC7C-FINDINGS.md` Q2.
 
 ## Stage P3 — Networking productionization (DDS multicast, end-to-end)
 
-### P3-1 — Crowd + PathArc DDS topics
-- **Design ref:** §7 (multicast, one stream); POC-7b. **Files:** `src/Sim.Replication.Dds/`,
-  `src/Sim.Replication/`. **Deps:** none (records landed in POC-7b).
-- Wire the quantized `PedFreeKinematicRecord` onto a **multicast crowd topic** and the `PathArcRecord` onto a
-  **durable/transient-local** topic (path sent once), plus **regime lifecycle events** (promote/demote,
-  board/alight, park) on the keyed lifecycle topic. Extend `DdsReplicationSink`/`DdsSubscriber`.
-- **Success conditions:** a **loopback multicast round-trip test** (CycloneDDS, as `Replication.Dds` already
-  supports) publishes a crowd frame + a PathArc record + a promote lifecycle event and a subscriber
-  reconstructs them; `git`-hermetic gate unaffected (DDS stays out of `Traffic.sln`, per its convention).
+### P3-1 — Pedestrian wire codec + transport-neutral replication surface (hermetic)
+- **Design ref:** §7 (multicast, one stream); POC-7b; the vehicle `IReplicationSink`/`Source` +
+  `InMemoryReplicationBus` pattern. **Files:** `src/Sim.Replication/` (Records, FrameCodec, a ped
+  replication surface + InMemory binding). **Deps:** none (POC-7b landed `PedFreeKinematicRecord` + wire
+  `PathArcRecord`); LIVE-POC-1 added `ActivityTimeline`.
+- Add the missing pedestrian wire records: an **`ActivityTimeline` codec** (T0 + segment list: Walk/Pause/
+  Dwell/Interact, each length-prefixed, anim tags as length-prefixed UTF-8) and a **ped lifecycle record**
+  (spawn/despawn + DR-model switch promote/demote). Build a **transport-neutral `IPedReplicationSink`/
+  `IPedReplicationSource`** (mirroring the vehicle pair) with an **InMemory binding** so the hermetic
+  `dotnet test` loop can round-trip the whole stream with NO DDS. The real CycloneDDS binding is a
+  separate, out-of-`Traffic.sln` concern (like the existing vehicle DDS binding) — NOT part of this task's
+  hermetic gate.
+- **Success conditions:** a round-trip test runs a real `PedLodManager` population (low-power PathArc +
+  lively `ActivityTimeline` + a promoted `FreeKinematic` ped), serializes the full `PedEvent` stream through
+  the InMemory ped bus, and reconstructs on the receiver: **server==IG EXACT** for low-power (path/timeline
+  sent once as doubles, reconstructed by the same `PoseAt`/`PathArcMotion`) and **within cm quantization
+  tolerance** for high-power (`PedFreeKinematicRecord` int32-cm); a DR-switch on the wire flips the receiver's
+  reconstruction model at the right time; every byte-level codec round-trips (encode→decode identity for
+  each record type); `dotnet test` stays hermetic (no DDS, no network) and parity is untouched.
 
 ### P3-2 — Publisher + global bandwidth governor
 - **Design ref:** §7. **Files:** `src/Sim.Replication/PublishPolicy.cs` (+ a ped publisher). **Deps:** P3-1, P0-3.
