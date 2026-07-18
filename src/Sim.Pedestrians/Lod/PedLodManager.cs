@@ -144,6 +144,34 @@ public sealed class PedLodManager
         return id;
     }
 
+    // ADDITIVE (P2-3, docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-NAVMESH-CONTRACT.md): removes a ped
+    // entirely -- the "arrived at its OD destination, despawn" case a demand generator needs, distinct
+    // from a demotion (which keeps the ped, just switches its DR model). If the ped is currently
+    // High-power (FreeKinematic), releases its OrcaCrowd handle and route exactly like a demotion's
+    // removal side (P0-3) -- every OTHER high-power ped's handle/route/waypoint cursor is untouched --
+    // so a despawn never leaks a crowd slot (HighCrowdSlotHighWater may still record the slot as ever-
+    // allocated, but HighPowerCount/live occupancy drops immediately and the slot is free-listed for
+    // reuse). If Low-power, PathArc motion is a pure function of (path, startTime, speed, now) with no
+    // crowd-side state at all, so dropping the dictionary entry is the whole removal. Inert (no-op) if
+    // `id` is not currently registered, mirroring OrcaCrowd.Remove / PedRouteController.RemoveRoute's
+    // established "removing something already gone is harmless" convention.
+    public void RemovePed(int id)
+    {
+        if (!_peds.TryGetValue(id, out var e))
+        {
+            return;
+        }
+
+        if (e.Model == PedDrModel.FreeKinematic)
+        {
+            _highController.RemoveRoute(e.HighIndex);
+            _highCrowd.Remove(e.HighIndex);
+            _highPowerLiveCount--;
+        }
+
+        _peds.Remove(id);
+    }
+
     public PedDrModel ModelOf(int id) => _peds[id].Model;
 
     public int HighPowerCount => _highPowerLiveCount;
