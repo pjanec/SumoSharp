@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Assemble the pedestrian-demo gallery artifact.
 
-Runs the ten Sim.Viz --ped-* scenes, base64-embeds each self-contained HTML into a single
-gallery page (a scene picker over a viewport-filling iframe), and writes it to the output path.
-The gallery is body-content-only (no <html>/<head>/<body>) so it publishes cleanly as a
-claude.ai Artifact, which wraps it in its own skeleton.
+Runs the Sim.Viz --ped-* scenes (plus the P5-1(B) --evac-district scene), base64-embeds each
+self-contained HTML into a single gallery page (a scene picker over a viewport-filling iframe),
+and writes it to the output path. The gallery is body-content-only (no <html>/<head>/<body>) so it
+publishes cleanly as a claude.ai Artifact, which wraps it in its own skeleton.
 
 Usage:  python3 scripts/build-ped-artifact.py <out.html>
-Keep the SCENES list in sync with the --ped-* modes in src/Sim.Viz/Program.cs and the
-"Pedestrians" category in scripts/gen-demos.sh.
+Keep the SCENES list in sync with the --ped-*/--evac-district modes in src/Sim.Viz/Program.cs and
+the "Pedestrians"/"Panic evacuation" categories in scripts/gen-demos.sh.
 """
 import base64
 import subprocess
@@ -31,14 +31,17 @@ SCENES = [
     ("waiter", "Waiter", "Templated micro-scenario actor: serves tables in rotation, goes inside between rounds"),
     ("lively-crowd", "Lively crowd", "The routed O-D crowd, now with seeded Pause beats along real routes"),
     ("remote", "Remote (over the wire)", "Reconstructed from the real DR-error-gated multicast stream, not the sim"),
+    ("evac-district", "Evac district", "Panicked peds route to the nearest safe zone along real sidewalks, forced high-power"),
 ]
 
 
 def gen_demo(mode: str, out: Path) -> str:
-    """Render one --ped-<mode> demo and return its HTML."""
+    """Render one demo and return its HTML. `--evac-district` (P5-1(B)) is its own top-level
+    Sim.Viz flag, not a `--ped-<mode>` mode; every other entry uses the `--ped-<mode>` convention."""
+    flag = f"--{mode}" if mode.startswith("evac-") else f"--ped-{mode}"
     subprocess.run(
         ["dotnet", "run", "--project", "src/Sim.Viz", "-c", "Release", "--no-build",
-         "--", f"--ped-{mode}", str(out)],
+         "--", flag, str(out)],
         cwd=REPO, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     return out.read_text(encoding="utf-8")

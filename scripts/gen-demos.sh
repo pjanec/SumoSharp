@@ -143,6 +143,15 @@ demo_evac() {
   run src/Sim.Viz --evac-organic "$SITE/$slug.html"
 }
 
+# demo_evac_district <slug>
+# P5-1(B): Sim.Viz's dedicated --evac-district mode (pedestrian panic evac routed onto
+# Sim.Pedestrians over the P5-PRE walkable net) writes straight to the site dir; no scenario dir,
+# no vehicles.
+demo_evac_district() {
+  local slug="$1"
+  run src/Sim.Viz --evac-district "$SITE/$slug.html"
+}
+
 # demo_ped <mode> <slug>
 # Sim.Viz's dedicated --ped-<mode> modes build a self-contained pedestrian showcase (crowd + LOD +
 # routing + parking) straight to the site dir; no scenario-dir round-trip, no external SUMO run.
@@ -259,6 +268,9 @@ try external-agents "External non-SUMO agents (5 reactions)" \
 try evac-organic "Panic evacuation (organic town)" \
   "A realistic organic town under panic evacuation: congestion plus a large local foot exodus." \
   "Panic evacuation" demo_evac evac-organic
+try evac-district "Panic evacuation (district, routed on foot)" \
+  "Panicked pedestrians on a synthetic sidewalk district route to their nearest safe-zone corner ALONG the real sidewalk grid -- bending around the blocks, never radially through them -- forced high-power (reactive full-ORCA) via the Sim.Pedestrians PedestrianWorld facade (EvacDistrictDirector, P5-1(B))." \
+  "Panic evacuation" demo_evac_district evac-district
 
 # Pedestrians
 try ped-crossing-gate "Crossing gate (car stops for pedestrian)" \

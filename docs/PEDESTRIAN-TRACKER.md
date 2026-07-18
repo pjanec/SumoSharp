@@ -121,7 +121,17 @@ loopback; the live CycloneDDS binding remains a separate out-of-`Traffic.sln` co
 
 ## Stage P5 — Evac generalization
 
-- [ ] **P5-1** `Sim.Evac` consumes `Sim.Pedestrians` (panic = forced promotion + override; route to safe zone)
+- [x] **P5-PRE** Synthetic pedestrian evac-district net (3×3 sidewalk grid; incident centre + 4 corner safe
+      zones) — bakes through `SumoNavMesh`, centre→corner routes around blocks (arc >1.2× straight); 2 tests
+- [x] **P5-1 (B)** `Sim.Evac` consumes `Sim.Pedestrians` on a real walkable net *(`EvacDistrictDirector` on
+      the `PedestrianWorld` facade over the P5-PRE net: panic = `Remove`+`AddWalker`(→nearest safe zone)+
+      `SetForcedHighPower` (forced promotion), fleeing ALONG sidewalks — routed arc 1.33–1.78× the radial
+      line, never through blocks; everyone escapes; `--evac-district` demo; 5 tests; legacy radial
+      `EvacDirector` untouched — all 29 existing Evac tests still green; 595 parity + 129 ped green)*
+
+**Stage P5 (evac generalization) COMPLETE** — the full (B) unification: the pedestrian side of evac now
+runs on the `Sim.Pedestrians` engine over a real (synthetic) walkable net, routing panicked peds to safe
+zones along sidewalks with forced promotion; the legacy car-centric radial evac stays intact alongside it.
 
 ## Stage P6 — Scale hardening + on-target validation
 

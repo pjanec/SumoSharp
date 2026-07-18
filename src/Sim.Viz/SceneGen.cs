@@ -36,6 +36,7 @@ internal static class SceneGen
     internal const int KindPedDwellSit = 15;   // #22d3ee -- ActivityTimeline Dwell(visible) pedestrian
     internal const int KindPedTalk = 16;       // #f472b6 -- ActivityTimeline Interact ("talk") pedestrian
     internal const int KindPedWaiter = 17;     // #fbbf24 -- LIVE-POC-3 waiter micro-scenario actor
+    internal const int KindSafeZone = 18;      // #22c55e -- evac-district safe-zone (corner) marker
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -2876,6 +2877,113 @@ internal static class SceneGen
             labels,
             incident,
             boundary);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Panic evacuation (district, routed on foot)" (P5-1(B), docs/PEDESTRIAN-TASKS.md;
+    // docs/PEDESTRIAN-DESIGN.md §6): the pedestrian-side evac unification onto Sim.Pedestrians. Unlike
+    // BuildEvacGrid/BuildEvacOrganic/BuildEvacCity (car-centric EvacDirector, radial FakeNavMesh flee),
+    // this scene has NO vehicles at all -- it is driven end-to-end by EvacDistrictDirector, which
+    // routes every panicked pedestrian to its NEAREST safe zone ALONG the real sidewalk grid (via
+    // PedestrianWorld/SumoNavMesh), not radially through the blocks. Calm (not-yet-panicked) peds
+    // render low-power grey; once panicked they are forced high-power (SetForcedHighPower) and render
+    // orange, streaming along the streets to a corner. NOT part of --bundle (its own standalone mode,
+    // like --evac-organic/--evac-city); emitted via `--evac-district`.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildEvacDistrict(string repoRoot)
+    {
+        var netPath = Path.Combine(repoRoot, "scenarios", "_ped", "evac-district", "net.net.xml");
+        var pedNetwork = PedNetworkParser.Load(netPath);
+        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
+
+        var network = BuildNetwork(NetworkParser.Parse(netPath));
+        network = WithCrossings(network, pedNetwork, netPath);
+
+        var safeZones = new[] { new Vec2(0, 0), new Vec2(200, 0), new Vec2(0, 200), new Vec2(200, 200) };
+        var incident = new Sim.Evac.Incident(X: 100.0, Y: 100.0, StartTime: 8.0, Radius: 90.0);
+        var cfg = new Sim.Evac.EvacDistrictConfig
+        {
+            PedCount = 36,
+            MaxSpeed = 1.3,
+            PedRadius = 0.3,
+            ArriveRadius = 1.0,
+            PanicRadius = 90.0,   // deliberately < the full district span so some peds stay calm throughout
+        };
+
+        var director = new Sim.Evac.EvacDistrictDirector(nav, incident, safeZones, cfg);
+
+        const double Dt = 0.5;
+        const int Decimate = 2;
+        const int Steps = 500; // 250s simulated, decimated to 250 recorded frames
+
+        var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+
+        for (var step = 0; step < Steps; step++)
+        {
+            director.Step(Dt);
+
+            if (step % Decimate != 0)
+            {
+                continue;
+            }
+
+            var discs = new List<(string, double[])>(cfg.PedCount + safeZones.Length);
+            for (var id = 1; id <= director.PedestrianCount; id++)
+            {
+                if (director.IsEscaped(id))
+                {
+                    continue;   // arrived at its safe zone -- stop rendering (AssignStableDiscSlots
+                                // leaves its slot null from here on, exactly like an FCD arrival).
+                }
+
+                var pos = director.PositionOf(id);
+                var kind = director.IsPanicked(id) ? KindPedHighPower : KindPedLowPower;
+                discs.Add(($"ped{id}", new[] { R(pos.X), R(pos.Y), cfg.PedRadius, (double)kind }));
+            }
+
+            for (var i = 0; i < safeZones.Length; i++)
+            {
+                var z = safeZones[i];
+                discs.Add(($"safe{i}", new[] { R(z.X), R(z.Y), 4.0, (double)KindSafeZone }));
+            }
+
+            frames.Add(new FramePayload(Array.Empty<double[]?>(), Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
+        }
+
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
+
+        const double Pad = 15.0;
+        var view = new double[] { -Pad, -Pad, 200.0 + Pad, 200.0 + Pad };
+
+        // No single "safe radius" ring makes sense here (four discrete corner safe zones, not one
+        // circle) -- pass 0 so the front-end's dashed safe-radius ring collapses to nothing; the
+        // corner safe-zone discs themselves (kind 18, green) carry that meaning instead.
+        var incidentOverlay = new[] { R(incident.X), R(incident.Y), R(cfg.PanicRadius), R(incident.StartTime), 0.0 };
+
+        var labels = new string[19];
+        labels[9] = "pedestrian (calm / low-power)";
+        labels[10] = "pedestrian (panicked / forced high-power)";
+        labels[18] = "safe zone (corner)";
+
+        return new ScenePayload(
+            "Panic evacuation (district, routed on foot)",
+            "A synthetic 3x3 sidewalk district (200x200 m); an incident at the centre panics any "
+            + "pedestrian within its radius (red halo). Calm walkers (grey) stroll ambient routes; a "
+            + "panicked walker (orange) is forced high-power (reactive full-ORCA) and routed to its "
+            + "NEAREST safe-zone corner (green) ALONG the real sidewalk grid -- bending around the "
+            + "blocks, never a straight line through them -- via the Sim.Pedestrians PedestrianWorld "
+            + "facade (EvacDistrictDirector). Vehicles are not modelled in this scene.",
+            view,
+            network,
+            new double[] { 0, 0 },
+            Dt * Decimate,
+            frames.ToArray(),
+            labels,
+            incidentOverlay,
+            null);
     }
 
     // Run a pure crowd to convergence, snapshotting disc positions each step and keeping every

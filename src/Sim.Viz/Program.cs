@@ -34,6 +34,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --bundle <outPath>");
             Console.Error.WriteLine("       Sim.Viz --evac-organic <outPath>");
             Console.Error.WriteLine("       Sim.Viz --evac-city <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --evac-district <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-crossing-gate <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-lod-promotion <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-od-routing <outPath>");
@@ -53,6 +54,7 @@ internal static class Program
             "--bundle" => RunBundle(args),
             "--evac-organic" => RunEvacOrganic(args),
             "--evac-city" => RunEvacCity(args),
+            "--evac-district" => RunEvacDistrict(args),
             "--ped-crossing-gate" => RunPedCrossingGate(args),
             "--ped-lod-promotion" => RunPedLodPromotion(args),
             "--ped-od-routing" => RunPedOdRouting(args),
@@ -589,6 +591,65 @@ internal static class Program
         Console.WriteLine(
             $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} vehicleSlots={vehicleSlots} " +
             $"pedestrianDiscs={pedestrianDiscs}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Standalone evac-district mode (P5-1(B), docs/PEDESTRIAN-TASKS.md): pedestrian panic evac
+    // routed onto Sim.Pedestrians over the P5-PRE walkable net -- no vehicles, no scenario dir.
+    // ---------------------------------------------------------------------------------------
+    private static int RunEvacDistrict(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --evac-district requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var repoRoot = RepoRoot();
+
+        var scene = SceneGen.BuildEvacDistrict(repoRoot);
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxPeds = 0;
+        var maxPanicked = 0;
+        var everPanicked = false;
+        foreach (var frame in scene.Frames)
+        {
+            var total = 0;
+            var panicked = 0;
+            foreach (var d in frame.D)
+            {
+                if (d is not { Length: > 3 })
+                {
+                    continue;
+                }
+
+                if (d[3] == SceneGen.KindPedLowPower)
+                {
+                    total++;
+                }
+                else if (d[3] == SceneGen.KindPedHighPower)
+                {
+                    total++;
+                    panicked++;
+                    everPanicked = true;
+                }
+            }
+
+            if (total > maxPeds) maxPeds = total;
+            if (panicked > maxPanicked) maxPanicked = panicked;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentPeds={maxPeds} " +
+            $"maxConcurrentPanicked={maxPanicked} everPanicked={everPanicked}");
         return 0;
     }
 
