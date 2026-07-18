@@ -270,9 +270,12 @@ try ped-lod-promotion "Sim-LOD promotion (low-power to full ORCA)" \
 try ped-od-routing "Origin-destination routed crowd" \
   "PedDemand spawns pedestrians on a Poisson process, each routed origin-to-destination across the junction's real sidewalks, crossings, and walkingareas via SumoNavMesh, then despawned on arrival (PedDemand + PedLodManager)." \
   "Pedestrians" demo_ped od-routing ped-od-routing
-try ped-dodge-reroute "Obstacle dodge + reroute" \
-  "A bidirectional pedestrian stream swerves around a static box obstacle purely via ORCA local avoidance; separately, a pedestrian pair reroutes around a blocker that appears mid-crossing (PedRouteController + BlockerRegistry + RerouteDriver)." \
-  "Pedestrians" demo_ped dodge-reroute ped-dodge-reroute
+try ped-dodge "Obstacle dodge" \
+  "A bidirectional pedestrian stream is routed through the clear corridor beside a static box obstacle by an off-line waypoint, while ORCA keeps each ped clear of the box and of oncoming peds -- the stream arcs around the box and re-forms past it (OrcaCrowd BoxObstacle + PedRouteController)." \
+  "Pedestrians" demo_ped dodge ped-dodge
+try ped-reroute "Crossing reroute" \
+  "A pedestrian pair walks a signalized crossing back and forth; a blocker box appears over the crossing partway through and RerouteDriver recomputes a detour through the walkingarea ring for exactly the affected pedestrian, then the blocker clears (PedRouteController + BlockerRegistry + RerouteDriver)." \
+  "Pedestrians" demo_ped reroute ped-reroute
 try ped-parking "Parking lot (car/pedestrian mutual avoidance)" \
   "A non-holonomic car maneuvers into a parking slot among static parked cars while pedestrians weave the drive aisle; one walker boards the car once it parks, another alights once it returns to the exit (LotCoupling)." \
   "Pedestrians" demo_ped parking ped-parking

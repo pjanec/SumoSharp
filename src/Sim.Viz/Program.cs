@@ -37,7 +37,8 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-crossing-gate <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-lod-promotion <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-od-routing <outPath>");
-            Console.Error.WriteLine("       Sim.Viz --ped-dodge-reroute <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-dodge <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-reroute <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-parking <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-liveliness <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-social <outPath>");
@@ -52,7 +53,8 @@ internal static class Program
             "--ped-crossing-gate" => RunPedCrossingGate(args),
             "--ped-lod-promotion" => RunPedLodPromotion(args),
             "--ped-od-routing" => RunPedOdRouting(args),
-            "--ped-dodge-reroute" => RunPedDodgeReroute(args),
+            "--ped-dodge" => RunPedScene(args, "--ped-dodge", SceneGen.BuildObstacleDodge),
+            "--ped-reroute" => RunPedScene(args, "--ped-reroute", SceneGen.BuildCrossingReroute),
             "--ped-parking" => RunPedParking(args),
             "--ped-liveliness" => RunPedLiveliness(args),
             "--ped-social" => RunPedSocial(args),
@@ -179,11 +181,11 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Pedestrian showcase: "Dodge / reroute" (local avoidance + BlockerRegistry/RerouteDriver).
     // ---------------------------------------------------------------------------------------
-    private static int RunPedDodgeReroute(string[] args)
+    private static int RunPedScene(string[] args, string flag, Func<string, ScenePayload> build)
     {
         if (args.Length < 2)
         {
-            Console.Error.WriteLine("error: --ped-dodge-reroute requires an output path");
+            Console.Error.WriteLine($"error: {flag} requires an output path");
             return 2;
         }
 
@@ -191,7 +193,7 @@ internal static class Program
         var repoRoot = RepoRoot();
         var scenarioDir = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza");
 
-        var scene = SceneGen.BuildDodgeReroute(scenarioDir);
+        var scene = build(scenarioDir);
         var payload = new ReplayData(new[] { scene });
         if (!WriteHtml(payload, scene.Name, outPath))
         {

@@ -849,7 +849,15 @@ internal static class SceneGen
     // Sim.Pedestrians controllers (PedRouteController/BlockerRegistry/RerouteDriver), driven here
     // exactly as DynamicBlockerRerouteTests/ObstacleDodgeTests drive them.
     // ---------------------------------------------------------------------------------------
-    internal static ScenePayload BuildDodgeReroute(string scenarioDir)
+    // Two watchable framings of the SAME simulation (both mechanisms run in one crowd): one camera
+    // zoomed on the sidewalk box so the local dodge arc is clearly visible, one on the north crossing
+    // so the strategic detour is. Framing them together in one 100 m-tall scene made each ~3 px on a
+    // phone -- imperceptible -- so they get separate, tight views of the same underlying run.
+    internal static ScenePayload BuildObstacleDodge(string scenarioDir) => BuildDodgeReroute(scenarioDir, "dodge");
+
+    internal static ScenePayload BuildCrossingReroute(string scenarioDir) => BuildDodgeReroute(scenarioDir, "reroute");
+
+    private static ScenePayload BuildDodgeReroute(string scenarioDir, string focus)
     {
         var netPath = Path.Combine(scenarioDir, "net.net.xml");
         var walkableAddPath = Path.Combine(scenarioDir, "walkable.add.xml");
@@ -882,24 +890,46 @@ internal static class SceneGen
             s => s.Shape.Any(p => Math.Abs(p.X - 112.6) < 0.5 && p.Y is > 195 and < 220));
         var dodgeHalfWidth = Math.Min(1.0, (dodgeSidewalk?.Width ?? 2.0) / 2.0);
 
-        var obstacleCenter = new Vec2(112.6, 207.0);
-        var obstacleHalfX = Math.Min(0.5, dodgeHalfWidth * 0.7);
-        var obstacleCorners = BoxObstacle.Corners(obstacleCenter, obstacleHalfX, 1.0, angleRadians: 0.0);
+        // The box sits on the RIGHT of the ~2 m sidewalk, its left edge just past the centreline, so a
+        // centreline pedestrian MUST leave the line to pass -- but it leaves a clear ~0.8 m corridor on
+        // the LEFT. (A box centred on the sidewalk spanning most of its width leaves under one
+        // ped-diameter each side, so ORCA has no feasible gap and peds get shoved straight through it --
+        // the failure mode ObstacleDodgeTests.BuildPedPath is written to avoid.)
+        const double SidewalkCenterX = 112.6;
+        const double BoxY = 207.0;
+        var boxLeftX = SidewalkCenterX - (0.15 * dodgeHalfWidth);   // just left of the centreline
+        var boxRightX = SidewalkCenterX + dodgeHalfWidth;           // out to the sidewalk's right edge
+        var obstacleCenter = new Vec2((boxLeftX + boxRightX) / 2.0, BoxY);
+        var obstacleHalfX = (boxRightX - boxLeftX) / 2.0;
+        var obstacleCorners = BoxObstacle.Corners(obstacleCenter, obstacleHalfX, 1.3, angleRadians: 0.0);
         crowd.AddObstacle(obstacleCorners);
 
-        var dodgeOrigin = new Vec2(112.6, 195.0);
-        var dodgeDest = new Vec2(112.6, 220.0);
-        var dodgePeds = new List<(OrcaHandle Handle, Vec2 Origin, Vec2 Dest, bool GoingToDest)>();
-        for (var i = 0; i < 6; i++)
+        // Dodge peds are ROUTED through the left corridor via a mid-path waypoint set clear of the box
+        // (the ObstacleDodgeTests recipe): the waypoint supplies the persistent lateral INTENT, and
+        // ORCA supplies the fine clearance from the box and from oncoming peds. A bare straight goal
+        // behind the box gives no lateral pull, so the ped never arcs -- it just walks into the box.
+        var dodgeLaneX = boxLeftX - PedRadius - 0.15;  // corridor centre, > ped radius clear of the box
+        var dodgeWaypoint = new Vec2(dodgeLaneX, BoxY);
+        var dodgeOrigin = new Vec2(SidewalkCenterX, 189.0);  // both ends well clear of the box's y-band
+        var dodgeDest = new Vec2(SidewalkCenterX, 225.0);
+        Vec2[] DodgePath(Vec2 from, Vec2 to) => new[] { from, dodgeWaypoint, to };
+
+        // Three peds heading up, three down, all spawned OUTSIDE the box's y-band [~205.7,208.3] so none
+        // starts inside the obstacle; staggered along the approach so they form a loose bidirectional
+        // single file that has to thread past the box.
+        var dodgeSpawns = new[]
         {
-            var goingToDest = i % 2 == 0;
-            var startY = 195.0 + (i * 4.0);
-            var start = new Vec2(112.6, startY);
-            var goal = goingToDest ? dodgeDest : dodgeOrigin;
-            var path = new[] { start, goal };
+            (Y: 189.0, Up: true), (Y: 195.0, Up: true), (Y: 201.0, Up: true),
+            (Y: 225.0, Up: false), (Y: 219.0, Up: false), (Y: 213.0, Up: false),
+        };
+        var dodgePeds = new List<(OrcaHandle Handle, Vec2 Origin, Vec2 Dest, bool GoingToDest)>();
+        foreach (var (startY, up) in dodgeSpawns)
+        {
+            var start = new Vec2(SidewalkCenterX, startY);
+            var goal = up ? dodgeDest : dodgeOrigin;
             var handle = crowd.Add(start, PedRadius, MaxSpeed, goal: start);
-            controller.AddRoute(handle, path, MaxSpeed);
-            dodgePeds.Add((handle, dodgeOrigin, dodgeDest, goingToDest));
+            controller.AddRoute(handle, DodgePath(start, goal), MaxSpeed);
+            dodgePeds.Add((handle, dodgeOrigin, dodgeDest, up));
         }
 
         // ----- (2) strategic reroute: two peds cycling the north crossing back and forth -----
@@ -983,7 +1013,7 @@ internal static class SceneGen
                 if (controller.IsRouteComplete(handle))
                 {
                     var newGoal = goingToDest ? origin : dest;
-                    controller.AddRoute(handle, new[] { crowd.Position(handle), newGoal }, MaxSpeed);
+                    controller.AddRoute(handle, DodgePath(crowd.Position(handle), newGoal), MaxSpeed);
                     dodgePeds[i] = (handle, origin, dest, !goingToDest);
                 }
             }
@@ -1072,16 +1102,31 @@ internal static class SceneGen
         Track(dodgeOrigin.X, dodgeOrigin.Y);
         Track(dodgeDest.X, dodgeDest.Y);
 
+        // Two tight framings of the same run (see BuildObstacleDodge/BuildCrossingReroute). Each view is
+        // small enough (tens of metres, not the whole ~100 m cross) that the behaviour is clearly
+        // visible on a phone; peds outside the frame are simply off-canvas.
+        var (name, desc, view) = focus == "reroute"
+            ? ("Crossing reroute",
+                "Strategic reroute (not local avoidance): an amber pedestrian pair walks the junction's "
+                + "north crossing back and forth. Partway through, a blocker box appears over the crossing "
+                + "(grey); RerouteDriver detects it and recomputes a detour through the walkingarea ring "
+                + "for exactly the affected pedestrian -- watch them swing wide around the block -- then "
+                + "the blocker clears and the direct crossing resumes. Driven end-to-end through "
+                + "PedRouteController + BlockerRegistry + RerouteDriver.",
+                new double[] { 106.0, 116.0, 134.0, 147.0 })
+            : ("Obstacle dodge",
+                "Local avoidance: a bidirectional pedestrian stream (purple) walks a sidewalk with a "
+                + "static box obstacle (grey) blocking the centreline. Each ped is routed through the "
+                + "clear corridor beside the box by a single off-line waypoint, and OrcaCrowd's own "
+                + "reciprocal/obstacle avoidance keeps it clear of the box and of oncoming peds -- so the "
+                + "stream arcs around the box and re-forms past it. No navmesh reroute; just steering. "
+                + "Driven through OrcaCrowd (BoxObstacle + AddObstacle) + PedRouteController.",
+                new double[] { R(obstacleCenter.X - 5.5), R(BoxY - 15.0), R(obstacleCenter.X + 5.5), R(BoxY + 15.0) });
+
         return new ScenePayload(
-            "Dodge / reroute",
-            "Two obstacle-avoidance mechanisms, one crowd: a bidirectional pedestrian stream (purple) "
-            + "swerves around a static box obstacle on a sidewalk purely via OrcaCrowd's own local "
-            + "avoidance -- no rerouting. Separately, a pedestrian pair (amber) crosses the junction's "
-            + "north crossing back and forth; a blocker box appears over it partway through (grey) and "
-            + "RerouteDriver detects it and recomputes a detour through the walkingarea ring for exactly "
-            + "the affected pedestrian, then the blocker clears and direct crossings resume. Driven "
-            + "end-to-end through PedRouteController + BlockerRegistry + RerouteDriver.",
-            new double[] { R(minX), R(minY), R(maxX), R(maxY) },
+            name,
+            desc,
+            view,
             network,
             new double[] { 0, 0 },
             Dt * Decimate,
