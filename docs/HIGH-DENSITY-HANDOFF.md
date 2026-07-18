@@ -139,7 +139,12 @@ design-first + scope heavily (each rivals a P1 rung in effort).
 ## 5. Orientation quick-reference
 - **Plan + verified gaps + owner steers:** `docs/HIGH-DENSITY-PLAN.md` (has the per-item tracker, updated).
 - **Designs:** `docs/HIGH-DENSITY-P0-DESIGN.md`, `-P1E-DESIGN.md`, `-P1F-DESIGN.md`, `-P2G-DESIGN.md`,
-  `-P2H-DESIGN.md`, `-P2G3-DESIGN.md` (diagnosis), `-X1-DESIGN.md`.
+  `-P2H-DESIGN.md`, `-P2G3-DESIGN.md` (diagnosis + attempted fix), `-P2G2-COOPERATIVE-LC-DESIGN.md`
+  (the coordinated dense LC model + the config-gate decision + full gain/cost analysis), `-X1-DESIGN.md`.
+- **Cross-session coordination:** `docs/COORDINATION-pedestrian-x-highdensity.md` — the collision surface
+  between this work and the pedestrian/crosswalk session (junction RoW, the LC decision, net ingest) and
+  the additive-constraint protocol to keep them conflict-free. READ if touching junction RoW or
+  `DecideSpeedGainForVehicle` while pedestrian work is in flight.
 - **Spec:** `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md`.
 - **Repo rules / architecture:** `CLAUDE.md`, `docs/DESIGN.md`.
 - **HD tests:** `tests/Sim.ParityTests/RungHD*.cs` + `RungHDx1RealismMaskTests.cs`. **HD scenarios:**
