@@ -40,6 +40,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-dodge-reroute <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-parking <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-liveliness <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-social <outPath>");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -54,6 +55,7 @@ internal static class Program
             "--ped-dodge-reroute" => RunPedDodgeReroute(args),
             "--ped-parking" => RunPedParking(args),
             "--ped-liveliness" => RunPedLiveliness(args),
+            "--ped-social" => RunPedSocial(args),
             _ => RunSingle(args),
         };
     }
@@ -91,6 +93,53 @@ internal static class Program
         Console.WriteLine(
             $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs} " +
             $"minConcurrentDiscs={minDiscs}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Pedestrian showcase: "Meet & talk" (LIVE-POC-2, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §5, §12).
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedSocial(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-social requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var scene = SceneGen.BuildSocial();
+        var payload = new ReplayData(new[] { scene });
+        if (!WriteHtml(payload, scene.Name, outPath))
+        {
+            return 2;
+        }
+
+        var maxDiscs = 0;
+        var everTalked = false;
+        var firstTalkTime = -1.0;
+        for (var f = 0; f < scene.Frames.Length; f++)
+        {
+            var frame = scene.Frames[f];
+            var n = 0;
+            foreach (var d in frame.D)
+            {
+                if (d is null) continue;
+                n++;
+                if (d.Length > 3 && d[3] == SceneGen.KindPedTalk)
+                {
+                    everTalked = true;
+                    if (firstTalkTime < 0.0) firstTalkTime = f * scene.Dt;
+                }
+            }
+
+            if (n > maxDiscs) maxDiscs = n;
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxDiscs} " +
+            $"everTalked={everTalked} firstTalkTime={firstTalkTime:F2}");
         return 0;
     }
 

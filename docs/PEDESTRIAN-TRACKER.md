@@ -20,7 +20,12 @@ once the POCs converge.
       broadcast-once + `HeadlessIg.ReconstructSample` share `PoseAt`; 4 tests inc. a 300+‑sample exact
       server==IG sweep; `--ped-liveliness` scene renders walk/sip/sit + hidden-window disc drop 5→4
       verified; 589 parity + 91 ped green)*
-- [ ] **LIVE-POC-2** — pre-scheduled two-ped Interact (meet, step aside, "talk", resume) — server==IG
+- [x] **LIVE-POC-2** — pre-scheduled two-ped Interact (meet, step aside, "talk", resume) — server==IG
+      *(`SocialPlanner` writes matching `InteractSegment`s into both timelines: closed-form nearest-
+      approach meet point, bisector-perpendicular ±offset, identical [T,T+D] window, headings facing;
+      earlier ped's approach re-timed so neither waits; `--ped-social` scene; 6 tests inc. exact
+      server==IG sweep (744 samples/ped), identical-window coordination, exact √2/2 stepped-aside
+      identity; 589 parity + 97 ped green)*
 - [ ] **LIVE-POC-3** — waiter micro-scenario (templated scripted actor serving open-air tables)
 - [ ] **LIVE-POC-4** — auto-deduced liveliness demand in a subarea + density knob + shared-mask legitimacy
       (after Stage P8 + a real cropped box; zero on-camera pops audited)

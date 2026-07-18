@@ -33,6 +33,7 @@ internal static class SceneGen
     private const int KindParkingCar = 13;     // #4f8ef7 -- the one maneuvering car in the parking demo
     internal const int KindPedPaused = 14;     // #eab308 -- ActivityTimeline Pause / idle-clamp pedestrian
     internal const int KindPedDwellSit = 15;   // #22d3ee -- ActivityTimeline Dwell(visible) pedestrian
+    internal const int KindPedTalk = 16;       // #f472b6 -- ActivityTimeline Interact ("talk") pedestrian
 
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
@@ -603,6 +604,96 @@ internal static class SceneGen
             null,
             new double[] { 0, 0 },
             dt * decimate,
+            frames.ToArray());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Scene -- "Meet & talk" (LIVE-POC-2, docs/PEDESTRIAN-LIVELINESS-DESIGN.md §5, §12): several
+    // PAIRS of pedestrians on converging approaches, each pair paired up front by SocialPlanner --
+    // both peds' Walk->Interact->Walk timelines are authored TOGETHER (matching meet point/time/
+    // duration, opposite step-aside offsets, headings aimed at each other) purely from their nominal
+    // O->D plans, with NO runtime negotiation between them. Rendered exactly like BuildLiveliness:
+    // ActivityTimeline.PoseAt(now) per ped, the same function the server AND the IG would call. The
+    // "talk" AnimTag drives a distinct disc colour (KindPedTalk) so the stepped-aside, face-to-face
+    // conversation reads visually distinct from ordinary low-power walking.
+    // ---------------------------------------------------------------------------------------
+    internal static ScenePayload BuildSocial()
+    {
+        const int pairCount = 3;
+        const double laneSpacing = 11.0;
+        const double speed = 1.3;
+        const double dt = 0.2;
+        const double meetOffset = 0.6;
+        const double talkDuration = 4.0;
+
+        var timelines = new List<(int Id, ActivityTimeline Timeline)>();
+        for (var p = 0; p < pairCount; p++)
+        {
+            var laneY = (p - (pairCount - 1) / 2.0) * laneSpacing;
+            var crossX = (p - (pairCount - 1) / 2.0) * 3.0; // stagger each pair's crossing point a bit
+
+            // Ped A walks west->east along its own lane; ped B walks south->north crossing that lane
+            // at (crossX, laneY) -- a converging pair of approaches meeting near the lane centre.
+            var pedAPath = new[] { new Vec2(-18.0, laneY), new Vec2(18.0, laneY) };
+            var pedBPath = new[] { new Vec2(crossX, laneY - 18.0), new Vec2(crossX, laneY + 18.0) };
+
+            var pedA = new PedPlan(p * 2 + 1, pedAPath, 0.0, speed);
+            var pedB = new PedPlan(p * 2 + 2, pedBPath, 0.0, speed);
+
+            var (timelineA, timelineB) = SocialPlanner.ScheduleInteraction(pedA, pedB, meetOffset, talkDuration);
+            timelines.Add((pedA.Id, timelineA));
+            timelines.Add((pedB.Id, timelineB));
+        }
+
+        var maxEnd = 0.0;
+        foreach (var (_, timeline) in timelines)
+        {
+            maxEnd = Math.Max(maxEnd, timeline.EndTime);
+        }
+
+        var steps = (int)((maxEnd + 3.0) / dt);
+        var snapshots = new List<List<(string Key, double[] Disc)>>(steps);
+
+        for (var step = 0; step < steps; step++)
+        {
+            var now = step * dt;
+            var discs = new List<(string, double[])>(timelines.Count);
+            foreach (var (id, timeline) in timelines)
+            {
+                var sample = timeline.PoseAt(now);
+                if (!sample.Visible)
+                {
+                    continue;
+                }
+
+                var kind = sample.AnimTag == SocialPlanner.TalkAnimTag ? KindPedTalk : KindPedLowPower;
+                discs.Add(($"ped{id}", new[] { R(sample.Pos.X), R(sample.Pos.Y), 0.3, (double)kind }));
+            }
+
+            snapshots.Add(discs);
+        }
+
+        var frames = new List<FramePayload>(snapshots.Count);
+        var noVehicles = Array.Empty<double[]?>();
+        foreach (var _ in snapshots)
+        {
+            frames.Add(new FramePayload(noVehicles, Array.Empty<double[]?>()));
+        }
+
+        AssignStableDiscSlots(frames, snapshots);
+
+        return new ScenePayload(
+            "Meet & talk",
+            "LIVE-POC-2: a pre-scheduled, deterministic two-pedestrian interaction. SocialPlanner pairs "
+            + "each converging pair of walkers and writes MATCHING Interact segments into both of their "
+            + "ActivityTimelines -- same meet time/duration, opposite step-aside offsets, headings aimed "
+            + "at each other -- entirely at schedule time, from their nominal walk plans. No runtime "
+            + "negotiation between the two peds: replay is still just ActivityTimeline.PoseAt(now), so "
+            + "server == IG and the pair stays exactly as low-power as a solo walker. Pink = talking.",
+            new double[] { -22, -20, 22, 20 },
+            null,
+            new double[] { 0, 0 },
+            dt,
             frames.ToArray());
     }
 

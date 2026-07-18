@@ -6,15 +6,18 @@ namespace Sim.Pedestrians.Lod;
 // function identity to a RICHER function so low-power pedestrians can look "alive" -- sipping,
 // sitting at a table, ducking into a building -- without ever becoming a per-step behavior loop.
 //
-// An ActivityTimeline is an ordered, precomputed list of ActivitySegments (Walk/Pause/Dwell), each
-// covering a [t0, t1) slice of the ped's life. `PoseAt(now)` is the ONE evaluator: a PURE function of
-// (this timeline, now) -- no mutable state, no System.Random, no neighbour queries. This is exactly
+// An ActivityTimeline is an ordered, precomputed list of ActivitySegments (Walk/Pause/Dwell/Interact),
+// each covering a [t0, t1) slice of the ped's life. `PoseAt(now)` is the ONE evaluator: a PURE function
+// of (this timeline, now) -- no mutable state, no System.Random, no neighbour queries. This is exactly
 // PathArcMotion's load-bearing identity ("server == IG because they share the code"), just applied to
 // a richer schedule: the server calls THIS SAME method to advance/expose a low-power ped, and the
 // headless IG calls it again to reconstruct that ped from the one-time ActivityTimelineRecord
 // broadcast -- so "server == IG for liveliness" follows from sharing the code, not from independently
 // matching two implementations. A pure Walk-only timeline delegates its motion to PathArcMotion
-// segment-by-segment, so it reproduces today's PathArc pose exactly.
+// segment-by-segment, so it reproduces today's PathArc pose exactly. LIVE-POC-2 (§5, §12) adds
+// `Interact`: pose-wise it IS a Dwell (its own Pose/Heading, always visible) that additionally names
+// the conversation `PartnerId` -- see `InteractSegment` below -- authored PAIRWISE by SocialPlanner so
+// two peds' timelines agree at schedule time rather than negotiating at runtime.
 //
 // Allocation-light: the per-segment start offsets/poses are computed ONCE in the constructor (a single
 // forward pass); `PoseAt` itself is a linear scan over the (small, n) segment list with no allocation.
@@ -39,6 +42,7 @@ public enum ActivitySegmentKind
     Walk,
     Pause,
     Dwell,
+    Interact,
 }
 
 // One [t0, t1) slice of an ActivityTimeline (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §2 table). `Duration`
@@ -70,6 +74,18 @@ public sealed record PauseSegment(double Dur, string AnimTag) : ActivitySegment(
 // so the caller (HeadlessIg/SceneGen) must emit no disc for that ped while inside.
 public sealed record DwellSegment(Vec2 Pose, Vec2 Heading, double Dur, string AnimTag, bool Visible)
     : ActivitySegment(ActivitySegmentKind.Dwell, Dur);
+
+// LIVE-POC-2 (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §5, §12): the "step aside and talk" beat. Exactly a
+// VISIBLE Dwell for pose purposes -- it carries its OWN `Pose`/`Heading` (the meet spot, just off the
+// nominal walked centerline, facing the partner) -- plus one extra field, `PartnerId`, naming the OTHER
+// ped in the conversation. `PartnerId` is carried for the animation contract / tests (so an IG or a
+// test can confirm which two peds are talking to each other); it plays NO role in PoseAt's pose math,
+// which is why Interact can otherwise reuse Dwell's anchor/EndOf handling verbatim. Two Interact
+// segments only ever "agree" because SocialPlanner authors them together at schedule time (matching
+// meetPos +/- offset, matching [T, T+D] window, headings aimed at each other) -- there is no runtime
+// negotiation between the two peds' timelines.
+public sealed record InteractSegment(Vec2 Pose, Vec2 Heading, double Dur, string AnimTag, int PartnerId)
+    : ActivitySegment(ActivitySegmentKind.Interact, Dur);
 
 public sealed class ActivityTimeline
 {
@@ -130,6 +146,7 @@ public sealed class ActivityTimeline
     {
         WalkSegment w when w.Path.Count > 0 => w.Path[0],
         DwellSegment d => d.Pose,
+        InteractSegment i => i.Pose,
         _ => Vec2.Zero,
     };
 
@@ -141,6 +158,7 @@ public sealed class ActivityTimeline
             WalkSegment w when w.Path.Count > 0 => (w.Path[^1], FinalWalkHeading(w.Path)),
             PauseSegment => (startPos, startHeading), // no movement -- keep facing the same way
             DwellSegment d => (d.Pose, d.Heading),
+            InteractSegment i => (i.Pose, i.Heading),
             _ => (startPos, startHeading),
         };
 
@@ -219,6 +237,9 @@ public sealed class ActivityTimeline
 
             case DwellSegment d:
                 return new PoseSample(d.Pose, d.Heading, d.AnimTag, d.Visible);
+
+            case InteractSegment i:
+                return new PoseSample(i.Pose, i.Heading, i.AnimTag, true);
 
             default:
                 throw new InvalidOperationException($"Unknown ActivitySegment type: {segment.GetType()}");
