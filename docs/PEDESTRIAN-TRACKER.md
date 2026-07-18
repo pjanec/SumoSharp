@@ -153,8 +153,14 @@ zones along sidewalks with forced promotion; the legacy car-centric radial evac 
       from the real components (Engine.CrowdSource, PedLodManager+InterestField, PedDemand+SumoNavMesh,
       RerouteDriver, LotCoupling), screenshot-verified, `everPromoted=True` on the LOD scene *(user
       requested HTML demos before 3D)*
-- [ ] **P7-1** Native viewer (`Sim.Viewer`/Raylib) in-process ped render (generalize evac overlay;
-      regime-aware; board/alight appear/disappear) — *schedule early for a visible demo*
+- [x] **P7-1** Native viewer (`Sim.Viewer`/Raylib) in-process ped render (generalize evac overlay;
+      regime-aware; board/alight appear/disappear) — new domain-agnostic `PedOverlay` (IRenderOverlay):
+      per-frame `PedRenderPoint(X,Y,Regime,Visible)` snapshot published in the OnAfterStep hook; regime from
+      `ModelOf` (FreeKinematic→HighPower else LowPower), escaped peds appear/disappear (omitted). Wired as
+      `DemoKind.Pedestrian`/`DemoCategory.Pedestrians` with the "Pedestrian evac (district)" entry over the
+      real `scenarios/_ped/evac-district` net (zero vehicles). Xvfb screenshot-verified: both regimes drawn
+      distinct (slate low-power vs cyan high-power), HUD `pop/low/high/escaped` split live; in-sln gate
+      596/139/2/1 green, Sim.Core untouched *(scheduled early for a visible demo)*
 - [ ] **P7-2** Native viewer remote ped render over DR/DDS (FreeKinematic extrapolate + PathArc follow;
       server==IG visual parity; no promotion pop)
 - [ ] **P7-3** City3D (Godot 3D) ped render — in-process (`SimSource`) + remote (`Reconstructor`/DDS);

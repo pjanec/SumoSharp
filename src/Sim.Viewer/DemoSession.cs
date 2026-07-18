@@ -146,6 +146,15 @@ public sealed class DemoSession : IDisposable
                 var host = EngineHost.CreateCustom(overlay.NetPath, overlay.Build);
                 overlay.Bind(host);
                 return (host, overlay);
+            case DemoKind.Pedestrian:
+                // P7-1: mirrors the Evac case above, minus Bind() -- PedOverlay has no HandlesWorldClick
+                // seam (no incident-placement/click behaviour is defined for a pedestrian-only demo yet),
+                // so it never needs a host reference back.
+                var pedKind = entry.PedKind
+                    ?? throw new InvalidOperationException($"Demo '{entry.Name}' has Kind.Pedestrian but no PedKind.");
+                var pedOverlay = new PedOverlay(pedKind, repoRoot);
+                var pedHost = EngineHost.CreateCustom(pedOverlay.NetPath, pedOverlay.Build);
+                return (pedHost, pedOverlay);
             case DemoKind.Sandbox:
                 return (new EngineHost(
                     ResolveNetPath(Path.Combine(repoRoot, entry.PathRelToRepo)),
