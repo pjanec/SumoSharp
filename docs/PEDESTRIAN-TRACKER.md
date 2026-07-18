@@ -77,7 +77,11 @@ Graduation into production (making the *routed ambient crowd* lively):
 
 - [x] **P1-1** Movable multi-source interest field (spatial, hysteretic, deterministic)
       *(InterestField; inverse spatial index matches a brute-force oracle; 8 tests; 582 parity green)*
-- [ ] **P1-2** `Sim.Pedestrians` production API surface + NuGet packaging + sample
+- [x] **P1-2** `Sim.Pedestrians` production API surface + NuGet packaging + sample *(`PedestrianWorld` thin
+      facade over `PedLodManager`+`InterestField`+`PedPublisher` — AddWalker/AddLivelyWalker/Remove/
+      `SetForcedHighPower` (evac panic pin, added to `PedLodManager`, unpinned path bit-identical)/interest
+      sources/SetExternalObstacles/Step/queries/LiveIds/Publisher; packs as `SumoSharp.Pedestrians`; sample +
+      README + 6 facade tests; 590 parity + 127 ped green)*
 
 ## Stage P2 — Navigation productionization
 
