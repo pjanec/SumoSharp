@@ -333,6 +333,35 @@ the speed was already 0); only the `departSpeed!="0"` case changes.**
 the frozen blockers are gone. Credit: the on-junction-RoW subagent correctly **refused to build the
 assigned (ineffective) fix** and traced the real root instead.
 
+## Post-acceptance round 4 (SumoData reaccept4): routeLength-across-reroutes FIXED; one real-box residual
+
+SumoData's 4th definitive re-run: **Issue 1 green on the real box + both synthetics**; Issue 2 cleared on
+both synthetics (teleports → 0). Two items remained:
+
+**(a) routeLength lost distance across a `device.rerouting` reroute — FIXED.** The internal-junction-lane
+routeLength fix summed the vehicle's *current* lane-sequence pool; a reroute (`ReplaceRoute`) rebuilds
+that pool for only the *remaining* route, so all pre-reroute distance was dropped (rerouted trips
+reported 0.33–0.49× — SumoData's synthetic-parity ids 2/113/697). Replaced with a **running accumulator**
+`VehicleRuntime.RouteDistanceTraveled` (SUMO's `MSDevice_Tripinfo::myRouteLength`): −departPos at
+insertion, `+= left-lane length` at the one `ExecuteMoveVehicle` lane-crossing site, `+ arrivalPos` at
+arrival — so it survives reroutes. Equals the old pool-sum exactly for non-rerouted trips ⇒ scenarios
+66/72 byte-identical. Verified on synthetic-parity: ids 2/113/697 went 0.37/0.49/0.33× → ~1.0× vanilla
+(id 113 exact). Regression golden `scenarios/73-reroute-routelength` (a `blocker` congests the short
+path so the tracked vehicle's *periodic* reroute fires mid-trip at t=8, `replacedOnEdge="e_src2"`,
+`rerouteNo=1`); `RungHDgap2RerouteRouteLengthTests` asserts routeLength=756.21 == golden and, as the
+guard, `> 696.11 + 30` (the old pool-sum-only value — proving it fails pre-fix). Golden from SUMO 1.20.0.
+
+**(b) waitingTime — NOT a bug (withdrawn).** For matched-duration ids waitingTime matches exactly;
+id-108 differs only because its duration differs hugely (ss flowed through in 124.6 s vs vanilla's
+601 s) — real faster-flow dynamics, not an accumulator error.
+
+**Open: real-box Issue-2 residual — 36 teleports (18 jam + 18 yield) vs vanilla 2** (down from 105).
+No committed synthetic reproduces it (the `departPos="stop"` fix took `synthetic-junction` to 0), so the
+residual is a *different* real-net junction pattern with no witness. Needs a repro (a sharper synthetic
+or a geometry-free real-net capture of the stalling junctions/vehicles) to fix faithfully, or ship as a
+documented follow-up (audit passes, Issue 1 green, RealismMask hides off-camera pops). Owner decision
+pending.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now
