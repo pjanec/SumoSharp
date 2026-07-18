@@ -9,9 +9,9 @@ namespace Sim.Pedestrians.Lod;
 // docs/PEDESTRIAN-POC-PLAN.md POC-3). Owns a population of peds, each either:
 //   - Low-power (PedDrModel.PathArc): pose is a pure function of (path, startTime, speed, now) via
 //     PathArcMotion -- O(1), no neighbour query, no ORCA.
-//   - High-power (PedDrModel.FreeKinematic): a real agent in a high-power OrcaCrowd, routed by a
-//     PedRouteController + WaypointFollower exactly like POC-1a, reacting to every other high-power
-//     ped AND to `externalEntities`.
+//   - High-power (PedDrModel.FreeKinematic): a real agent in a persistent high-power OrcaCrowd,
+//     routed by a persistent PedRouteController + WaypointFollower exactly like POC-1a, reacting to
+//     every other high-power ped AND to `externalEntities`.
 //
 // A ped is high-power iff its (frozen, start-of-step) position lies within ANY active
 // InterestSource.PromoteRadius; it demotes once it has been continuously outside EVERY source's
@@ -20,13 +20,17 @@ namespace Sim.Pedestrians.Lod;
 // collapsed into one knob for this POC (a production version might separate "how long outside before
 // demoting" from "minimum time before ANY transition"; see the report for this simplification).
 //
-// OrcaCrowd churn (a real design gap, not a POC shortcut): OrcaCrowd has no public agent-removal, so
-// membership can't be edited in place. Whenever this step's promotions/demotions change the high-power
-// SET, the whole high-power OrcaCrowd is REBUILT from scratch, carrying every still-high ped's current
-// position and velocity forward and re-deriving its steering path via IPedNavigation.FindPath(current
-// position, destination) (see RebuildHighCrowd). This is O(high-power count) per membership change,
-// not per step -- acceptable at POC scale, but "OrcaCrowd needs efficient add/remove" should be
-// recorded as a real backlog item for scale (POC-7).
+// P0-3 (docs/PEDESTRIAN-TASKS.md, PEDESTRIAN-POC7C-FINDINGS.md Q2): the POC-3 version of this class
+// had NO agent removal on either the crowd or the route-controller side, so every membership change
+// rebuilt the ENTIRE high-power OrcaCrowd from scratch AND re-derived EVERY still-high ped's steering
+// route (even peds nothing happened to) -- an O(current-high-power-count) cost per switch, measured
+// at 100k as the dominant reason a churning (constantly promoting/demoting) world cost 3.6x a stable
+// one. P0-1/P0-2 gave OrcaCrowd a real O(1) Add/Remove and P0-3 (this class) now uses it directly:
+// `_highCrowd`/`_highController` are PERSISTENT for the lifetime of this manager -- a promotion Adds
+// exactly the one newly-promoted ped and registers exactly its route; a demotion Removes exactly
+// that one ped's handle and route. Every OTHER high-power ped's handle, position, velocity, route,
+// AND waypoint cursor are completely untouched by someone else's promotion/demotion -- there is
+// nothing left to rebuild.
 public sealed class PedLodManager
 {
     private sealed class PedEntry
@@ -39,12 +43,11 @@ public sealed class PedLodManager
         public PedDrModel Model = PedDrModel.PathArc;
 
         // The polyline currently being followed: the PathArc leg's polyline when Low, the navmesh
-        // steering route (refreshed on every high-crowd rebuild) when High.
+        // steering route (set once, at promotion) when High.
         public IReadOnlyList<Vec2> Path = Array.Empty<Vec2>();
         public double PathStartTime;
 
-        public OrcaHandle HighIndex = OrcaHandle.Invalid;    // handle into the CURRENT high-power OrcaCrowd, or Invalid when Low
-        public Vec2 PendingVelocity;  // velocity-at-promotion, stashed for the rebuild that follows
+        public OrcaHandle HighIndex = OrcaHandle.Invalid;    // handle into the persistent high-power OrcaCrowd, or Invalid when Low
 
         public double StateEnteredAt;             // sim time this ped entered its CURRENT LOD state
         public double OutsideSince = double.NaN;   // sim time since continuously outside every demote
@@ -59,15 +62,17 @@ public sealed class PedLodManager
 
     private readonly Dictionary<int, PedEntry> _peds = new();
 
-    private OrcaCrowd _highCrowd;
-    private PedRouteController _highController;
+    // Persistent for the manager's whole lifetime (P0-3) -- see class remarks. Never replaced.
+    private readonly OrcaCrowd _highCrowd;
+    private readonly PedRouteController _highController;
     private bool _useParallelHighCrowd;
 
-    // Additive POC-7c wiring: forwards OrcaCrowd.UseParallelStep (POC-7a, bit-identical to serial) onto
-    // whichever OrcaCrowd currently backs the high-power set -- both the live one and, since
-    // RebuildHighCrowd (a real design gap -- see class remarks) replaces it wholesale on every
-    // membership change, every crowd created afterwards. Default false, matching OrcaCrowd's own
-    // default, so no existing caller's behavior changes.
+    // Live high-power ped count. NOT the same as `_highCrowd.Count` any more: OrcaCrowd.Count is a
+    // high-water mark of slots ever allocated (P0-1), so it stays at its peak even after every
+    // currently-high ped demotes, whereas this is decremented on every demotion -- the accurate
+    // "is anyone currently high-power" signal Step() and HighPowerCount both need.
+    private int _highPowerLiveCount;
+
     public bool UseParallelHighCrowd
     {
         get => _useParallelHighCrowd;
@@ -122,7 +127,7 @@ public sealed class PedLodManager
 
     public PedDrModel ModelOf(int id) => _peds[id].Model;
 
-    public int HighPowerCount => _highCrowd.Count;
+    public int HighPowerCount => _highPowerLiveCount;
 
     // The ped's current world position: for Low-power this is the pure PathArcMotion function
     // evaluated AT `now` (so it can be queried for any `now`, not just at a Step boundary); for
@@ -138,12 +143,12 @@ public sealed class PedLodManager
     // Advances every ped by `dt`, from time `now` to `now + dt`:
     //   1. Evaluate promotion/demotion (pure function of frozen ped/source positions + dwell timers),
     //      in ascending ped-id order.
-    //   2. Apply transitions: flip PedDrModel, emit lifecycle events (DrSwitchEvent, and on demotion a
-    //      fresh PathArcRecord).
-    //   3. Rebuild the high-power OrcaCrowd if membership changed this step.
-    //   4. Advance motion: low-power peds are a pure function of time (nothing to "step"); the
+    //   2. Apply transitions: flip PedDrModel, Add/Remove the ONE affected ped's OrcaCrowd handle and
+    //      PedRouteController route (P0-3 -- O(1) per switch, no rebuild), emit lifecycle events
+    //      (DrSwitchEvent, and on demotion a fresh PathArcRecord).
+    //   3. Advance motion: low-power peds are a pure function of time (nothing to "step"); the
     //      high-power crowd is stepped once, avoiding `externalEntities`.
-    //   5. Publish this step's wire traffic: a FreeKinematicSample per high-power ped, a (rate-limited)
+    //   4. Publish this step's wire traffic: a FreeKinematicSample per high-power ped, a (rate-limited)
     //      HeartbeatEvent per low-power ped.
     public void Step(
         double now,
@@ -196,28 +201,43 @@ public sealed class PedLodManager
             }
         }
 
-        var membershipChanged = toPromote.Count > 0 || toDemote.Count > 0;
-
-        // Promotions: PathArc -> FreeKinematic. Stash the velocity-at-promotion (computed from the
-        // STILL-INTACT PathArc fields) for RebuildHighCrowd to pick up below.
+        // Promotions: PathArc -> FreeKinematic. Adds ONLY this ped to the persistent high-power
+        // OrcaCrowd (carrying its frozen position + PathArc-derived velocity forward) and registers
+        // ONLY its route -- every already-high ped's handle/route is untouched (P0-3).
         foreach (var id in toPromote)
         {
             var e = _peds[id];
-            e.PendingVelocity = PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
+            var pos = frozenPos[id];
+            var velocity = PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
+            var steeringPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
             e.OutsideSince = double.NaN;
-            e.HighIndex = OrcaHandle.Invalid;
+            e.Path = steeringPath;
+
+            var handle = _highCrowd.Add(pos, e.Radius, e.MaxSpeed, goal: pos, velocity: velocity);
+            _highController.AddRoute(handle, steeringPath, e.MaxSpeed);
+            e.HighIndex = handle;
+            _highPowerLiveCount++;
+
             _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.FreeKinematic, now);
         }
 
-        // Demotions: FreeKinematic -> PathArc. Re-route from the ped's CURRENT position to its
-        // destination via IPedNavigation (see the class remarks for why re-route rather than resume).
+        // Demotions: FreeKinematic -> PathArc. Re-routes from the ped's CURRENT (frozen) position to
+        // its destination via IPedNavigation (see the class remarks for why re-route rather than
+        // resume), then Removes ONLY this ped's OrcaCrowd handle and route -- every other high-power
+        // ped's handle/route/waypoint cursor is untouched (P0-3).
         foreach (var id in toDemote)
         {
             var e = _peds[id];
             var pos = frozenPos[id];
             var newPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+
+            _highController.RemoveRoute(e.HighIndex);
+            _highCrowd.Remove(e.HighIndex);
+            _highPowerLiveCount--;
+
             e.Model = PedDrModel.PathArc;
             e.Path = newPath;
             e.PathStartTime = now;
@@ -227,12 +247,7 @@ public sealed class PedLodManager
             _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.PathArc, now);
         }
 
-        if (membershipChanged)
-        {
-            RebuildHighCrowd(frozenPos, now);
-        }
-
-        if (_highCrowd.Count > 0)
+        if (_highPowerLiveCount > 0)
         {
             var discs = new WorldDisc[externalEntities.Count];
             for (var i = 0; i < discs.Length; i++)
@@ -258,59 +273,6 @@ public sealed class PedLodManager
                 _publisher.MaybePublishHeartbeat(id, newNow);
             }
         }
-    }
-
-    // Rebuilds the high-power OrcaCrowd from scratch (OrcaCrowd has no agent-removal -- see class
-    // remarks). Every currently-high ped (post this step's promotions/demotions) is re-added in
-    // ascending ped-id order:
-    //   - already-high peds carry over the OLD crowd's current position/velocity;
-    //   - freshly-promoted peds carry over their frozen PathArc position + PendingVelocity.
-    // Every one of them gets a FRESH steering path via IPedNavigation.FindPath(currentPosition,
-    // destination) -- not just the newly-promoted ones -- because the OLD PedRouteController's
-    // per-route waypoint cursor lives inside the discarded controller; re-deriving the path from the
-    // ped's actual current position is simpler and more robust than trying to carry a waypoint index
-    // across the rebuild (documented design choice, see report).
-    private void RebuildHighCrowd(IReadOnlyDictionary<int, Vec2> frozenPos, double now)
-    {
-        _ = now; // kept for symmetry/future use (e.g. time-stamped diagnostics); not needed today
-
-        var oldCrowd = _highCrowd;
-        var newCrowd = new OrcaCrowd { UseParallelStep = _useParallelHighCrowd };
-        var newController = new PedRouteController(newCrowd, _steering, _arriveRadius);
-
-        var ids = new List<int>(_peds.Keys);
-        ids.Sort(); // ascending ped-id order -- deterministic add order into the new crowd
-
-        foreach (var id in ids)
-        {
-            var e = _peds[id];
-            if (e.Model != PedDrModel.FreeKinematic)
-            {
-                continue;
-            }
-
-            Vec2 pos, vel;
-            if (e.HighIndex.IsValid)
-            {
-                pos = oldCrowd.Position(e.HighIndex);
-                vel = oldCrowd.Velocity(e.HighIndex);
-            }
-            else
-            {
-                pos = frozenPos[id];
-                vel = e.PendingVelocity;
-            }
-
-            var steeringPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
-            e.Path = steeringPath;
-
-            var newIndex = newCrowd.Add(pos, e.Radius, e.MaxSpeed, goal: pos, velocity: vel);
-            newController.AddRoute(newIndex, steeringPath, e.MaxSpeed);
-            e.HighIndex = newIndex;
-        }
-
-        _highCrowd = newCrowd;
-        _highController = newController;
     }
 
     private static bool AnySourceWithinPromote(IReadOnlyList<InterestSource> sources, Vec2 pos)

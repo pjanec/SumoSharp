@@ -89,3 +89,33 @@ churning worlds already run without it.
 **Acceptance:** the design's scale thesis holds — 100k pedestrians + 10k cars is tractable on CPU (LOD) and
 comfortable on bandwidth (multicast + quantization). The one identified priority follow-up before heavy-
 churn production is efficient crowd `Add`/`Remove` (design §3d), now quantified here.
+
+---
+
+## P0-3 update — incremental Add/Remove vs the rebuild (measured, same-VM A/B)
+
+P0-3 replaced `PedLodManager.RebuildHighCrowd` (rebuild the whole high-power crowd + re-route every
+high-power ped on each membership change) and `LotCoupling`'s per-step car-crowd rebuild with incremental
+`OrcaCrowd`/`MixedTrafficCrowd` `Add`/`Remove` (P0-1/P0-2). To measure P0-3's effect WITHOUT cross-session
+VM variance, the benchmark was run **back-to-back on the same VM**, P0-3 stashed (rebuild) vs applied
+(incremental), on the **identical scenario** (same `actualHigh` and switches/step):
+
+| 100k total | rebuild (pre-P0-3) | incremental (P0-3) | Δ |
+|---|---:|---:|---:|
+| A/stable (523.85 switches/step, 10477 high) | 141.8 ms/step | 144.6 ms/step | ~neutral (within noise) |
+| B/churn (1578 switches/step, 27444 high) | 514.8 ms/step | 467.95 ms/step | **~9% faster** |
+
+**Honest reading:** P0-3 is a **net win on churn (~9%) and neutral on stable** — no regression. It is
+**smaller than POC-7c projected** (the doc implied churn was dominated by rebuild overhead). The same-VM
+data shows otherwise: most of B/churn's extra cost over A/stable is genuinely stepping **~2.6× more ORCA
+agents** (27444 vs 10477 — the sweeping interest sources simply hold far more peds high-power), not rebuild
+overhead, so removing the rebuild only recovers ~9%. (The earlier apparent "regression" to 174/660 ms was
+cross-session VM/host variance — comparing to POC-7c's original 285 ms, measured on a different VM, is
+invalid; the valid measure is the same-VM before/after above.)
+
+**Follow-up hypothesis (a P6 perf item, not P0-3):** the persistent crowd's slot high-water (`_count`) never
+shrinks after a churn spike, so `Step`/`RebuildGrid` iterate vacated slots (cheaply skipped, but still
+O(high-water) not O(live)). A maintained dense ascending live-slot list — or shrinking the high-water when
+top slots free — would make cost track LIVE count and could widen P0-3's churn margin. Correctness and the
+architectural benefit (O(1) per switch, no re-routing every ped each change) already hold; this is a pure
+throughput refinement.
