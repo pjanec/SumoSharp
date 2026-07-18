@@ -181,10 +181,38 @@ SUMO 1.20.0**, wired into `dotnet test`:
   and guards the null-vs-null vacuity trap. **Re-ran the full suite first-hand: 595 parity (+2) / 3
   skipped, 72 pedestrian, 2 nav, 1 host; determinism (D1/D8) green; `git status scenarios/` shows only
   the new `66-*`.**
-- **GAP-3 — next** (multi-occupant parkingArea). Will reuse `scripts/audit_nocheat.py` (now committed)
-  as the network-tier no-cheating check + a C# offline port of its logic as a `dotnet test` assertion
-  on a synthetic served scenario (parkingArea id `pa_<edge>`, fringe births/deaths), since the real
-  Geneva box is company-restricted — a synthetic box is built from the documented contract instead.
+- **GAP-3 — DONE** (Opus-reviewed hard). Real multi-occupant parkingArea semantics, all gated on a new
+  `StopRuntime.IsParking` (true iff the stop came from `<stop parkingArea>`) / `VehicleRuntime.IsParked`
+  so **plain `<stop lane>` stays on-lane blocking and every existing golden is byte-identical**:
+  distinct per-occupant slots (`ParkingArea.LotPosition(i) = startPos + spaceDim·(i+1)`, two-pass
+  load-time occupant→lot assignment — origins first, then moving cars — faithful to
+  `MSParkingArea::computeLastFreePos` for the park-and-stay + `departPos="stop"` shapes, no reroute/
+  turnover); a parked vehicle is lifted OFF the running lane (lateral bay offset via `LatOffset`, and
+  **excluded from the leader search** in `LaneNeighborQuery.Refill`/`RefillRegion` — SUMO's
+  `MSLane.cpp:2212 isParking()` — so a follower passes it, both serial and region-parallel paths);
+  `departPos="stop"` origins start parked and pull out into a gap. A real diagnosed gap was fixed, not
+  papered over: a parkingArea stop drops the generic `+NUMERICAL_EPS` braking term
+  (`MSVehicle.cpp:2477-2481`), gated on `IsParking` — this reproduced SUMO's 204.999-vs-205.000 settle
+  exactly (tolerance stayed strict at 0.001, **not loosened**). Acceptance:
+  `scenarios/67-multi-parking` (parkStay0/pullOut0/driveInPark0 sharing one bay + through0 passing —
+  golden from **SUMO 1.20.0**, asserts follower stays at cruise ≥13.88 while crossing the bays,
+  co-occupants >5 m apart in distinct lots, parked cars off-lane) and `scenarios/68-serve-nocheat` (a
+  synthetic fringe→interior→fringe box with `pa_eB`, through/origin/sink vehicles). `audit_nocheat.py`
+  is ported to a **C# offline assertion** (`RungHDgap3NoCheatTests`) that runs the engine and checks 0
+  birth/0 death/0 FCD-first-appearance violations from the engine's own tripinfo+FCD — no SUMO/sumolib,
+  so it guards the no-cheating rule on every fresh VM. **Re-ran the full suite first-hand: 600 parity
+  (+5) / 3 skipped, 72 pedestrian, 2 nav, 1 host; determinism (D1/D8) green; scenario 48 unchanged;
+  `git status scenarios/` shows only new `67-*`/`68-*`.**
+
+## All three gaps landed — definitive acceptance status
+
+GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now
+accepts the full serve/replay CLI contract, emits `--tripinfo-output` with `arrivalLane`, and runs
+multi-occupant-parkingArea served scenarios. The no-cheating rule is guarded offline (C# port) and
+available at the network tier (`scripts/audit_nocheat.py`). The one piece that still needs the owner is
+a **real** SumoData-produced `scenario.sumocfg` to run the *definitive* end-to-end audit against a live
+vanilla-SUMO reference — the Geneva box is company-restricted, so `68-serve-nocheat` stands in as a
+synthetic equivalent built from the documented contract.
 
 ## 4. Recommendation
 

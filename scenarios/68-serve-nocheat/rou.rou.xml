@@ -1,0 +1,29 @@
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+
+    <!-- eA (fringe stub, west) -> eB (interior, hosts pa_eB) -> eC (fringe stub, east). -->
+    <route id="r_through" edges="eA eB eC"/>
+    <!-- Origin: born parked in pa_eB (interior edge eB), pulls out, exits at the east fringe. -->
+    <route id="r_origin" edges="eB eC"/>
+    <!-- Sink: born at the west fringe, drives to the interior and parks forever. -->
+    <route id="r_sink" edges="eA eB"/>
+
+    <!-- Through-traffic: fringe -> fringe, no parking at all. -->
+    <vehicle id="through0" type="car" route="r_through" depart="0" departPos="0" departSpeed="0" departLane="0"/>
+
+    <!-- departPos="stop" origin: born OFF-ROAD in pa_eB (an interior edge, but the audit's
+         park-edge exemption applies because it departs already parked there), pulls out after a
+         short stop, and leaves the box at the east fringe (eC). -->
+    <vehicle id="originPark0" type="car" route="r_origin" depart="0" departPos="stop" departSpeed="0" departLane="0">
+        <stop parkingArea="pa_eB" duration="20"/>
+    </vehicle>
+
+    <!-- Park-and-stay sink: born at the west fringe (a normal, visible insertion, which is allowed
+         since fringe births are always legal), drives into the box, and parks forever in pa_eB.
+         Never appears in tripinfo (still parked at run end): audit_nocheat.py's own comment says
+         parked-forever sink vehicles simply don't appear until they leave, which is expected and
+         handled. -->
+    <vehicle id="sinkPark0" type="car" route="r_sink" depart="3" departPos="0" departSpeed="0" departLane="0">
+        <stop parkingArea="pa_eB" duration="100000"/>
+    </vehicle>
+</routes>

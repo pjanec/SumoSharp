@@ -1,0 +1,41 @@
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+
+    <!-- Co-occupant A: departPos="stop" origin that parks-and-stays forever (lot 0). Together with
+         driveInPark0 (lot 2) this proves co-occupants get DISTINCT lot positions. -->
+    <vehicle id="parkStay0" type="car" route="r0" depart="0" departPos="stop" departSpeed="0" departLane="0">
+        <stop parkingArea="pa0" duration="100000"/>
+    </vehicle>
+
+    <!-- The departPos="stop" origin that PULLS OUT (lot 1): already parked at t=1, resumes well
+         before driveInPark0 arrives, so its own occupancy is what real SUMO's dynamic
+         getLastFreePos sees when driveInPark0 arrives: no lot is freed and reassigned before then.
+         depart="1" (one second after parkStay0, not the same insertion pass): SUMO's
+         MSEdge::insertVehicle throttles ALL insertion attempts on a lane for the rest of a
+         timestep once one has failed on it (myFailedInsertionMemory); two departPos="stop"
+         vehicles racing for the SAME parkingArea in the SAME insertion pass would both target the
+         area's not-yet-updated lowest-free lot, since MSParkingArea::enter() only runs once a
+         vehicle physically settles, one step after insertion, not at insertion itself. Staggering
+         by a second sidesteps that dynamic-reservation race entirely (out of GAP-3's scope, see
+         Engine.ResolveParkingAreaStops' own header comment on this engine's static load-time
+         assignment), while still leaving parkStay0/pullOut0 co-resident for the entire run. -->
+    <vehicle id="pullOut0" type="car" route="r0" depart="1" departPos="stop" departSpeed="0" departLane="0">
+        <stop parkingArea="pa0" duration="60"/>
+    </vehicle>
+
+    <!-- The moving car that DRIVES IN and parks (lot 2): normal insertion at the edge start, drives
+         about 225m and stops in the free lot next to the two already-parked departPos="stop"
+         occupants. depart="2", one second after pullOut0, for the same same-step-insertion-race
+         reason (its own target position never conflicts, but SUMO's per-lane failed-insertion
+         throttle would still defer it if it shared an insertion pass with a failed attempt). -->
+    <vehicle id="driveInPark0" type="car" route="r0" depart="2" departPos="0" departSpeed="0" departLane="0">
+        <stop parkingArea="pa0" duration="100000"/>
+    </vehicle>
+
+    <!-- Through-traffic: departs once driveInPark0 has already parked, and drives the full 1000m
+         lane past all three occupied or formerly-occupied bays. No stop. Its trajectory (matched
+         against the golden) is the functional proof that a following vehicle is NOT blocked by a
+         parked one: it must not decelerate as it passes x=195..225. -->
+    <vehicle id="through0" type="car" route="r0" depart="20" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

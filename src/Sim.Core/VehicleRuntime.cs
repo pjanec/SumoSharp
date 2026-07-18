@@ -450,4 +450,19 @@ internal sealed class VehicleRuntime
     // arrival pos). Default 0.0 -- always overwritten by TryInsertOnLane before a vehicle can become
     // Inserted (and therefore before it can ever Arrive).
     public double DepartPosResolved;
+
+    // GAP-3 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §3, SUMO's MSLane.cpp:2212 `veh->isParking()` ->
+    // MSVehicleTransfer::add -- the vehicle is lifted OFF the lane's vehicle list): true ONLY while
+    // this vehicle is currently `Reached` at a `<stop parkingArea=...>` (StopRuntime.IsParking) --
+    // set/cleared in Engine.ExecuteMoves' stop-transition apply block, the SAME step
+    // StopRuntime.Reached flips (matching scenario 48's golden: the parked lateral offset appears
+    // the step AFTER insertion, not at t=0, and disappears the same step the vehicle resumes).
+    // Consumed in two places, both GATED so a scenario with no parkingArea stop is byte-identical:
+    // (1) ComputeMoveIntent's LatOffset selection (off-lane bay offset while parked instead of the
+    // usual evasion/sublane drift); (2) LaneNeighborQuery.Refill/RefillRegion, which now excludes an
+    // IsParked vehicle from every per-lane neighbor bucket -- so it is invisible to GetLeader/
+    // GetNeighborLeader/GetRearmost/OnLane exactly like SUMO's real off-lane transfer, and a
+    // following through-vehicle is never blocked by it. Default false; BuildRuntime always
+    // constructs a fresh instance, so a recycled EntityIndex's occupant starts unparked.
+    public bool IsParked;
 }
