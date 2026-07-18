@@ -50,6 +50,10 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         public ObstacleSegment[] ObstacleSegmentScratch = Array.Empty<ObstacleSegment>();
         public int[] CandidateScratch = Array.Empty<int>();
 
+        // P2-1: raw obstacle-grid candidate buffer (pre-sort/de-dup) -- per-worker, like every other
+        // scratch buffer here, so ParallelPlan workers never share it.
+        public int[] ObstacleCandidateScratch = Array.Empty<int>();
+
         // Minimal scratch, grown lazily on first use -- what a fresh Parallel.For worker starts with.
         public ScratchSet()
             : this(1)
@@ -117,6 +121,49 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // to the pre-obstacle behaviour -- obstacles span is empty, numObstLines == 0, nothing changes.
     private OrcaObstacle[] _obstacles = Array.Empty<OrcaObstacle>();
     private int _obstacleCount;
+
+    // P2-1 (docs/PEDESTRIAN-TASKS.md, PEDESTRIAN-DESIGN.md §3(b)): opt-in uniform spatial index
+    // over STATIC obstacle segments, mirroring the agent spatial hash (UseSpatialHash/RebuildGrid)
+    // bit-for-bit: it is a pure pre-filter over the SAME segment set the brute-force scan in Plan()
+    // visits, and the downstream candidate list is sorted ascending (then de-duplicated -- see
+    // below) so it is processed in EXACTLY the order the brute-force loop would reach it in, giving
+    // an identical `obst[]` array and hence an identical ORCA solve. Default false -> brute-force,
+    // byte-identical to pre-P2-1.
+    //
+    // Unlike the agent grid (agents are points, one per cell), an obstacle SEGMENT has extent and is
+    // inserted into every cell its bounding box overlaps, so the same segment index can appear under
+    // more than one queried cell -- candidates are therefore sorted AND de-duplicated (adjacent-equal
+    // removal on the sorted array) before being fed to the same leftOf/distance filter the
+    // brute-force path uses, so a segment is considered EXACTLY ONCE either way.
+    //
+    // Cell size is fixed at NeighbourDist (reusing the agent grid's existing scale rather than adding
+    // a second knob), but the obstacle query range (TimeHorizonObst * maxSpeed + radius) varies PER
+    // AGENT (different maxSpeed/radius), unlike the agent-agent query whose range is the constant
+    // NeighbourDist the cell size is chosen to exactly match with a single 3x3 ring. So the query
+    // instead computes how many rings are needed for THIS agent's actual range
+    // (ring = ceil(range / cellSize)), which generalises the "3x3 covers the whole neighbourhood"
+    // guarantee to any range/cellSize ratio (see RebuildObstacleGrid/GatherObstacleCandidates remarks).
+    //
+    // Rebuilt lazily: dirty on construction and whenever AddObstacle appends new geometry, rebuilt
+    // (serially, from Step(), before the plan loop -- exactly like RebuildGrid) the next time
+    // UseObstacleSpatialIndex is on and the index is stale. Obstacles are static within a run (no
+    // Remove), so -- unlike the agent grid -- there is no reason to rebuild every step.
+    public bool UseObstacleSpatialIndex { get; set; }
+
+    private readonly Dictionary<long, int> _obstacleCellToBucket = new();
+    private int[][] _obstacleBucketSegments = Array.Empty<int[]>();
+    private int[] _obstacleBucketFill = Array.Empty<int>();
+    private int _obstacleBucketCount;
+    private double _obstacleCellSize;
+    private bool _obstacleGridDirty = true;
+
+    // Diagnostic-only (Part A gate 2): total obstacle-segment candidates examined by
+    // GatherObstacleSegments across every Plan() call since the last Reset -- lets a benchmark/test
+    // demonstrate the index's sub-linear scaling in obstacle count without any effect on the solve
+    // itself. Interlocked because Plan() can run from many ParallelPlan workers concurrently.
+    private long _obstacleCandidatesExamined;
+    public long ObstacleCandidatesExamined => System.Threading.Interlocked.Read(ref _obstacleCandidatesExamined);
+    public void ResetObstacleCandidateCounter() => System.Threading.Interlocked.Exchange(ref _obstacleCandidatesExamined, 0);
 
     // Cross-regime bridge (Direction A -- crowd avoids vehicles): external world-space discs from the
     // OTHER regime (lane vehicles, projected to discs) that every agent also avoids, ONE-SIDED
@@ -370,6 +417,7 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         }
 
         _obstacleCount += n;
+        _obstacleGridDirty = true;   // P2-1: new geometry invalidates the spatial index, rebuilt lazily
         return baseIndex;
     }
 
@@ -408,6 +456,16 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         if (UseSpatialHash)
         {
             RebuildGrid();
+        }
+
+        // P2-1: rebuild the static-obstacle grid SERIALLY, once, before planning -- exactly the same
+        // "single writer, then read-only for the rest of the step (including every parallel worker)"
+        // discipline as the agent grid above. Obstacles are static, so this only actually does work
+        // the first time the index is used, or again after a later AddObstacle call marks it dirty --
+        // unlike the agent grid it is NOT rebuilt every step.
+        if (UseObstacleSpatialIndex && _obstacleGridDirty)
+        {
+            RebuildObstacleGrid();
         }
 
         // POC-7a: parallelize only when opted in AND the crowd is big enough to amortize dispatch
@@ -629,28 +687,22 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         }
 
         var obst = scratch.ObstacleSegmentScratch.AsSpan(0, _obstacleCount);
-        var oCount = 0;
         var obstRange = TimeHorizonObst * maxSpeed + _radius[i];
         var rangeSqObst = obstRange * obstRange;
-        for (var v = 0; v < _obstacleCount; v++)
+
+        // Obstacle (wall) neighbours: brute-force scan over every segment, or (opt-in,
+        // UseObstacleSpatialIndex) only the spatial-grid candidates for this agent's actual range,
+        // SORTED + DE-DUPLICATED ascending so the result is bit-identical to brute-force (see
+        // GatherObstacleCandidates remarks on why de-dup is needed here but not for the agent grid).
+        int oCount;
+        if (UseObstacleSpatialIndex && _obstacleCount > 0)
         {
-            var node = _obstacles[v];
-            var next = _obstacles[node.NextIndex];
-
-            if (OrcaObstacle.LeftOf(node.Point, next.Point, _position[i]) >= 0.0)
-            {
-                continue;   // agent is on the polygon-interior side of this directed edge -- not a candidate
-            }
-
-            var distSq = OrcaObstacle.DistanceSquaredToSegment(node.Point, next.Point, _position[i]);
-            if (distSq >= rangeSqObst)
-            {
-                continue;
-            }
-
-            var prev = _obstacles[node.PrevIndex];
-            obst[oCount++] = new ObstacleSegment(
-                node.Point, next.Point, node.UnitDir, next.UnitDir, prev.UnitDir, node.IsConvex, next.IsConvex);
+            var candidates = GatherObstacleCandidates(_position[i], obstRange, scratch);
+            oCount = GatherObstacleSegments(_position[i], rangeSqObst, obst, candidates, useAll: false);
+        }
+        else
+        {
+            oCount = GatherObstacleSegments(_position[i], rangeSqObst, obst, default, useAll: true);
         }
 
         return OrcaSolver.ComputeNewVelocity(
@@ -762,6 +814,45 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         return k;
     }
 
+    // The single obstacle-segment gather used by BOTH the brute-force and spatial-index paths (so
+    // they are bit-identical by construction) -- mirrors GatherAgentNeighbours' useAll/candidates
+    // split exactly. `candidates` (when not useAll) is already sorted ascending AND de-duplicated
+    // (GatherObstacleCandidates), so each segment is visited exactly once, in the same relative order
+    // the brute-force `0.._obstacleCount` loop would visit it in. Applies the identical leftOf
+    // occlusion gate and distance-to-edge range test as the pre-P2-1 inline loop. Returns the count
+    // written to `obst`.
+    private int GatherObstacleSegments(
+        Vec2 position, double rangeSqObst, Span<ObstacleSegment> obst, ReadOnlySpan<int> candidates, bool useAll)
+    {
+        var oCount = 0;
+        var m = useAll ? _obstacleCount : candidates.Length;
+        System.Threading.Interlocked.Add(ref _obstacleCandidatesExamined, m);   // diagnostic only, see remarks above
+
+        for (var idx = 0; idx < m; idx++)
+        {
+            var v = useAll ? idx : candidates[idx];
+            var node = _obstacles[v];
+            var next = _obstacles[node.NextIndex];
+
+            if (OrcaObstacle.LeftOf(node.Point, next.Point, position) >= 0.0)
+            {
+                continue;   // agent is on the polygon-interior side of this directed edge -- not a candidate
+            }
+
+            var distSq = OrcaObstacle.DistanceSquaredToSegment(node.Point, next.Point, position);
+            if (distSq >= rangeSqObst)
+            {
+                continue;
+            }
+
+            var prev = _obstacles[node.PrevIndex];
+            obst[oCount++] = new ObstacleSegment(
+                node.Point, next.Point, node.UnitDir, next.UnitDir, prev.UnitDir, node.IsConvex, next.IsConvex);
+        }
+
+        return oCount;
+    }
+
     // Rebuild the uniform spatial hash from the frozen (post-removal) positions. Cell size ==
     // NeighbourDist so an agent's whole in-range neighbourhood is within its cell + the 8 around it.
     // Pooled per-bucket arrays are cleared (fill reset) and reused; only growth allocates.
@@ -849,6 +940,132 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     private static long PackCell(int cx, int cy) => ((long)cx << 32) | (uint)cy;
 
     private long CellKey(Vec2 p) => PackCell(FloorDiv(p.X, _cellSize), FloorDiv(p.Y, _cellSize));
+
+    // P2-1: rebuild the static-obstacle grid from scratch. Cell size is fixed at NeighbourDist (see
+    // UseObstacleSpatialIndex remarks). Each segment (obstacle vertex v -> its NextIndex neighbour) is
+    // inserted into EVERY cell its bounding box overlaps -- not just the cell(s) its endpoints fall
+    // in -- so a long segment crossing several cells is still found from any of them; a query later
+    // reconstructs the visited-once guarantee via sort+de-dup (GatherObstacleCandidates), not by
+    // insertion-side dedup, keeping this side a simple bbox rasterisation.
+    private void RebuildObstacleGrid()
+    {
+        _obstacleCellSize = NeighbourDist > 1e-9 ? NeighbourDist : 1.0;
+        _obstacleCellToBucket.Clear();
+        _obstacleBucketCount = 0;
+
+        for (var v = 0; v < _obstacleCount; v++)
+        {
+            var node = _obstacles[v];
+            var next = _obstacles[node.NextIndex];
+            InsertObstacleSegment(v, node.Point, next.Point);
+        }
+
+        _obstacleGridDirty = false;
+    }
+
+    private void InsertObstacleSegment(int segmentIndex, Vec2 a, Vec2 b)
+    {
+        var minCx = FloorDiv(Math.Min(a.X, b.X), _obstacleCellSize);
+        var maxCx = FloorDiv(Math.Max(a.X, b.X), _obstacleCellSize);
+        var minCy = FloorDiv(Math.Min(a.Y, b.Y), _obstacleCellSize);
+        var maxCy = FloorDiv(Math.Max(a.Y, b.Y), _obstacleCellSize);
+
+        for (var cx = minCx; cx <= maxCx; cx++)
+        {
+            for (var cy = minCy; cy <= maxCy; cy++)
+            {
+                var key = PackCell(cx, cy);
+                if (!_obstacleCellToBucket.TryGetValue(key, out var bi))
+                {
+                    bi = _obstacleBucketCount++;
+                    EnsureObstacleBucket(bi);
+                    _obstacleBucketFill[bi] = 0;
+                    _obstacleCellToBucket[key] = bi;
+                }
+
+                var arr = _obstacleBucketSegments[bi];
+                var f = _obstacleBucketFill[bi];
+                if (f == arr.Length)
+                {
+                    Array.Resize(ref arr, arr.Length * 2);
+                    _obstacleBucketSegments[bi] = arr;
+                }
+
+                arr[f] = segmentIndex;
+                _obstacleBucketFill[bi] = f + 1;
+            }
+        }
+    }
+
+    private void EnsureObstacleBucket(int bi)
+    {
+        if (_obstacleBucketSegments.Length <= bi)
+        {
+            var newLen = Math.Max(bi + 1, Math.Max(8, _obstacleBucketSegments.Length * 2));
+            Array.Resize(ref _obstacleBucketSegments, newLen);
+            Array.Resize(ref _obstacleBucketFill, newLen);
+        }
+
+        _obstacleBucketSegments[bi] ??= new int[8];
+    }
+
+    // Candidate obstacle-segment indices within `range` of `position`: gathers every segment in the
+    // (2*ring+1)^2 cell block around position's cell, where ring = ceil(range / cellSize) -- the
+    // generalisation of the agent grid's fixed 3x3 block to a query range that can exceed the cell
+    // size (see UseObstacleSpatialIndex remarks for the derivation). Because a segment can be
+    // inserted into more than one cell, the raw gather can contain duplicates; this SORTS then
+    // DE-DUPLICATES (adjacent-equal removal) before returning, so the result is exactly the sorted
+    // set of distinct candidate segment indices -- each visited once by GatherObstacleSegments,
+    // matching the brute-force loop's "each segment considered exactly once" invariant bit-for-bit.
+    private ReadOnlySpan<int> GatherObstacleCandidates(Vec2 position, double range, ScratchSet scratch)
+    {
+        var ring = Math.Max(1, (int)Math.Ceiling(range / _obstacleCellSize));
+        var cx = FloorDiv(position.X, _obstacleCellSize);
+        var cy = FloorDiv(position.Y, _obstacleCellSize);
+
+        var buffer = scratch.ObstacleCandidateScratch;
+        var n = 0;
+        for (var dx = -ring; dx <= ring; dx++)
+        {
+            for (var dy = -ring; dy <= ring; dy++)
+            {
+                if (!_obstacleCellToBucket.TryGetValue(PackCell(cx + dx, cy + dy), out var bi))
+                {
+                    continue;
+                }
+
+                var fill = _obstacleBucketFill[bi];
+                if (fill == 0)
+                {
+                    continue;
+                }
+
+                if (n + fill > buffer.Length)
+                {
+                    Array.Resize(ref buffer, Math.Max(buffer.Length * 2, n + fill));
+                }
+
+                Array.Copy(_obstacleBucketSegments[bi], 0, buffer, n, fill);
+                n += fill;
+            }
+        }
+
+        scratch.ObstacleCandidateScratch = buffer;
+
+        Array.Sort(buffer, 0, n);
+
+        // De-dup adjacent-equal in place (buffer is sorted, so equal entries are contiguous).
+        var unique = 0;
+        for (var t = 0; t < n; t++)
+        {
+            if (unique == 0 || buffer[unique - 1] != buffer[t])
+            {
+                buffer[unique++] = buffer[t];
+            }
+        }
+
+        return buffer.AsSpan(0, unique);
+    }
 
     private void Grow(int newCapacity)
     {

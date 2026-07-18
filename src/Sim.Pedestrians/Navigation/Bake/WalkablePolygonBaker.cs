@@ -7,17 +7,18 @@ namespace Sim.Pedestrians.Navigation.Bake;
 // PEDESTRIAN-POC-PLAN.md POC-1a). This is the shared input SumoWalkableSpace (containment) and
 // SumoNavMesh (routing) both build on.
 //
-// APPROXIMATION (documented, POC-1a): sidewalks are not modelled as a single strip polygon per
-// lane; each shape SEGMENT is buffered independently into its own quad ("a per-segment quad set
-// is fine for the POC", PEDESTRIAN-POC-PLAN.md POC-1). For a lane whose shape bends (more than one
-// segment), consecutive quads meet at the segment joint but, unless the two segments are
-// collinear, their cut edges will not coincide exactly there -- at a sharp bend the two quads can
-// fail PolygonGraph's shared-EDGE adjacency test entirely (a real gap, not just a rounding error),
-// leaving them disconnected. PolygonGraph deliberately does NOT paper over this with a
-// vertex-proximity fallback (see its own remarks: that fallback caused a real routing bug at a
-// 3-polygon corner in POC-0). POC-0's fixture network only has straight (2-point) sidewalk shapes,
-// so this never bites here; a production bake would buffer the whole polyline as one
-// mitred/rounded strip instead.
+// P2-1 (docs/PEDESTRIAN-TASKS.md, PEDESTRIAN-DESIGN.md §4): each sidewalk lane's WHOLE polyline is
+// buffered into ONE mitred strip polygon (PolylineBuffer.Buffer), not baked per-segment. POC-1a's
+// per-segment quad approximation left a bent (multi-segment) sidewalk as several independent quads
+// that, unless consecutive segments happened to be collinear, did not share an exact cut edge at
+// the joint -- a real disconnection (see PolygonGraph's remarks on the adjacency gap this caused
+// and how the vertex-proximity restore in PolygonGraph avoids reintroducing the POC-1a
+// 3-polygon-corner bug). Buffering the whole polyline at once removes the joint entirely: a bent
+// sidewalk is now baked as ONE watertight polygon, so no adjacency is even needed across its own
+// bend. For a straight (2-point, single-segment) lane -- POC-0's fixture network only has these --
+// PolylineBuffer's end caps reduce to exactly the same rectangle POC-1a's single-segment quad
+// produced, so this change is byte-identical there (see SumoBakeNavigationTests /
+// BothProvidersAgreeTests, which assert against that fixture unchanged).
 //
 // FILTERING: any shape whose absolute shoelace area falls below MinArea is dropped (not baked)
 // rather than kept as a zero-area polygon -- SUMO emits exactly such a degenerate (all-collinear)
@@ -32,14 +33,14 @@ public static class WalkablePolygonBaker
 
     public static IReadOnlyList<BakedPolygon> Bake(PedNetwork network)
     {
-        var staged = new List<(string Id, BakedPolygonKind Kind, IReadOnlyList<Vec2> Vertices)>();
+        var staged = new List<(string Id, BakedPolygonKind Kind, IReadOnlyList<Vec2> Vertices, IReadOnlyList<Vec2>? Spine)>();
 
         // WalkingAreas: Polygon already IS the walkable polygon.
         foreach (var wa in network.WalkingAreas.OrderBy(w => w.Id, StringComparer.Ordinal))
         {
             if (IsRealArea(wa.Polygon))
             {
-                staged.Add((wa.Id, BakedPolygonKind.WalkingArea, wa.Polygon));
+                staged.Add((wa.Id, BakedPolygonKind.WalkingArea, wa.Polygon, null));
             }
         }
 
@@ -48,28 +49,22 @@ public static class WalkablePolygonBaker
         {
             if (IsRealArea(crossing.Outline))
             {
-                staged.Add((crossing.Id, BakedPolygonKind.Crossing, crossing.Outline));
+                staged.Add((crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null));
             }
         }
 
-        // Sidewalks: buffer each polyline SEGMENT by +-Width/2 perpendicular into a quad (see the
-        // class remarks above for the per-segment approximation).
+        // Sidewalks: buffer the WHOLE polyline by +-Width/2 into one mitred strip polygon (see the
+        // class remarks above -- this replaces POC-1a's per-segment quad approximation). The
+        // original centreline is kept as the polygon's Spine (see BakedPolygon remarks) so
+        // SumoNavMesh can thread a same-polygon path through a bend instead of a naive direct
+        // segment.
         foreach (var lane in network.Sidewalks.OrderBy(l => l.Id, StringComparer.Ordinal))
         {
             var half = lane.Width > 0.0 ? lane.Width / 2.0 : 0.5; // sane default if width is unset
-            for (var i = 0; i + 1 < lane.Shape.Count; i++)
+            var strip = PolylineBuffer.Buffer(lane.Shape, half);
+            if (strip.Count >= 3)
             {
-                var a = lane.Shape[i];
-                var b = lane.Shape[i + 1];
-                var dir = b - a;
-                if (dir.AbsSq <= PolygonGeometry.DegenerateLengthSq)
-                {
-                    continue; // degenerate zero-length shape segment
-                }
-
-                var offset = dir.Normalized().PerpCW * half;
-                var quad = new[] { a + offset, b + offset, b - offset, a - offset };
-                staged.Add(($"{lane.Id}#{i}", BakedPolygonKind.SidewalkSegment, quad));
+                staged.Add((lane.Id, BakedPolygonKind.SidewalkSegment, strip, lane.Shape));
             }
         }
 
@@ -78,7 +73,7 @@ public static class WalkablePolygonBaker
         {
             if (IsRealArea(wp.Shape))
             {
-                staged.Add((wp.Id, BakedPolygonKind.WalkablePolygon, wp.Shape));
+                staged.Add((wp.Id, BakedPolygonKind.WalkablePolygon, wp.Shape, null));
             }
         }
 
@@ -88,8 +83,8 @@ public static class WalkablePolygonBaker
         var result = new List<BakedPolygon>(staged.Count);
         for (var i = 0; i < staged.Count; i++)
         {
-            var (id, kind, vertices) = staged[i];
-            result.Add(new BakedPolygon(i, id, kind, vertices));
+            var (id, kind, vertices, spine) = staged[i];
+            result.Add(new BakedPolygon(i, id, kind, vertices, spine));
         }
 
         return result;

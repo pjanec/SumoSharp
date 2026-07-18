@@ -14,17 +14,28 @@ internal readonly record struct PolygonPortal(int Neighbor, Vec2 Point);
 // portal point is the average of every shared segment's midpoint, giving one representative
 // doorway point roughly centred on the shared chain.
 //
-// DELIBERATELY NO vertex-only fallback: an earlier version of this connected any pair sharing just
-// one endpoint (no whole matching edge), meant to be the interface doc's "or overlap (endpoints
-// within a small epsilon)" case for same-lane sidewalk quads meeting at a bend. In POC-0's fixture
-// that fallback instead created a WRONG shortcut: a crossing polygon, its walkingarea, and the far
-// sidewalk quad all meet at one shared CORNER VERTEX (three polygons, one point), and the fallback
-// connected the crossing directly to the sidewalk there -- skipping the walkingarea whose actual
-// AREA is the only real path between them. A* then routed a straight line across that corner that
-// briefly left the walkable union (verified empirically against POC-0). A single shared vertex is
-// not evidence of a walkable doorway when 3+ polygons touch it; only a shared EDGE is. POC-0 has no
-// bent sidewalks, so dropping the fallback costs nothing here -- see WalkablePolygonBaker's bend
-// note for the resulting (accepted) POC limitation.
+// P2-1 (docs/PEDESTRIAN-TASKS.md): a SECOND pass restores vertex-proximity adjacency for polygon
+// pairs that touch at a corner point without sharing a whole edge (e.g. two sidewalk polygons that
+// meet a third lane's corner at a junction where widths differ, or a bent sidewalk's single mitred
+// polygon meeting a neighbour only at its end-cap vertex). An EARLIER version of this connected ANY
+// pair sharing just one endpoint, unconditionally, and that caused a real routing bug in POC-0: a
+// crossing polygon, its walkingarea, and the far sidewalk quad all met at one shared CORNER VERTEX
+// (three polygons, one point), and the unconditional fallback connected the crossing directly to
+// the sidewalk there -- skipping the walkingarea whose actual AREA is the only real path between
+// them. A* then routed a straight line across that corner that briefly left the walkable union.
+//
+// THE FIX applied here: cluster vertices across ALL polygons by mutual proximity (union-find, same
+// AdjacencyEpsilon as the edge test), then, per cluster, only add a vertex portal when the cluster
+// touches EXACTLY TWO distinct polygons. A cluster touched by 3+ polygons (the POC-0 bug's shape,
+// "three polygons, one point") is skipped entirely -- a single shared vertex is ambiguous evidence
+// of a doorway once more than two polygons meet there, exactly the case the bug came from, so it is
+// never connected by this pass (any REAL connection through such a corner must go through the
+// area polygon, via the shared-edge pass above). A cluster touched by exactly two polygons has no
+// such ambiguity: it is a genuine two-party corner touch, so it gets a portal (the point is the
+// cluster's vertex average). Pairs already connected by the shared-edge pass are left alone (the
+// edge portal wins; a vertex portal is only added where no edge portal already exists for that
+// pair), so this pass strictly ADDS missing corner-only connections, it never duplicates or
+// overrides an edge-based one.
 internal sealed class PolygonGraph
 {
     // A "small epsilon" for SUMO net coordinates (meters): generous enough to tolerate minor
@@ -63,6 +74,8 @@ internal sealed class PolygonGraph
             }
         }
 
+        AddVertexProximityAdjacency(polygons, adjacency);
+
         // Fixed iteration order per node: sort each neighbour list ascending by neighbour index,
         // so graph traversal (and hence A*) never depends on the O(n^2) build order above.
         for (var i = 0; i < n; i++)
@@ -71,6 +84,103 @@ internal sealed class PolygonGraph
         }
 
         return adjacency;
+    }
+
+    // Second adjacency pass (see class remarks): connects polygon pairs that share ONLY a corner
+    // vertex, restricted to clusters touched by EXACTLY two distinct polygons so the POC-0
+    // 3-polygon-corner bug can never recur. Union-find over every (polygon, vertex) pair is O(V^2)
+    // in the total vertex count across the bake -- fine for an offline navmesh bake, not a per-step
+    // cost.
+    private static void AddVertexProximityAdjacency(
+        IReadOnlyList<BakedPolygon> polygons, List<PolygonPortal>[] adjacency)
+    {
+        var verts = new List<(int Polygon, Vec2 Point)>();
+        for (var i = 0; i < polygons.Count; i++)
+        {
+            foreach (var v in polygons[i].Vertices)
+            {
+                verts.Add((i, v));
+            }
+        }
+
+        var parent = new int[verts.Count];
+        for (var v = 0; v < verts.Count; v++)
+        {
+            parent[v] = v;
+        }
+
+        int Find(int x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]]; // path halving
+                x = parent[x];
+            }
+
+            return x;
+        }
+
+        void Union(int a, int b)
+        {
+            var ra = Find(a);
+            var rb = Find(b);
+            if (ra != rb)
+            {
+                parent[ra] = rb;
+            }
+        }
+
+        for (var a = 0; a < verts.Count; a++)
+        {
+            for (var b = a + 1; b < verts.Count; b++)
+            {
+                if (PolygonGeometry.NearlyEqual(verts[a].Point, verts[b].Point, AdjacencyEpsilon))
+                {
+                    Union(a, b);
+                }
+            }
+        }
+
+        var clusters = new Dictionary<int, List<int>>();
+        for (var v = 0; v < verts.Count; v++)
+        {
+            var root = Find(v);
+            if (!clusters.TryGetValue(root, out var members))
+            {
+                clusters[root] = members = new List<int>();
+            }
+
+            members.Add(v);
+        }
+
+        foreach (var members in clusters.Values)
+        {
+            var distinctPolygons = new SortedSet<int>();
+            foreach (var v in members)
+            {
+                distinctPolygons.Add(verts[v].Polygon);
+            }
+
+            if (distinctPolygons.Count != 2)
+            {
+                continue; // 1 (self-touch only) or 3+ (ambiguous corner, the POC-0 bug shape) -- skip
+            }
+
+            var it = distinctPolygons.GetEnumerator();
+            it.MoveNext();
+            var pi = it.Current;
+            it.MoveNext();
+            var pj = it.Current;
+
+            if (adjacency[pi].Exists(p => p.Neighbor == pj))
+            {
+                continue; // already connected by the shared-edge pass (or an earlier cluster) -- edge/first wins
+            }
+
+            var point = Average(members.Select(v => verts[v].Point).ToList());
+            adjacency[pi].Add(new PolygonPortal(pj, point));
+            adjacency[pj].Add(new PolygonPortal(pi, point));
+        }
     }
 
     private static Vec2? FindPortal(IReadOnlyList<Vec2> a, IReadOnlyList<Vec2> b)

@@ -54,8 +54,20 @@ public sealed class SumoNavMesh : IPedNavigation
 
         if (startPolygon == goalPolygon)
         {
-            // Same convex-ish local region: a direct segment is a valid (if not string-pulled)
-            // corridor path.
+            // Same local region: for a small convex-ish polygon (crossing/walkingarea/walkable
+            // polygon, or a straight sidewalk quad) a direct segment is a valid corridor path. A
+            // BENT sidewalk's whole-lane polygon (P2-1, PolylineBuffer) is generally NON-CONVEX,
+            // so a naive direct segment between two points on different arms can cut outside the
+            // strip across the elbow -- thread through the lane's Spine instead whenever it has a
+            // genuine bend (3+ points); see ThreadThroughSpine / BakedPolygon.Spine remarks. A
+            // straight (2-point) Spine, or no Spine at all, falls through to the pre-P2-1 direct
+            // segment unchanged.
+            var spine = _polygons[startPolygon].Spine;
+            if (spine is { Count: >= 3 })
+            {
+                return ThreadThroughSpine(spine, start, goal);
+            }
+
             return new[] { start, goal };
         }
 
@@ -198,6 +210,76 @@ public sealed class SumoNavMesh : IPedNavigation
         }
 
         return null;
+    }
+
+    // P2-1: builds a path from `start` to `goal` (both known to lie in the same bent-sidewalk
+    // polygon) that threads through `spine`'s interior vertices between the two points' projections,
+    // instead of a direct segment that can cut outside the strip across a bend's elbow. `spine` is
+    // the lane's ORIGINAL centreline polyline (BakedPolygon.Spine) -- following it (offset by at
+    // most the strip's own half-width from `start`/`goal` to the nearest spine vertices actually
+    // used) stays inside the buffered strip as long as the strip's width covers that offset, which
+    // holds for any point actually placed on/near the lane the way SumoWalkableSpace.ClampToWalkable
+    // and normal spawn/goal placement do.
+    private static IReadOnlyList<Vec2> ThreadThroughSpine(IReadOnlyList<Vec2> spine, Vec2 start, Vec2 goal)
+    {
+        var startPos = NearestPositionOnSpine(spine, start);
+        var goalPos = NearestPositionOnSpine(spine, goal);
+
+        var waypoints = new List<Vec2> { start };
+        if (startPos <= goalPos)
+        {
+            for (var idx = 1; idx < spine.Count - 1; idx++)
+            {
+                if (idx > startPos && idx < goalPos)
+                {
+                    waypoints.Add(spine[idx]);
+                }
+            }
+        }
+        else
+        {
+            for (var idx = spine.Count - 2; idx >= 1; idx--)
+            {
+                if (idx < startPos && idx > goalPos)
+                {
+                    waypoints.Add(spine[idx]);
+                }
+            }
+        }
+
+        waypoints.Add(goal);
+        return waypoints;
+    }
+
+    // Position of `p`'s nearest point on the polyline `spine`, expressed as `segmentIndex + t`
+    // (t in [0,1], the fraction along that segment) -- monotonically increasing along the spine's
+    // own vertex order, which is all ThreadThroughSpine needs to pick out (and correctly order) the
+    // interior vertices strictly between two projected positions. Not true arc length, but that is
+    // never required here: a spine VERTEX `idx` has position exactly `idx` (t=0 at its own segment),
+    // so the "idx strictly between startPos and goalPos" comparisons above are exact regardless of
+    // per-segment length.
+    private static double NearestPositionOnSpine(IReadOnlyList<Vec2> spine, Vec2 p)
+    {
+        var bestDistSq = double.MaxValue;
+        var bestPos = 0.0;
+        for (var s = 0; s + 1 < spine.Count; s++)
+        {
+            var a = spine[s];
+            var b = spine[s + 1];
+            var candidate = PolygonGeometry.NearestPointOnSegment(a, b, p);
+            var distSq = (candidate - p).AbsSq;
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                var segLenSq = (b - a).AbsSq;
+                var t = segLenSq > PolygonGeometry.DegenerateLengthSq
+                    ? Math.Clamp(Vec2.Dot(candidate - a, b - a) / segLenSq, 0.0, 1.0)
+                    : 0.0;
+                bestPos = s + t;
+            }
+        }
+
+        return bestPos;
     }
 
     private double Heuristic(int node, int goal) => CentroidDistance(node, goal);
