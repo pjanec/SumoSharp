@@ -451,6 +451,18 @@ internal sealed class VehicleRuntime
     // Inserted (and therefore before it can ever Arrive).
     public double DepartPosResolved;
 
+    // GAP-2 follow-up (routeLength across device.rerouting reroutes): SUMO's MSDevice_Tripinfo
+    // myRouteLength -- a RUNNING distance accumulator, NOT a route-pool recomputation. Initialized to
+    // -departPos at insertion (TryInsertOnLane), += the length of each lane the vehicle fully LEAVES
+    // (Engine.ExecuteMoveVehicle's lane-boundary crossing), and routeLength = this + arrivalPos at
+    // arrival (BuildCompletedTripInfo). Because it accumulates as the vehicle drives, it survives a
+    // device.rerouting ReplaceRoute (which rebuilds the lane-sequence pool for only the REMAINING
+    // route) -- the prior pool-sum formula lost all distance travelled BEFORE a reroute (reported
+    // 0.33-0.49x on rerouted trips). For a non-rerouted trip this equals the old pool-sum exactly
+    // (all lanes left == all pool lanes before the arrival lane), so single-route goldens (66/72) are
+    // byte-identical. Default 0; TryInsertOnLane always overwrites it before the vehicle can move.
+    public double RouteDistanceTraveled;
+
     // GAP-3 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §3, SUMO's MSLane.cpp:2212 `veh->isParking()` ->
     // MSVehicleTransfer::add -- the vehicle is lifted OFF the lane's vehicle list): true ONLY while
     // this vehicle is currently `Reached` at a `<stop parkingArea=...>` (StopRuntime.IsParking) --

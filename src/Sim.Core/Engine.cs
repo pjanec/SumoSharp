@@ -3310,6 +3310,9 @@ public sealed partial class Engine : IEngine
         // GAP-2: remember the resolved depart position for the WHOLE trip (Kinematics.Pos itself
         // advances/wraps as the vehicle moves) -- see VehicleRuntime.DepartPosResolved's own comment.
         v.DepartPosResolved = insertPos;
+        // GAP-2 follow-up: seed the running routeLength accumulator at -departPos (SUMO's
+        // MSDevice_Tripinfo myRouteLength at NOTIFICATION_DEPARTED) -- see RouteDistanceTraveled.
+        v.RouteDistanceTraveled = -insertPos;
 
         // Rung 9a: resolve the FULL lane sequence for this vehicle's route (spanning internal/
         // junction lanes between edges), not just the departure edge/lane. For a single-edge
@@ -8543,22 +8546,15 @@ public sealed partial class Engine : IEngine
         var arrivalLane = _network!.LanesByHandle[v.LaneHandle];
         var arrivalPos = arrivalLane.Length;
 
-        // routeLength = -departPos + (sum of the lengths of every lane the vehicle fully LEFT) +
-        // arrivalPos. SUMO's MSDevice_Tripinfo accumulates `lane.getLength()` on each
-        // NOTIFICATION_JUNCTION leave (MSVehicle.cpp), so its sum spans the INTERNAL junction lanes
-        // between edges, not just the named route edges. We therefore sum the vehicle's resolved lane
-        // SEQUENCE (`_laneSeqPool`, which includes those internal/junction lanes) up to -- but not
-        // including -- the arrival lane (`v.LaneSeqIndex`, the last pool index at arrival). For a
-        // single-edge route the sum is empty (LaneSeqIndex == 0), so this is byte-identical to the
-        // prior edge-only form (scenario 66); on a multi-junction route it now adds the internal
-        // lane lengths SUMO counts (fixes the ~11.77 m/junction shortfall vs golden -- scenario 72).
-        var lengthBeforeArrival = 0.0;
-        for (var i = 0; i < v.LaneSeqIndex; i++)
-        {
-            lengthBeforeArrival += _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]].Length;
-        }
-
-        var routeLength = lengthBeforeArrival - v.DepartPosResolved + arrivalPos;
+        // routeLength = (running distance travelled) + arrivalPos, matching SUMO's MSDevice_Tripinfo
+        // `myRouteLength + arrivalPos`. RouteDistanceTraveled is the running accumulator seeded at
+        // -departPos and grown by each left lane's length in ExecuteMoveVehicle (incl. internal
+        // junction lanes); using the accumulator instead of re-summing the CURRENT lane-sequence pool
+        // is what makes routeLength correct across a device.rerouting reroute (which rebuilds the pool
+        // for only the remaining route -- the pool-sum lost all pre-reroute distance). For a
+        // non-rerouted trip the accumulator equals the old pool-sum exactly, so scenarios 66/72 stay
+        // byte-identical.
+        var routeLength = v.RouteDistanceTraveled + arrivalPos;
 
         return new CompletedTripInfo(
             Id: v.Def.Id,
@@ -8851,6 +8847,12 @@ public sealed partial class Engine : IEngine
                     break;
                 }
 
+                // GAP-2 follow-up: the vehicle is LEAVING currentLane -- accumulate its full length
+                // into the running routeLength total (SUMO's MSDevice_Tripinfo += lane.getLength() on
+                // each NOTIFICATION_JUNCTION leave). This is the ONE site a lane is fully left, so it
+                // captures the internal junction lanes AND survives a device.rerouting pool rebuild --
+                // see VehicleRuntime.RouteDistanceTraveled.
+                v.RouteDistanceTraveled += currentLane.Length;
                 v.Kinematics.Pos -= currentLane.Length;
                 v.LaneSeqIndex++;
                 // C2-v: land on the new slot's ARRIVAL lane (the lane physically entered via the
