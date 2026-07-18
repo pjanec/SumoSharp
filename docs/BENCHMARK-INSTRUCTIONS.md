@@ -38,11 +38,20 @@ convenience wrappers.
 
 Steps default to the scenario's config end; pass `--steps N` to fix the horizon for a fair timing.
 
-> **Lane-change mode.** The runtime tools (`Sim.BenchCity`, `Sim.Run`, the live host) now default to the
-> **coordinated dense lane-change model** — believable multi-lane overtaking/merging, perf-neutral,
-> robustness-hardened (runs clean region-parallel on every committed scenario). Pass **`--parity`** to run
-> the deterministic SUMO-anchor mode instead (the mode the golden `dotnet test` suite uses). Both are
-> deterministic and thread-independent (serial vs `--region` byte-identical).
+> **Lane-change mode (three settings).** The runtime tools (`Sim.BenchCity`, `Sim.Run`, the live host)
+> default to the **aggressive dense lane-change model** — believable multi-lane overtaking/merging, and it
+> flows the realistic organic net *better* than parity (21 vs 24 stuck, same arrivals on `city-organic-L2`)
+> with no perf penalty. Robustness-hardened (runs clean region-parallel on every committed scenario).
+>
+> | flag | mode | use |
+> |---|---|---|
+> | *(none)* | **dense LC** (default) | believable overtaking, best organic flow — the product default |
+> | `--inform-follower` | dense LC **+ cooperative informFollower** | rescues a genuinely saturated grid (`willpass-saturation` 51 → 0 stuck) but **degrades organic flow** (organic 28 vs 21) — opt in only for saturated grids |
+> | `--parity` | SUMO-anchor | deterministic, byte-identical to the committed goldens — the mode the golden `dotnet test` suite uses |
+>
+> All three are deterministic and thread-independent (serial vs `--region` byte-identical). The
+> informFollower is a saturated-grid medicine, not a general-flow win — that is why it is **off** by
+> default even though the dense LC is on.
 
 ## 3. Benchmark A — engine throughput & core scaling (the primary numbers)
 This is what to report for "how fast is the engine on the target hardware." Runs in the default
@@ -71,19 +80,30 @@ foreach ($t in 1,2,4,8,16) {
 Note: the trajectory is thread-count-independent (byte-identical serial vs parallel — verified), so only
 wall time changes across the sweep.
 
-## 4. Benchmark B — coordinated (default) vs parity lane-change cost
-The coordinated dense lane-change model adds believable multi-lane overtaking/merging. Measured cost:
-**perf-neutral to slightly faster** on dense traffic (better flow offsets the extra LC work). A/B any
-scenario (the multi-lane ones show the difference; single-lane grids are identical since coordinated LC
-only acts on multi-lane):
+## 4. Benchmark B — dense LC (default) vs parity, and the informFollower cost
+The dense lane-change model adds believable multi-lane overtaking/merging. It only acts on multi-lane nets
+(single-lane grids are identical in every mode). Two things worth A/B-ing on the multi-lane scenarios:
 
+**(a) default dense LC vs parity** — the headline A/B. On `city-organic-L2` the default flows *better*
+than parity (fewer stuck, equal arrivals) at no perf cost:
 ```powershell
-# coordinated (default) vs parity -- same scenario, 3 runs each, take the best wall time
-1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd }
-1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd --parity }
+# default (dense LC) vs parity -- same scenario, 3 runs each, take the best wall time
+1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd }
+1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd --parity }
 ```
-Good multi-lane scenarios for this A/B: `scenarios/_diag/willpass-saturation` (saturated grid) and
-`scenarios/_bench/city-organic-L2` (organic). Or the convenience wrapper (does both, prints a comparison):
+
+**(b) the informFollower** — `--inform-follower` adds the cooperative follower-yield. It **rescues a
+saturated grid but hurts organic flow**, so A/B it to see both sides:
+```powershell
+# saturated grid: informFollower rescues it (0 vs 51 stuck)
+1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd }                    # default: ~51 stuck
+1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd --inform-follower }  # ~0 stuck
+# organic net: informFollower degrades it (28 vs 21 stuck, fewer arrivals) -- why it is NOT the default
+1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd --inform-follower }
+```
+Good multi-lane scenarios: `scenarios/_diag/willpass-saturation` (saturated grid — the informFollower
+case) and `scenarios/_bench/city-organic-L2` (organic — the realistic default case). Or the convenience
+wrapper (does default-vs-parity, prints a comparison):
 ```powershell
 pwsh scripts/bench-coordinated.ps1 -Scenario scenarios/_diag/willpass-saturation -Steps 700 -Repeats 3
 pwsh scripts/bench-coordinated.ps1 -Scenario scenarios/_bench/city-organic-L2   -Steps 600 -Repeats 3

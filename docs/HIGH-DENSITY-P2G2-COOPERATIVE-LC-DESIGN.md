@@ -171,7 +171,59 @@ default ON, `--parity` opts out). The `Engine.CoordinatedLaneChange` LIBRARY pro
 default would churn 190 test sites for no benefit); a direct library/game embed sets
 `CoordinatedLaneChange = true` (one line) for the product behaviour.
 
+> **SUPERSEDED by §3.8 (session 4).** The target-Windows benchmark showed the *informFollower half* of the
+> then-shipped default degraded organic flow and cost perf. The default is now **dense LC only**; the
+> informFollower moved behind its own `CooperativeInformFollower` gate / `--inform-follower` CLI opt-in.
+> Read §3.8 for the corrected decision.
+
+## 3.8 WINDOWS-BENCHMARK CORRECTION (session 4) — the informFollower is split off; DEFAULT = dense LC only
+
+The target-Windows benchmark session corrected two of session 3's claims and forced a decision:
+
+- **Not perf-neutral on target hardware.** Coordinated (as then shipped: dense LC **+** informFollower) ran
+  **slower** on the Windows box (+~9–15% on the dense rungs), not the "perf-neutral to slightly faster" the
+  Linux box suggested. Wall-time delta is hardware/noise dependent; the Linux box happened to be faster, the
+  Windows box slower. Do not lean on wall time for this A/B — lean on flow (stuck / arrivals), which is
+  deterministic and thread-independent.
+- **Worse organic flow, reproducibly on both boxes.** Coordinated left **more** vehicles stuck on the
+  realistic organic net (`city-organic-L2`): 58 vs parity's 24 at first, and still 28 vs 24 after the fix
+  below. That directly contradicts the "better flow offsets the LC work" premise the default flip rested on.
+
+**Root cause — isolated by A/B (`P2G2_NO_INFORM` measurement gate, since removed):** the regression is the
+**informFollower**, not the dense lane-changing. The two components pull opposite ways:
+
+| config | GRID `willpass-saturation` (700) | ORGANIC `city-organic-L2` (600) |
+|---|---|---|
+| parity | 0 stuck / 411 arr | 24 stuck / 278 arr |
+| **dense LC only** (new default) | 51 stuck / 361 arr ❌ | **21 stuck / 278 arr** ✅ best |
+| dense LC + informFollower | 0 stuck / 411 arr | 28 stuck / 268 arr ❌ worst |
+
+- The **dense LC alone flows the realistic organic net better than parity** (21 vs 24 stuck, equal arrivals),
+  with no perf penalty — this is the believable-overtaking win, and it earns being the default.
+- The **informFollower is a saturated-grid medicine that is organic-net poison**: it fully rescues the
+  deliberately over-saturated `willpass-saturation` diagnostic (51 → 0 stuck) but over-brakes followers on
+  the organic net into *more* congestion. `willpass-saturation` is a synthetic stress diagnostic, not a
+  realistic product net; the organic net is the realistic target.
+- A **gentle one-step helpDecel** yield (SUMO `HELP_DECEL_FACTOR` 0.5) replaced the earlier crude
+  full-follow-speed cap and roughly halved the informFollower's organic damage (58 → 28), but could not
+  erase it — the informFollower is inherently a flow tax on unsaturated multi-lane traffic.
+
+**DECISION (owner, session 4): default = dense LC only; informFollower is a documented CLI opt-in.** The
+two behaviours now sit behind **two separate gates**:
+- `Engine.CoordinatedLaneChange` — the aggressive dense LC (cross-junction speed-gain). **Runtime-host
+  default ON.** Library default `false` = the SUMO-parity anchor the golden suite runs on.
+- `Engine.CooperativeInformFollower` — the cooperative follower-yield. **Default OFF everywhere**, inert
+  unless `CoordinatedLaneChange` is also on. Opt in via **`--inform-follower`** for genuinely saturated
+  grids only.
+
+CLI across the hosts (`Sim.Run`, `Sim.BenchCity`; `SimHost` fixed at the default): *(none)* = dense LC,
+`--inform-follower` = dense LC + informFollower, `--parity` = SUMO anchor. Tests
+`RungHDp2g2CoordinatedLaneChangeTests` pin all three: the default flows organic ≥ parity and ≥ full
+coordination (throughput guard), dense-LC-alone gridlocks the saturated grid, and informFollower rescues it.
+
 ## 4. Tracked as
-`docs/HIGH-DENSITY-PLAN.md` P2G-2. Foundation + spike + perf + **robustness hardening + default flip
-LANDED**; coordinated is the believable, perf-neutral, robust **product default** (`--parity` for the
-deterministic anchor). Bit-exact gate-ON de-prioritised per the owner steer (believable + fast > bit-exact).
+`docs/HIGH-DENSITY-PLAN.md` P2G-2. Foundation + spike + perf + robustness hardening + **gate split**
+LANDED. **Product default = aggressive dense LC only** (believable overtaking, best organic flow, no perf
+penalty); **`--inform-follower`** opts into the cooperative layer for saturated grids; **`--parity`** is the
+deterministic SUMO anchor. Bit-exact gate-ON de-prioritised per the owner steer (believable + fast >
+bit-exact). Decision record: §3.8.

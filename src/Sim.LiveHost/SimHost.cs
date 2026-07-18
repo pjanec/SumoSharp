@@ -87,9 +87,11 @@ public sealed class SimHost : IDisposable
         {
             var old = _runner;
 
-            // P2G-2: the interactive/live host runs the coordinated dense lane-change model by default
-            // (believable multi-lane overtaking/merging, perf-neutral, robustness-hardened) -- the product
-            // default. The deterministic SUMO-anchor mode is CoordinatedLaneChange=false (the goldens' mode).
+            // P2G-2: the interactive/live host runs the aggressive dense lane-change model by default
+            // (believable multi-lane overtaking/merging, best organic flow, robustness-hardened) -- the
+            // product default. The cooperative informFollower layer is left OFF (it degrades organic flow;
+            // it is a saturated-grid medicine). The deterministic SUMO-anchor mode is
+            // CoordinatedLaneChange=false (the goldens' mode).
             var engine = new Engine { CoordinatedLaneChange = true };
             if (_scenarioMode)
             {

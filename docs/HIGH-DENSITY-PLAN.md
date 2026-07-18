@@ -269,10 +269,14 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     coordinated's aggressive LC hits it concurrently -> corrupted list size -> IndexOutOfRange. Fixed by
     _laneSeqPoolLock (byte-identical on the serial golden path). Plus TryBestLanesForEdge (off-route-edge
     guard). Coordinated now runs clean region-parallel across the whole committed ladder + a no-crash
-    regression test. Coordinated is now the PRODUCT DEFAULT in the hosts (Sim.Run/SimHost/Sim.BenchCity;
-    --parity opts to the deterministic anchor); Engine library default stays false (the golden-suite
-    anchor). Benchmarks + Windows instructions: docs/BENCHMARK-INSTRUCTIONS.md + scripts/bench-coordinated.ps1
-    (+ scripts/bench-scaling.ps1). DONE. Bit-exact de-prioritised (owner: believable+fast > bit-exact).
+    regression test. Benchmarks + Windows instructions: docs/BENCHMARK-INSTRUCTIONS.md +
+    scripts/bench-coordinated.ps1 (+ scripts/bench-scaling.ps1). GATE SPLIT (§3.8, session 4): the Windows
+    benchmark showed the informFollower half degraded organic flow + cost perf, so it moved behind its OWN
+    gate (Engine.CooperativeInformFollower / --inform-follower, default OFF). PRODUCT DEFAULT is now
+    AGGRESSIVE DENSE LC ONLY (CoordinatedLaneChange=true in the hosts: best organic flow 21<24 vs parity,
+    no perf penalty, believable overtaking); --inform-follower opts into the saturated-grid coordination;
+    --parity is the deterministic anchor. Engine library default stays false (golden-suite anchor). DONE.
+    Bit-exact de-prioritised (owner: believable+fast > bit-exact).
   - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
     cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
     passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason

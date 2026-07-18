@@ -968,13 +968,23 @@ public sealed partial class Engine : IEngine
     private int _dejamDespawnCount;
     public int DejamDespawnCount => _dejamDespawnCount;
 
-    // P2G-2 (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md): master switch for the coordinated dense
-    // lane-change model -- cooperative speed-advice (informFollower: a blocked changer tells its target
-    // follower to make room) + the currently-gated faithful LC pieces it unblocks (P2G-3 cross-junction
-    // speed-gain). Default OFF -> no CoopSpeedAdvice is ever written and the P2G-3 path is skipped, so
-    // every committed golden AND the saturated-grid diagnostic are byte-identical. Runtime host property
-    // (a non-parity behavioural/perf mode, like the X1 controls), never a sumocfg key.
+    // P2G-2 (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md): the dense lane-change model -- the faithful
+    // aggressive multi-lane overtaking/merging the parity path leaves on the table (P2G-3 cross-junction
+    // speed-gain). This is the PRODUCT DEFAULT in the runtime hosts: it flows the realistic organic
+    // multi-lane net BETTER than parity (21 vs 24 stuck on city-organic-L2) with no perf penalty, and adds
+    // believable overtaking. Default OFF here (the parity anchor) -> the P2G-3 path is skipped, so every
+    // committed golden is byte-identical. Runtime host property, never a sumocfg key.
     public bool CoordinatedLaneChange { get; set; }
+
+    // P2G-2 informFollower: the cooperative layer ON TOP of CoordinatedLaneChange -- a blocked changer
+    // advises its target-lane follower to yield (one-step helpDecel) so the change succeeds. This is a
+    // grid-saturation medicine that is organic-net poison: it fully rescues the deliberately over-saturated
+    // willpass-saturation diagnostic (51 -> 0 stuck) but DEGRADES the realistic organic net (21 -> 28
+    // stuck, fewer arrivals) because it over-brakes followers into more congestion. So it is OFF by default
+    // even when CoordinatedLaneChange is on (the product default is aggressive-LC WITHOUT it); opt in only
+    // for genuinely saturated grids. Inert unless CoordinatedLaneChange is also on -- no CoopSpeedAdvice is
+    // written when off, so the consumption path stays a data no-op (+Infinity == none).
+    public bool CooperativeInformFollower { get; set; }
 
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
@@ -8786,6 +8796,7 @@ public sealed partial class Engine : IEngine
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
                 }
                 else if (CoordinatedLaneChange
+                    && CooperativeInformFollower
                     && neighFollow is not null
                     && !IsTargetLaneSafe(v, null, neighFollow, dt))
                 {

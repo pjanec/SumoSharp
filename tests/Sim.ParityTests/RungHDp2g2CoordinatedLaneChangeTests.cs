@@ -33,22 +33,90 @@ public class RungHDp2g2CoordinatedLaneChangeTests
         return last.Count(kv => kv.Value.T >= maxT - 1 && kv.Value.Speed < 0.1);
     }
 
-    // THE HEADLINE: with the coordinated model ON, the faithful lane-changing (cross-junction speed-gain)
-    // flows the saturated grid (0 stuck), NOT gridlocks it. Without the cooperative informFollower
-    // coordination, the same faithful lane-changing gridlocks this grid to ~51 stuck (measured; that is
-    // exactly why P2G-3 could not land in the default path). This is the proof the coordinated-LC
-    // architecture is correct.
+    // Throughput proxy: how many vehicles drained (reached their destination) before the run's final
+    // emitted step. Mirrors Sim.BenchCity's "vehicles arrived" -- a vehicle whose last trajectory frame
+    // is before the final step left the network; one still present at the final step is running@end. More
+    // arrived over a fixed horizon == better flow. (StuckCount above only separates cleanly on a net that
+    // fully drains, e.g. the saturated grid; on a still-busy organic net at its horizon, momentary
+    // junction queueing dominates it -- so use arrivals to compare organic flow.)
+    private static int ArrivedCount(TrajectorySet traj)
+    {
+        var last = new Dictionary<string, double>();
+        var maxT = 0.0;
+        foreach (var p in traj.AllPoints)
+        {
+            maxT = System.Math.Max(maxT, p.Time);
+            last[p.VehicleId] = p.Time;
+        }
+
+        return last.Count(kv => kv.Value < maxT - 0.5); // left before the final step (half-step slack)
+    }
+
+    // THE HEADLINE: full coordination (aggressive dense LC + the cooperative informFollower yield) flows the
+    // saturated grid (0 stuck), NOT gridlocks it. This is what the `--inform-follower` opt-in buys. Note the
+    // informFollower is REQUIRED here: aggressive LC alone gridlocks this deliberately over-saturated grid
+    // to ~51 stuck (see CoordinatedLaneChange_DenseOnly_SaturatedGridGridlocks). That is exactly why the
+    // informFollower exists -- and exactly why it is NOT the product default (it degrades the realistic
+    // organic net; see CoordinatedLaneChange_DenseOnly_FlowsOrganicNet). This is the proof the cooperative
+    // coordination architecture is correct for the saturated-grid case.
     [Fact]
-    public void CoordinatedLaneChange_On_SaturatedGridStillFlows()
+    public void CoordinatedLaneChange_WithInformFollower_SaturatedGridStillFlows()
     {
         var dir = Path.Combine(RepoRoot(), "scenarios", "_diag", "willpass-saturation");
-        var engine = new Engine { CoordinatedLaneChange = true };
+        var engine = new Engine { CoordinatedLaneChange = true, CooperativeInformFollower = true };
         engine.LoadScenario(Path.Combine(dir, "net.net.xml"), Path.Combine(dir, "rou.rou.xml"), Path.Combine(dir, "config.sumocfg"));
 
         var traj = engine.Run(700);
 
         var stuck = StuckCount(traj);
-        Assert.True(stuck <= 5, $"coordinated-LC saturated grid gridlocked: {stuck} stuck (expected <=5; SUMO 0).");
+        Assert.True(stuck <= 5, $"full-coordination saturated grid gridlocked: {stuck} stuck (expected <=5; SUMO 0).");
+    }
+
+    // THE PRODUCT DEFAULT: aggressive dense LC WITHOUT the informFollower (CoordinatedLaneChange=true,
+    // CooperativeInformFollower=false -- what the runtime hosts ship). On the realistic organic multi-lane
+    // net it must flow AT LEAST as well as parity -- that is the entire reason it is the default. Compared
+    // by throughput (vehicles drained over a fixed 600-step horizon): the default must arrive no fewer than
+    // parity. Also asserts the default arrives no fewer than FULL coordination (dense LC + informFollower),
+    // pinning the headline finding that the informFollower HURTS organic throughput (measured: default and
+    // parity both drain 278, full coordination only 268). This is the load-bearing guard for the default
+    // choice: if a change made the default flow worse than parity, the default would no longer be justified.
+    [Fact]
+    public void CoordinatedLaneChange_DenseOnly_FlowsOrganicNetAtLeastAsWellAsParity()
+    {
+        var dir = Path.Combine(RepoRoot(), "scenarios", "_bench", "city-organic-L2");
+
+        int ArrivedFor(bool denseLc, bool informFollower)
+        {
+            var engine = new Engine { CoordinatedLaneChange = denseLc, CooperativeInformFollower = informFollower };
+            engine.LoadScenario(Path.Combine(dir, "net.net.xml"), Path.Combine(dir, "rou.rou.xml"), Path.Combine(dir, "config.sumocfg"));
+            return ArrivedCount(engine.Run(600));
+        }
+
+        var parity = ArrivedFor(denseLc: false, informFollower: false); // SUMO-anchor baseline
+        var defaultDense = ArrivedFor(denseLc: true, informFollower: false); // the product default
+        var fullCoord = ArrivedFor(denseLc: true, informFollower: true); // the --inform-follower opt-in
+
+        Assert.True(defaultDense >= parity,
+            $"default dense-LC must flow the organic net >= parity: default arrived {defaultDense}, parity {parity}.");
+        Assert.True(defaultDense >= fullCoord,
+            $"informFollower should not improve organic throughput: default arrived {defaultDense}, full-coordination {fullCoord}.");
+    }
+
+    // CONTROL for the headline: aggressive dense LC ALONE (no informFollower -- the product default) DOES
+    // gridlock the deliberately over-saturated diagnostic grid. This is the documented reason the
+    // informFollower opt-in exists, and the reason the saturated-grid A/B is a diagnostic, not a realistic
+    // product net. Asserts the two configs genuinely differ (the informFollower flag is load-bearing).
+    [Fact]
+    public void CoordinatedLaneChange_DenseOnly_SaturatedGridGridlocks()
+    {
+        var dir = Path.Combine(RepoRoot(), "scenarios", "_diag", "willpass-saturation");
+        var engine = new Engine { CoordinatedLaneChange = true }; // dense LC only -- no informFollower rescue
+        engine.LoadScenario(Path.Combine(dir, "net.net.xml"), Path.Combine(dir, "rou.rou.xml"), Path.Combine(dir, "config.sumocfg"));
+
+        var traj = engine.Run(700);
+
+        var stuck = StuckCount(traj);
+        Assert.True(stuck >= 20, $"expected dense-LC-alone to gridlock the saturated grid (~51 stuck); got {stuck}.");
     }
 
     // Fidelity: with the coordinated model ON, the engine performs the SUMO-faithful speed-gain overtake
