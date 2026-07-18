@@ -221,6 +221,39 @@ public sealed class ActivityTimeline
         return Evaluate(Segments[idx], _startPos[idx], _startHeading[idx], segElapsed);
     }
 
+    // The ped's world velocity at `now` -- the segment direction * speed while Walking, Vec2.Zero while
+    // Pausing/Dwelling/Interacting (standing still) and outside the timeline (clamped). Used when a
+    // low-power ActivityTimeline ped is PROMOTED into the high-power OrcaCrowd (PedLodManager): the crowd
+    // agent is seeded with this velocity so it continues in the same direction rather than jerking to a
+    // stop. Mirrors PoseAt's segment scan exactly (same idx, same clamps) so pose and velocity agree.
+    public Vec2 VelocityAt(double now)
+    {
+        if (now < T0)
+        {
+            return Vec2.Zero;
+        }
+
+        var elapsed = now - T0;
+        if (elapsed >= TotalDuration)
+        {
+            return Vec2.Zero;
+        }
+
+        var idx = Segments.Count - 1;
+        for (var i = 1; i < Segments.Count; i++)
+        {
+            if (_startOffset[i] > elapsed)
+            {
+                idx = i - 1;
+                break;
+            }
+        }
+
+        return Segments[idx] is WalkSegment w
+            ? PathArcMotion.VelocityAt(w.Path, 0.0, w.Speed, elapsed - _startOffset[idx])
+            : Vec2.Zero;
+    }
+
     private static PoseSample Evaluate(ActivitySegment segment, Vec2 startPos, Vec2 startHeading, double segElapsed)
     {
         switch (segment)

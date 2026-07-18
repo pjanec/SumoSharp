@@ -55,6 +55,12 @@ public sealed class PedLodManager
         public IReadOnlyList<Vec2> Path = Array.Empty<Vec2>();
         public double PathStartTime;
 
+        // LIVE-PROD-1a: set when this ped is a LIVELY low-power ped (Model == ActivityTimeline) -- its
+        // low-power pose/velocity come from Timeline.PoseAt/VelocityAt instead of PathArcMotion. Null for
+        // an ordinary PathArc ped (the whole population before liveliness is enabled), so every branch
+        // that special-cases it is inert and the PathArc path stays bit-identical.
+        public ActivityTimeline? Timeline;
+
         public OrcaHandle HighIndex = OrcaHandle.Invalid;    // handle into the persistent high-power OrcaCrowd, or Invalid when Low
 
         public double StateEnteredAt;             // sim time this ped entered its CURRENT LOD state
@@ -144,6 +150,34 @@ public sealed class PedLodManager
         return id;
     }
 
+    // LIVE-PROD-1a (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4, §10): registers a LIVELY low-power ped whose
+    // pose is `timeline` (Walk legs plus Pause/Dwell/Interact beats) evaluated by ActivityTimeline.PoseAt,
+    // rather than a bare PathArc leg. It is still low-power and O(1)/step (PoseAt is a pure function of
+    // time), and still server==IG: the whole timeline is broadcast ONCE here (ActivityTimelineRecord,
+    // mirroring AddPed's "path sent once") and the IG reconstructs pose+visibility by calling the same
+    // PoseAt. `timeline`'s final pose is treated as the destination (used to re-route on promote/demote
+    // and for demand-side arrival). The ped can promote to a full reactive OrcaCrowd agent exactly like a
+    // PathArc ped -- see Step's promotion branch, which carries PoseAt/VelocityAt forward.
+    public int AddPedLively(int id, ActivityTimeline timeline, double maxSpeed, double radius, double now)
+    {
+        var entry = new PedEntry
+        {
+            Id = id,
+            Destination = timeline.PoseAt(timeline.EndTime).Pos,
+            MaxSpeed = maxSpeed,
+            Radius = radius,
+            Model = PedDrModel.ActivityTimeline,
+            Timeline = timeline,
+            PathStartTime = now,
+            StateEnteredAt = now,
+        };
+
+        _peds.Add(id, entry);
+        _publisher.PublishActivityTimeline(id, timeline, now);
+        _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.ActivityTimeline, now);
+        return id;
+    }
+
     // ADDITIVE (P2-3, docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-NAVMESH-CONTRACT.md): removes a ped
     // entirely -- the "arrived at its OD destination, despawn" case a demand generator needs, distinct
     // from a demotion (which keeps the ped, just switches its DR model). If the ped is currently
@@ -189,9 +223,12 @@ public sealed class PedLodManager
     public Vec2 PositionOf(int id, double now)
     {
         var e = _peds[id];
-        return e.Model == PedDrModel.FreeKinematic
-            ? _highCrowd.Position(e.HighIndex)
-            : PathArcMotion.PositionAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
+        return e.Model switch
+        {
+            PedDrModel.FreeKinematic => _highCrowd.Position(e.HighIndex),
+            PedDrModel.ActivityTimeline => e.Timeline!.PoseAt(now).Pos,
+            _ => PathArcMotion.PositionAt(e.Path, e.PathStartTime, e.MaxSpeed, now),
+        };
     }
 
     // Advances every ped by `dt`, from time `now` to `now + dt`:
@@ -233,7 +270,9 @@ public sealed class PedLodManager
             var pos = frozenPos[id];
             var stateAge = now - e.StateEnteredAt;
 
-            if (e.Model == PedDrModel.PathArc)
+            // Low-power = PathArc OR ActivityTimeline (a lively low-power ped, LIVE-PROD-1a); both promote
+            // the same way. FreeKinematic is the only high-power model. Stationary is not used here.
+            if (e.Model != PedDrModel.FreeKinematic)
             {
                 if (stateAge >= _dwellSeconds && interestField.Query(pos).AnyWithinPromote)
                 {
@@ -268,13 +307,16 @@ public sealed class PedLodManager
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var velocity = PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
+            var velocity = e.Model == PedDrModel.ActivityTimeline
+                ? e.Timeline!.VelocityAt(now)
+                : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
             var steeringPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
             e.OutsideSince = double.NaN;
             e.Path = steeringPath;
+            e.Timeline = null; // now a reactive high-power agent; a later demotion resumes as plain PathArc
 
             var handle = _highCrowd.Add(pos, e.Radius, e.MaxSpeed, goal: pos, velocity: velocity);
             _highController.AddRoute(handle, steeringPath, e.MaxSpeed);

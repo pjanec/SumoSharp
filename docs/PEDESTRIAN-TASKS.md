@@ -183,6 +183,39 @@ Design ref: `PEDESTRIAN-DESIGN.md` §3(d), `PEDESTRIAN-POC7C-FINDINGS.md` Q2.
 
 ---
 
+## Stage LIVE-PROD — Graduate liveliness into the demand path
+
+The LIVE-POCs proved the mechanisms in isolation (`ActivityTimeline`, `SocialPlanner`, `WaiterScenario`);
+this stage makes the *routed ambient crowd* actually lively. Design refs: `PEDESTRIAN-LIVELINESS-DESIGN.md`
+§4 (schedule generator extends `PedDemand`) + §10 (LOD integration). Iron rule: strictly additive — with
+liveliness disabled the population is **bit-identical** to today's PathArc behaviour.
+
+### LIVE-PROD-1a — `PedLodManager` low-power `ActivityTimeline` path
+- **Design ref:** liveliness §10; `PedLodManager.cs`, `ActivityTimeline.cs`. **Deps:** LIVE-POC-1.
+- A low-power ped may carry an `ActivityTimeline` (`Model = PedDrModel.ActivityTimeline`) instead of a bare
+  PathArc leg: `AddPedLively(id, timeline, radius, now)` publishes `ActivityTimelineRecord` + the switch;
+  `PositionOf` evaluates `PoseAt`; promotion carries the timeline's pose+velocity forward into the crowd
+  (add `ActivityTimeline.VelocityAt`); demotion returns to a plain PathArc walk-to-destination. Low-power =
+  PathArc **or** ActivityTimeline throughout the promote/demote state machine.
+- **Success conditions:** every existing `PedLodManager`/`PedDemand` test stays **bit-identical** (null
+  timeline path unchanged); a new test drives a lively low-power ped through a `PedPublisher`→`HeadlessIg`
+  round-trip and asserts exact server==IG over a sweep, and asserts a lively ped inside a promote radius
+  promotes to FreeKinematic and demotes back; serial==parallel; 589 parity green.
+
+### LIVE-PROD-1b — `PedDemand` schedule generator + lively-crowd demo
+- **Design ref:** liveliness §4, §8; `PedDemand.cs`. **Deps:** LIVE-PROD-1a.
+- `PedDemandConfig` gains an optional liveliness block (per-ped probability of a Pause/Dwell beat, a POI/
+  dwell-spot set, seeded from `config.Seed`+id). `TrySpawnOne` builds an `ActivityTimeline` = the route as
+  Walk segments with occasional deterministic Pause("sip"/"phone")/Dwell(at a nearby POI) inserted, and
+  calls `AddPedLively`. A `--ped-lively-crowd` Sim.Viz scene shows the routed crowd sipping/sitting/dwelling
+  as it moves.
+- **Success conditions:** determinism (same seed → identical spawn/pose stream); with the liveliness block
+  omitted the demand is bit-identical to today's `PedDemand`; the demo visibly shows lively beats along
+  real routes; arrivals still despawn at destination (a dwelling ped does not despawn mid-route); ped tests
+  green.
+
+---
+
 ## Stage P6 — Scale hardening + on-target validation
 
 ### P6-1 — On-target benchmark run
