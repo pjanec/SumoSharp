@@ -95,7 +95,12 @@ Graduation into production (making the *routed ambient crowd* lively):
       `Sim.Replication` one-way, `Sim.Replication` stays ped-free; round-trip test: server==IG over serialized
       bytes — EXACT for PathArc + ActivityTimeline (801 samples), ≤0.02 m for quantized FreeKinematic (meas.
       2.7e-7 m), receiver `ModelOf` flips on promote; 590 parity + 111 ped green, no DDS)*
-- [ ] **P3-2** Publisher + global bandwidth governor (single-stream < 500 Mbit/s under spike)
+- [x] **P3-2** Publisher DR-error gating + global bandwidth governor *(`PedPublishScheduler` linear-
+      extrapolation DR-error gate — steady ped 7/200 sends @ ~0 err, maneuvering 23/200 within 0.1 m tol;
+      `PedBandwidthMeter` real per-topic byte→Mbit/s; `PedBandwidthGovernor` global cap, defers least-urgent
+      (first-sightings never) — 100k all-high-power = 144 Mbit/s, 400k-promotion spike held at 499.99 Mbit/s
+      (governor engaged, caught up in 2 steps), low-power 0 per-step crowd bytes; gated-by-flag so P3-1
+      round-trip unchanged; 590 parity + 116 ped green)*
 - [ ] **P3-3** IG-side reconstruction (FreeKinematic extrapolator + PathArc follower; server==IG over DDS)
 
 ## Stage P4 — Engine coordination seams (Core; with lane-engine session)
