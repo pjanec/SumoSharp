@@ -85,6 +85,7 @@ public sealed class PedLodManager
     private readonly OrcaCrowd _highCrowd;
     private readonly PedRouteController _highController;
     private bool _useParallelHighCrowd;
+    private bool _useRegionDecompHighCrowd;
 
     // Live high-power ped count. NOT the same as `_highCrowd.Count` any more: OrcaCrowd.Count is a
     // high-water mark of slots ever allocated (P0-1), so it stays at its peak even after every
@@ -100,6 +101,27 @@ public sealed class PedLodManager
             _useParallelHighCrowd = value;
             _highCrowd.UseParallelStep = value;
         }
+    }
+
+    // P6-2 (docs/PEDESTRIAN-P6-2-REGION-DESIGN.md): opt in the high-power crowd to spatial region
+    // decomposition -- the cache-local parallel plan that raises ped per-core throughput (the combined-load
+    // GO). Bit-identical to serial (OrcaRegionDecompositionTests); default off, so the manager's behaviour is
+    // unchanged unless a caller enables it. Takes precedence over UseParallelHighCrowd on the underlying crowd.
+    public bool UseRegionDecompositionHighCrowd
+    {
+        get => _useRegionDecompHighCrowd;
+        set
+        {
+            _useRegionDecompHighCrowd = value;
+            _highCrowd.UseRegionDecomposition = value;
+        }
+    }
+
+    // P6-2-4 tuning passthrough: region cell side = this multiple of NeighbourDist on the high-power crowd.
+    public double HighCrowdRegionCellSizeMultiplier
+    {
+        get => _highCrowd.RegionCellSizeMultiplier;
+        set => _highCrowd.RegionCellSizeMultiplier = value;
     }
 
     public PedLodManager(

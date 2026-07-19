@@ -125,8 +125,12 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   uplift** vs the current parallel path on `Sim.BenchCrowd`/`Sim.BenchPedLod` at the 4–8-core caps, and a
   re-run of the 6+6 / 8+4 combined-load splits showing heavy churn clearing real-time with ≥1.5× margin at
   6 ped cores (or the honest measured figure). Documented in a P6-2 results doc / findings update.
-- [ ] **P6-2-5 — Wire into `PedLodManager`** high-power crowd (opt-in), and confirm the full offline gate is
-  unchanged (**634 (+3 skip) / 142 / 2 / 1**, hash `909605E965BFFE59`) with the flag both off and on.
+- [x] **P6-2-5 — Wire into `PedLodManager`** high-power crowd (opt-in). *Done:* `UseRegionDecompositionHighCrowd`
+  + `HighCrowdRegionCellSizeMultiplier` passthroughs (mirror `UseParallelHighCrowd`), default off.
+  `PedLodRegionDecompositionTests` promotes 400 peds (≥256 high-power after the dwell) through the FULL manager
+  and asserts region-on is bit-identical to default on position AND DR-model every step. Gate green with the
+  flag off (all ped tests pass with the passthrough present) and bit-identical with it on. *(Base gate has
+  grown to 649/142/2/1 as tests were added; the invariant is "never drops / hash unchanged", satisfied.)*
 
 ## 7. Standing invariants (every task)
 
