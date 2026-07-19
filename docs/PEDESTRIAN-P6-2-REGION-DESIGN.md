@@ -103,9 +103,12 @@ never silently accepted.
 
 Legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 
-- [ ] **P6-2-1 — Region grid + per-`Step` agent→region bucketing** (frozen positions; region size a knob).
+- [x] **P6-2-1 — Region grid + per-`Step` agent→region bucketing** (frozen positions; region size a knob).
   *Success:* buckets partition all agents exactly once; re-bucketing per step handles movement (an agent that
   crosses a region boundary lands in the new region next step) — unit-tested against a brute-force oracle.
+  *Done:* `src/Sim.Core/Orca/RegionPartition.cs` (deterministic, ascending-by-index, pooled; same FloorDiv/
+  pack-cell math as the agent grid; parity-inert — no solve touched). `RegionPartitionTests` (7 tests) prove
+  the partition/oracle/movement/determinism conditions; offline gate green.
 - [ ] **P6-2-2 — Region-local neighbour gather with `NeighbourDist` halo.** *Success:* for every agent, the
   gathered+sorted neighbour list is **element-for-element identical** to the current `UseSpatialHash` list
   (asserted over a spread + a dense scenario) — proves the halo loses no neighbour and preserves order.
