@@ -6117,14 +6117,40 @@ public sealed partial class Engine : IEngine
         // pass (the pre-pass computes each vNext WITHOUT this refinement, mirroring the foeYieldsThisStep
         // gate) and ONLY before ego commits onto its internal lane (the hold gates ENTRY; once on the
         // junction the on-junction leader path governs). Uses the SAME stop-line StopSpeedFor the
-        // crossing arm applies (approach-lane end minus PositionEps). Inert unless a real cycle exists.
+        // crossing arm applies (approach-lane end minus PositionEps).
+        //
+        // FIX (synthetic-junction2 root cause, completing C4-vii-a): the stop-line distance was
+        // `approachLane.Length - v.Kinematics.Pos`, the SAME raw formula C4-vii-a already replaced with
+        // `egoDistToEntry` for the cautious-approach arm above and for SameTargetMergeConstraint (see
+        // that comment) -- this call site was simply missed. For a cont-turn chain (ego still on its
+        // normal approach lane, `approachLane` the short INTERMEDIATE internal lane) the raw formula
+        // goes deeply negative (observed on synthetic-junction2's TL node 181, veh 114 stalled on lane
+        // 182_1 at pos=16.92 with approachLane=":181_14_0" length=7.80: 7.80 - 16.92 = -9.14 m), so
+        // StopSpeedFor returns ~0 -- permanently freezing a JunctionCycleHold vehicle regardless of
+        // actual gap availability, which is exactly the synthetic-junction2 Y1 teleport pattern.
+        // Pinned via temporary per-constraint-arm instrumentation: with the SAME seen/brakeDist/stopDist
+        // inputs, the pre-pass (which skips this JunctionCycleHold-gated arm entirely, `!prePass`)
+        // computed a sane 7.0854 constraint from the cautious-approach arm alone, while the real pass
+        // (which also runs this arm) collapsed to exactly 0.0000 -- isolating this arm's own distance
+        // term as the sole culprit. `egoDistToEntry` is mathematically IDENTICAL to
+        // `approachLane.Length - pos` for every ORDINARY (single-segment) link (the cont pool-walk loop
+        // never executes when approachLane immediately precedes egoInternalLaneId, and then
+        // `_network.LanesByHandle[v.LaneHandle]` IS `approachLane`) -- byte-identical no-op for every
+        // committed non-cont-turn golden; it only changes a `cont`-chain link, i.e. only when
+        // JunctionCycleHold is ALSO true (a rare RBL-tie-break condition). NOTE: the same stale
+        // `approachLane.Length - pos` formula also appears at this function's ExternalAgentOnFoeLane arm
+        // and its foe-loop approaching-branch (both a few dozen lines below) -- applying this SAME
+        // substitution there was tried and reverted: it further reduced synthetic-junction2's teleport
+        // count but regressed two saturated-grid stress tests (WillPassSaturationDiagTests,
+        // RungHDp2g2CoordinatedLaneChangeTests) to gridlock, so it is deliberately NOT applied there.
+        // Those two call sites keep the pre-existing (still cont-unaware, still imperfect) formula.
         if (!prePass && v.JunctionCycleHold && !egoOnInternal && approachLane is not null)
         {
             constraint = Math.Min(
                 constraint,
                 StopSpeedFor(
                     v.VType, v.Kinematics.Speed,
-                    approachLane.Length - v.Kinematics.Pos - PositionEps,
+                    egoDistToEntry - PositionEps,
                     laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
         }
 

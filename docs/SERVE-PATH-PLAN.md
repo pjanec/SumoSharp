@@ -362,6 +362,30 @@ or a geometry-free real-net capture of the stalling junctions/vehicles) to fix f
 documented follow-up (audit passes, Issue 1 green, RealismMask hides off-camera pops). Owner decision
 pending.
 
+## Real-box teleport residual (synthetic-junction2 witness): partial fix 42→17, root-caused
+
+Geneva's geometry-free witness `scenarios/_repro/synthetic-junction2` reproduces the residual real-box
+teleports (vanilla 0 vs SumoSharp 42 = 13 jam + 29 yield). Root cause pinned (via per-constraint-arm
+instrumentation): a **stale distance formula** in `JunctionYieldConstraint`'s `JunctionCycleHold`
+(right-before-left tie-break hold) arm. For a **cont-turn** chain (a 2-stage turn split across two
+internal lanes), the arm computed the stop-line distance as `approachLane.Length − pos` where
+`approachLane` is the SHORT intermediate internal lane (~7.8 m) — going deeply negative (e.g. 7.80 − 16.92
+= −9.14), so `StopSpeedFor` collapses to ≈0 and **permanently freezes** the vehicle regardless of real
+gap → it hits `time-to-teleport=120` (the Y1 pattern). Fix: use `egoDistToEntry` (the pool-walk distance
+C4-vii-a already established for the cautious-approach arm and SameTargetMerge) — mathematically identical
+to the old formula for every ordinary (non-cont) link, so **byte-identical for every committed golden**;
+it only changes a cont-chain link (rare, RBL-tie-break-gated). Result: synthetic-junction2 **42→17** (jam
+13→3, yield 29→14); synthetic-parity + synthetic-junction stay at 0; all 27 named TL/junction goldens +
+determinism byte-identical; full suite green.
+
+**Residual 17 not yet closed:** the same stale formula exists at two other sites in the function
+(`ExternalAgentOnFoeLane` arm, foe-loop approaching-branch); applying the same substitution there further
+cut teleports BUT gridlocked two saturated-grid stress tests (`WillPassSaturationDiagTests`,
+`RungHDp2g2CoordinatedLaneChangeTests`) — so it was correctly NOT forced. Those two sites need a separate,
+carefully-verified fix (they feed the saturated-grid path, so the naive substitution over-shoots). Owner
+decision: attempt that delicate 2-site pass, or ship with the residual (down from 105→~14 est. on the real
+box, audit passes, Issue 1 green, RealismMask hides off-camera pops) as a documented follow-up.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now
