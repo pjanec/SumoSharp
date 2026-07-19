@@ -33,6 +33,12 @@ internal static class Program
         var neighbourDist = 3.0;
         var maxNeighbours = 8;
         var maxParallelism = -1;
+        // P6-2-4 (docs/PEDESTRIAN-P6-2-REGION-DESIGN.md): when set, the "parallel" column uses the region-
+        // decomposed plan (OrcaCrowd.UseRegionDecomposition) instead of the flat Parallel.For, so a run with
+        // vs without --region-decomp measures P6-2's per-core uplift. --region-mult is the region cell size
+        // in multiples of neighbourDist.
+        var regionDecomp = false;
+        var regionMult = 4.0;
 
         for (var a = 0; a < args.Length; a++)
         {
@@ -60,6 +66,12 @@ internal static class Program
                 case "--max-parallelism":
                     maxParallelism = int.Parse(args[++a]);
                     break;
+                case "--region-decomp":
+                    regionDecomp = true;
+                    break;
+                case "--region-mult":
+                    regionMult = double.Parse(args[++a], CultureInfo.InvariantCulture);
+                    break;
                 case "-h":
                 case "--help":
                     PrintUsage();
@@ -74,14 +86,15 @@ internal static class Program
         Console.WriteLine($"logical processors : {Environment.ProcessorCount}");
         Console.WriteLine($"max-parallelism arg : {(maxParallelism > 0 ? maxParallelism.ToString(CultureInfo.InvariantCulture) : "-1 (runtime auto)")}");
         Console.WriteLine($"steps/warmup        : {steps}/{warmup}   dt={dt}   neighbourDist={neighbourDist}   maxNeighbours={maxNeighbours}");
+        Console.WriteLine($"parallel column     : {(regionDecomp ? $"REGION-DECOMP (mult={regionMult})" : "flat Parallel.For")}");
         Console.WriteLine();
         Console.WriteLine($"{"N",10} | {"serial ms/step",15} | {"parallel ms/step",17} | {"speedup",8} | {"serial steps/s",15} | {"parallel steps/s",17}");
         Console.WriteLine(new string('-', 96));
 
         foreach (var n in sizes)
         {
-            var serial = BuildCrowd(n, useParallel: false, maxParallelism, neighbourDist, maxNeighbours);
-            var parallel = BuildCrowd(n, useParallel: true, maxParallelism, neighbourDist, maxNeighbours);
+            var serial = BuildCrowd(n, useParallel: false, maxParallelism, neighbourDist, maxNeighbours, regionDecomp: false, regionMult);
+            var parallel = BuildCrowd(n, useParallel: true, maxParallelism, neighbourDist, maxNeighbours, regionDecomp, regionMult);
 
             for (var w = 0; w < warmup; w++)
             {
@@ -121,7 +134,7 @@ internal static class Program
     {
         Console.Error.WriteLine(
             "usage: Sim.BenchCrowd [--sizes N,N,...] [--steps N] [--warmup N] [--dt SECONDS] " +
-            "[--neighbour-dist M] [--max-neighbours N] [--max-parallelism N]");
+            "[--neighbour-dist M] [--max-neighbours N] [--max-parallelism N] [--region-decomp] [--region-mult K]");
     }
 
     // Deterministic crowd of exactly `n` agents: a near-square grid, each agent routed to the point
@@ -132,7 +145,8 @@ internal static class Program
     // scratch-touching features -- exercising them here means the benchmark's parallel path takes the
     // exact same code path OrcaParallelStepTests proves bit-identical, not a simplified stand-in.
     private static OrcaCrowd BuildCrowd(
-        int n, bool useParallel, int maxParallelism, double neighbourDist, int maxNeighbours)
+        int n, bool useParallel, int maxParallelism, double neighbourDist, int maxNeighbours,
+        bool regionDecomp, double regionMult)
     {
         const double radius = 0.35;
         const double maxSpeed = 1.4;
@@ -148,6 +162,10 @@ internal static class Program
             MaxNeighbours = maxNeighbours,
             SymmetryBreak = 0.05,
             UseParallelStep = useParallel,
+            // P6-2: the parallel variant uses region decomposition when requested (it takes precedence over
+            // the flat parallel plan on OrcaCrowd). The serial variant always passes regionDecomp:false.
+            UseRegionDecomposition = useParallel && regionDecomp,
+            RegionCellSizeMultiplier = regionMult,
         };
 
         if (maxParallelism > 0)

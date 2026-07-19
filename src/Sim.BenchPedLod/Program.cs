@@ -54,6 +54,10 @@ internal static class Program
         var perSourceTarget = 1000;
         var maxParallelism = -1;
         var runHighOnly = true;
+        // P6-2-4: region-decompose the parallel high-power crowd (measures P6-2's per-core uplift on the
+        // integrated LOD system when run with vs without --region-decomp).
+        var regionDecomp = false;
+        var regionMult = 4.0;
 
         for (var a = 0; a < args.Length; a++)
         {
@@ -84,6 +88,12 @@ internal static class Program
                 case "--max-parallelism":
                     maxParallelism = int.Parse(args[++a]);
                     break;
+                case "--region-decomp":
+                    regionDecomp = true;
+                    break;
+                case "--region-mult":
+                    regionMult = double.Parse(args[++a], CultureInfo.InvariantCulture);
+                    break;
                 case "--no-high-only":
                     runHighOnly = false;
                     break;
@@ -100,6 +110,7 @@ internal static class Program
 
         Console.WriteLine($"logical processors : {Environment.ProcessorCount}");
         Console.WriteLine($"max-parallelism arg : {(maxParallelism > 0 ? maxParallelism.ToString(CultureInfo.InvariantCulture) : "-1 (runtime auto)")}");
+        Console.WriteLine($"parallel high-crowd : {(regionDecomp ? $"REGION-DECOMP (mult={regionMult})" : "flat parallel")}");
         Console.WriteLine($"steps/warmup        : {steps}/{warmup}   dt={dt}   highFraction={highFraction:P0}   spacing={spacing}");
         Console.WriteLine();
 
@@ -128,8 +139,8 @@ internal static class Program
 
         foreach (var n in sizes)
         {
-            RunAndReport($"{n}", n, highFraction, spacing, perSourceTarget, churn: false, dt, warmup, steps, maxParallelism, tableRow: true);
-            RunAndReport($"{n}", n, highFraction, spacing, perSourceTarget, churn: true, dt, warmup, steps, maxParallelism, tableRow: true);
+            RunAndReport($"{n}", n, highFraction, spacing, perSourceTarget, churn: false, dt, warmup, steps, maxParallelism, tableRow: true, regionDecomp: regionDecomp, regionMult: regionMult);
+            RunAndReport($"{n}", n, highFraction, spacing, perSourceTarget, churn: true, dt, warmup, steps, maxParallelism, tableRow: true, regionDecomp: regionDecomp, regionMult: regionMult);
         }
 
         return 0;
@@ -146,10 +157,11 @@ internal static class Program
     // serial and once with UseParallelHighCrowd=true, and prints one (or two table) row(s).
     private static void RunAndReport(
         string label, int n, double highFraction, double spacing, int perSourceTarget, bool churn,
-        double dt, int warmup, int steps, int maxParallelism, bool tableRow = false)
+        double dt, int warmup, int steps, int maxParallelism, bool tableRow = false,
+        bool regionDecomp = false, double regionMult = 4.0)
     {
         var serial = Measure(n, highFraction, spacing, perSourceTarget, churn, dt, warmup, steps, useParallel: false, maxParallelism);
-        var parallel = Measure(n, highFraction, spacing, perSourceTarget, churn, dt, warmup, steps, useParallel: true, maxParallelism);
+        var parallel = Measure(n, highFraction, spacing, perSourceTarget, churn, dt, warmup, steps, useParallel: true, maxParallelism, regionDecomp, regionMult);
 
         var speedup = serial.MsPerStep / parallel.MsPerStep;
 
@@ -173,7 +185,8 @@ internal static class Program
 
     private static Measurement Measure(
         int n, double highFraction, double spacing, int perSourceTarget, bool churn,
-        double dt, int warmup, int steps, bool useParallel, int maxParallelism)
+        double dt, int warmup, int steps, bool useParallel, int maxParallelism,
+        bool regionDecomp = false, double regionMult = 4.0)
     {
         var pop = BuildPopulation(n, highFraction, spacing, perSourceTarget);
 
@@ -182,6 +195,10 @@ internal static class Program
         var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds)
         {
             UseParallelHighCrowd = useParallel,
+            // P6-2-4: when requested, the parallel variant region-decomposes the high-power crowd (takes
+            // precedence over the flat parallel plan). Serial variant always passes regionDecomp:false.
+            UseRegionDecompositionHighCrowd = useParallel && regionDecomp,
+            HighCrowdRegionCellSizeMultiplier = regionMult,
         };
 
         if (maxParallelism > 0)

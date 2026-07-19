@@ -121,10 +121,15 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   serial** for every agent every step across region sizes {1,2,3,4,8×NeighbourDist}, thread caps {−1,2,4,8},
   spatial-hash on/off, and the MaxNeighbours+removal combination, on 400/600-agent spread + dense-counterflow
   scenarios (all > the 256 parallel threshold). Default-off path untouched; offline gate 649/142/2/1 green.
-- [ ] **P6-2-4 — Perf validation (on-target, perf session).** *Success:* measured **≥1.4× ped churn per-core
-  uplift** vs the current parallel path on `Sim.BenchCrowd`/`Sim.BenchPedLod` at the 4–8-core caps, and a
-  re-run of the 6+6 / 8+4 combined-load splits showing heavy churn clearing real-time with ≥1.5× margin at
-  6 ped cores (or the honest measured figure). Documented in a P6-2 results doc / findings update.
+- [~] **P6-2-4 — Perf validation (on-target, perf session).** *Enabled:* `Sim.BenchCrowd --region-decomp
+  [--region-mult K]` (the parallel column becomes region-decomposed) and `Sim.BenchPedLod --region-decomp
+  [--region-mult K]` (region-decomposes the parallel high-power crowd). Local **directional** sanity on the
+  4-core VM (the regime where region decomposition helps *least* — few cores, little bandwidth pressure):
+  region-decomp is neutral-to-slightly-faster, **no regression** (BenchCrowd 10k: 138.9→145.1 st/s, +4.5%;
+  50k ~flat). *Pending (perf session, on-target 24-core box):* the acceptance measurement — **≥1.4× ped churn
+  per-core uplift** vs the flat parallel path at the 4–8-core caps, and a re-run of the 6+6 / 8+4 combined-load
+  splits showing heavy churn clearing real-time with ≥1.5× margin at 6 ped cores. Documented in a P6-2 results
+  doc / findings update.
 - [x] **P6-2-5 — Wire into `PedLodManager`** high-power crowd (opt-in). *Done:* `UseRegionDecompositionHighCrowd`
   + `HighCrowdRegionCellSizeMultiplier` passthroughs (mirror `UseParallelHighCrowd`), default off.
   `PedLodRegionDecompositionTests` promotes 400 peds (≥256 high-power after the dwell) through the FULL manager
