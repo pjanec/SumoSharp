@@ -487,9 +487,19 @@ the red-check. Bug-3's real, measured effect is on the dense `synthetic-junction
 minimal golden regression for Bug-2/Bug-3 remains a TODO (it must reach full vanilla parity, which the
 dense witness does not).
 
-**Residual (Bug-4, smaller).** A green **permissive** movement still crosses a few steps later than
-vanilla — the minor-link cautious-approach arm (`couldBrakeForMinor`) brakes it toward its stop line
-even on green with no real foe. A tempo/believability gap, not a freeze; candidate next core fix.
+**"Bug-4" was not a separate bug.** An earlier note here posited that a permissive-green movement
+still crossed late because of an over-eager minor-link cautious-approach brake. That was wrong: it was
+the *same* red-foe yield, via the **cont-turn** foe the ad-hoc check could not reach. With the
+generalized `WillPass` fix, the minimal 2-car case now tracks vanilla's **lane-timing exactly** (green
+`e_left` crosses `:C_5_0` at t=9, same as vanilla; was t=12). The only residual there is a ~1.7 m/s
+approach-speed transient over 2 steps (SumoSharp slightly *faster*, not more cautious), converging to
+an exact match by t=11 — a negligible speed-profile difference, not a tempo or gridlock gap.
+
+**Remaining synthetic residual.** `synthetic-junction2` still peaks at 85 halting vs vanilla's 45.
+That gap is now small and **diffuse** (no single dominant mechanism localized), plausibly the
+accumulation of many sub-metre/sub-m/s approach transients across 10 TL junctions over 1000 s, and/or
+lane-choice/insertion-order effects. Chasing it further on the synthetic has diminishing returns and
+rising golden risk; the real acceptance signal is the owner-gated Geneva re-run.
 
 **Still owner-gated:** the Geneva box is company-restricted, so all of the above is on the synthetic
 witness only. A real-box re-run (Geneva) is needed to confirm convergence and judge the residual

@@ -50,9 +50,11 @@ foes alike. This replaced an earlier ad-hoc single-lane red check that could not
 (its request-matrix lane is the internal continuation, not the red entry lane).
 
 The whole-box progressive gridlock is materially reduced but **not** fully closed: peak halting is
-still 83 vs vanilla's 45, and ~4 trips finish just past the t=1000 cutoff. A residual remains — the
-minor-link cautious-approach still slows permissive-green movements more than vanilla (a tempo gap,
-not a freeze). The committed `ss.*` outputs are the **HEAD (Bug-1+2+3)** run.
+still 85 vs vanilla's 45, and ~4 trips finish just past the t=1000 cutoff. The remaining gap is small
+and **diffuse** — on a minimal 2-car TL case the generalized fix reproduces vanilla's lane-timing
+exactly (only a ~1.7 m/s approach transient over 2 steps, converging), so no single dominant residual
+mechanism remains to localize on this witness. The committed `ss.*` outputs are the **HEAD
+(Bug-1+2+3)** run.
 
 ## Measurement note (correction)
 
