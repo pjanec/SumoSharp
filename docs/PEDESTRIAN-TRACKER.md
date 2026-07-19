@@ -235,9 +235,13 @@ permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real croppe
       walkable stubs; pin the fringe set) — *done: SumoData handoff box committed at
       `scenarios/_ped/subarea-box/`; `SubareaBoxBakeTests` bakes the crop into a connected pathable navmesh
       and pins all 48 walkable-fringe edges as baked sidewalks. Re-verify vs a real crop later.*
-- [ ] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
+- [~] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
       sim-LOD**; spawn/despawn only at fringe/sink/off-camera, reading the same camera visible-edge set as
-      the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*
+      the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*.
+      *Mechanism LANDED:* `PedSpawnPolicy` (mirrors `RealismMask`) + tests (inert-default + all 4 predicate
+      branches); design + wiring plan in `docs/PEDESTRIAN-P8-2-APPEARANCE-LEGITIMACY-DESIGN.md`. *Next:* wire
+      into `PedDemand` spawn (origin→edge; deny-defers) + `PedLodManager` despawn (route-to-sink/hold) + host
+      fringe/visible-set plumbing — intertwined with P8-3 edge-aware demand.
 - [ ] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
       `deduce_weights.py` as template; spawns land at fringe/doors)
 - [ ] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
