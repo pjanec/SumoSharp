@@ -15,8 +15,15 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
       *(`src/Sim.PedDdsLoopback`, out of `Traffic.sln`: PathArc + ActivityTimeline reconstruct exactly
       (0/801 mismatches), promoted FreeKinematic error 2.67e-7 m ≤ 0.02 m, promotion observed over the wire;
       live single-stream bandwidth readout emitted; PASS/exit 0)*
-- [ ] **D3** *(follow-on, gated on user)* — wire the live DDS ped path into native viewer `--mode remote`
-      + Godot City3D `--transport=dds`
+- [~] **D3** — wire the live DDS ped path into the viewers:
+  - [x] **D3a** — native viewer: `RemotePedOverlay` transport-pluggable (InMemory | `Dds`); new demo
+        "Pedestrian remote (DDS multicast)" reconstructs the crowd over the live CycloneDDS binding.
+        Headless-verified: renders server==IG over real DDS, **max |server−IG| 0.203 m (run max 0.232 m)**,
+        consistent with the P7-2 in-process 0.213 m peak. *(Note: a pre-existing headless Raylib/Xvfb
+        teardown segfault (exit 139) occurs AFTER the screenshot is written — reproduces on the InMemory
+        demo too, so it is unrelated to the DDS change.)*
+  - [ ] **D3b** — native viewer `--mode remote` **two-process** split (separate ped publisher process) +
+        Godot City3D `--transport=dds` ped path.
 
 ## Standing invariants (every task)
 

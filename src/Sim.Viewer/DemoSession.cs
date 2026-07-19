@@ -155,9 +155,13 @@ public sealed class DemoSession : IDisposable
                 // P7-2: pick the overlay by pedKind -- "lod-remote" reconstructs its crowd from the wire
                 // (RemotePedOverlay), every other kind is the in-process PedOverlay. Both implement
                 // IPedDemoOverlay, so the host is built uniformly through that seam.
-                IPedDemoOverlay pedOverlay = pedKind == "lod-remote"
-                    ? new RemotePedOverlay(repoRoot)
-                    : new PedOverlay(pedKind, repoRoot);
+                IPedDemoOverlay pedOverlay = pedKind switch
+                {
+                    "lod-remote" => new RemotePedOverlay(repoRoot),
+                    // D3: same reconstruct-from-the-wire overlay, but over the live CycloneDDS transport.
+                    "lod-remote-dds" => new RemotePedOverlay(repoRoot, PedWireTransport.Dds),
+                    _ => new PedOverlay(pedKind, repoRoot),
+                };
                 var pedHost = EngineHost.CreateCustom(pedOverlay.NetPath, pedOverlay.Build);
                 return (pedHost, pedOverlay);
             case DemoKind.Sandbox:

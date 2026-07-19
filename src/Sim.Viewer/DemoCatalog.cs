@@ -147,6 +147,12 @@ public static class DemoCatalog
             "the reconstructed (IG) discs render coincident with the server ground-truth rings -- server == " +
             "IG, no promotion pop.",
             DemoCategory.Pedestrians, DemoKind.Pedestrian, "", PedKind: "lod-remote"),
+        new DemoEntry("Pedestrian remote (DDS multicast)",
+            "The same reconstruct-from-the-wire crowd as 'Pedestrian remote (over the wire)', but the " +
+            "replication stream rides the LIVE CycloneDDS transport (DdsPedReplicationSink/Source) instead " +
+            "of the in-process byte loopback -- the real one-server-to-many-IG multicast path. Requires a " +
+            "build with native DDS available; server == IG holds over the real wire.",
+            DemoCategory.Pedestrians, DemoKind.Pedestrian, "", PedKind: "lod-remote-dds"),
     };
 
     // Only the entries whose backing path actually exists under `repoRoot` -- so a trimmed checkout
@@ -188,8 +194,9 @@ public static class DemoCatalog
     public static string PedNetPath(string pedKind, string repoRoot) => pedKind switch
     {
         "evac-district" => Path.Combine(repoRoot, "scenarios", "_ped", "evac-district", "net.net.xml"),
-        "lod-remote" => Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza", "net.net.xml"),
-        _ => throw new ArgumentException($"Unknown pedestrian kind '{pedKind}' (expected \"evac-district\" or \"lod-remote\").",
+        // Both remote demos (in-process byte loopback and live DDS) reconstruct the SAME crossing-plaza net.
+        "lod-remote" or "lod-remote-dds" => Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza", "net.net.xml"),
+        _ => throw new ArgumentException($"Unknown pedestrian kind '{pedKind}' (expected \"evac-district\", \"lod-remote\", or \"lod-remote-dds\").",
             nameof(pedKind)),
     };
 

@@ -1,4 +1,5 @@
 using System.Numerics;
+using CycloneDDS.Runtime;
 using ImGuiNET;
 using Raylib_cs;
 using Sim.Core;
@@ -8,6 +9,7 @@ using Sim.Pedestrians;
 using Sim.Pedestrians.Lod;
 using Sim.Pedestrians.Navigation.Bake;
 using Sim.Replication;
+using Sim.Replication.Dds;
 using Sim.Viewer.Raylib;
 
 namespace Sim.Viewer;
@@ -37,6 +39,16 @@ internal interface IPedDemoOverlay : IRenderOverlay
 {
     string NetPath { get; }
     (Engine Engine, Action<Engine>? OnAfterStep) Build();
+}
+
+// D3 (docs/PEDESTRIAN-DDS-TRANSPORT-TASKS.md): which transport carries this overlay's ped wire. InMemory
+// is the hermetic in-process byte loopback (the P7-2 default); Dds is the live CycloneDDS binding
+// (DdsPedReplicationSink/Source), lighting up the real "remote (DDS)" path in the native viewer. The
+// IPedReplicationSink/Source pair is identical either way, so the reconstruction + render are unchanged.
+public enum PedWireTransport
+{
+    InMemory,
+    Dds,
 }
 
 public sealed class RemotePedOverlay : IPedDemoOverlay
@@ -72,6 +84,11 @@ public sealed class RemotePedOverlay : IPedDemoOverlay
     private const float PedRenderRadius = 1.2f;
 
     private readonly string _repoRoot;
+    private readonly PedWireTransport _transport;
+
+    // Held for the overlay's lifetime when _transport == Dds (IRenderOverlay has no Dispose seam, and the
+    // participant must outlive the render loop). Null for the in-process InMemory transport.
+    private DdsParticipant? _participant;
 
     // Published atomically on the engine thread (inside the OnAfterStep hook), read on the UI thread by the
     // draw methods -- same immutable-snapshot discipline PedOverlay uses.
@@ -79,9 +96,10 @@ public sealed class RemotePedOverlay : IPedDemoOverlay
     private volatile RemoteHud? _hud;
     private Vec2 _sourcePos;
 
-    public RemotePedOverlay(string repoRoot)
+    public RemotePedOverlay(string repoRoot, PedWireTransport transport = PedWireTransport.InMemory)
     {
         _repoRoot = repoRoot;
+        _transport = transport;
         NetPath = Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza", "net.net.xml");
     }
 
@@ -156,14 +174,38 @@ public sealed class RemotePedOverlay : IPedDemoOverlay
         var sourceId = field.Register(source, InterestSourceKind.EntityAttached);
         var noEntities = Array.Empty<WorldDisc>();
 
-        // The wire: gated publisher (DR-error scheduler + global bandwidth governor) -> InMemory byte
-        // loopback -> reconstructor. The crowd this overlay draws is reconstructed from THIS stream.
+        // The wire: gated publisher (DR-error scheduler + global bandwidth governor) -> transport ->
+        // reconstructor. The crowd this overlay draws is reconstructed PURELY from THIS stream. The
+        // transport is either the in-process byte loopback (default, hermetic) or the live CycloneDDS
+        // binding (_transport == Dds) -- the SAME IPedReplicationSink/Source pair either way, so the
+        // reconstruction + render below are byte-for-byte identical; only the path the bytes take differs.
         var meter = new PedBandwidthMeter();
         var scheduler = new PedPublishScheduler(new PedDrErrorPublishPolicy());
         var governor = new PedBandwidthGovernor(scheduler, meter, maxMbitPerSecond: 500.0);
-        var bus = new InMemoryPedReplicationBus();
-        var wirePublisher = new PedReplicationPublisher(bus.Sink, scheduler, governor, meter, stepDt: Dt);
-        var reconstructor = new PedRemoteReconstructor(bus.Source);
+
+        IPedReplicationSink sink;
+        IPedReplicationSource wireSource;
+        if (_transport == PedWireTransport.Dds)
+        {
+            // Live CycloneDDS: publisher + subscriber on one participant, exactly the D2 loopback proof's
+            // path (src/Sim.PedDdsLoopback) but driving a render instead of a headless assert. Kept in a
+            // field so the participant is not GC-collected mid-run; DDS discovery is async, so settle once
+            // before the first publish (LoopbackSelfTest's proven pattern). `sink`/`wireSource` are held
+            // alive by wirePublisher/reconstructor below.
+            _participant = new DdsParticipant();
+            sink = new DdsPedReplicationSink(_participant);
+            wireSource = new DdsPedReplicationSource(_participant);
+            Thread.Sleep(500);
+        }
+        else
+        {
+            var bus = new InMemoryPedReplicationBus();
+            sink = bus.Sink;
+            wireSource = bus.Source;
+        }
+
+        var wirePublisher = new PedReplicationPublisher(sink, scheduler, governor, meter, stepDt: Dt);
+        var reconstructor = new PedRemoteReconstructor(wireSource);
 
         var pedInfo = new Dictionary<int, (Vec2[] Forward, Vec2[] Backward, bool GoingForward)>();
         var activeIds = new List<int>();
