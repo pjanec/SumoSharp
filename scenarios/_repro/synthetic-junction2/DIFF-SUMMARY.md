@@ -12,12 +12,13 @@ golden reference; the three SumoSharp columns are HEAD with the P2-G fixes progr
 
 - **Bug-1** = `<routing>`-section config parsing (device.rerouting honored).
 - **Bug-2** = traffic_light junctions excluded from the RBL cycle resolver.
-- **Bug-3** = crossing gate no longer yields to a red-light foe.
+- **Bug-3** = a foe held at a red light no longer blocks a crossing ego (its `WillPass` is forced
+  false, mirroring SUMO's `mySetRequest` — see the mechanism note below).
 
 | metric | vanilla | Bug-1 | Bug-1+2 | Bug-1+2+3 (HEAD) |
 |---|---|---|---|---|
-| teleports (jam / yield) | 0 (0/0) | 24 (8/16) | 23 (4/19) | **11 (0/11)** |
-| peak on-net halting | 45 | 101 | 95 | **83** |
+| teleports (jam / yield) | 0 (0/0) | 24 (8/16) | 23 (4/19) | **10 (1/9)** |
+| peak on-net halting | 45 | 101 | 95 | **85** |
 
 **Arrival curve** (trips cleared — the un-confounded believability signal; raw `halting`
 over-counts SumoSharp's parked sinks, which SUMO excludes when parked):
@@ -38,8 +39,15 @@ Both fixes move toward vanilla, Bug-3 the larger share:
   (better early/mid, slightly worse near t=599). A modest, net-positive improvement; its main
   guarantee is that it keeps all committed goldens byte-identical while removing a class of
   spurious green-link holds at dense TL junctions.
-- **Bug-3** (red-foe yield): the bigger lever — teleports 23→11 (jam 4→0), peak halting 95→83,
-  and the mid-run arrival gap vs vanilla roughly halved (t=499: −15→−6, t=699: −16→−8).
+- **Bug-3** (red-foe yield): the bigger lever — teleports 23→10, peak halting 95→85, and the
+  mid-run arrival gap vs vanilla roughly halved (t=499: −15→−6, t=699: −16→−8).
+
+**Bug-3 mechanism (generalized).** A vehicle stopping for a red light does not enter its junction,
+so it must not read as a passing foe. `RedLightConstraint` sets `HeldByRedThisStep` on the will-stop
+path and `ComputeWillPass` forces such a vehicle's `WillPass=false`; the crossing gate's existing
+`!foe.WillPass` term then releases ego uniformly — for plain and for cont (internal-junction) turn
+foes alike. This replaced an earlier ad-hoc single-lane red check that could not reach a cont foe
+(its request-matrix lane is the internal continuation, not the red entry lane).
 
 The whole-box progressive gridlock is materially reduced but **not** fully closed: peak halting is
 still 83 vs vanilla's 45, and ~4 trips finish just past the t=1000 cutoff. A residual remains — the

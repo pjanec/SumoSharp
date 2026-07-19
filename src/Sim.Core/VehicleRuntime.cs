@@ -264,6 +264,16 @@ internal sealed class VehicleRuntime
     // (every committed scenario) -- there, no vehicle's WillPass is ever read.
     public bool WillPass;
 
+    // P2-G Bug-3 (generalized): set true by Engine.RedLightConstraint when THIS vehicle is held by a
+    // red/yellow traffic light this step (it can brake and will stop before the stop line, so it does
+    // NOT enter the junction). Read in Engine.ComputeWillPass to force WillPass=false for such a
+    // vehicle -- mirroring SUMO's mySetRequest, which a vehicle stopping for a red does not set. This
+    // makes the crossing gate's `!foe.WillPass` release ego from yielding to a red-held foe uniformly,
+    // whether the foe is a plain or a cont (internal-junction) turn -- the ad-hoc single-lane red
+    // check could not reach a cont foe (its request-matrix lane is the internal continuation, not the
+    // red entry lane). Reset at the top of each ComputeMoveIntent. Default false.
+    public bool HeldByRedThisStep;
+
     // C4-viii-b (bug C, the hold arm): set by Engine.ResolveRightBeforeLeftCycles when it breaks a
     // symmetric right-before-left response cycle. The resolver selects a maximal non-conflicting
     // subset of the cycle's links to PASS and marks the rest to YIELD; a yielding vehicle's WillPass

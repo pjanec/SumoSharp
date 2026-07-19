@@ -450,10 +450,14 @@ holds no right-of-way and does not block a green ego. The engine's gate was TL-s
 static `response`/`foe` matrix + the foe's motion, never the foe link's live signal state). Same
 TL-blindness class as Bug-2, but in the **main** crossing gate.
 
-**Fix (owner authorized the core work).** `JunctionYieldConstraint`'s approaching-foe branch now
-treats a foe whose live TL state is `'r'` as non-blocking (`FoeApproachingOnRedSignal`), guarded so a
-rail_signal's non-TL `Tl` id can't be mis-read (that guard fixed a `KeyNotFoundException` the first
-cut threw on the rail-crossing golden). **All 622 committed goldens stay byte-identical.**
+**Fix (owner authorized the core work).** Generalized, mirroring SUMO's `mySetRequest`: a vehicle
+stopping for a red light does not enter its junction, so `RedLightConstraint` sets `HeldByRedThisStep`
+on the will-stop path and `ComputeWillPass` forces that vehicle's `WillPass=false`. The crossing
+gate's existing `!foe.WillPass` term then releases ego from yielding to a red-held foe — for plain
+AND cont (internal-junction) turn foes alike. (An earlier ad-hoc single-lane red check,
+`FoeApproachingOnRedSignal`, was tried first and then removed: it could not reach a cont foe, whose
+request-matrix lane is the internal continuation rather than the red entry lane, and it needed a
+rail_signal guard the general path does not.) **All 622 committed goldens stay byte-identical.**
 
 ## Corrected controlled measurement (synthetic-junction2, fresh binary, one fix toggled at a time)
 
@@ -466,14 +470,14 @@ carries the same table.)
 
 | metric | vanilla | Bug-1 | Bug-1+2 | Bug-1+2+3 (HEAD) |
 |---|---|---|---|---|
-| teleports (jam / yield) | 0 | 24 (8/16) | 23 (4/19) | **11 (0/11)** |
-| peak on-net halting | 45 | 101 | 95 | **83** |
+| teleports (jam / yield) | 0 | 24 (8/16) | 23 (4/19) | **10 (1/9)** |
+| peak on-net halting | 45 | 101 | 95 | **85** |
 | arrivals @ t=499 | 177 | 150 | 162 | **171** |
 | arrivals @ t=699 | 280 | 264 | 264 | **272** |
 
-Both fixes move toward vanilla; **Bug-3 is the larger lever** (teleports 23→11, peak halting 95→83,
+Both fixes move toward vanilla; **Bug-3 is the larger lever** (teleports 23→10, peak halting 95→85,
 mid-run arrival gap roughly halved). The whole-box progressive gridlock is materially reduced but
-**not** fully closed: peak halting is still 83 vs vanilla's 45.
+**not** fully closed: peak halting is still 85 vs vanilla's 45.
 
 **Witness note.** The minimal 2-car `tl-redfoe-yield` scenario built during this pass was **removed**:
 on the current engine (fresh binary) its green car crosses even without Bug-3, so it did not isolate

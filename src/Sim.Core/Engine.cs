@@ -4538,6 +4538,9 @@ public sealed partial class Engine : IEngine
     {
         // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
         var lane = _network!.LanesByHandle[v.LaneHandle];
+        // P2-G Bug-3 (generalized): reset the red-held flag each plan; RedLightConstraint (called
+        // below in the constraint chain) re-sets it iff this vehicle is stopping for a red this step.
+        v.HeldByRedThisStep = false;
         var dt = _config!.StepLength;
         // default.action-step-length=1 in rung 1's config, equal to dt; kept as its own value
         // (not silently assumed == dt) since MSCFModel.cpp divides by it separately from TS.
@@ -5324,7 +5327,11 @@ public sealed partial class Engine : IEngine
         v.CrossingYieldTaken = false;
         var intent = ComputeMoveIntent(v, neighbors, time, prePass: true);
         v.Intent = intent; // tentative -- reused by PlanMovements iff eligible && !CrossingYieldTaken
-        v.WillPass = intent.NewSpeed > willPassSpeedEps;
+        // P2-G Bug-3 (generalized): a vehicle stopping for a red light this step does NOT enter its
+        // junction, so it must not read as a passing foe -- force WillPass=false even though its
+        // braking vNext is still > 0 (it is rolling toward the stop line). RedLightConstraint (run
+        // inside the ComputeMoveIntent above) set HeldByRedThisStep on exactly the will-stop path.
+        v.WillPass = intent.NewSpeed > willPassSpeedEps && !v.HeldByRedThisStep;
         // The pre-pass Intent carries LatOffset == 0 (prePass short-circuit). The real pass only
         // reproduces that when ComputeLateralEvasion returns exactly 0 -- which, under an eligible
         // scenario (no obstacle/EV/overtake trigger), holds iff the vehicle carries NO residual
@@ -5962,6 +5969,14 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // P2-G Bug-3 (generalized): this vehicle is red/yellow-held AND can brake before the line, so
+        // it will STOP here and not enter the junction this step. Record that so ComputeWillPass can
+        // force WillPass=false -- a red-held foe must not make a green ego yield (SUMO's mySetRequest
+        // is unset for a vehicle stopping at a red). Set only on the will-stop path: the ignoreRed and
+        // cannot-brake branches above already returned +inf (the vehicle runs the light -> it DOES
+        // enter -> WillPass stays true), so the flag correctly stays false for them.
+        v.HeldByRedThisStep = true;
+
         // majorStopOffset (MSVehicle.cpp:2642): MAX2(jmStoplineGap default
         // DIST_TO_STOPLINE_EXPECT_PRIORITY=1.0, lane.getVehicleStopOffset(this)=0 -- no
         // vClass-specific stop offset modeled) = 1.0.
@@ -6396,13 +6411,13 @@ public sealed partial class Engine : IEngine
                 // yield. Inert (IgnoresApproachingFoe returns false) for every vType that leaves
                 // jmIgnoreFoeProb at its 0 default.
                 var ignoresFoe = IgnoresApproachingFoe(v, foe.Kinematics.Speed, time);
-                // P2-G Bug-3: a foe approaching on a RED traffic-light link holds no right-of-way
-                // (its own red stops it at its stop line) and does not block ego -- mirrors SUMO's
-                // MSLink::opened, which only yields to foes that currently havePriority(). Without
-                // this, ego yields to a red-held foe that is still rolling toward its line
-                // (WillPass true for a few steps), freezing green movements at TL junctions.
-                var foeHeldByRed = !egoOnInternal && FoeApproachingOnRedSignal(foeInternalLaneId);
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || foeHeldByRed);
+                // P2-G Bug-3: a foe held at a RED traffic light does not block ego. This is now handled
+                // generally by the `!foe.WillPass` term above: RedLightConstraint sets the foe's
+                // HeldByRedThisStep and ComputeWillPass forces its WillPass=false (SUMO's mySetRequest
+                // is unset for a vehicle stopping at a red). That subsumes -- and, unlike -- the earlier
+                // ad-hoc single-lane red check, also reaches a cont (internal-junction) turn foe, whose
+                // request-matrix lane is the internal continuation rather than the red entry lane.
+                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -10381,33 +10396,6 @@ public sealed partial class Engine : IEngine
         }
 
         return conn.State is { Length: > 0 } s ? s[0] : 'M';
-    }
-
-    // P2-G Bug-3: is the foe on this internal lane approaching on a RED traffic-light link? Such a
-    // foe has no right-of-way -- its own TL red will stop it at its stop line -- so it must NOT
-    // block a crossing ego, exactly as SUMO's MSLink::opened only yields to foes that currently
-    // hold priority (havePriority() reads the live link state). The engine's approaching-foe gate
-    // was TL-state-blind: it yielded to a red-held foe while that foe was still ROLLING toward its
-    // stop line (WillPass=true for the few steps before it halts), which froze green movements that
-    // statically respondTo the red foe's minor link and cascaded into whole-junction TL gridlock
-    // (witness: scenarios/_repro/tl-redfoe-yield). Self-gated to TL-controlled links: a non-TL
-    // connection is never queried here (only the TL branch can return 'r'), so priority junctions
-    // -- and every committed non-TL golden -- are unaffected.
-    private bool FoeApproachingOnRedSignal(string foeInternalLaneId)
-    {
-        if (!_network!.LinkByInternalLane.TryGetValue(foeInternalLaneId, out var jl))
-        {
-            return false;
-        }
-
-        var conn = jl.Link.Connection;
-        // Guard TlLogicsById: a rail_signal connection also carries a Tl id, but it is NOT a
-        // traffic_light program (it lives outside TlLogicsById), and a train obeys its rail signal
-        // via RailSignalConstraint -- never this crossing gate. Only a genuine TL program can put a
-        // link into the 'r' state this check cares about, so a missing key means "not TL red".
-        return conn.Tl is { } tl && conn.LinkIndex is { } li
-            && _network.TlLogicsById.ContainsKey(tl)
-            && TlLinkStateChar(tl, li, CurrentTime) == 'r';
     }
 
     private void TeleportVehicle(VehicleRuntime v)
