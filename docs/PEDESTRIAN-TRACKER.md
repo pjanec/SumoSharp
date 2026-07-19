@@ -244,9 +244,19 @@ permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real croppe
       branches); design + wiring plan in `docs/PEDESTRIAN-P8-2-APPEARANCE-LEGITIMACY-DESIGN.md`. *Next:* wire
       into `PedDemand` spawn (origin→edge; deny-defers) + `PedLodManager` despawn (route-to-sink/hold) + host
       fringe/visible-set plumbing — intertwined with P8-3 edge-aware demand.
-- [ ] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
-      `deduce_weights.py` as template; spawns land at fringe/doors)
-- [ ] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
+- [~] **P8-3** Auto-deduced pedestrian demand (O→D + POIs from walkable-space + land-use; their
+      `deduce_weights.py` as template; spawns land at fringe/doors) — *P8-3a + P8-3b DONE
+      (`docs/PEDESTRIAN-P8-3-DEMAND-DESIGN.md`): `SubareaDemand` (weighted fringe+POI endpoint set,
+      deterministic weighted draw, fringe→sidewalk-midpoint resolve) wired into `PedDemand` behind the
+      optional inert-default `WeightedEndpoints`; box run = every O/D a fringe/POI endpoint (legitimacy by
+      construction, the P8-3×P8-2 synergy), cap held, `unreachableSkips=0`, deterministic. Density scaling is
+      P8-4.*
+- [~] **P8-4** Pedestrian density knob + crossing-throughput guard (crowds never deadlock the calibrated cars)
+      — *design: `docs/PEDESTRIAN-P8-4-DENSITY-DESIGN.md`. **P8-4a DONE** (`PedDensityKnob`): dialable
+      pedestrians-per-walkable-km knob (mirrors the vehicle knee_veh_lkm density model; length not area so a
+      cap is never inflated), Little's-law rate, dial clamped to a LoS-C safe ceiling (the static
+      crossing-throughput guarantee), composes with the P8-3 weighted demand. **P8-4b** (dynamic per-crossing
+      guard) DEFERRED — needs the vehicle-calibration seam + P4 vehicle-yields-at-crossing (SumoData-owned).*
 - [ ] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream)
 
 ---
