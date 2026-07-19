@@ -133,8 +133,9 @@ public static class NetworkParser
             var linkIndex = connEl.Attribute("linkIndex") is { } linkIndexAttr
                 ? int.Parse(linkIndexAttr.Value, CultureInfo.InvariantCulture)
                 : (int?)null;
+            var state = connEl.Attribute("state")?.Value;
 
-            var connection = new Connection(from, fromLane, to, toLane, via, tl, linkIndex);
+            var connection = new Connection(from, fromLane, to, toLane, via, tl, linkIndex, state);
             connections.Add(connection);
             // Last-wins on a duplicate key is a non-issue for this rung's straight-through,
             // single-connection-per-(fromEdge,fromLane,toEdge) network.

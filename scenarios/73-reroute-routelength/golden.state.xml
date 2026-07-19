@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-18 22:50:45 by Eclipse SUMO sumo Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="/home/user/SumoSharp/scenarios/73-reroute-routelength/net.net.xml"/>
+        <route-files value="/home/user/SumoSharp/scenarios/73-reroute-routelength/rou.rou.xml"/>
+    </input>
+
+    <output>
+        <precision value="6"/>
+        <fcd-output value="/home/user/SumoSharp/scenarios/73-reroute-routelength/golden.fcd.xml"/>
+        <fcd-output.acceleration value="true"/>
+        <tripinfo-output value="/home/user/SumoSharp/scenarios/73-reroute-routelength/golden.tripinfo.xml"/>
+        <save-state.times value="1"/>
+        <save-state.files value="/home/user/SumoSharp/scenarios/73-reroute-routelength/golden.state.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="120"/>
+        <step-length value="1"/>
+    </time>
+
+    <processing>
+        <step-method.ballistic value="false"/>
+        <collision.action value="none"/>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1"/>
+        <default.speeddev value="0"/>
+    </processing>
+
+    <routing>
+        <routing-algorithm value="astar"/>
+        <device.rerouting.probability value="1.0"/>
+        <device.rerouting.period value="8"/>
+        <device.rerouting.adaptation-steps value="3"/>
+    </routing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+    <random_number>
+        <seed value="42"/>
+    </random_number>
+
+</configuration>
+-->
+
+<snapshot xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/state_file.xsd" version="1.20.0" time="1.000" type="micro">
+    <route id="viaShort" state="1" edges="e_src1 e_src2 e_short e_dest"/>
+    <route id="viaShortOnly" state="1" edges="e_short e_dest"/>
+    <delay number="2" begin="2" end="0" depart="0.00" time="0.00"/>
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <vehicle id="blocker" type="car" depart="0.000" departLane="0" departPos="0.000000" departSpeed="0.000000" route="viaShortOnly" distance="0 0" speedFactor="1.0000" state="2078 0 0 0.000000 0 0.000000 1000 0 0" pos="0.00 3.58 0.00" speed="0.00 0.00" angle="90.00" posLat="0.00" waitingTime="100000 0">
+        <stop lane="e_short_0" startPos="20.00" endPos="25.00" duration="300.000"/>
+        <device id="tripinfo_blocker" state="e_short_0 0 0 -0 0 0 0 0 -1"/>
+        <device id="routing_blocker" state="8000"/>
+    </vehicle>
+    <vehicle id="rerouted" type="car" depart="0.000" departLane="0" departPos="0.000000" departSpeed="0.000000" route="viaShort" distance="0 0" speedFactor="1.0000" state="2078 0 0 0.000000 0 0.000000 1000 0 0" pos="0.00 -5.00 0.00" speed="0.00 0.00" angle="90.00" posLat="0.00" waitingTime="100000 0">
+        <device id="tripinfo_rerouted" state="e_src1_0 0 0 -0 0 0 0 0 -1"/>
+        <device id="routing_rerouted" state="8000"/>
+    </vehicle>
+    <lane id="e_short_0">
+        <vehicles value="blocker"/>
+    </lane>
+    <lane id="e_src1_0">
+        <vehicles value="rerouted"/>
+    </lane>
+</snapshot>

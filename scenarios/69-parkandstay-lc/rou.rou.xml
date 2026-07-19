@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Issue 1 repro (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md par 7, park-and-stay residency). A single
+         park-and-stay "sink" vehicle departs on the WRONG (left, index 1) lane of a 2-lane edge
+         whose parkingArea pa0 sits on lane 0 close ahead (startPos=40, well inside the 120m edge).
+         duration="100000" far outlasts any committed sim end, matching the no-cheating sink
+         semantics: the vehicle must park and STAY resident (parked, off-lane) for the whole run,
+         never "arrive". The short lead distance (40m) is deliberate: it is far too little for the
+         engine's independent keep-right accumulator (about 5 to 6s to fire, scenarios/07's own
+         timing) to have reached lane 0 in time, so this isolates the STRATEGIC
+         lane-change-toward-the-stop mechanism specifically (MSVehicle::updateBestLanes,
+         MSLCM_LC2013::driveToNextStop) rather than being confoundable by keep-right. Verified
+         against vanilla SUMO 1.20.0: the real engine changes lane from e0_1 to e0_0 at t=2 (see
+         golden.fcd.xml), long before any keep-right timer could fire. -->
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="r0" edges="e0"/>
+    <vehicle id="park0" type="car" route="r0" depart="0" departPos="0" departSpeed="0" departLane="1">
+        <stop parkingArea="pa0" duration="100000"/>
+    </vehicle>
+</routes>

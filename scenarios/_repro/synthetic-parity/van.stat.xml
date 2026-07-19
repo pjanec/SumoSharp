@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-18 14:23:53 by Eclipse SUMO sumo Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="grid.net.xml"/>
+        <route-files value="vType.config.xml,vType_pedestrians.xml,vTypeDist.config.xml,scenario.rou.xml"/>
+        <additional-files value="scenario.add.xml"/>
+    </input>
+
+    <output>
+        <fcd-output value="/home/user/SumoData/experiments/scratch/synthetic_parity/van.fcd.xml"/>
+        <summary-output value="/home/user/SumoData/experiments/scratch/synthetic_parity/van.sum.xml"/>
+        <tripinfo-output value="/home/user/SumoData/experiments/scratch/synthetic_parity/van.ti.xml"/>
+        <statistic-output value="/home/user/SumoData/experiments/scratch/synthetic_parity/van.stat.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="1000"/>
+        <step-length value="1.0"/>
+    </time>
+
+    <processing>
+        <ignore-route-errors value="true"/>
+        <collision.action value="none"/>
+        <time-to-teleport value="120"/>
+    </processing>
+
+    <routing>
+        <routing-algorithm value="astar"/>
+        <device.rerouting.probability value="1.0"/>
+        <device.rerouting.period value="30"/>
+        <device.rerouting.adaptation-steps value="18"/>
+    </routing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+</configuration>
+-->
+
+<statistics xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/statistic_file.xsd">
+    <performance clockBegin="1784384633.10" clockEnd="1784384638.45" clockDuration="5.35" traciDuration="0.00" realTimeFactor="187.09" vehicleUpdatesPerSecond="81661.55" personUpdatesPerSecond="0.00" begin="0.00" end="1000.00" duration="1000.00"/>
+    <vehicles loaded="1360" inserted="1360" running="120" waiting="0"/>
+    <teleports total="4" jam="0" yield="3" wrongLane="1"/>
+    <safety collisions="0" emergencyStops="0" emergencyBraking="0"/>
+    <persons loaded="0" running="0" jammed="0"/>
+    <personTeleports total="0" abortWait="0" wrongDest="0"/>
+    <vehicleTripStatistics count="1240" routeLength="1384.79" speed="6.33" duration="259.72" waitingTime="103.01" timeLoss="155.45" departDelay="0.62" departDelayWaiting="-1.00" totalTravelTime="322055.00" totalDepartDelay="769.00"/>
+    <pedestrianStatistics number="0" routeLength="0.00" duration="0.00" timeLoss="0.00"/>
+    <rideStatistics number="0"/>
+    <transportStatistics number="0"/>
+</statistics>

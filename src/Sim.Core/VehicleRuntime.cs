@@ -264,6 +264,16 @@ internal sealed class VehicleRuntime
     // (every committed scenario) -- there, no vehicle's WillPass is ever read.
     public bool WillPass;
 
+    // P2-G Bug-3 (generalized): set true by Engine.RedLightConstraint when THIS vehicle is held by a
+    // red/yellow traffic light this step (it can brake and will stop before the stop line, so it does
+    // NOT enter the junction). Read in Engine.ComputeWillPass to force WillPass=false for such a
+    // vehicle -- mirroring SUMO's mySetRequest, which a vehicle stopping for a red does not set. This
+    // makes the crossing gate's `!foe.WillPass` release ego from yielding to a red-held foe uniformly,
+    // whether the foe is a plain or a cont (internal-junction) turn -- the ad-hoc single-lane red
+    // check could not reach a cont foe (its request-matrix lane is the internal continuation, not the
+    // red entry lane). Reset at the top of each ComputeMoveIntent. Default false.
+    public bool HeldByRedThisStep;
+
     // C4-viii-b (bug C, the hold arm): set by Engine.ResolveRightBeforeLeftCycles when it breaks a
     // symmetric right-before-left response cycle. The resolver selects a maximal non-conflicting
     // subset of the cycle's links to PASS and marks the rest to YIELD; a yielding vehicle's WillPass
@@ -415,4 +425,66 @@ internal sealed class VehicleRuntime
     // ScenarioConfig.TimeToTeleport>0, so every pre-P1F scenario (time-to-teleport=-1) never
     // touches it and the active-query filters stay byte-identical.
     public bool InTransfer;
+
+    // GAP-2 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §2, docs/SERVE-PATH-PLAN.md): SUMO's
+    // MSDevice_Tripinfo::myWaitingTime (MSDevice_Tripinfo::notifyMove, MSDevice_Tripinfo.cpp:179-193)
+    // -- a TRIP-TOTAL accumulator, DISTINCT from WaitingTime above (which resets to 0 the instant the
+    // vehicle moves/accelerates away -- that field is SUMO's *consecutive*-halt timer,
+    // MSVehicle::updateWaitingTime, used by the all-way-stop tie-break). This one NEVER resets: each
+    // Engine.ExecuteMoves step, while the vehicle is NOT currently halted at a reached <stop>
+    // (!IsStoppedAtStop) AND newSpeed <= haltingSpeed AND this step's acceleration <=
+    // accelThresholdForWaiting (0.5*maxAccel) -- the SAME predicate WaitingTime already evaluates --
+    // `+= dt`. Written ONLY in Engine.ExecuteMoves; read ONLY by Engine's trip-arrival capture
+    // (CaptureCompletedTrips) to populate a completed trip's tripinfo `waitingTime`. Default 0.0;
+    // BuildRuntime always constructs a fresh VehicleRuntime (append or recycled slot), so this is
+    // always 0 at a vehicle's insertion -- no separate reset path needed.
+    public double TripWaitingTime;
+
+    // GAP-2: SUMO's MSVehicle::myTimeLoss (MSVehicle::updateTimeLoss, MSVehicle.cpp:4095-4105) -- a
+    // TRIP-TOTAL accumulator of "how much slower than the lane's free-flow speed was I", in seconds.
+    // Each Engine.ExecuteMoves step, while the vehicle is NOT currently halted at a reached <stop>
+    // (!IsStoppedAtStop): `+= dt * (vmax - newSpeed) / vmax`, where vmax is this lane's
+    // KraussModel.LaneVehicleMaxSpeed for this vehicle (lane speed limit x this vehicle's SpeedFactor,
+    // capped at VType.MaxSpeed) -- SUMO's `myLane->getVehicleMaxSpeed(this)`. Never resets. Written
+    // ONLY in Engine.ExecuteMoves; read ONLY by CaptureCompletedTrips. Default 0.0, same fresh-
+    // instance-per-insertion guarantee as TripWaitingTime above.
+    public double TripTimeLoss;
+
+    // GAP-2: the RESOLVED depart position -- this vehicle's Kinematics.Pos at the exact moment of
+    // insertion (TryInsertOnLane's `insertPos`), captured ONCE there and never touched again. This is
+    // SUMO's `-veh.getPositionOnLane()` seed for myRouteLength at NOTIFICATION_DEPARTED
+    // (MSDevice_Tripinfo.cpp:239-245): unlike Kinematics.Pos (which advances as the vehicle moves and
+    // wraps at each lane boundary), this stays the vehicle's ORIGINAL insertion offset for the whole
+    // trip, which CaptureCompletedTrips needs for the routeLength formula (routeLength = sum of full
+    // lengths of every route edge before the arrival edge, minus this depart pos, plus the configured
+    // arrival pos). Default 0.0 -- always overwritten by TryInsertOnLane before a vehicle can become
+    // Inserted (and therefore before it can ever Arrive).
+    public double DepartPosResolved;
+
+    // GAP-2 follow-up (routeLength across device.rerouting reroutes): SUMO's MSDevice_Tripinfo
+    // myRouteLength -- a RUNNING distance accumulator, NOT a route-pool recomputation. Initialized to
+    // -departPos at insertion (TryInsertOnLane), += the length of each lane the vehicle fully LEAVES
+    // (Engine.ExecuteMoveVehicle's lane-boundary crossing), and routeLength = this + arrivalPos at
+    // arrival (BuildCompletedTripInfo). Because it accumulates as the vehicle drives, it survives a
+    // device.rerouting ReplaceRoute (which rebuilds the lane-sequence pool for only the REMAINING
+    // route) -- the prior pool-sum formula lost all distance travelled BEFORE a reroute (reported
+    // 0.33-0.49x on rerouted trips). For a non-rerouted trip this equals the old pool-sum exactly
+    // (all lanes left == all pool lanes before the arrival lane), so single-route goldens (66/72) are
+    // byte-identical. Default 0; TryInsertOnLane always overwrites it before the vehicle can move.
+    public double RouteDistanceTraveled;
+
+    // GAP-3 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §3, SUMO's MSLane.cpp:2212 `veh->isParking()` ->
+    // MSVehicleTransfer::add -- the vehicle is lifted OFF the lane's vehicle list): true ONLY while
+    // this vehicle is currently `Reached` at a `<stop parkingArea=...>` (StopRuntime.IsParking) --
+    // set/cleared in Engine.ExecuteMoves' stop-transition apply block, the SAME step
+    // StopRuntime.Reached flips (matching scenario 48's golden: the parked lateral offset appears
+    // the step AFTER insertion, not at t=0, and disappears the same step the vehicle resumes).
+    // Consumed in two places, both GATED so a scenario with no parkingArea stop is byte-identical:
+    // (1) ComputeMoveIntent's LatOffset selection (off-lane bay offset while parked instead of the
+    // usual evasion/sublane drift); (2) LaneNeighborQuery.Refill/RefillRegion, which now excludes an
+    // IsParked vehicle from every per-lane neighbor bucket -- so it is invisible to GetLeader/
+    // GetNeighborLeader/GetRearmost/OnLane exactly like SUMO's real off-lane transfer, and a
+    // following through-vehicle is never blocked by it. Default false; BuildRuntime always
+    // constructs a fresh instance, so a recycled EntityIndex's occupant starts unparked.
+    public bool IsParked;
 }

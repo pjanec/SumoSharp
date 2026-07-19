@@ -1,0 +1,7 @@
+<additional xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/additional_file.xsd">
+    <!-- Naming convention required by scripts/audit_nocheat.py / SumoData's auto_parking.py:
+         parkingArea id = "pa_<edgeId>" for the edge it sits on. eB is the sole INTERIOR (non-fringe)
+         edge; the no-cheating rule is that a vehicle may only be born/die off-road here, never on
+         the visible lane. -->
+    <parkingArea id="pa_eB" lane="eB_0" startPos="50.00" endPos="150.00" roadsideCapacity="2"/>
+</additional>

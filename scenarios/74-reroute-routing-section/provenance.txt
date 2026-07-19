@@ -1,0 +1,9 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-19T08:21:42Z
+command=sumo -c /home/user/SumoSharp/scenarios/74-reroute-routing-section/config.sumocfg --fcd-output /home/user/SumoSharp/scenarios/74-reroute-routing-section/golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files /home/user/SumoSharp/scenarios/74-reroute-routing-section/golden.state.xml --no-step-log true --tripinfo-output /home/user/SumoSharp/scenarios/74-reroute-routing-section/golden.tripinfo.xml
+state_time=1
+# input file hashes (sha256):
+input=net.net.xml sha256=33b0b1365cea126cc60b5423ecfebd1e995a83038cb5459770da367de6168392
+input=rou.rou.xml sha256=00e14018b90e5f1244fa01cb689a61763698d050fbb8e5945181437377135a8f
+input=config.sumocfg sha256=44e804acef9322c0b819ed815d7a6c2667a527ebafffdcbbe15b85a597ecf4c8

@@ -1,0 +1,10 @@
+{
+  "parityMode": "exact",
+  "comparedAttributes": ["lane", "pos", "speed"],
+  "pos": 0.001,
+  "speed": 0.001,
+  "tripinfo": {
+    "abs": 0.05,
+    "note": "Same geometry/demand as scenarios/73-reroute-routelength; the ONLY difference is that the device.rerouting.* / routing-algorithm keys live under <routing> instead of <processing>. Vanilla SUMO 1.20.0 reads options by name regardless of the sumocfg section, so this scenario's golden.fcd.xml trajectory body is byte-identical to 73's (verified) and the rerouted vehicle's routeLength is the same 756.21. The scenario exists to guard ScenarioConfigParser's <routing>-section fallback (P2-G Bug-1): if the parser ever regresses to reading device.rerouting only from <processing>, rerouting goes inert here, the vehicle drives into the stopped 'blocker' on e_short instead of taking the detour, and the FCD parity below diverges hard."
+  }
+}

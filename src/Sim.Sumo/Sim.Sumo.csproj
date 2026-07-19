@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- GAP-1: the drop-in binary SumoData points SUMO_BINARY at. Distinct name (NOT `sumo`) so it
+         never shadows vanilla netconvert/randomTrips/duarouter on PATH. Published self-contained
+         (scripts/publish-sumosharp.sh) so calibration's ~7-probes + serve + verify per box do not
+         pay JIT/build startup on every invocation. -->
+    <AssemblyName>sumosharp</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <ProjectReference Include="..\Sim.Harness\Sim.Harness.csproj" />
+  </ItemGroup>
+
+</Project>

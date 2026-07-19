@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <!-- Regression scenario for the tripinfo routeLength device.rerouting fix (Engine.cs commit
+         "Fix tripinfo routeLength across device.rerouting reroutes").
+
+         Two vehicles:
+           - "blocker": inserted directly onto e_short (route "e_short e_dest", bypassing the
+             e_src1/e_src2 prefix entirely) and immediately stopped a few metres in for the whole
+             run. This is what actually congests e_short: MSDevice_Routing/RerouteEdgeWeights
+             samples occupants' ACTUAL speed each adaptation-interval, and a stopped vehicle
+             drags e_short's smoothed speed toward 0, inflating its routing effort far past the
+             fixed-length two-edge detour (e_det1+e_det2)'s effort. device.rerouting.adaptation-
+             steps=3 (small on purpose) makes this converge within about 3 samples (by t=3-4s),
+             well before the tracked vehicle's own first periodic reroute check at t=8s.
+           - "rerouted": the vehicle under test. Its EXPLICIT route is "e_src1 e_src2 e_short
+             e_dest". At its own insertion (t=0), e_short is still UNCONGESTED (length 150m at
+             13.89 m/s, effort about 10.8s) and is genuinely the faster path vs. the detour
+             (effort about 25.8s), so device.rerouting's pre-insertion routing pass (which runs
+             once, at insertion, against the free-flow/not-yet-updated edge-weight snapshot: see
+             Engine.InsertDepartingVehicles' PreInsertionReroute call) leaves its route
+             UNCHANGED. Only "blocker"'s congestion, sampled over the next several seconds,
+             degrades e_short's smoothed effort enough that "rerouted"'s first PERIODIC reroute
+             (device.rerouting.period=8s, jitter off, so due at exactly t=8s) picks the detour
+             instead: a genuine MID-TRIP switch, not a pre-insertion one.
+
+         The O to P to J prefix is deliberately split into TWO edges (not one) so "rerouted" fully
+         LEAVES e_src1 (its lane-sequence pool slot is consumed and the engine's ExecuteMoveVehicle
+         boundary-crossing site has already folded e_src1's length into the running routeLength
+         accumulator) BEFORE its t=8s periodic reroute fires. This is what actually exercises the
+         bug: a reroute that fires while the vehicle is on e_src2 REBUILDS the lane-sequence pool
+         starting at e_src2, discarding e_src1 from the pool entirely, so the OLD "sum the current
+         pool" routeLength formula silently lost e_src1's length while the NEW running-accumulator
+         formula (seeded at insertion, grown at each lane-boundary crossing, immune to a pool
+         rebuild) keeps it. Per golden.fcd.xml, "rerouted" leaves e_src1 around t=6-7s and does not
+         reach J until around t=15-16s, so the t=8s periodic reroute lands squarely mid-e_src2. -->
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="viaShort" edges="e_src1 e_src2 e_short e_dest"/>
+    <route id="viaShortOnly" edges="e_short e_dest"/>
+    <vehicle id="blocker" type="car" route="viaShortOnly" depart="0" departLane="0" departPos="0" departSpeed="0">
+        <stop lane="e_short_0" startPos="20" endPos="25" duration="300"/>
+    </vehicle>
+    <vehicle id="rerouted" type="car" route="viaShort" depart="0" departLane="0" departPos="0" departSpeed="0"/>
+</routes>

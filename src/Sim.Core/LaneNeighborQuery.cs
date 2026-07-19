@@ -66,6 +66,18 @@ internal sealed class LaneNeighborQuery
 
         foreach (var v in vehicles)
         {
+            // GAP-3 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §3): a parked vehicle is OFF the running
+            // lane (SUMO's MSLane.cpp:2212 isParking() -> MSVehicleTransfer, which lifts it out of
+            // the lane's vehicle list entirely) -- excluded from every neighbor bucket here so it is
+            // invisible to GetLeader/GetNeighborLeader/GetRearmost/OnLane (and, by extension,
+            // BuildPacked's packed leader-slot precompute, which reads OnLane). Gated on IsParked
+            // (default false, only ever set true via a resolved `<stop parkingArea>`), so byte-
+            // identical for every scenario without one.
+            if (v.IsParked)
+            {
+                continue;
+            }
+
             _byLaneHandle[v.LaneHandle].Add(v);
         }
 
@@ -90,6 +102,13 @@ internal sealed class LaneNeighborQuery
         for (var i = 0; i < vehicleIndices.Count; i++)
         {
             var v = vehicles[vehicleIndices[i]];
+            // GAP-3: same parked-vehicle exclusion as Refill above -- keeps the region-parallel plan
+            // path byte-identical to the serial path for a parkingArea scenario.
+            if (v.IsParked)
+            {
+                continue;
+            }
+
             _byLaneHandle[v.LaneHandle].Add(v);
         }
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<additional xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/additional_file.xsd">
+    <!-- Roadside bay on JE, just past junction J. SUMO lifts a car parked here OFF JE's running
+         lane entirely (MSVehicleTransfer::add); the through/merge traffic below must drive straight
+         past it. -->
+    <parkingArea id="pa_JE" lane="JE_0" startPos="10.00" endPos="25.00" roadsideCapacity="1"/>
+</additional>

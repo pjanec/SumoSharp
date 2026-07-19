@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vType id="car" vClass="passenger" sigma="0"/>
+    <route id="through" edges="WJ JE"/>
+    <route id="cross" edges="NJ JS"/>
+
+    <!-- Vehicles below are listed in strict ascending depart order (a SUMO route-file
+         requirement); see each group's own header comment for its role:
+         parkStay = the park-and-stay blocker (drives W to J to E, parks in pa_JE on JE_0
+         at pos 10-25 for effectively the whole run; in SUMO this lifts it OFF JE_0's
+         running lane entirely, so through/merge traffic must never brake to 0 there).
+         through* = continuous MAJOR through-traffic (W to J to E) that must drive
+         straight past the parked car on JE_0 without stopping, then reach E; dense enough
+         (15 vehicles, one every 6s) that a reintroduced on-lane-blocker bug would back
+         several of them up onto J's internal lane and jam-teleport.
+         cross1/cross2 = two MINOR cross-traffic probes (N to J to S) that prove the minor
+         movement at J is not permanently denied by the parked car either. Each is timed
+         (t=1, well before any through-vehicle nears J; t=200, well after the last one has
+         cleared) so it meets an otherwise-empty junction, isolating the parkingArea
+         off-lane fix under test from this engine's separate, pre-existing minor-road
+         gap-acceptance timing approximation under SUSTAINED two-way contention (a distinct,
+         out-of-scope precision gap: confirmed present with or without this session's
+         Engine.cs changes, so it is not this regression's concern and must not be exercised
+         by it; see the design doc's own scope note on leaving keepClear/right-of-way
+         untouched). -->
+    <vehicle id="parkStay" type="car" route="through" depart="0" departPos="0" departSpeed="0" departLane="0">
+        <stop parkingArea="pa_JE" duration="100000"/>
+    </vehicle>
+    <vehicle id="cross1" type="car" route="cross" depart="1" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through1" type="car" route="through" depart="6" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through2" type="car" route="through" depart="12" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through3" type="car" route="through" depart="18" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through4" type="car" route="through" depart="24" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through5" type="car" route="through" depart="30" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through6" type="car" route="through" depart="36" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through7" type="car" route="through" depart="42" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through8" type="car" route="through" depart="48" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through9" type="car" route="through" depart="54" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through10" type="car" route="through" depart="60" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through11" type="car" route="through" depart="66" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through12" type="car" route="through" depart="72" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through13" type="car" route="through" depart="78" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through14" type="car" route="through" depart="84" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="through15" type="car" route="through" depart="90" departPos="0" departSpeed="0" departLane="0"/>
+    <vehicle id="cross2" type="car" route="cross" depart="200" departPos="0" departSpeed="0" departLane="0"/>
+</routes>

@@ -1,0 +1,9 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO sumo Version 1.20.0
+generated_utc=2026-07-18T12:48:26Z
+command=sumo -c /home/user/SumoSharp/scenarios/68-serve-nocheat/config.sumocfg --fcd-output /home/user/SumoSharp/scenarios/68-serve-nocheat/golden.fcd.xml --fcd-output.acceleration --precision 6 --save-state.times 1 --save-state.files /home/user/SumoSharp/scenarios/68-serve-nocheat/golden.state.xml --no-step-log true --tripinfo-output /home/user/SumoSharp/scenarios/68-serve-nocheat/golden.tripinfo.xml
+state_time=1
+# input file hashes (sha256):
+input=net.net.xml sha256=470370c2e678e2af9e2339f343d82cd1d36977fbff1da99b209d3af0692fa8c3
+input=rou.rou.xml sha256=b0a97027e9f47b68dcfe87b7b019d91238ae46ea1e007d7939124683b4d56459
+input=config.sumocfg sha256=90c602ea94f99a616fc15e10e4e0ddc361d194ecbe4b8e584c6e2004e4a50f29

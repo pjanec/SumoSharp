@@ -1,0 +1,10 @@
+{
+  "parityMode": "exact",
+  "comparedAttributes": ["lane", "pos", "speed"],
+  "pos": 0.001,
+  "speed": 0.001,
+  "tripinfo": {
+    "abs": 0.05,
+    "note": "Mirrors scenarios/66-tripinfo-arrivallane's tripinfo tolerance (single absolute tolerance applied to every numeric tripinfo field by TripInfoComparator.Compare; arrivalLane is EXACT string match). 0.05 comfortably covers golden.tripinfo.xml's own 2-3 decimal rounding while still catching a real behavioral divergence. The scenario's own regression test additionally asserts the rerouting vehicle's engine.CompletedTrips RouteLength against the golden tripinfo routeLength with a 1.0m tolerance (see RungHDgap2RerouteRouteLengthTests.cs) -- looser than this comparator's 0.05 to allow for the possibility (not observed on this scenario: both engines run the identical RerouteEdgeWeights congestion model against the stopped 'blocker' vehicle and pick the same reroute instant/edges) that engine vs vanilla SUMO pick a different reroute instant."
+  }
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nodes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/nodes_file.xsd">
+    <!-- ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md's mechanism, minimized: a park-and-stay car sits in a
+         roadside parkingArea on the MAJOR through exit lane JE, just past priority junction J.
+         W to E is major (priority 10, never yields), N to S is minor (priority 1, yields to the
+         major movement); the SAME cross geometry as the already-committed keepClear golden
+         (scenario 38-keepclear-crosstraffic), so a wedge on JE (if the parked car were still
+         treated as an on-lane blocker) backs traffic onto J's internal lane and denies the minor
+         N to S movement too, exactly the E1D1_0 mechanism the design doc diagnosed. -->
+    <node id="W" x="-200.0" y="0.0"    type="dead_end"/>
+    <node id="J" x="0.0"    y="0.0"    type="priority"/>
+    <node id="E" x="300.0"  y="0.0"    type="dead_end"/>
+    <node id="N" x="0.0"    y="150.0"  type="dead_end"/>
+    <node id="S" x="0.0"    y="-150.0" type="dead_end"/>
+</nodes>
