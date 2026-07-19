@@ -31,7 +31,9 @@ stalled) and fair mean rel-speed 0.725 vs 0.838 — a flow-rate / throughput gap
 SumoSharp-side synthetic finding (peak halting 85 vs vanilla 45, now small and diffuse): it is a
 tempo residual, not gridlock.
 
-**Merge is owner-gated** — this branch is not merged and no PR is open until the owner says so.
+**Merge:** owner authorized merging this branch to `main` directly. The one throughput/flow-rate
+follow-up is tracked in `docs/FOLLOWUP-TL-throughput-flowrate.md` (likely folded into a later
+performance-optimization pass) — NOT a blocker.
 
 ---
 
