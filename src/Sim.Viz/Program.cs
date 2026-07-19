@@ -46,6 +46,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-waiter <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-lively-crowd <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
+            Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -66,6 +67,7 @@ internal static class Program
             "--ped-waiter" => RunPedWaiter(args),
             "--ped-lively-crowd" => RunPedLivelyCrowd(args),
             "--ped-remote" => RunPedRemote(args),
+            "--ped-subarea-fcd" => RunPedSubareaFcd(args),
             _ => RunSingle(args),
         };
     }
@@ -418,6 +420,65 @@ internal static class Program
         Console.WriteLine(
             $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} maxConcurrentDiscs={maxPeds} " +
             $"everPromoted={everPromoted}");
+        return 0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Sub-area end-to-end recorder (P8-3 weighted demand + P8-4a density knob -> SUMO <person> FCD).
+    // Unlike the other ped modes this emits a SUMO-schema FCD stream (not an HTML replay): the
+    // pedestrian half of the shared car+ped replay (P8-5, sub-area session), which sim_viz renders
+    // beside the box's vehicle FCD. See docs/PEDESTRIAN-P8-3/-P8-4 designs + PEDESTRIAN-P8-BACKLOG.md.
+    // ---------------------------------------------------------------------------------------
+    private static int RunPedSubareaFcd(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-subarea-fcd requires an output path (e.g. peds.fcd.xml)");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var dial = 0.03;
+        var seconds = 120.0;
+        string? boxDir = null;
+        for (var i = 2; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--dial" when i + 1 < args.Length:
+                    dial = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--seconds" when i + 1 < args.Length:
+                    seconds = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture);
+                    break;
+                case "--box" when i + 1 < args.Length:
+                    boxDir = args[++i];
+                    break;
+                default:
+                    Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
+                    return 2;
+            }
+        }
+
+        boxDir ??= Path.Combine(RepoRoot(), "scenarios", "_ped", "subarea-box");
+        if (!Directory.Exists(boxDir))
+        {
+            Console.Error.WriteLine($"error: box directory not found: {boxDir}");
+            return 2;
+        }
+
+        var options = new Sim.Pedestrians.SubareaFcdRecorder.Options { Dial = dial, Seconds = seconds };
+        Sim.Pedestrians.SubareaFcdRecorder.Result result;
+        using (var writer = new Sim.Pedestrians.PersonFcdWriter(outPath))
+        {
+            result = Sim.Pedestrians.SubareaFcdRecorder.Record(boxDir, writer, options);
+        }
+
+        var size = new FileInfo(outPath).Length;
+        Console.WriteLine(
+            $"wrote {outPath}  ({size} bytes)  frames={result.Frames} dial={dial} cap={result.PopulationCap} " +
+            $"rate={result.SpawnRatePerSecond:F3}/s walkableKm={result.WalkableLengthKm:F3} endpoints={result.Endpoints} " +
+            $"peakLive={result.PeakLive} spawns={result.Spawns} arrivals={result.Arrivals}");
         return 0;
     }
 

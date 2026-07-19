@@ -257,7 +257,12 @@ permissive → existing goldens unchanged). Waits on P2-3 + P1-1 + a real croppe
       cap is never inflated), Little's-law rate, dial clamped to a LoS-C safe ceiling (the static
       crossing-throughput guarantee), composes with the P8-3 weighted demand. **P8-4b** (dynamic per-crossing
       guard) DEFERRED — needs the vehicle-calibration seam + P4 vehicle-yields-at-crossing (SumoData-owned).*
-- [ ] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream)
+- [~] **P8-5** Scenario/manifest slot-in + shared FCD replay (cars + peds in one Sim.Viz stream) —
+      *sub-area session owns the merge/slot-in. **Ped side landed:** `SubareaFcdRecorder` + `PersonFcdWriter`
+      drive the box with P8-3 weighted demand sized by the P8-4a knob and emit a SUMO `<person>` FCD stream
+      (world-frame x/y/angle/speed, deterministic, appearance-legitimate by construction) via
+      `Sim.Viz --ped-subarea-fcd <out> [--dial d] [--seconds s] [--box dir]`. The shared car+ped edge/coordinate
+      contract + the vehicle-row merge are theirs (see `docs/PEDESTRIAN-P8-BACKLOG.md`).*
 
 ---
 
