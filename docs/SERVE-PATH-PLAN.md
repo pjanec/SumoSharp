@@ -481,11 +481,36 @@ combined Bug-2+Bug-3 golden regression (revert either fix → diverge). So Bug-3
 remaining gridlock convergence AND the Bug-2 regression lock-in.
 
 **Scope.** This is a high-risk CORE junction-gate change (the load-bearing parity path at every TL
-junction): the fix — treat a foe whose live link state is red/yellow as non-blocking, mirroring
+junction): the fix — treat a foe whose live link state is red as non-blocking, mirroring
 `MSLink::opened` — must be gated hard against the committed TL/junction goldens
 (09/30/35/08/11/26/27/34/38/39/40 + determinism) staying byte-identical, plus the saturation stress
-tests. Per the owner's "core issues → other session" split, this is a candidate for the Geneva/core
-session; owner decision pending on whether to fix it here or hand it off with this witness.
+tests.
+
+**RESOLVED (owner authorized the core work).** Implemented in `JunctionYieldConstraint`'s
+approaching-foe branch via `FoeApproachingOnRedSignal` (a foe whose live TL state is `'r'` no longer
+blocks ego), guarded so a rail_signal's non-TL `Tl` id can't be mis-read (that guard fixed a
+`KeyNotFoundException` the first cut threw on the rail-crossing golden). Gate results:
+
+- **All 622 committed goldens byte-identical** — the red-foe situation never arises in the sparse
+  committed TL goldens, so the check is inert there; the saturation stress tests + determinism
+  goldens are unaffected.
+- **synthetic-junction2 (arrival curve, trips cleared):** mid-run lag cut ~75% —
+
+  | t | vanilla | Bug-2 only | Bug-2+Bug-3 |
+  |---|---|---|---|
+  | 199 | 26 | 19 | 26 |
+  | 499 | 177 | 146 | 171 |
+  | 699 | 280 | 254 | 272 |
+
+  Peak on-net halting 107→83 (toward vanilla's 45); teleports 17→11 (jam 3→0). The whole-box
+  progressive gridlock is now largely closed on the witness.
+
+**Residual (Bug-4, smaller):** a green **permissive** movement still crosses a few steps later than
+vanilla — the minor-link cautious-approach arm (`couldBrakeForMinor`) brakes it toward its stop line
+even on green with no real foe (witness `tl-redfoe-yield`: e_left enters the junction at t≈12 vs
+vanilla t≈9). This slows a permissive green by seconds but does not freeze it — a believability/tempo
+gap, not gridlock. Candidate next core fix; then `tl-redfoe-yield` reaches full parity and becomes a
+committed golden regression locking Bug-2+Bug-3+Bug-4.
 
 ## All three gaps landed — definitive acceptance status
 

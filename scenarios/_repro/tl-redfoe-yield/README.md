@@ -17,13 +17,22 @@ lefts are `g`). Two cars, both departing t=0 at max speed:
 
 ## Vanilla vs SumoSharp
 
-| | vanilla 1.20.0 (`van.fcd.xml`) | SumoSharp (`ss.fcd.xml`) |
-|---|---|---|
-| `e_left` (green) | crosses at t≈9 (`:C_5_0`→`:C_13_0`→`CtoS_0`), arrives | **frozen on `EtoC_0`**, never crosses (stop-start 0/2.6/5.2, then stuck) |
-| `n_left` (red) | waits at the stop line | waits at the stop line |
+| | vanilla 1.20.0 (`van.fcd.xml`) | SumoSharp **baseline** | SumoSharp **+ Bug-3 fix** (`ss.fcd.xml`) |
+|---|---|---|---|
+| `e_left` (green) | crosses at t≈9 (`:C_5_0`→`:C_13_0`→`CtoS_0`), arrives | **frozen on `EtoC_0`**, never crosses | **crosses** (enters `:C_5_0` at t≈12), arrives |
+| `n_left` (red) | waits at the stop line | waits at the stop line | waits at the stop line |
 
-`e_left` run **alone** (delete `n_left`) crosses cleanly in SumoSharp too — so the freeze is
-caused *solely* by the presence of the red-light foe.
+`e_left` run **alone** (delete `n_left`) crosses cleanly in SumoSharp even at baseline — so the
+baseline freeze was caused *solely* by the presence of the red-light foe.
+
+**Status: FIXED (freeze) by P2-G Bug-3.** With the crossing gate made TL-aware (see below),
+`e_left` is no longer frozen — it crosses and arrives like vanilla. A small residual remains: it
+crosses ~3 steps later than vanilla (enters the junction at t≈12 vs t≈9), because the minor-link
+cautious-approach arm (`couldBrakeForMinor`) still brakes a permissive-**green** TL link toward its
+stop line as if it might meet a foe, adding hesitation vanilla does not have. That residual is a
+smaller, separate follow-up (call it Bug-4) — it slows a green permissive movement by a few seconds
+but does not freeze it, so it is a believability/tempo gap, not gridlock. `ss.fcd.xml` is the
+**+ Bug-3** run.
 
 ## Root cause (P2-G Bug-3)
 
@@ -44,14 +53,15 @@ crossing gate rather than the deadlock-breaker — and it is the larger contribu
 movement that shares a static foe relationship with a red-waiting car is held, which cascades into
 the whole-junction stalls Geneva measured (halting climbing while vanilla flows).
 
-## Proposed fix direction
+## Fix (implemented — P2-G Bug-3)
 
-In the approaching-foe branch (and the on-junction branch) of `JunctionYieldConstraint`, treat a
-foe whose live link state is red/yellow (`LinkStateChar(foeLink)` ∈ {`r`,`y`, off states}) as
-non-blocking — mirroring `MSLink::opened`, which only yields to foes that currently hold
-right-of-way. High-risk: this is the load-bearing parity gate at every TL junction, so it must be
-gated hard against the committed TL/junction goldens (09/30/35/08/11/26/27/34/38/39/40 + the
-determinism goldens) staying byte-identical, plus the saturation stress tests.
+In the approaching-foe branch of `JunctionYieldConstraint`, a foe whose live TL link state is red
+(`r`) is treated as non-blocking (`FoeApproachingOnRedSignal`, guarded so a rail_signal's Tl id —
+which is not a traffic-light program — is never mis-read as red) — mirroring `MSLink::opened`,
+which only yields to foes that currently hold right-of-way. Validated: all 622 committed goldens
+stay byte-identical (the red-foe situation never arises in the sparse committed TL goldens, so the
+check is inert there), and on the `synthetic-junction2` witness the mid-run arrival lag drops ~75%
+(peak on-net halting 107→83 toward vanilla's 45; teleports 17→11).
 
 ## Reproduce
 

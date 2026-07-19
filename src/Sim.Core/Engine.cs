@@ -6396,7 +6396,13 @@ public sealed partial class Engine : IEngine
                 // yield. Inert (IgnoresApproachingFoe returns false) for every vType that leaves
                 // jmIgnoreFoeProb at its 0 default.
                 var ignoresFoe = IgnoresApproachingFoe(v, foe.Kinematics.Speed, time);
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe);
+                // P2-G Bug-3: a foe approaching on a RED traffic-light link holds no right-of-way
+                // (its own red stops it at its stop line) and does not block ego -- mirrors SUMO's
+                // MSLink::opened, which only yields to foes that currently havePriority(). Without
+                // this, ego yields to a red-held foe that is still rolling toward its line
+                // (WillPass true for a few steps), freezing green movements at TL junctions.
+                var foeHeldByRed = !egoOnInternal && FoeApproachingOnRedSignal(foeInternalLaneId);
+                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || foeHeldByRed);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -10375,6 +10381,33 @@ public sealed partial class Engine : IEngine
         }
 
         return conn.State is { Length: > 0 } s ? s[0] : 'M';
+    }
+
+    // P2-G Bug-3: is the foe on this internal lane approaching on a RED traffic-light link? Such a
+    // foe has no right-of-way -- its own TL red will stop it at its stop line -- so it must NOT
+    // block a crossing ego, exactly as SUMO's MSLink::opened only yields to foes that currently
+    // hold priority (havePriority() reads the live link state). The engine's approaching-foe gate
+    // was TL-state-blind: it yielded to a red-held foe while that foe was still ROLLING toward its
+    // stop line (WillPass=true for the few steps before it halts), which froze green movements that
+    // statically respondTo the red foe's minor link and cascaded into whole-junction TL gridlock
+    // (witness: scenarios/_repro/tl-redfoe-yield). Self-gated to TL-controlled links: a non-TL
+    // connection is never queried here (only the TL branch can return 'r'), so priority junctions
+    // -- and every committed non-TL golden -- are unaffected.
+    private bool FoeApproachingOnRedSignal(string foeInternalLaneId)
+    {
+        if (!_network!.LinkByInternalLane.TryGetValue(foeInternalLaneId, out var jl))
+        {
+            return false;
+        }
+
+        var conn = jl.Link.Connection;
+        // Guard TlLogicsById: a rail_signal connection also carries a Tl id, but it is NOT a
+        // traffic_light program (it lives outside TlLogicsById), and a train obeys its rail signal
+        // via RailSignalConstraint -- never this crossing gate. Only a genuine TL program can put a
+        // link into the 'r' state this check cares about, so a missing key means "not TL red".
+        return conn.Tl is { } tl && conn.LinkIndex is { } li
+            && _network.TlLogicsById.ContainsKey(tl)
+            && TlLinkStateChar(tl, li, CurrentTime) == 'r';
     }
 
     private void TeleportVehicle(VehicleRuntime v)
