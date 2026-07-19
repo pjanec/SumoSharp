@@ -24,6 +24,13 @@ public static class ScenarioConfigParser
 
         var timeEl = root.Element("time");
         var processingEl = root.Element("processing");
+        // P2-G Bug-1: SUMO's canonical layout puts the rerouting-device / routing options in a
+        // dedicated <routing> section, while our earlier scenarios (and SumoData's older configs)
+        // placed the same keys under <processing>. Read the rerouting/routing keys from <processing>
+        // first (back-compat: every committed golden uses <processing>, so those stay byte-identical)
+        // and fall back to <routing> when the key is absent there. Without this fallback a
+        // SUMO-canonical config's device.rerouting.* is silently ignored and rerouting is inert.
+        var routingEl = root.Element("routing");
         // C1-i: SUMO's <random_number> section (see ScenarioConfig.Seed's own comment).
         var randomEl = root.Element("random_number");
         // P0-A: SUMO's <input> section -- net-file/route-files/additional-files. Absent for every
@@ -49,12 +56,12 @@ public static class ScenarioConfigParser
             // P1E-1: <processing><device.rerouting.*>/<routing-algorithm> -- absent for every
             // pre-P1E-1 scenario, so every default below is "rerouting inert" (see ScenarioConfig's
             // own header comment for what each key means and its SUMO/non-SUMO provenance).
-            RerouteProbability: ParseDouble(processingEl, "device.rerouting.probability", 0.0),
-            ReroutePeriod: ParseDouble(processingEl, "device.rerouting.period", 0.0),
-            RerouteAdaptationSteps: ParseInt(processingEl, "device.rerouting.adaptation-steps", 180),
-            RerouteAdaptationInterval: ParseDouble(processingEl, "device.rerouting.adaptation-interval", 1.0),
-            RoutingAlgorithm: processingEl?.Element("routing-algorithm")?.Attribute("value")?.Value ?? "dijkstra",
-            RerouteJitter: ParseBool(processingEl, "device.rerouting.jitter", defaultValue: false),
+            RerouteProbability: ParseDouble(processingEl, routingEl, "device.rerouting.probability", 0.0),
+            ReroutePeriod: ParseDouble(processingEl, routingEl, "device.rerouting.period", 0.0),
+            RerouteAdaptationSteps: ParseInt(processingEl, routingEl, "device.rerouting.adaptation-steps", 180),
+            RerouteAdaptationInterval: ParseDouble(processingEl, routingEl, "device.rerouting.adaptation-interval", 1.0),
+            RoutingAlgorithm: (processingEl?.Element("routing-algorithm") ?? routingEl?.Element("routing-algorithm"))?.Attribute("value")?.Value ?? "dijkstra",
+            RerouteJitter: ParseBool(processingEl, routingEl, "device.rerouting.jitter", defaultValue: false),
             // P1F-1: SUMO's <processing><time-to-teleport.remove> (default false). Absent for
             // every pre-P1F scenario, so the default keeps the jam valve's re-insertion behaviour.
             TimeToTeleportRemove: ParseBool(processingEl, "time-to-teleport.remove", defaultValue: false),
@@ -99,6 +106,27 @@ public static class ScenarioConfigParser
     private static int ParseInt(XElement? parent, string name, int defaultValue)
     {
         var value = parent?.Element(name)?.Attribute("value")?.Value;
+        return value is null ? defaultValue : int.Parse(value, CultureInfo.InvariantCulture);
+    }
+
+    // P2-G Bug-1 two-parent overloads: read `name` from `primary` first, then `fallback`. Used so a
+    // key present under <processing> wins (back-compat) but a SUMO-canonical config that puts it
+    // under <routing> is still honored. Returns the default only when neither section carries it.
+    private static double ParseDouble(XElement? primary, XElement? fallback, string name, double defaultValue)
+    {
+        var value = (primary?.Element(name) ?? fallback?.Element(name))?.Attribute("value")?.Value;
+        return value is null ? defaultValue : double.Parse(value, CultureInfo.InvariantCulture);
+    }
+
+    private static bool ParseBool(XElement? primary, XElement? fallback, string name, bool defaultValue)
+    {
+        var value = (primary?.Element(name) ?? fallback?.Element(name))?.Attribute("value")?.Value;
+        return value is null ? defaultValue : bool.Parse(value);
+    }
+
+    private static int ParseInt(XElement? primary, XElement? fallback, string name, int defaultValue)
+    {
+        var value = (primary?.Element(name) ?? fallback?.Element(name))?.Attribute("value")?.Value;
         return value is null ? defaultValue : int.Parse(value, CultureInfo.InvariantCulture);
     }
 }

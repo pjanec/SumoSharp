@@ -412,6 +412,50 @@ yield-release / junction-blocking / internal-lane-speed), with the **halting cur
 halting) as the gate. Fix follows the diagnosis, gated hard against the saturation stress tests +
 TL/junction goldens.
 
+## P2-G gridlock — DIAGNOSED to two bugs, both fixed and verified
+
+The diagnose-first pass localized the seed-stall to **two** independent defects, both confirmed
+first-hand, both now fixed with every committed golden byte-identical:
+
+**Bug-1 — config parser ignored the `<routing>` section (rerouting inert).** `ScenarioConfigParser`
+read `device.rerouting.*` / `routing-algorithm` only from `<processing>`; SUMO's canonical layout (and
+SumoData's configs, and synthetic-junction2) put them under `<routing>`, so `device.rerouting` was
+silently disabled — vehicles could not route around the jams vanilla routes around. Fix: read those keys
+from `<processing>` first (back-compat: every committed golden uses `<processing>`, so all stay
+byte-identical) and fall back to `<routing>`. Additive; all 619 goldens byte-identical.
+
+**Bug-2 (dominant) — the right-before-left cycle resolver was traffic-light-blind.**
+`ResolveRightBeforeLeftCycles` is a deterministic stand-in for SUMO's RNG deadlock-abort, which fires
+ONLY for uncontrolled LINKSTATE_EQUAL links. Its cycle detector read the static `<request>` foe matrix
+(TL-state-blind); on a dense TL junction it found the geometric 4-way cycle and, via the greedy
+ascending-index select, held a **green** link a full signal cycle (`JunctionCycleHold`) while a **red**
+link "won" the tie-break. That is the rolling yield-release slowdown that gridlocked the short TL
+approaches — the real box's dominant Y1 pattern (many of its yields sat at one TL node). Fix: exclude
+`traffic_light` junctions from the resolver, exactly as `allway_stop` is excluded — the TL program owns
+its links; a geometric tie-break must never override live signal state. All 619 goldens byte-identical
+(RBL was already inert at the sparse committed TL goldens, so nothing changed there).
+
+**Verification on the halting-curve witness (synthetic-junction2, un-confounded by parked-sink halting →
+measured on trips cleared):**
+
+| t | vanilla arrived | baseline arrived | +Bug-1+Bug-2 arrived |
+|---|---|---|---|
+| 599 | 241 | 170 | 219 |
+| 699 | 280 | 203 | 254 |
+| 999 | 290 | **277** | **290** |
+
+Teleports 42→17 (jam 13→3, yield 29→14). The network now **clears all 290 trips like vanilla** instead
+of leaving 13 permanently stuck and freezing; the progressive gridlock (baseline halting climbed and
+stuck) is gone. A modest mid-run lag (~20–26 trips behind vanilla near t=600–700) remains — SumoSharp is
+still slightly slower to clear the TL approaches, but it catches up fully and does not gridlock. This is
+a flowing city, not a frozen one.
+
+**Still owner-gated:** the Geneva box is company-restricted, so this is verified on the synthetic witness
+only. A real-box re-run (Geneva) is needed to confirm the halting curve converges there too, and to
+decide whether the residual mid-run lag clears the believability bar. Regression lock-in (proper parity
+scenarios: a `<routing>`-section reroute golden for Bug-1, a dense-TL-junction assertion for Bug-2,
+regenerated from vanilla) is the natural follow-up rung.
+
 ## All three gaps landed — definitive acceptance status
 
 GAP-1→GAP-3 are complete and golden-verified against vanilla SUMO 1.20.0. The `sumosharp` binary now

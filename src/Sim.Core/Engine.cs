@@ -5390,6 +5390,24 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            // P2-G Bug-2: traffic_light junctions are EXCLUDED, exactly as allway_stop is. This resolver
+            // is a deterministic stand-in for SUMO's RNG deadlock-abort, which fires ONLY for
+            // LINKSTATE_EQUAL (uncontrolled, mutually-yielding right-before-left) links. At a TL junction
+            // the signal program already sequences every movement -- simultaneously-green links are
+            // conflict-free by construction, red links are held by the TL gate -- so no equal-priority
+            // response cycle exists to break. The cycle DETECTOR below, however, reads only the static
+            // <request> foe matrix (TL-state-blind); on a dense TL junction it finds the geometric 4-way
+            // cycle and, via the greedy ascending-index select, marks a *green* link JunctionCycleHold=true
+            // (held a full signal cycle) while a *red* link "wins" pass=true. That is the progressive
+            // gridlock on short TL approaches (the synthetic_junction2 witness). Letting the TL program
+            // own these links -- never overriding live signal state with a geometric tie-break -- removes
+            // it. Simple TL goldens are unaffected: their sparse approaches never formed a cycle here, so
+            // this path was already inert for them (verified byte-identical across all committed goldens).
+            if (junction.Type == "traffic_light")
+            {
+                continue;
+            }
+
             byJunction ??= new Dictionary<Junction, Dictionary<int, VehicleRuntime>>();
             if (!byJunction.TryGetValue(junction, out var links))
             {
