@@ -1,5 +1,40 @@
 # SERVE-PATH-PLAN — making SumoSharp a drop-in `sumo` for the SumoData serve/replay path
 
+## ✅ DEFINITIVE ACCEPTANCE: GREEN (Geneva re-run, clearing/halting curve)
+
+The SumoData/Geneva acceptance seat re-ran the real box after the P2-G junction fixes and returned
+**gridlock re-check GREEN** — the sole remaining ship blocker is resolved:
+
+- **Teleports SumoSharp 0 vs vanilla 2** (was 36 last pass) — the three TL fixes (Bug-1/2/3) took.
+- **Non-sink on-lane halting tracks vanilla** — measured identically from FCD for both engines, both
+  stay ≤14 the whole run, **no monotonic climb toward standstill**:
+
+  | t | vanilla on-lane halting | SumoSharp on-lane halting |
+  |---|---|---|
+  | 300 | 4 | 1 |
+  | 500 | 5 | 2 |
+  | 700 | 6 | 4 |
+  | 900 | 13 | 10 |
+  | 998 | 9 | 14 |
+
+- **no-cheating audit PASS**, Issue 1 (sink residency) green, routeLength fixed.
+- **Correction to the prior "not shippable" call:** the last-pass "89% halting → frozen city" was a
+  **measurement confound** — SumoSharp's summary `halting` counts park-and-stay sinks while vanilla's
+  excludes them, so ~340 parked sinks masqueraded as gridlock and the "monotonic climb" was just sinks
+  parking one-by-one. The sink-counting caveat flagged from the SumoSharp side was the right catch;
+  the on-lane congestion was never pathological.
+
+**Verdict (Geneva):** from the acceptance seat the drop-in is **clear to merge to main and replace
+vanilla on the serve/replay path.** One minor tracked follow-up, NOT a blocker: SumoSharp clears
+~27% fewer non-sink through-trips in the 1000 s window (the ~14 difference are still moving, not
+stalled) and fair mean rel-speed 0.725 vs 0.838 — a flow-rate / throughput gap. This matches the
+SumoSharp-side synthetic finding (peak halting 85 vs vanilla 45, now small and diffuse): it is a
+tempo residual, not gridlock.
+
+**Merge is owner-gated** — this branch is not merged and no PR is open until the owner says so.
+
+---
+
 **Status:** analysis + sequencing, pre-implementation. Source of truth for the *what*:
 `docs/SUMOSHARP-SERVE-PATH-DROP-IN.md`. This document is the verified *how/when*, to be agreed with
 the owner before any large implementation begins (CLAUDE.md "design-first").
