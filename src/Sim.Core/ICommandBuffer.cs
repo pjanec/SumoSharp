@@ -32,10 +32,6 @@ internal interface ICommandBuffer
     // comment.
     void Destroy(VehicleRuntime v);
 
-    // P2G-2 (cooperative LC / informFollower) -- see CommandBuffer.SpeedAdvice's own comment. Applied as
-    // a MIN into follower.CoopSpeedAdvice at Flush.
-    void SpeedAdvice(VehicleRuntime follower, double speed);
-
     // Applies every recorded command, in record order, then clears the buffer for reuse.
     void Flush();
 }

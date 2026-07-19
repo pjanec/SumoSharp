@@ -45,13 +45,13 @@ Steps default to the scenario's config end; pass `--steps N` to fix the horizon 
 >
 > | flag | mode | use |
 > |---|---|---|
-> | *(none)* | **dense LC** (default) | believable overtaking, best organic flow — the product default |
-> | `--inform-follower` | dense LC **+ cooperative informFollower** | rescues a genuinely saturated grid (`willpass-saturation` 51 → 0 stuck) but **degrades organic flow** (organic 28 vs 21) — opt in only for saturated grids |
+> | *(none)* | **dense LC** (default) | believable overtaking, ~parity organic flow — the product default |
 > | `--parity` | SUMO-anchor | deterministic, byte-identical to the committed goldens — the mode the golden `dotnet test` suite uses |
 >
-> All three are deterministic and thread-independent (serial vs `--region` byte-identical). The
-> informFollower is a saturated-grid medicine, not a general-flow win — that is why it is **off** by
-> default even though the dense LC is on.
+> Both are deterministic and thread-independent (serial vs `--region` byte-identical). (The cooperative
+> `--inform-follower` mode was retired — its only benefit was rescuing the synthetic saturated grid, which
+> the P2-G traffic-light junction fixes now do at the engine level, and it degraded organic flow + cost
+> perf. See docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md.)
 
 ## 3. Benchmark A — engine throughput & core scaling (the primary numbers)
 This is what to report for "how fast is the engine on the target hardware." Runs in the default
@@ -80,27 +80,20 @@ foreach ($t in 1,2,4,8,16) {
 Note: the trajectory is thread-count-independent (byte-identical serial vs parallel — verified), so only
 wall time changes across the sweep.
 
-## 4. Benchmark B — dense LC (default) vs parity, and the informFollower cost
+## 4. Benchmark B — dense LC (default) vs parity
 The dense lane-change model adds believable multi-lane overtaking/merging. It only acts on multi-lane nets
-(single-lane grids are identical in every mode). Two things worth A/B-ing on the multi-lane scenarios:
+(single-lane grids are identical in every mode).
 
-**(a) default dense LC vs parity** — the headline A/B. On `city-organic-L2` the default flows *better*
-than parity (fewer stuck, equal arrivals) at no perf cost:
+**default dense LC vs parity** — the headline A/B. On `city-organic-L2` the default now flows about as
+well as parity (after the P2-G junction fixes: dense-only 325 vs parity 327 arrived), at no perf cost:
 ```powershell
 # default (dense LC) vs parity -- same scenario, 3 runs each, take the best wall time
 1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd }
 1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd --parity }
 ```
-
-**(b) the informFollower** — `--inform-follower` adds the cooperative follower-yield. It **rescues a
-saturated grid but hurts organic flow**, so A/B it to see both sides:
-```powershell
-# saturated grid: informFollower rescues it (0 vs 51 stuck)
-1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd }                    # default: ~51 stuck
-1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_diag/willpass-saturation --steps 700 --region --no-fcd --inform-follower }  # ~0 stuck
-# organic net: informFollower degrades it (28 vs 21 stuck, fewer arrivals) -- why it is NOT the default
-1..3 | % { dotnet run -c Release --project src/Sim.BenchCity -- scenarios/_bench/city-organic-L2 --steps 600 --region --no-fcd --inform-follower }
-```
+After the P2-G junction fixes, both modes also DRAIN the previously-gridlocking saturated grid
+(`scenarios/_diag/willpass-saturation`, ~1 stuck either way) — the cooperative `--inform-follower` mode
+that used to be needed for that was retired.
 Good multi-lane scenarios: `scenarios/_diag/willpass-saturation` (saturated grid — the informFollower
 case) and `scenarios/_bench/city-organic-L2` (organic — the realistic default case). Or the convenience
 wrapper (does default-vs-parity, prints a comparison):

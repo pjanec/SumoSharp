@@ -28,9 +28,16 @@ acceptance tests were **re-baselined** to the measured post-fix reality (see
 `tests/Sim.ParityTests/RungHDp2g2CoordinatedLaneChangeTests.cs`); the gate-OFF default remains
 byte-identical (all committed parity goldens green).
 
-**OPEN DECISION for the high-density effort:** with the flow/gridlock rationale gone and throughput now
-neutral, does the cooperative `informFollower` opt-in still earn its place, or does its value collapse to
-the fidelity (lane-distribution) case alone? Not resolved here — flagged for a deliberate call.
+**RESOLVED (owner decision 2026-07): the `informFollower` layer is RETIRED.** With its only benefit (the
+synthetic saturated-grid rescue) now delivered by the P2-G junction fixes, and its documented costs
+(degrades organic flow; +~9–15% perf on the Windows box, §3.8), it was pure dead weight. Removed
+entirely: the `Engine.CooperativeInformFollower` gate, the `informFollower` production in the LC phase,
+the `CoopSpeedAdvice` channel (`VehicleRuntime` field + `CommandBuffer.SpeedAdvice` command +
+`ICommandBuffer` method), and the `--inform-follower` CLI opt-ins (`Sim.Run`, `Sim.BenchCity`). The
+**dense lane-change model (`CoordinatedLaneChange`) is unchanged** and remains the product default for
+FIDELITY (SUMO-faithful lane distribution / scenario-46 speed-gain); the gate-OFF parity default is
+byte-identical (all committed goldens green). §3.8's `--inform-follower` A/B and the `informFollower`
+discussion below are retained as historical rationale for the removal.
 
 ## 1. The analysis — why this exists, what it buys, what it costs
 

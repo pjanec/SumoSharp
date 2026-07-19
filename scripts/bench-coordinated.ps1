@@ -1,19 +1,18 @@
 <#
 .SYNOPSIS
-    Lane-change mode benchmark on one scenario: dense-LC (default) vs full-coordination vs parity.
+    Lane-change mode benchmark on one scenario: dense-LC (default) vs parity.
 
 .DESCRIPTION
-    Builds Sim.BenchCity in Release, then times the engine on a scenario in all THREE lane-change modes,
+    Builds Sim.BenchCity in Release, then times the engine on a scenario in both lane-change modes,
     region-parallel, with FCD export off. Prints a small comparison table (best-of-Repeats wall time, RTF,
     steps/sec, stuck-at-end) so you can see each mode's cost/benefit. See docs/BENCHMARK-INSTRUCTIONS.md.
 
-      dense (default)     : aggressive dense LC, no flag        -- believable overtaking, best organic flow
-      +informFollower     : --inform-follower                   -- rescues saturated grids, hurts organic flow
+      dense (default)     : aggressive dense LC, no flag        -- believable overtaking, ~parity organic flow
       parity              : --parity                            -- deterministic SUMO anchor
 
-    All three run clean region-parallel on every committed scenario (grids and large organic nets alike).
-    On organic nets expect dense >= parity > +informFollower on flow; on the saturated grid expect
-    +informFollower (and parity) to drain while dense-alone gridlocks.
+    Both run clean region-parallel on every committed scenario (grids and large organic nets alike), and
+    after the P2-G junction fixes both drain the saturated grid too. (The cooperative informFollower mode
+    was retired -- see docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md.)
 
 .PARAMETER Scenario
     Scenario directory (one each of *.net.xml, *.rou.xml, *.sumocfg). Default: the saturated grid.
@@ -65,11 +64,10 @@ function Measure-Mode {
 
 Write-Host "Scenario: $Scenario   Steps: $Steps   Repeats: $Repeats (best-of)" -ForegroundColor Cyan
 $dense  = Measure-Mode -Label "dense (default)"  -ModeFlag ""
-$inform = Measure-Mode -Label "+informFollower"  -ModeFlag "--inform-follower"
 $parity = Measure-Mode -Label "parity"           -ModeFlag "--parity"
 $coord  = $dense  # back-compat: the default mode is the "coordinated" dense LC
 
-@($dense, $inform, $parity) | Where-Object { $_ -ne $null } | Format-Table -AutoSize
+@($dense, $parity) | Where-Object { $_ -ne $null } | Format-Table -AutoSize
 
 if ($parity -and $coord) {
     $delta = [math]::Round((($coord.WallSec - $parity.WallSec) / $parity.WallSec) * 100.0, 1)

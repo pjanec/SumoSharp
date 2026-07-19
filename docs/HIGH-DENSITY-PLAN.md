@@ -277,6 +277,13 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     no perf penalty, believable overtaking); --inform-follower opts into the saturated-grid coordination;
     --parity is the deterministic anchor. Engine library default stays false (golden-suite anchor). DONE.
     Bit-exact de-prioritised (owner: believable+fast > bit-exact).
+    **informFollower RETIRED (owner decision 2026-07):** the serve-path P2-G traffic-light junction fixes
+    (Bug-2 RBL traffic_light exclusion, Bug-3 red-held-foe WillPass) now flow the saturated grid at the
+    engine level, so the informFollower's only benefit was gone while its costs (organic-flow degradation +
+    Windows perf) remained. Removed the CooperativeInformFollower gate, its LC-phase production, the
+    CoopSpeedAdvice channel, and the --inform-follower CLI opt-ins. Dense LC (CoordinatedLaneChange)
+    unchanged and still the host default for FIDELITY; gate-OFF parity default byte-identical (all goldens
+    green). See docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md top note.
   - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
     cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
     passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason

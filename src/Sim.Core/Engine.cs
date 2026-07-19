@@ -997,16 +997,6 @@ public sealed partial class Engine : IEngine
     // committed golden is byte-identical. Runtime host property, never a sumocfg key.
     public bool CoordinatedLaneChange { get; set; }
 
-    // P2G-2 informFollower: the cooperative layer ON TOP of CoordinatedLaneChange -- a blocked changer
-    // advises its target-lane follower to yield (one-step helpDecel) so the change succeeds. This is a
-    // grid-saturation medicine that is organic-net poison: it fully rescues the deliberately over-saturated
-    // willpass-saturation diagnostic (51 -> 0 stuck) but DEGRADES the realistic organic net (21 -> 28
-    // stuck, fewer arrivals) because it over-brakes followers into more congestion. So it is OFF by default
-    // even when CoordinatedLaneChange is on (the product default is aggressive-LC WITHOUT it); opt in only
-    // for genuinely saturated grids. Inert unless CoordinatedLaneChange is also on -- no CoopSpeedAdvice is
-    // written when off, so the consumption path stays a data no-op (+Infinity == none).
-    public bool CooperativeInformFollower { get; set; }
-
     // SUMOSHARP-API.md §4.4: resolve a lane's string id to the int lane handle ONCE at setup, so the
     // per-step obstacle path never touches a string. Requires a loaded scenario.
     public int GetLane(string laneId) =>
@@ -4705,19 +4695,6 @@ public sealed partial class Engine : IEngine
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
         vPos = Math.Min(vPos, CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed));
-
-        // P2G-2 (cooperative LC): consume any speed-advice a blocked lane-changer wrote LAST step's LC
-        // phase (informFollower "make room"). +Infinity == none, so byte-identical when CoordinatedLaneChange
-        // is off (nothing is ever written). Cleared on the REAL pass only (the willPass pre-pass reads it
-        // as a constraint but must not consume it, or the real PlanMovements call would miss it).
-        if (!double.IsPositiveInfinity(v.CoopSpeedAdvice))
-        {
-            vPos = Math.Min(vPos, v.CoopSpeedAdvice);
-            if (!prePass)
-            {
-                v.CoopSpeedAdvice = double.PositiveInfinity;
-            }
-        }
 
         // MSCFModel.cpp:191 finalizeSpeed: `vStop = MIN2(vPos, veh->processNextStop(vPos))`.
         // ProcessNextStop reads only the front stop's START-OF-STEP snapshot (Reached/
@@ -9353,30 +9330,6 @@ public sealed partial class Engine : IEngine
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
-                }
-                else if (CoordinatedLaneChange
-                    && CooperativeInformFollower
-                    && neighFollow is not null
-                    && !IsTargetLaneSafe(v, null, neighFollow, dt))
-                {
-                    // P2G-2 informFollower (MSLCM_LC2013::informFollower, MSLCM_LC2013.cpp:697-708): the
-                    // change is WANTED but blocked by the target-lane FOLLOWER. Ask the follower to yield a
-                    // GENTLE, bounded amount -- SUMO assumes the equivalent of ONE step of helpDecel
-                    // (= maxDecel * HELP_DECEL_FACTOR, 0.5) to make room, NOT a hard cap to full follow
-                    // speed. The crude full-follow-speed cap (the earlier spike) over-braked followers on
-                    // organic nets, cascading into MORE congestion (58 vs parity's 24 stuck on
-                    // city-organic-L2); the bounded one-step helpDecel yield opens enough gap to keep the
-                    // saturated grid flowing (0 stuck) WITHOUT the organic over-braking. Applied as a MIN
-                    // into the follower's CoopSpeedAdvice (consumed next step). Only when ego is actually
-                    // ahead of the follower (gap>0). Inert by default (CoordinatedLaneChange off).
-                    var gap = (v.Kinematics.Pos - v.VType.Length) - neighFollow.VType.MinGap - neighFollow.Kinematics.Pos;
-                    if (gap > 0.0)
-                    {
-                        const double helpDecelFactor = 0.5; // MSLCM_LC2013.cpp HELP_DECEL_FACTOR
-                        var helpDecel = neighFollow.VType.Decel * helpDecelFactor;
-                        var adviceSpeed = Math.Max(0.0, neighFollow.Kinematics.Speed - (helpDecel * dt));
-                        _commandBuffer.SpeedAdvice(neighFollow, adviceSpeed);
-                    }
                 }
             }
 

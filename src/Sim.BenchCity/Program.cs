@@ -77,7 +77,6 @@ internal static class Program
         var spatial = false;
         var region = false;
         var coordinatedLc = true;  // P2G-2: aggressive dense LC is the PRODUCT DEFAULT (best organic flow, robust); --parity opts out
-        var informFollower = false; // P2G-2: cooperative informFollower is OFF by default (grid-only medicine); --inform-follower opts in
         var regionGrid = 4;
         string? sumoSummaryPath = null;
         string? sumoTripinfoPath = null;
@@ -166,18 +165,10 @@ internal static class Program
                     // the DEFAULT; the flag is kept as an explicit opt-in for scripts/back-compat.
                     coordinatedLc = true;
                     break;
-                case "--inform-follower":
-                    // P2G-2: full coordination = dense LC + the cooperative informFollower yield. Rescues
-                    // genuinely saturated grids (willpass-saturation 51 -> 0 stuck) at the cost of organic
-                    // flow -- opt in only for saturated-grid scenarios.
-                    coordinatedLc = true;
-                    informFollower = true;
-                    break;
                 case "--parity":
                     // Deterministic SUMO-anchor mode (byte-identical to the committed goldens) -- the
                     // A/B baseline for benchmarking the dense-LC default against the parity path.
                     coordinatedLc = false;
-                    informFollower = false;
                     break;
                 default:
                     Console.Error.WriteLine($"error: unrecognized argument: {args[i]}");
@@ -229,7 +220,6 @@ internal static class Program
         engine.RegionGrid = regionGrid; // spatial region grid G (regions = G*G); set BEFORE LoadScenario
         engine.RegionPlan = region; // opt-in region-parallel plan/willPass (byte-identical when on)
         engine.CoordinatedLaneChange = coordinatedLc; // P2G-2 aggressive dense LC (default; believable, best organic flow)
-        engine.CooperativeInformFollower = informFollower; // P2G-2 cooperative informFollower (opt-in; saturated-grid medicine)
 
         engine.LoadScenario(net, rou, cfg);
 

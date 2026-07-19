@@ -147,13 +147,6 @@ internal sealed class VehicleRuntime
     // snapshot built at the top of that phase -- not a mid-query shared-state write).
     public double SpeedGainProbability;
 
-    // P2G-2 (docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md): SUMO's MSLCM_LC2013 myVSafes speed-advice
-    // channel. A blocked lane-changer's informFollower writes (as a MIN) the speed THIS vehicle should
-    // slow to so the changer can cut in ("make room"); the car-following phase reads it as an additive
-    // vPos cap NEXT step and clears it. +Infinity == no advice. Written/consumed ONLY when
-    // Engine.CoordinatedLaneChange is on, so it stays +Infinity (inert, byte-identical) by default.
-    public double CoopSpeedAdvice = double.PositiveInfinity;
-
     // C2-ii: SUMO's MSLCM_LC2013::myLookAheadSpeed -- a stateful per-vehicle "how fast have I
     // recently been driving" estimate feeding the STRATEGIC lane-change look-ahead distance
     // (laDist, MSLCM_LC2013.cpp:1227-1239) and the keep-right STAY guard's own laDist term.
