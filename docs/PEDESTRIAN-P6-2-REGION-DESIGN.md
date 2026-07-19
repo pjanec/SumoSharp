@@ -109,13 +109,18 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   *Done:* `src/Sim.Core/Orca/RegionPartition.cs` (deterministic, ascending-by-index, pooled; same FloorDiv/
   pack-cell math as the agent grid; parity-inert — no solve touched). `RegionPartitionTests` (7 tests) prove
   the partition/oracle/movement/determinism conditions; offline gate green.
-- [ ] **P6-2-2 — Region-local neighbour gather with `NeighbourDist` halo.** *Success:* for every agent, the
-  gathered+sorted neighbour list is **element-for-element identical** to the current `UseSpatialHash` list
-  (asserted over a spread + a dense scenario) — proves the halo loses no neighbour and preserves order.
-- [ ] **P6-2-3 — Per-region parallel dispatch (opt-in `UseRegionDecomposition`).** *Success:* the
-  region-decomposed `Step` produces a **bit-identical trajectory hash to serial and to `UseParallelStep`**,
-  across {1,4,8,16} threads and ≥2 region sizes, over a churny scenario (the extended `OrcaParallelStepTests`
-  gate). Default-off path byte-identical to today.
+- [x] **P6-2-2 / P6-2-3 — Region-*task* dispatch over the shared frozen grid (opt-in `UseRegionDecomposition`).**
+  **Design refinement (as built):** a separate per-region *local* grid + explicit `NeighbourDist` halo gather
+  proved **unnecessary** — keeping the existing *shared, read-only* frozen grid (`RebuildGrid` /
+  `GridCandidates`, already bit-identical) and changing only *which agents a worker processes together*
+  (region-task parallelism) is the faithful port of the vehicle `--region` (which also processes region-grouped
+  work over shared frozen state, not isolated per-region grids). This makes the halo moot and bit-identity
+  automatic (the gather + per-agent `Plan` are untouched). *Done:* `OrcaCrowd.UseRegionDecomposition` +
+  `RegionCellSizeMultiplier` + `PlanRegions` (one `Parallel.For` task per region, own `ScratchSet`, unchanged
+  `Plan`). *Success met:* `OrcaRegionDecompositionTests` (7) assert the region path is **bit-identical to
+  serial** for every agent every step across region sizes {1,2,3,4,8×NeighbourDist}, thread caps {−1,2,4,8},
+  spatial-hash on/off, and the MaxNeighbours+removal combination, on 400/600-agent spread + dense-counterflow
+  scenarios (all > the 256 parallel threshold). Default-off path untouched; offline gate 649/142/2/1 green.
 - [ ] **P6-2-4 — Perf validation (on-target, perf session).** *Success:* measured **≥1.4× ped churn per-core
   uplift** vs the current parallel path on `Sim.BenchCrowd`/`Sim.BenchPedLod` at the 4–8-core caps, and a
   re-run of the 6+6 / 8+4 combined-load splits showing heavy churn clearing real-time with ≥1.5× margin at

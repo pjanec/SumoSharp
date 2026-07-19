@@ -234,6 +234,28 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // bit-identical to serial regardless of thread count or scheduling (see OrcaParallelStepTests).
     public bool UseParallelStep { get; set; }
 
+    // P6-2 (docs/PEDESTRIAN-P6-2-REGION-DESIGN.md): opt-in spatial REGION DECOMPOSITION of the parallel plan
+    // -- the pedestrian port of the vehicle engine's `--region` domain decomposition. Instead of a flat
+    // Parallel.For over agent indices (a worker gets a contiguous INDEX range = spatially-scattered agents =
+    // scattered neighbour reads), agents are grouped into a grid of spatial REGIONS (RegionPartition) and
+    // each region is one parallel task: a worker sweeps spatially-adjacent agents whose 3x3 neighbour cells
+    // overlap, so its working set (buckets + neighbour positions) stays cache-resident -- the memory-locality
+    // win that the flat parallel path (P6-1's ~8-16-thread plateau) leaves on the table.
+    //
+    // BIT-IDENTICAL to serial: the neighbour gather (GridCandidates, sorted ascending by index) and the
+    // per-agent Plan are UNCHANGED; every _newVelocity[i] is still a pure function of the frozen start-of-step
+    // state and each task writes only its own slots. Only which agents a worker processes TOGETHER changes,
+    // which the ORCA math is invariant to (see OrcaRegionDecompositionTests). Default false -> untouched.
+    // Engages only when _count >= ParallelStepThreshold; most effective with UseSpatialHash on (else the
+    // gather is O(n) brute-force regardless and there is no locality to win). Takes precedence over
+    // UseParallelStep when both are set.
+    public bool UseRegionDecomposition { get; set; }
+
+    // Region cell side = this multiple of NeighbourDist (each region spans multiplier^2 neighbour cells). The
+    // P6-2-4 tuning knob: finer (smaller) = better load balance + smaller per-region working set; coarser =
+    // less per-region task overhead. Trajectory-invariant (a scheduling knob only). Default 4.0.
+    public double RegionCellSizeMultiplier { get; set; } = 4.0;
+
     // Caps the degree of parallelism of the Parallel.For plan/execute loops when UseParallelStep is
     // set. Default -1 == unlimited (TPL's own default). Mirrors Engine.MaxParallelism; never changes
     // the trajectory, only the wall-clock -- cached as a ParallelOptions so the hot loop allocates
@@ -253,6 +275,11 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // engine's ParallelPlanThreshold (Engine.cs), including its "gate on total count, a cheap O(1)
     // proxy for crowd size, not the exact active count" convention.
     private const int ParallelStepThreshold = 256;
+
+    // P6-2: the region partition (rebuilt per Step when UseRegionDecomposition) and a scratch alive-mask
+    // (active && slotAlive) it buckets over. Pooled -- only growth allocates.
+    private readonly RegionPartition _regionPartition = new();
+    private bool[] _regionAliveScratch = Array.Empty<bool>();
 
     private int _stepIndex;
 
@@ -470,10 +497,17 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
         // POC-7a: parallelize only when opted in AND the crowd is big enough to amortize dispatch
         // overhead (ParallelStepThreshold) -- default/small-crowd path is the untouched serial loop.
-        var parallel = UseParallelStep && _count >= ParallelStepThreshold;
+        // P6-2: region decomposition is a parallel strategy too; it takes precedence over the flat parallel
+        // plan when both are opted in. Either parallel path uses the parallel execute below.
+        var regionDecomp = UseRegionDecomposition && _count >= ParallelStepThreshold;
+        var parallel = (UseParallelStep || regionDecomp) && _count >= ParallelStepThreshold;
 
         // PLAN: every new velocity is a pure function of the frozen start-of-step state.
-        if (parallel)
+        if (regionDecomp)
+        {
+            PlanRegions(dt);
+        }
+        else if (parallel)
         {
             PlanParallel(dt);
         }
@@ -546,6 +580,55 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             {
                 if (active[i] && slotAlive[i])
                 {
+                    newVelocity[i] = Plan(i, dt, local);
+                }
+
+                return local;
+            },
+            _ => { });
+    }
+
+    // P6-2 region-decomposed PLAN: bucket the alive agents into spatial regions (RegionPartition) over the
+    // frozen positions, then run ONE parallel task per region -- each worker holds its own ScratchSet and
+    // sweeps that region's spatially-adjacent agents, calling the UNCHANGED Plan(i, ...). Because the gather
+    // and Plan are identical to the serial/flat-parallel paths and each task writes only its own slots, the
+    // result is bit-identical regardless of region size, region order, or thread count (see
+    // OrcaRegionDecompositionTests). The win is locality: a region's agents share neighbour cells, so a
+    // worker's buckets + neighbour positions stay cache-resident instead of scattering across the whole SoA.
+    private void PlanRegions(double dt)
+    {
+        // Frozen alive-mask (active && slotAlive) the partition buckets over -- RemoveOnArrival has already
+        // parked arrived agents above, so this matches the plan's own per-agent guard exactly.
+        if (_regionAliveScratch.Length < _count)
+        {
+            _regionAliveScratch = new bool[_count];
+        }
+
+        var aliveMask = _regionAliveScratch;
+        for (var i = 0; i < _count; i++)
+        {
+            aliveMask[i] = _active[i] && _slotAlive[i];
+        }
+
+        // Region cell side = multiplier * NeighbourDist (a region spans multiplier^2 neighbour cells).
+        var neighbourCell = NeighbourDist > 1e-9 ? NeighbourDist : 1.0;
+        var regionSize = neighbourCell * (RegionCellSizeMultiplier > 0.0 ? RegionCellSizeMultiplier : 1.0);
+        _regionPartition.Build(_position, aliveMask, _count, regionSize);
+
+        var partition = _regionPartition;
+        var newVelocity = _newVelocity;
+
+        System.Threading.Tasks.Parallel.For(
+            0, partition.RegionCount, _parallelOptions,
+            () => new ScratchSet(),
+            (r, _, local) =>
+            {
+                // Every agent in a region is alive by construction (the mask above), so no per-agent guard is
+                // needed -- and each is planned exactly once, so the set of Plan() calls equals the serial loop.
+                var agents = partition.AgentsInRegion(r);
+                for (var k = 0; k < agents.Length; k++)
+                {
+                    var i = agents[k];
                     newVelocity[i] = Plan(i, dt, local);
                 }
 
