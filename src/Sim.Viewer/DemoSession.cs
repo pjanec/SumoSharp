@@ -158,8 +158,12 @@ public sealed class DemoSession : IDisposable
                 IPedDemoOverlay pedOverlay = pedKind switch
                 {
                     "lod-remote" => new RemotePedOverlay(repoRoot),
-                    // D3: same reconstruct-from-the-wire overlay, but over the live CycloneDDS transport.
+                    // D3a: same reconstruct-from-the-wire overlay, but over the live CycloneDDS transport
+                    // (server + subscriber on one participant, in this process).
                     "lod-remote-dds" => new RemotePedOverlay(repoRoot, PedWireTransport.Dds),
+                    // D3b: PURE remote IG -- no local sim; subscribe to a separate `--mode ped-publish`
+                    // process's live DDS ped stream and render it (the two-process, cross-process topology).
+                    "lod-remote-dds-sub" => new RemotePedOverlay(repoRoot, PedWireTransport.DdsSubscribeOnly),
                     _ => new PedOverlay(pedKind, repoRoot),
                 };
                 var pedHost = EngineHost.CreateCustom(pedOverlay.NetPath, pedOverlay.Build);

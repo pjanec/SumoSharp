@@ -153,6 +153,12 @@ public static class DemoCatalog
             "of the in-process byte loopback -- the real one-server-to-many-IG multicast path. Requires a " +
             "build with native DDS available; server == IG holds over the real wire.",
             DemoCategory.Pedestrians, DemoKind.Pedestrian, "", PedKind: "lod-remote-dds"),
+        new DemoEntry("Pedestrian remote (DDS subscribe)",
+            "A PURE remote IG: this process runs NO ped sim -- it subscribes to a separate " +
+            "'--mode ped-publish' process's live CycloneDDS ped stream and renders the reconstructed crowd " +
+            "alone (no server ground-truth rings). The genuine two-process, cross-process multicast topology " +
+            "of Requirement 7. Start a ped publisher first; requires a build with native DDS.",
+            DemoCategory.Pedestrians, DemoKind.Pedestrian, "", PedKind: "lod-remote-dds-sub"),
     };
 
     // Only the entries whose backing path actually exists under `repoRoot` -- so a trimmed checkout
@@ -194,9 +200,12 @@ public static class DemoCatalog
     public static string PedNetPath(string pedKind, string repoRoot) => pedKind switch
     {
         "evac-district" => Path.Combine(repoRoot, "scenarios", "_ped", "evac-district", "net.net.xml"),
-        // Both remote demos (in-process byte loopback and live DDS) reconstruct the SAME crossing-plaza net.
-        "lod-remote" or "lod-remote-dds" => Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza", "net.net.xml"),
-        _ => throw new ArgumentException($"Unknown pedestrian kind '{pedKind}' (expected \"evac-district\", \"lod-remote\", or \"lod-remote-dds\").",
+        // Every remote demo (in-process byte loopback, live DDS single-process, and DDS subscribe-only)
+        // reconstructs the SAME crossing-plaza net.
+        "lod-remote" or "lod-remote-dds" or "lod-remote-dds-sub" =>
+            Path.Combine(repoRoot, "scenarios", "_ped", "poc0-crossing-plaza", "net.net.xml"),
+        _ => throw new ArgumentException(
+            $"Unknown pedestrian kind '{pedKind}' (expected \"evac-district\", \"lod-remote\", \"lod-remote-dds\", or \"lod-remote-dds-sub\").",
             nameof(pedKind)),
     };
 

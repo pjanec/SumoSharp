@@ -22,8 +22,14 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked/ne
         consistent with the P7-2 in-process 0.213 m peak. *(Note: a pre-existing headless Raylib/Xvfb
         teardown segfault (exit 139) occurs AFTER the screenshot is written — reproduces on the InMemory
         demo too, so it is unrelated to the DDS change.)*
-  - [ ] **D3b** — native viewer `--mode remote` **two-process** split (separate ped publisher process) +
-        Godot City3D `--transport=dds` ped path.
+  - [~] **D3b** — genuine two-process, cross-process DDS ped path:
+    - [x] **native** — `RemotePedServer` extracted (shared sim); `--mode ped-publish` (headless ped
+          publisher over live DDS) + demo "Pedestrian remote (DDS subscribe)" (`DdsSubscribeOnly`: no local
+          sim, renders purely from the wire). Verified two-process: the subscriber received all **14 peds**
+          and their high-power promotions from a SEPARATE publisher process over CycloneDDS; D3a single-
+          process re-verified (no regression). *(Same pre-existing headless-teardown segfault applies.)*
+    - [ ] **Godot** — City3D `--transport=dds --peds`: point `PedReconstructor` at a `DdsPedReplicationSource`
+          fed by `--mode ped-publish`.
 
 ## Standing invariants (every task)
 
