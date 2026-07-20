@@ -252,6 +252,19 @@ existing goldens, gate green (649 parity / 168 ped / 2 DotRecast). What's NOT ye
       walkable stubs; pin the fringe set) — *done: SumoData handoff box committed at
       `scenarios/_ped/subarea-box/`; `SubareaBoxBakeTests` bakes the crop into a connected pathable navmesh
       and pins all 48 walkable-fringe edges as baked sidewalks. Re-verify vs a real crop later.*
+- [x] **P8-1b** Bake connectivity on REAL (irregular) geometry — *DONE, accepted end-to-end against the
+      sub-area session's `netgenerate --rand` witness (`scenarios/_ped/subarea-irregular/`), which baked to
+      **222 components / peak-live 0** pre-fix and now bakes to **1 component / peak 113 of cap 115 /
+      unreachableSkips=0**, while the uniform grid stays **1 / peak 203**. Root cause
+      (`docs/SUMOSHARP-P8-1-REAL-NET-NAVMESH.md`): independently-buffered strips meet the junction walkingArea
+      by a sliver overlap OR a ≤~2 mm gap, below the 1 mm shared-edge/vertex epsilon. Fix
+      (`docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md`): an additive, area-anchored **overlap/abutment**
+      adjacency pass in `PolygonGraph` (`PolygonGeometry.TryFindOverlapPortal`, `AbutProximityEps=5 cm`) that
+      bridges genuine 2D overlaps and near-abutments **only through an area polygon** — preserving the POC-0
+      no-shortcut invariant by construction and leaving every existing bake bit-identical (dedup). Added
+      `SumoNavMesh.ConnectedComponentCount()` + recorder connectivity diagnostics. `NavmeshConnectivityTests`
+      (6) pin the mini-junction, non-area-never-bridged, gap/corner-not-bridged, synthetic box → 1, and the
+      irregular witness → 1. Gate: 649 parity / 174 ped / 2 DotRecast green.*
 - [~] **P8-2** Appearance-legitimacy layer (`PedSpawnPolicy`) — the no-cheating gate, **orthogonal to
       sim-LOD**; spawn/despawn only at fringe/sink/off-camera, reading the same camera visible-edge set as
       the vehicle `RealismMask`; inert-default bit-identical — *the load-bearing new piece*.
