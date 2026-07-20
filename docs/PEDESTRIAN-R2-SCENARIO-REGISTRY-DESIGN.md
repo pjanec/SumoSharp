@@ -1,8 +1,40 @@
 # R2 — data-driven micro-scenario registry (design)
 
-**Status:** design, pre-implementation — for review. **HOW** for `SUMOSHARP-DEMO-CITY-REQUIREMENTS.md` R2
-("data-driven micro-scenario registry, headline behavior: waiter"). The **WHAT** is that requirement + the
-`pois/v2` schema in `SUBAREA-DEMO-CITY-DESIGN.md §3`; this doc does not restate them. No code yet.
+**Status: PARKED (design retained, not implemented).** Decision (2026-07-20): the micro-scenarios (waiter R2,
+drive-away R3) demand tight cross-referenced input-data consistency (`venue → service_door → table_cluster`,
+`parking_lot → boardable_car → exit_route`, every id resolving) that adds disproportionate difficulty right
+now — and the delivered box's `venue` records don't yet even carry the `scenario_template`/`service_door`/
+`table_cluster` fields. So R2/R3 are parked: the design below stands for when we unpark, but the near-term goal
+is that **SumoSharp loads, bakes, and runs the demo-city with the already-landed live-behaviors (dwell, meet &
+talk, enter/exit, crossing, weave) — WITHOUT the micro-scenario complexity.** §0 records the O/D data contract
+we consume now (agreed with SumoData); the rest is the retained HOW.
+
+**HOW** for `SUMOSHARP-DEMO-CITY-REQUIREMENTS.md` R2. The **WHAT** is that requirement + the `pois/v2` schema
+in `SUBAREA-DEMO-CITY-DESIGN.md §3`; this doc does not restate them.
+
+## 0. O/D + POI data contract consumed NOW (the un-parked part)
+
+What SumoSharp reads from `pois/v2` today, so the box runs with the landed behaviors and nothing throws:
+
+| record / field | consumed now? | by what |
+|---|---|---|
+| base POI `id/kind/pos/edge/weight/facing/capacity/land_use` (all kinds) | **yes** | `PedPoiReader` → O/D demand weighting + P8-2 legitimacy gate |
+| kinds `building_entrance / venue / dwell_spot / transit_stop / parking_access` | **yes** | demand endpoints + enter/exit/dwell anchors (v1 behaviors) |
+| new kinds `parking_lot / park` | **tolerated** — loaded as base POIs, `weight` defaulted 0 (not O/D-drawn) | `PedPoiReader` (loads, does not act) |
+| `venue.venue_type / lateral_anchor` | not yet | (weave lateral anchor is a later refinement) |
+| `venue.scenario_template / service_door / table_cluster` | **PARKED** | R2 registry (this doc) |
+| `parking_lot.polygon / lane_seam / parked_cars / boardable_car / hidden` | **PARKED** | R3 drive-away / R4 garage |
+| `park.polygon / path_edges / meet_areas / dwell_points` | **PARKED** | R5 park ped-only region |
+| `edge_fields.json` (per-edge width / keep-side / crossing class) | **yes** (width → the weave, R7) | baked sidewalk width → `LateralWeave` |
+
+**Contract with SumoData:** the box must remain loadable + bakeable with only the base-POI + `edge_fields`
+path — i.e. a build may add/omit the parked cross-reference fields without breaking SumoSharp load or bake.
+The parked fields resolve their ids within the box (SumoData's invariant) so that when R2/R3/R5 unpark, the
+resolver in §3 can rely on it. **No SumoSharp change consumes the parked fields until its R unparks.**
+
+## Retained design (below) — for when R2 unparks
+
+*(Everything from here down is the original design, kept intact; implementation deferred.)*
 
 ## 1. Goal & scope
 
