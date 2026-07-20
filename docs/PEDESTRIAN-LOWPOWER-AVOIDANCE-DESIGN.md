@@ -194,6 +194,38 @@ bulk everywhere else stays low-power weave. So the composition is: **determinist
 deterministic activity displacements (still low-power) + temporary ORCA only for the genuinely-reactive
 stream-crossings, ideally inside the already-promoted zones.**
 
+### 9c-bis. Measured density ceiling of the pure weave (Prototype 1b)
+The pure deterministic weave was packed to failure to find where it stops looking clean, measured (not
+claimed) by counting per-frame pairs whose centres fall within 2·r = 0.5 m on a 60 m × 4 m counterflow
+corridor (`--ped-weave-density-csv`, steady-state window):
+
+| spawnEvery | peds (avg) | density | overlaps/frame | cross-stream | same-stream | overlap/ped |
+|-----------:|-----------:|--------:|---------------:|-------------:|------------:|------------:|
+| 2.0 s | 47 | 0.20/m² | 3.5 | 0.6 | 2.9 | 7.5% |
+| 1.2 s | 77 | 0.32/m² | 9.3 | 1.0 | 8.3 | 12% |
+| 0.8 s | 120 | 0.50/m² | 23 | 2.9 | 20 | 19% |
+| 0.5 s | 196 | 0.82/m² | 73 | 8.6 | 64 | 37% |
+| 0.35 s | 280 | 1.16/m² | 152 | 19 | 133 | 54% |
+
+Two findings, both load-bearing for the design:
+
+1. **The weave's actual job — separating opposing flows — holds at ALL densities.** Cross-stream overlaps
+   stay a small minority (≈12% of overlaps even at a crushing 1.16/m²), and they are confined to the shared
+   interface where opposing peds legitimately brush shoulders (side-by-side, not centre-through-centre — the
+   0.5 m metric overcounts these). The keep-right sign guarantees east ≤ c ≤ west by construction, so the two
+   streams provably never interpenetrate. The 279-ped snapshot shows this cleanly: red stays below, blue above.
+2. **The weave does NOT resolve same-stream conflicts, and that is the ceiling.** Same-stream overlaps
+   dominate and climb steeply with density: peds sharing a direction but seeded to different preferred speeds
+   overtake and pass through each other, because `Offset` is a pure per-ped function with **no minimum-
+   separation enforcement** — by design (that reactivity is ORCA's job, not a pure field's).
+
+**Operating range:** the pure weave reads as visually clean up to ≈0.3/m² (spawnEvery ≈1.2 s, ~77 peds on
+this corridor: 12% overlap, most of it the interface brush). Beyond ≈0.5/m² same-stream overtakes become
+frequent enough to notice. This is exactly the hand-off the LOD design already anticipates (§9c): the weave
+delivers free, deterministic, IG-reconstructable crowd up to moderate density, and the **density hotspots
+that exceed it are precisely the zones ORCA is already promoted in.** The number to remember: ~0.3/m² is the
+per-corridor budget where "low-power weave, zero ORCA" still looks right.
+
 ### 9d. Open decisions
 - The lateral-profile override API: how an `ActivityTimeline` segment carries its lateral target + the
   blend-in/out lengths, and how that composes with `LateralWeave.Offset` (override vs add).

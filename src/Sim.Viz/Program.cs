@@ -71,6 +71,7 @@ internal static class Program
             "--ped-weave-csv" => RunPedWeaveCsv(args),
             "--ped-weave-bend-csv" => RunPedWeaveBendCsv(args),
             "--ped-weave-anim-csv" => RunPedWeaveAnimCsv(args),
+            "--ped-weave-density-csv" => RunPedWeaveDensityCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -534,7 +535,12 @@ internal static class Program
 
         var outPath = args[1];
         const double length = 50.0, halfWidth = 2.0, speed = 1.3;
-        const double spawnEvery = 1.7;             // seconds between spawns per stream
+        // Density knob: seconds between spawns per stream (smaller = denser). Optional 3rd arg.
+        var spawnEvery = 1.7;
+        if (args.Length >= 3 && double.TryParse(args[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var se) && se > 0.05)
+        {
+            spawnEvery = se;
+        }
         const double tMax = 34.0, dt = 0.2;        // animation window / frame step
         const ulong globalSeed = 777UL;
         var maxShift = 0.35 * halfWidth;
@@ -624,6 +630,85 @@ internal static class Program
 
         System.IO.File.WriteAllText(outPath, sb.ToString());
         Console.WriteLine($"wrote {outPath}  frames={(int)(tMax / dt) + 1} length={length} (ambient weave + phone + doorway actors)");
+        return 0;
+    }
+
+    // Pure ambient two-stream crowd at a controllable DENSITY (no live-behaviour actors) -- the honest
+    // density-ceiling probe for PED-REALISM-1: how densely can the deterministic weave pack a counterflow
+    // before peds start overlapping ("passing through each other")? Emits frame,x,y,dir; the Python side
+    // counts per-frame near-collisions (centre distance < 2*radius) so the ceiling is measured, not claimed.
+    // Every pose is a pure LateralWeave sample (server==IG); density is just the spawn cadence.
+    private static int RunPedWeaveDensityCsv(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-weave-density-csv requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        const double length = 60.0, halfWidth = 2.0;
+        // Density knob: seconds between spawns per stream (smaller = denser). Optional 3rd arg.
+        var spawnEvery = 1.2;
+        if (args.Length >= 3 && double.TryParse(args[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var se) && se > 0.02)
+        {
+            spawnEvery = se;
+        }
+
+        const double tMax = 40.0, dt = 0.2;
+        const ulong globalSeed = 777UL;
+        var maxShift = 0.35 * halfWidth;
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("frame,x,y,dir\n");
+
+        double PedSpeed(ulong seed)
+        {
+            var z = unchecked(((seed ^ 0x5EED0000BADF00D5UL) * 0x9E3779B97F4A7C15UL) + 0x9E3779B97F4A7C15UL);
+            z = unchecked((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL);
+            z = unchecked((z ^ (z >> 27)) * 0x94D049BB133111EBUL);
+            z ^= z >> 31;
+            var u = (z >> 11) * (1.0 / 9007199254740992.0);
+            return 0.9 + (0.8 * u);
+        }
+
+        double AmbientY(int dir, double s, double a, double now, ulong seed)
+        {
+            var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(a, now, length, globalSeed, maxShift, wp);
+            return dir == 1
+                ? c - Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, c + halfWidth, wp)
+                : c + Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth - c, wp);
+        }
+
+        for (var f = 0; f * dt <= tMax + 1e-9; f++)
+        {
+            var now = f * dt;
+            for (var stream = 0; stream < 2; stream++)
+            {
+                var dir = stream == 0 ? 1 : -1;
+                var k0 = -(int)Math.Ceiling((length / 0.9) / spawnEvery);
+                var kMax = (int)Math.Floor(tMax / spawnEvery);
+                for (var k = k0; k <= kMax; k++)
+                {
+                    var startT = k * spawnEvery;
+                    var seed = (ulong)((stream * 1_000_000) + (k - k0) + 1);
+                    var s = PedSpeed(seed) * (now - startT);
+                    if (s < 0.0 || s > length)
+                    {
+                        continue;
+                    }
+
+                    var a = dir == 1 ? s : length - s;
+                    var y = AmbientY(dir, s, a, now, seed);
+                    sb.Append(f).Append(',').Append(a.ToString("F3", inv)).Append(',')
+                      .Append(y.ToString("F3", inv)).Append(',').Append(dir == 1 ? "east" : "west").Append('\n');
+                }
+            }
+        }
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}  spawnEvery={spawnEvery.ToString("F2", inv)}s length={length} (pure ambient counterflow)");
         return 0;
     }
 
