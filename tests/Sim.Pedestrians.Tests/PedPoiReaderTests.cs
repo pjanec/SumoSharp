@@ -71,12 +71,12 @@ public class PedPoiReaderTests
         var box = Path.Combine(RepoDir(), "scenarios", "_ped", "demo_city", "box");
         var pois = PedPoiReader.LoadJson(Path.Combine(box, "pois.json"));
 
-        Assert.Equal(458, pois.Count);
+        Assert.Equal(464, pois.Count);
         var byKind = pois.GroupBy(p => p.Kind).ToDictionary(g => g.Key, g => g.Count());
         Assert.Equal(5, byKind[PedPoiKind.ParkingLot]);
         Assert.Equal(1, byKind[PedPoiKind.Park]);
         Assert.Equal(25, byKind[PedPoiKind.Venue]);
-        Assert.Equal(346, byKind[PedPoiKind.ParkingAccess]);
+        Assert.Equal(351, byKind[PedPoiKind.ParkingAccess]);
 
         // The polygon kinds legitimately have no O/D weight -> defaulted to 0, not an exception.
         Assert.All(pois, p => Assert.True(p.Weight >= 0.0));

@@ -56,18 +56,50 @@ Both artifacts are built and baked through your recorder (`e9ac56c`):
     sidewalk-guess threshold silently dropped their sidewalks, isolating the mall district + two
     roundabouts. We now stamp explicit widths; those merged into the main component. (Heads-up for your
     own real-net handling: **arterial-speed edges lose guessed sidewalks** — a silent navmesh hole.)
-  - *Yours, R1:* residual fragments — the **dining-plaza interior (36-poly)**, three single-polygon
-    dining-corner artifacts, and a **7-poly ring-NW-corner** stretch — trace to netconvert's own
-    **walkingArea splitting at heterogeneous-approach junctions**, which `PolygonGraph.cs`'s documented
-    anti-shortcut invariant **correctly refuses to bridge**. This is a baker-level limitation, not a
-    citygen shortcut. **Demo impact:** the dining-plaza meet-&-talk spot won't populate from
-    cross-district demand while its interior is a separate component. This is the concrete, shareable,
-    geometry-free repro for the net-connectivity-based stitching in R1 — the plaza interior in `box/` is
-    the minimal case. **Update:** we tried the citygen-side mitigation (homogenising the plaza's
-    approaches) — it did **not** move the residual (re-bake byte-identical), which *confirms* this is a
-    baker-level limitation, not something the net author can paper over. So R1 stands as a real ask.
-    Full box re-bake after all Stage-3 edges: **`components=6, unreachableSkips=0`** (1 main ≈ 1027 polys
-    + the plaza-36 + three 1-poly + one 7-poly residuals).
+  - *The residuals — CORRECTED diagnosis (2026-07-20, from the ped session's `<connection>` scan).*
+    Full box re-bake: **`components=6 [1027, 36, 7, 1, 1, 1], unreachableSkips=0`**. The ped session
+    scanned all 3,976 net `<connection>`s against the per-polygon component map (committed
+    `box-components.csv`) and the residual is **three different failures, not one baker limit** — and it
+    **overturns my earlier "baker-level" call, which was wrong** (my citygen "mitigation" homogenised
+    lane width to stop walkingArea *splitting*, but splitting was never the cause, so it couldn't move
+    anything):
+    - **comp 5 (ring-NW, 7 polys) — ALSO ours, not a baker miss (re-corrected 2026-07-20).** The
+      "15 cross-component links" was an **edge-level** scan artifact; at **lane** granularity (what SUMO
+      ped connectivity + the stitch actually use) there are 1377 ped-lane connections and **zero** cross
+      any component boundary. So ring-NW is ped-isolated in the net too — the same citygen gap as the
+      plaza (missing ped links across the fringe corner). SumoData fixes it in citygen. The
+      connection-stitch (R1-b) is landed + tested on a hermetic witness + shortcut-safe, but a **no-op on
+      this box** (the net declares nothing to stitch); it will kick in on any real net that does have a
+      geometry-missed ped link.
+    - **comp 1 (dining-plaza, 36 polys) — OURS to fix, NOT a baker hole.** The plaza walkingAreas
+      connect internally + to *vehicle* edges, but have **zero** ped `<connection>`s to the surrounding
+      city. Root cause confirmed in `citygen_full.py:build_dining`: the plaza interior is downgraded to
+      `allow="pedestrian"` in place but — unlike the park, which adds explicit ped gate edges — **no ped
+      link is authored across its perimeter junctions**, so netconvert never wires the plaza ped surface
+      to the outer sidewalks. SumoData fixes this in citygen (apply the park's ped-gate pattern).
+      Bridging it in the baker would fabricate a path the net doesn't declare — the shortcut the invariant
+      correctly forbids. So it is **not** a baker item.
+    - **comps 2/3/4 (1 poly each) — benign.** Orphan plaza-corner walkingArea stubs, no ped connections
+      anywhere; harmless, ignore.
+
+  - **RESOLVED (2026-07-20) — full box now bakes to `components=1, unreachableSkips=0` (1132 polys), no
+    ped-isolated-component warning.** Fixed in `citygen_full.py` (commit `6527f03`). The empirical root
+    cause of *both* fragments turned out to be **netconvert speed-threshold traps**, not missing
+    connector edges (so the "add a ped gate edge like the park" framing was only half-right):
+    - *Plaza:* the shared-space grid runs at `SPEED_SHARED = 5.56 m/s`, just under netconvert's
+      `--sidewalks.guess.min-speed` floor (**5.8 m/s**) — so sidewalk-guessing was silently skipped on
+      the whole dining quarter. Fix: stamp explicit sidewalks below that floor (symmetric with the
+      arterial fix). **This is the low-speed mirror of the arterial-speed trap** — both a silent navmesh
+      hole from a speed threshold.
+    - *Ring-NW:* `--crossings.guess.speed-threshold` (**13.89 m/s**) refuses to guess a crossing across a
+      faster edge **at an uncontrolled node**; `ring_N`/`ring_W` run at `SPEED_ARTERIAL = 16.67 m/s`, so
+      the corner walkingArea never linked. Fix: made those two arterial intersections `traffic_light`
+      (realistic anyway), which lifts the cap.
+    - **Two heads-ups for your real-net handling (both are silent navmesh holes from netconvert speed
+      thresholds):** (1) edges **above** `--sidewalks.guess.max-speed` lose guessed sidewalks; (2) edges
+      **below** `--sidewalks.guess.min-speed` (5.8 m/s — shared-space / living-street speeds) also lose
+      them; and (3) fast **uncontrolled** junctions won't get guessed crossings. Worth explicit handling
+      when you bake real crops.
 
 ## R2 — Data-driven micro-scenario registry *(headline behavior: waiter)*
 

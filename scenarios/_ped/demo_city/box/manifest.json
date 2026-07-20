@@ -5,17 +5,17 @@
   "scenario_sumocfg": "scenario.sumocfg",
   "scenario_rou": "scenario.rou.xml",
   "scenario_add": "scenario.add.xml",
-  "lane_km": 402.5995500000016,
+  "lane_km": 407.1117500000017,
   "knee": {
-    "veh_lkm": 3.939,
-    "period": 0.2213,
+    "veh_lkm": 3.927,
+    "period": 0.2152,
     "pop_pct": 1.0,
     "degraded": false,
     "knee_confidence": "ok"
   },
   "requested_percent": 40.0,
-  "target_veh_lkm": 1.576,
-  "chosen_period": 0.8214,
+  "target_veh_lkm": 1.571,
+  "chosen_period": 0.8152,
   "seed": 42,
   "serve_end": 800,
   "subarea": {
@@ -320,40 +320,40 @@
     ]
   },
   "density": {
-    "knee_veh_lkm": 3.939,
+    "knee_veh_lkm": 3.927,
     "served_percent": 40.0,
-    "served_veh_lkm": 1.576
+    "served_veh_lkm": 1.571
   },
   "workers": 3,
   "knee_mode": "prior",
   "mode_detail": {
-    "factor": 0.8718,
+    "factor": 0.845,
     "note": "approximate knee: size-tiered prior (measured urban anchors) + 1 pilot probe for this box's period<->density factor; no probe grid was run"
   },
   "compute_budget": "mid",
   "compute_budget_explicit_override": true,
-  "calibration_seconds": 3.3,
+  "calibration_seconds": 2.9,
   "verify": {
     "no_cheating": "pass",
     "birth_violations": 0,
     "death_violations": 0,
-    "peak_moving": 542.0,
-    "peak_veh_lkm": 1.346,
-    "min_speed_relative": 0.34,
+    "peak_moving": 540.0,
+    "peak_veh_lkm": 1.326,
+    "min_speed_relative": 0.44,
     "teleports": 2,
-    "teleport_pct": 0.25,
+    "teleport_pct": 0.24,
     "verify_end": 1700,
-    "verify_seconds": 5.8,
+    "verify_seconds": 5.9,
     "note": null,
-    "achieved_vs_target_pct": 85.4
+    "achieved_vs_target_pct": 84.4
   },
-  "total_seconds": 10.9,
+  "total_seconds": 10.3,
   "timings": {
-    "prepare": 0.6,
-    "calibrate": 3.3,
-    "serve": 0.9,
+    "prepare": 0.5,
+    "calibrate": 2.9,
+    "serve": 0.7,
     "parking": 0.2,
     "emit": 0.0,
-    "verify": 5.8
+    "verify": 5.9
   }
 }
