@@ -34,7 +34,10 @@ public sealed record BakedPolygon(
     string Id,
     BakedPolygonKind Kind,
     IReadOnlyList<Vec2> Vertices,
-    IReadOnlyList<Vec2>? Spine = null)
+    IReadOnlyList<Vec2>? Spine = null,
+    // The sidewalk/crossing/walkingarea half-width (metres) the deterministic pedestrian weave
+    // clamps to; 0.5 m default when the source width is unset (see WalkablePolygonBaker).
+    double HalfWidth = 0.5)
 {
     public Vec2 Centroid { get; } = PolygonGeometry.VertexAverage(Vertices);
 }

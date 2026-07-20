@@ -32,6 +32,29 @@ public sealed class SumoNavMesh : IPedNavigation
 
     public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => FindPath(start, goal, blockedPolygonIndices: null);
 
+    // W2a (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md): the baked sidewalk/crossing/walkingarea
+    // half-width (BakedPolygon.HalfWidth) at a single point -- the deterministic pedestrian weave's
+    // clamp width. Locates the containing (or nearest, per LocatePolygon's off-mesh fallback)
+    // polygon exactly as FindPath does; 0.5 m if no polygon can be located at all (empty navmesh).
+    public double HalfWidthAt(Vec2 p)
+    {
+        var index = LocatePolygon(p, blocked: null);
+        return index >= 0 ? _polygons[index].HalfWidth : 0.5;
+    }
+
+    // W2a: HalfWidthAt sampled at every vertex of `path` (e.g. a FindPath result), in order -- the
+    // per-vertex `HalfWidths` a WalkSegment hands to the weave clamp along its route.
+    public IReadOnlyList<double> HalfWidthsAlong(IReadOnlyList<Vec2> path)
+    {
+        var widths = new double[path.Count];
+        for (var i = 0; i < path.Count; i++)
+        {
+            widths[i] = HalfWidthAt(path[i]);
+        }
+
+        return widths;
+    }
+
     /// P8-1b (docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md): number of connected components in the
     /// portal-adjacency graph -- a direct diagnostic for the real-geometry fragmentation bug. A well-connected
     /// crop is 1 (or a few large) components; ~1000 means the surface shattered and O/D routing will fail.
