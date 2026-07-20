@@ -152,3 +152,26 @@ sessions flagged (needs SumoSharp per-class ceilings + P8-4b + SumoData crossing
    re-broadcast.
 
 Prototype 1 is the immediate next step and is not blocked on anything.
+
+## 10. Schema decision + field-ownership split (agreed with SumoData)
+
+SumoData accepted the §7 split and committed to the schema. Decisions locked:
+
+- **Two files, kept separate** (both broadcast-once, same net-XY frame, `schema` tag): keep `pois.json` for
+  point/area anchors (building entrances, venues + capacity, `aoi` markers); add a sibling
+  **`edge_fields.json`**: `{ "<edgeId>": { "sidewalk_width_m": …, "keep_side": "R", "crossing": {"class":
+  "signalized|unsignalized|discouraged", "veh_knee": …} | null, "aoi": 0..1 }, … }`. This is the shape we
+  parse.
+- **Net-derivable vs broadcast-once:** SumoData EMITS the static fields (per-edge width, crossing class, AOI,
+  POIs) as broadcast-once companion data; SumoSharp COMPUTES the dynamic ones (weave `offset(s)`, LOD
+  promotion, crossing-averse route) from (route, seed, those fields). **Consequence worth noting:** because
+  `edge_fields.json` is broadcast-once and the IG ingests it, the corridor half-width `W` is *derivable* from
+  (route, edge_fields) — so the weave costs **zero per-ped bytes on the wire** (no per-ped `W` scalar needed;
+  the IG recomputes it). That is the shared-fields model paying off.
+- **Owed back to SumoData (sequenced with P2/P3, not now):** the per-class (sidewalk vs crossing) density
+  ceiling model; `crossing_rate(ped_density, bias, class)` (coarse for v1); the micro-scenario registry +
+  live-behavior anchors consuming their POIs. v1 density coupling is "crossing-averse routing keeps
+  crossing-rate low → dense sidewalks + safe crossings by construction," which needs no full co-calibration.
+- **Prototype 1 input:** SumoData offered a per-edge sidewalk-width file for the existing `subarea-box`. We
+  accept it for schema-shakedown, but Prototype 1 is not blocked on it — the bake already exposes
+  `PedLane.Width`, so the weave clamp can bootstrap from that immediately.
