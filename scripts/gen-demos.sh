@@ -160,6 +160,15 @@ demo_ped() {
   run src/Sim.Viz "--ped-$mode" "$SITE/$slug.html"
 }
 
+# demo_static <srcHtml> <slug>
+# Copies a committed, fully self-contained HTML page (its own inline CSS/JS/data) straight into the
+# gallery. Used for pages that are not a Sim.Viz replay-template render -- e.g. the weave demos under
+# docs/weave-demo/ (an interactive JS port of LateralWeave; a recorded weaving-crowd playback).
+demo_static() {
+  local src="$1" slug="$2"
+  cp "$ROOT/$src" "$SITE/$slug.html"
+}
+
 # --- the curated set: category | slug | title | description | scenario dir | pattern ---------
 # One row per feature. Categories are emitted as section headings on the gallery index in this
 # same order; demos within a category keep this order too.
@@ -306,6 +315,12 @@ try ped-lively-crowd "Lively crowd (routed + activity timelines)" \
 try ped-remote "Remote (over the wire)" \
   "The same sweeping-interest-source LOD promotion demo, but every disc is drawn from a PedRemoteReconstructor fed by the real DR-error-gated PedReplicationPublisher over an InMemoryPedReplicationBus -- each path is sent once, high-power positions are gated onto the wire only when dead-reckoning would drift out of tolerance, and a playout-delay render clock plus capped-correction smoothing reconstruct every pose (including the promotion/demotion DR-switch) with no visible pop: this crowd is literally reconstructed from the one multicast stream, not the sim (P3-3)." \
   "Pedestrians" demo_ped remote ped-remote
+try ped-weave "Deterministic weave — no pass-through (on/off)" \
+  "Two counterflowing pedestrian streams share one sidewalk. Toggle the weave to see opposing flows separate (on) versus collapse onto the centreline and pass through each other (off), with a live overlapping-% counter and sliders for crowd density and sidewalk width (the band fills the baked width, ~2x wider on a 4 m arterial). Runs a faithful in-browser port of the engine's LateralWeave (SplitMix64-seeded, pure function of route arc-length), self-checked against the C# engine on load -- the same determinism that makes server==IG bit-for-bit (PED-REALISM-1 W1-W4, LateralWeave)." \
+  "Pedestrians" demo_static docs/weave-demo/index.html ped-weave
+try ped-weave-city "Weaving crowd (demo-city)" \
+  "A real Sim.Viz recorder run of the weaving low-power crowd on a ~440 m block of the synthetic 5x5 km demo-city (weave on): peds thread the real baked sidewalks with few overlaps despite no neighbour lookups, every pose a pure deterministic function of route+seed+width+time (amber rings mark any pair within 0.5 m). Play/pause + speed; reload replays identically (SubareaFcdRecorder --weave)." \
+  "Pedestrians" demo_static docs/weave-demo/city.html ped-weave-city
 
 # Integration & driver behavior
 try ballistic-integration "Ballistic integration" \

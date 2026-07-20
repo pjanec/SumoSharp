@@ -1,19 +1,22 @@
-# Weave demo (GitHub Pages)
+# Weave demos (gallery source)
 
-A single self-contained page — `index.html` — demonstrating the deterministic pedestrian weave
-(PED-REALISM-1 / `docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md`). No build step, no dependencies, no network:
-open the file, or serve this directory statically.
+Two self-contained pages demonstrating the deterministic pedestrian weave (PED-REALISM-1 /
+`docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md`). No build step, no dependencies, no network.
 
-**GitHub Pages:** enable Pages for the repo with source = `/docs` (Settings → Pages), and the demo is served
-at `<pages-root>/weave-demo/`. (Or copy `index.html` to a `gh-pages` branch / any static host.)
+- **`index.html`** — the on/off corridor demo: two counterflowing streams; toggle the weave to see the
+  pass-through count collapse, with density + sidewalk-width sliders. Runs a faithful in-browser port of the
+  engine's `Sim.Pedestrians.Lod.LateralWeave` (SplitMix64 seeded), self-checked against the C# engine on load.
+- **`city.html`** — a recorded weaving-crowd playback: a ~440 m block of the synthetic demo-city (weave on),
+  peds threading the real baked sidewalks with the overlap counter live. Data is an embedded snapshot from a
+  `SubareaFcdRecorder --weave` run.
 
-**What it shows.** Two counterflowing pedestrian streams on one sidewalk. Toggle **Weave On/Off** to see
-opposing flows separate (on) versus collapse onto the centreline and pass through each other (off) — with a
-live "% of peds overlapping" counter that quantifies it. Sliders vary crowd density and sidewalk width (the
-band fills the baked width, ~2× wider on a 4 m arterial than a 2 m local).
+## How they reach GitHub Pages
 
-**It's the real algorithm.** The page runs a faithful JavaScript port of the engine's
-`Sim.Pedestrians.Lod.LateralWeave` (SplitMix64 seeded, pure function of route arc-length), and self-checks a
-reference sample against the C# engine on load (`0.4801 = engine ✓`). Because the pose is a pure function of
-`(route, seed, width, time)`, it reproduces identically on reload — the same determinism that makes
-`server == image-generator` bit-for-bit over the wire.
+The Pages site is the **auto-generated demo gallery** (`scripts/gen-demos.sh` → `site/`, deployed by the
+`demos` GitHub Actions workflow — see `docs/DEMOS.md`), *not* this folder directly. These two files are
+registered in `gen-demos.sh` under the **Pedestrians** category via `demo_static`, so running the gallery
+build copies them to `site/ped-weave.html` and `site/ped-weave-city.html` and lists them alongside the other
+pedestrian demos. To regenerate locally: `scripts/gen-demos.sh` then open `site/index.html`.
+
+Because each ped's pose is a pure function of `(route, seed, width, time)`, both pages replay identically on
+reload — the same determinism that makes `server == image-generator` bit-for-bit over the wire.
