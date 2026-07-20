@@ -451,7 +451,7 @@ internal static class Program
         var inv = System.Globalization.CultureInfo.InvariantCulture;
 
         var sb = new System.Text.StringBuilder();
-        sb.Append("ped,dir,x,y\n");
+        sb.Append("ped,dir,x,y,t\n");
 
         // A SHARED, moving interface c(x) between the two counterflowing streams -- one scenario-global seed,
         // evaluated at the CORRIDOR position x (so both directions see the same interface at the same x) --
@@ -468,10 +468,13 @@ internal static class Program
             {
                 var seed = (ulong)((stream * 100_000) + i + 1);
                 var pedId = (stream * perStream) + i;
+                const double speed = 1.3;      // m/s, so the ped experiences the interface EVOLVING as it walks
+                var startT = i * 1.0;          // staggered spawn -> peds at the same x see different interface phases
                 for (var s = 0.0; s <= length + 1e-9; s += ds)
                 {
                     var cx = dir == 1 ? s : length - s; // corridor position by travel direction
-                    var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(cx, length, globalSeed, maxShift, wp);
+                    var now = startT + (s / speed);     // wall time when this ped is at arc-length s
+                    var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(cx, now, length, globalSeed, maxShift, wp);
                     double room, y;
                     if (dir == 1)
                     {
@@ -486,17 +489,22 @@ internal static class Program
 
                     sb.Append(pedId).Append(',').Append(dir).Append(',')
                       .Append(cx.ToString("F3", inv)).Append(',')
-                      .Append(y.ToString("F3", inv)).Append('\n');
+                      .Append(y.ToString("F3", inv)).Append(',')
+                      .Append(now.ToString("F2", inv)).Append('\n');
                 }
             }
         }
 
-        // Emit the interface itself (dir=0) so the plot can draw the moving centreline.
-        for (var x = 0.0; x <= length + 1e-9; x += ds)
+        // Emit the interface c(x, t) at several TIME snapshots (dir=0) so the plot shows it migrate over time.
+        foreach (var t in new[] { 0.0, 10.0, 20.0, 30.0, 40.0, 50.0 })
         {
-            var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(x, length, globalSeed, maxShift, wp);
-            sb.Append(-1).Append(',').Append(0).Append(',')
-              .Append(x.ToString("F3", inv)).Append(',').Append(c.ToString("F3", inv)).Append('\n');
+            for (var x = 0.0; x <= length + 1e-9; x += ds)
+            {
+                var c = Sim.Pedestrians.Lod.LateralWeave.CenterShift(x, t, length, globalSeed, maxShift, wp);
+                sb.Append(-1).Append(',').Append(0).Append(',')
+                  .Append(x.ToString("F3", inv)).Append(',').Append(c.ToString("F3", inv)).Append(',')
+                  .Append(t.ToString("F2", inv)).Append('\n');
+            }
         }
 
         System.IO.File.WriteAllText(outPath, sb.ToString());

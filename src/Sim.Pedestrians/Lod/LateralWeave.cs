@@ -122,20 +122,30 @@ public static class LateralWeave
     // gives each stream its own side of c(s): the stream the interface drifts toward is squeezed, the other
     // widens -- the real emergent-lane breathing. Longer wavelength than the per-ped lane weave so it reads as
     // the whole interface drifting, not individual jitter. Tapered to 0 at the route ends.
-    public static double CenterShift(double s, double routeLength, ulong globalSeed, double maxShift, in WeaveParams p)
+    // `now` (seconds) makes the interface a SPATIOTEMPORAL field: the dividing line at a fixed corridor
+    // position also drifts over TIME, so it isn't frozen for a segment forever. The two components travel in
+    // OPPOSITE temporal directions (+w1, -w2) at slow, non-commensurate periods, giving a never-exactly-
+    // repeating slow slosh. server==IG holds because the low-power pose already reconstructs at a specific
+    // `now`; the IG evaluates the identical c(x, now) from the same global seed. The spatial endpoint taper
+    // (a function of x only) keeps c == 0 at the corridor ends at ALL times, so peds still converge to the
+    // true endpoint whenever they arrive.
+    public static double CenterShift(double x, double now, double routeLength, ulong globalSeed, double maxShift, in WeaveParams p)
     {
         if (maxShift <= 0.0 || routeLength <= 0.0)
         {
             return 0.0;
         }
 
-        const double wl1 = 55.0, wl2 = 33.0; // metres -- both longer than the per-ped lane WavelengthMeters
-        var s0 = s < 0.0 ? 0.0 : (s > routeLength ? routeLength : s);
+        const double wl1 = 55.0, wl2 = 33.0; // spatial wavelengths (m) -- longer than the per-ped lane weave
+        const double tp1 = 47.0, tp2 = 71.0; // temporal periods (s) -- slow, non-commensurate slosh
+        var x0 = x < 0.0 ? 0.0 : (x > routeLength ? routeLength : x);
+        var w1 = (2.0 * Math.PI) / tp1;
+        var w2 = (2.0 * Math.PI) / tp2;
         var ph1 = Hash01(globalSeed, MeanderSalt1) * (2.0 * Math.PI);
         var ph2 = Hash01(globalSeed, MeanderSalt2) * (2.0 * Math.PI);
-        var raw = (0.6 * Math.Sin(((2.0 * Math.PI * s0) / wl1) + ph1))
-                + (0.4 * Math.Sin(((2.0 * Math.PI * s0) / wl2) + ph2)); // in [-1, 1]
-        return maxShift * raw * EndpointTaper(s0, routeLength, p.EndpointTaperMeters);
+        var raw = (0.6 * Math.Sin((((2.0 * Math.PI) * x0) / wl1) + (w1 * now) + ph1))
+                + (0.4 * Math.Sin((((2.0 * Math.PI) * x0) / wl2) - (w2 * now) + ph2)); // in [-1, 1]
+        return maxShift * raw * EndpointTaper(x0, routeLength, p.EndpointTaperMeters);
     }
 
     // The ped's lateral target (metres, right side) for lane segment `k`: a seeded position in

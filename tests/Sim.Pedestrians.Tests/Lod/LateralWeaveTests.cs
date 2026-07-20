@@ -69,20 +69,41 @@ public class LateralWeaveTests
         // The shared moving-interface field: deterministic (server==IG rests on it), bounded by maxShift, and
         // 0 at the corridor ends so peds still converge to the true endpoint.
         const double maxShift = 0.7;
-        Assert.Equal(0.0, LateralWeave.CenterShift(0.0, RouteLen, globalSeed: 777, maxShift, P), precision: 12);
-        Assert.Equal(0.0, LateralWeave.CenterShift(RouteLen, RouteLen, globalSeed: 777, maxShift, P), precision: 12);
+        // Ends pinned to 0 at every time (peds still converge to the true endpoint whenever they arrive).
+        Assert.Equal(0.0, LateralWeave.CenterShift(0.0, now: 0.0, RouteLen, 777, maxShift, P), precision: 12);
+        Assert.Equal(0.0, LateralWeave.CenterShift(RouteLen, now: 33.0, RouteLen, 777, maxShift, P), precision: 12);
 
         var distinct = new System.Collections.Generic.HashSet<double>();
-        for (var s = 0.0; s <= RouteLen; s += 0.5)
+        for (var x = 0.0; x <= RouteLen; x += 0.5)
         {
-            var a = LateralWeave.CenterShift(s, RouteLen, globalSeed: 777, maxShift, P);
-            var b = LateralWeave.CenterShift(s, RouteLen, globalSeed: 777, maxShift, P);
-            Assert.Equal(a, b, precision: 15);                       // deterministic
-            Assert.True(System.Math.Abs(a) <= maxShift + 1e-9, $"interface {a} exceeds maxShift at s={s}");
+            var a = LateralWeave.CenterShift(x, now: 12.0, RouteLen, 777, maxShift, P);
+            var b = LateralWeave.CenterShift(x, now: 12.0, RouteLen, 777, maxShift, P);
+            Assert.Equal(a, b, precision: 15);                       // deterministic at a fixed time
+            Assert.True(System.Math.Abs(a) <= maxShift + 1e-9, $"interface {a} exceeds maxShift at x={x}");
             distinct.Add(System.Math.Round(a, 3));
         }
 
-        Assert.True(distinct.Count > 5, "interface should actually meander along the corridor");
+        Assert.True(distinct.Count > 5, "interface should meander along the corridor");
+    }
+
+    [Fact]
+    public void CenterShift_FluctuatesInTime()
+    {
+        // At a FIXED corridor position the interface must change over time (not frozen for the segment forever).
+        const double maxShift = 0.7;
+        const double x = 25.0;
+        var t0 = LateralWeave.CenterShift(x, now: 0.0, RouteLen, 777, maxShift, P);
+        var moved = false;
+        for (var t = 1.0; t <= 60.0; t += 1.0)
+        {
+            if (System.Math.Abs(LateralWeave.CenterShift(x, t, RouteLen, 777, maxShift, P) - t0) > 0.05)
+            {
+                moved = true;
+                break;
+            }
+        }
+
+        Assert.True(moved, "the interface at a fixed position should drift over time");
     }
 
     [Fact]
