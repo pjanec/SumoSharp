@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SumoSharp — deterministic pedestrian weave</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1c2230; --muted:#5b6472; --line:#dfe3e9;
+    --east:#d0392b; --west:#2471a3; --kerb:#3a4150; --band:#eef4ee; --centre:#c8ccd2; --overlap:#e67e22; --accent:#1e8449;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0f1116;--panel:#171a21;--ink:#e7eaf0;--muted:#9aa3b2;--line:#262b35;
+      --east:#e8635a;--west:#5aa7d8;--kerb:#8892a5;--band:#1b2620;--centre:#333a45;--overlap:#e8923e;--accent:#3fbf78;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:24px 20px 48px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  .controls{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:center}
+  .ctl{display:flex;flex-direction:column;gap:4px;min-width:120px}
+  .ctl label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .ctl .val{font-variant-numeric:tabular-nums;color:var(--ink)}
+  input[type=range]{width:150px;accent-color:var(--accent)}
+  .toggle{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .toggle button{border:0;background:transparent;color:var(--muted);padding:7px 14px;cursor:pointer;font:inherit;font-weight:600}
+  .toggle button.on{background:var(--accent);color:#fff}
+  select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
+  canvas{width:100%;height:auto;display:block;border-radius:10px;background:var(--panel)}
+  .stats{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:12px;font-variant-numeric:tabular-nums}
+  .stat b{font-size:20px} .stat span{color:var(--muted);font-size:12px;display:block;text-transform:uppercase;letter-spacing:.04em}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin-top:10px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:5px}
+  .note{color:var(--muted);font-size:13.5px}
+  .note b{color:var(--ink)}
+  code{background:var(--band);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  a{color:var(--accent)}
+  .verify{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .verify .ok{color:var(--accent);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Deterministic pedestrian weave</h1>
+  <p class="sub">Two pedestrian streams share one sidewalk. Toggle the weave to see the difference — and watch the live pass-through count.</p>
+
+  <div class="card">
+    <div class="controls">
+      <div class="ctl">
+        <label>Weave</label>
+        <div class="toggle" id="weaveToggle">
+          <button data-v="1" class="on">On</button><button data-v="0">Off</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label>Crowd density</label>
+        <input type="range" id="density" min="0.4" max="2.6" step="0.05" value="1.1">
+        <span class="val" id="densityVal"></span>
+      </div>
+      <div class="ctl">
+        <label>Sidewalk width</label>
+        <select id="width"><option value="2">2 m (local)</option><option value="4" selected>4 m (arterial)</option><option value="6">6 m (plaza)</option></select>
+      </div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--east)"></span>eastbound →</span>
+      <span><span class="dot" style="background:var(--west)"></span>← westbound</span>
+      <span><span class="dot" style="background:transparent;border:2px solid var(--overlap)"></span>within 0.5 m (a pass-through)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <canvas id="cv" width="1000" height="300"></canvas>
+    <div class="stats">
+      <div class="stat"><b id="sPeds">0</b><span>live peds</span></div>
+      <div class="stat"><b id="sDens">0</b><span>peds / m²</span></div>
+      <div class="stat"><b id="sOverlap">0</b><span>within 0.5 m now</span></div>
+      <div class="stat"><b id="sPct">0%</b><span>of peds overlapping</span></div>
+    </div>
+  </div>
+
+  <div class="card note">
+    <p><b>What you're seeing.</b> Each ped's lateral position on the sidewalk is a <b>pure, seeded function</b> of
+    its own route arc-length — no neighbour lookups. Opposing directions keep to their own half (a soft keep-right),
+    so head-on flows separate instead of interpenetrating; a same-direction flow fans into a <b>band</b> that fills
+    the sidewalk's own width (wider on the 4 m / 6 m sidewalks). Turn the weave <b>off</b> and both streams collapse
+    onto the centreline — the pass-through count jumps.</p>
+    <p><b>Why it matters.</b> Because the pose is a pure function of <code>(route, seed, width, time)</code>, a
+    remote image-generator recomputes the identical positions from the once-broadcast route — <b>server == image
+    generator, bit-for-bit</b>, with no per-frame position stream for the low-power crowd. The same determinism you
+    see on reload.</p>
+    <p class="verify">This page runs a faithful port of the engine's <code>LateralWeave</code> algorithm.
+      Self-check vs. the C# engine at a reference sample: <span id="verify">…</span></p>
+  </div>
+</div>
+
+<script>
+// ---- faithful port of Sim.Pedestrians.Lod.LateralWeave (SplitMix64, verified vs the C# engine) ----
+const M=(1n<<64n)-1n, GOLD=0x9E3779B97F4A7C15n;
+function hash01(seed,k){let z=(seed+(k*GOLD)+GOLD)&M;z=((z^(z>>30n))*0xBF58476D1CE4E5B9n)&M;z=((z^(z>>27n))*0x94D049BB133111EBn)&M;z=(z^(z>>31n))&M;return Number(z>>11n)/9007199254740992;}
+const P={wl:55,tr:9,minF:0,maxF:0.9,taper:4,microA:0.04,microWl:13};
+const PhaseSalt=0xA5A5A5A5A5A5A5A5n,MicroSalt=0x5A5A5A5A5A5A5A5An,Msalt1=0x1234567898765432n,Msalt2=0x0FEDCBA987654321n,SpeedSalt=0x5EED0000BADF00D5n;
+function smooth(x){const t=x<0?0:(x>1?1:x);return t*t*(3-2*t);}
+function laneTarget(seed,k,hw){const u=hash01(seed,BigInt.asUintN(64,BigInt(k)));return (P.minF+(P.maxF-P.minF)*u)*hw;}
+function offInt(s0,seed,hw){const phase=hash01(seed,PhaseSalt)*P.wl;const sp=s0+phase;const k=Math.floor(sp/P.wl);const localS=sp-k*P.wl;const prev=laneTarget(seed,k-1,hw),cur=laneTarget(seed,k,hw);let lane=(localS<P.tr)?prev+(cur-prev)*smooth(localS/P.tr):cur;lane+=P.microA*Math.sin(2*Math.PI*s0/P.microWl+hash01(seed,MicroSalt)*2*Math.PI);return lane<0?0:(lane>hw?hw:lane);}
+function taperFn(s,L){if(P.taper<=1e-6)return 1;const up=s/P.taper,down=(L-s)/P.taper,t=Math.min(up,down);return t<0?0:(t>1?1:t);}
+function offset(s,L,seed,hw){if(hw<=0||L<=0)return 0;const s0=s<0?0:(s>L?L:s);return offInt(s0,seed,hw)*taperFn(s0,L);}
+function centerShift(x,now,L,g,maxShift){if(maxShift<=0||L<=0)return 0;const wl1=55,wl2=33,tp1=47,tp2=71;const x0=x<0?0:(x>L?L:x);const w1=2*Math.PI/tp1,w2=2*Math.PI/tp2;const ph1=hash01(g,Msalt1)*2*Math.PI,ph2=hash01(g,Msalt2)*2*Math.PI;const raw=0.6*Math.sin(2*Math.PI*x0/wl1+w1*now+ph1)+0.4*Math.sin(2*Math.PI*x0/wl2-w2*now+ph2);return maxShift*raw*taperFn(x0,L);}
+function pedSpeed(seed){return 0.9+0.8*hash01(seed,SpeedSalt);}
+
+// self-check against a committed C# reference value (4 m edge, seed 47413268384, s=10 -> 0.4801)
+{const v=offset(10,2094.5,47413268384n,2.0);const el=document.getElementById('verify');
+ el.innerHTML = Math.abs(v-0.4801)<5e-4 ? `<span class="ok">${v.toFixed(4)} = engine ✓</span>` : `${v.toFixed(4)} ≠ 0.4801 (mismatch)`;}
+
+// ---- scene ----
+const L=60, GSEED=777n;
+let weaveOn=1, spawnEvery=1.1, halfWidth=2.0;
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+
+function poses(now){
+  const out=[];
+  const maxShift=0.35*halfWidth;
+  for(let stream=0;stream<2;stream++){
+    const dir=stream?-1:1;
+    const k0=-Math.ceil((L/0.9)/spawnEvery), kMax=Math.floor(now/spawnEvery)+1;
+    for(let k=k0;k<=kMax;k++){
+      const startT=k*spawnEvery;
+      const seed=BigInt(stream*1000000 + (k-k0) + 1);
+      const s=pedSpeed(seed)*(now-startT);
+      if(s<0||s>L)continue;
+      const a = dir===1 ? s : L-s;
+      let y;
+      if(weaveOn){const c=centerShift(a,now,L,GSEED,maxShift);
+        y = dir===1 ? c-offset(s,L,seed,c+halfWidth) : c+offset(s,L,seed,halfWidth-c);}
+      else y=0;
+      out.push({x:a,y,dir});
+    }
+  }
+  return out;
+}
+
+function draw(now){
+  const W=cv.width,H=cv.height,padX=26,padY=24;
+  const sx=x=>padX+(x/L)*(W-2*padX);
+  const midY=H/2, yscale=(H/2-padY)/ (halfWidth+0.3);
+  const sy=y=>midY - y*yscale;
+  ctx.clearRect(0,0,W,H);
+  // sidewalk band + kerbs + centreline
+  ctx.fillStyle=css('--band'); ctx.fillRect(padX,sy(halfWidth),W-2*padX,sy(-halfWidth)-sy(halfWidth));
+  ctx.strokeStyle=css('--kerb'); ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(padX,sy(halfWidth));ctx.lineTo(W-padX,sy(halfWidth));ctx.moveTo(padX,sy(-halfWidth));ctx.lineTo(W-padX,sy(-halfWidth));ctx.stroke();
+  ctx.strokeStyle=css('--centre');ctx.lineWidth=1;ctx.setLineDash([4,5]);
+  ctx.beginPath();ctx.moveTo(padX,midY);ctx.lineTo(W-padX,midY);ctx.stroke();ctx.setLineDash([]);
+
+  const ps=poses(now);
+  // overlaps (world distance < 0.5 m)
+  const hit=new Set(); let pairs=0;
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++){
+    const dx=ps[i].x-ps[j].x, dy=ps[i].y-ps[j].y;
+    if(dx*dx+dy*dy<0.25){pairs++;hit.add(i);hit.add(j);}
+  }
+  const east=css('--east'),west=css('--west'),ov=css('--overlap');
+  for(let i=0;i<ps.length;i++){const p=ps[i],X=sx(p.x),Y=sy(p.y);
+    if(hit.has(i)){ctx.beginPath();ctx.arc(X,Y,6,0,7);ctx.strokeStyle=ov;ctx.lineWidth=2;ctx.stroke();}
+    ctx.beginPath();ctx.arc(X,Y,3.1,0,7);ctx.fillStyle=p.dir===1?east:west;ctx.fill();
+  }
+  // stats
+  const area=L*(2*halfWidth);
+  document.getElementById('sPeds').textContent=ps.length;
+  document.getElementById('sDens').textContent=(ps.length/area).toFixed(2);
+  document.getElementById('sOverlap').textContent=hit.size;
+  document.getElementById('sPct').textContent=ps.length?Math.round(100*hit.size/ps.length)+'%':'0%';
+}
+
+let t0=null;
+function frame(ts){if(t0===null)t0=ts;draw((ts-t0)/1000+40);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+// ---- controls ----
+const dv=document.getElementById('densityVal');
+function fmtDens(){dv.textContent=`spawn every ${spawnEvery.toFixed(2)} s`;}
+document.getElementById('density').addEventListener('input',e=>{spawnEvery=+e.target.value;fmtDens();});
+document.getElementById('width').addEventListener('change',e=>{halfWidth=(+e.target.value)/2;});
+document.querySelectorAll('#weaveToggle button').forEach(b=>b.addEventListener('click',()=>{
+  weaveOn=+b.dataset.v;
+  document.querySelectorAll('#weaveToggle button').forEach(x=>x.classList.toggle('on',x===b));
+}));
+fmtDens();
+</script>
+</body>
+</html>
