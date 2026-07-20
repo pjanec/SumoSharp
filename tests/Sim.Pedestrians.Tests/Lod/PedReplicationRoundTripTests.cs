@@ -168,4 +168,78 @@ public class PedReplicationRoundTripTests
         Assert.Equal(1, publisher.ActivityTimelineRecordsSent[2]);
         Assert.True(publisher.FreeKinematicSamplesSent.GetValueOrDefault(3) > 0);
     }
+
+    // W3 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md): server==IG for a WEAVING low-power ped, END TO END
+    // over the real publisher -> byte-loopback bus -> receiver -> HeadlessIg path (not a direct
+    // Encode/Decode). The weave seed + global seed + per-vertex half-widths ride the ActivityTimelineWire
+    // blob the bridge ships, so the decoded timeline's PoseAt must reproduce the server's weaving pose
+    // bit-for-bit -- AND the weave must actually be active (the reconstructed track leaves the centreline),
+    // so this is not a vacuous "weave off" pass.
+    [Fact]
+    public void ServerEqualsIg_OverTheWire_ForWeavingActivityTimeline()
+    {
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(new StraightLineNav(), publisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+
+        // A straight eastbound leg at y=10 with a 2 m half-width per vertex, a non-zero per-ped weave seed,
+        // and a non-zero global seed -> the weave is ON. Deliberately non-round coordinates: exactness does
+        // not depend on lucky inputs (ActivityTimelineWire carries raw doubles).
+        var widths = new[] { 2.0, 2.0 };
+        var timeline = new ActivityTimeline(
+            t0: 0.0,
+            new ActivitySegment[] { new WalkSegment(new[] { new Vec2(0.3, 10.0), new Vec2(41.7, 10.0) }, 1.37, widths) },
+            seed: 0xC0FFEE1234UL,
+            globalSeed: 42UL);
+        manager.AddPedLively(id: 7, timeline, maxSpeed: 1.37, radius: 0.3, now: 0.0);
+
+        var field = new InterestField();
+        field.Register(new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0)); // keep it low-power
+        var noEntities = Array.Empty<WorldDisc>();
+
+        var bus = new InMemoryPedReplicationBus();
+        var replicationPublisher = new PedReplicationPublisher(bus.Sink);
+        var receiver = new PedReplicationReceiver(bus.Source);
+
+        replicationPublisher.Publish(publisher.Events);
+        bus.Source.Pump();
+        receiver.Drain();
+
+        var now = 0.0;
+        for (var i = 0; i < 320; i++) // ~30 m at 1.37 m/s + slack
+        {
+            var beforeCount = publisher.Events.Count;
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+
+            var newEvents = new List<PedEvent>();
+            for (var e = beforeCount; e < publisher.Events.Count; e++)
+            {
+                newEvents.Add(publisher.Events[e]);
+            }
+
+            replicationPublisher.Publish(newEvents);
+            bus.Source.Pump();
+            receiver.Drain();
+        }
+
+        Assert.Equal(PedDrModel.ActivityTimeline, manager.ModelOf(7));
+        Assert.Equal(PedDrModel.ActivityTimeline, receiver.Ig.ModelOf(7));
+
+        var maxLateral = 0.0;
+        var samples = 0;
+        for (var t = 0.0; t <= now; t += Dt / 4.0)
+        {
+            var server = manager.PositionOf(7, t);
+            var ig = receiver.Ig.ReconstructSample(7, t).Pos;
+            Assert.Equal(server.X, ig.X);   // bit-for-bit -- server==IG over the wire
+            Assert.Equal(server.Y, ig.Y);
+            maxLateral = Math.Max(maxLateral, Math.Abs(server.Y - 10.0)); // centreline is y=10
+            samples++;
+        }
+
+        Assert.True(samples > 30, $"expected a fine sweep, got {samples}");
+        Assert.True(maxLateral > 0.2, $"the weave must be active over the wire (reconstructed track leaves the centreline); max lateral was {maxLateral:F3} m");
+        Assert.Equal(1, publisher.ActivityTimelineRecordsSent[7]);
+        _output.WriteLine($"[W3 measured] weaving ped: {samples} exact over-the-wire samples, max lateral {maxLateral:F3} m");
+    }
 }

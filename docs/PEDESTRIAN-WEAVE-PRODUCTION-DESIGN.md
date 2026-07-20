@@ -227,7 +227,7 @@ Edge-join width smoothing; optional heading-from-offset derivative; the per-ped-
 ### Tracker
 - [x] **W1** evaluator injection + seed + `CenterShift` + server==IG bit-exact unit test *(DONE: `PathArcMotion.SampleAt`, `ActivityTimeline` weave in `Evaluate`, `WalkSegment.HalfWidths`, `Seed`/`GlobalSeed` + wire; `WeaveEvaluatorTests` 5/5 — weave-off byte-identical, pose==centre+n̂·(c+off), server==IG bit-for-bit, endpoint taper; full gate 649+3, ped 200/200)*
 - [x] **W2** piecewise per-vertex width threaded from `PedLane` (0.5 fallback); clamp ≤ baked half everywhere *(DONE: W2a `BakedPolygon.HalfWidth` + `SumoNavMesh.HalfWidthsAlong` [Sonnet, reviewed]; `IPedNavigation.HalfWidthsAlong` default method; `PedDemandConfig.EnableWeave` (default off) wires per-vertex widths + `WeaveSalt` seed + `GlobalSeed` into `BuildLivelyTimeline`. `PedDemandWeaveTests`: weaves >0.2 m yet stays ≤ baked half on the real POC-0 route, deterministic. Gate 649+3, ped 206/206)*
-- [ ] **W3** `HeadlessIg` decodes new fields; reconstruction exact on the weave path
+- [x] **W3** `HeadlessIg` decodes new fields; reconstruction exact on the weave path *(DONE, verification-only — no production change: a weaving lively ped run through the real `PedReplicationPublisher` → byte-loopback bus → `PedReplicationReceiver` → `HeadlessIg.ReconstructSample` matches the server pose bit-for-bit across the leg, with the weave confirmed active (max lateral > 0.2 m). `PedReplicationRoundTripTests.ServerEqualsIg_OverTheWire_ForWeavingActivityTimeline`; ped suite 207/207)*
 - [ ] **W4** demote re-anchor `l_r` (project frozen pose → centreline); no-pop seam < 1e-9; D2 assertions ported
 - [ ] **W-polish** (deferred) edge-join width smoothing + heading polish + per-ped demote timing
 
