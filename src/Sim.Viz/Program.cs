@@ -68,6 +68,7 @@ internal static class Program
             "--ped-lively-crowd" => RunPedLivelyCrowd(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
+            "--ped-weave-csv" => RunPedWeaveCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -429,6 +430,57 @@ internal static class Program
     // pedestrian half of the shared car+ped replay (P8-5, sub-area session), which sim_viz renders
     // beside the box's vehicle FCD. See docs/PEDESTRIAN-P8-3/-P8-4 designs + PEDESTRIAN-P8-BACKLOG.md.
     // ---------------------------------------------------------------------------------------
+    // PED-REALISM-1 Prototype 1 (docs/PEDESTRIAN-PLANNING-INTENTS.md Section 9): dump low-power ped
+    // trajectories with LateralWeave applied, over a straight corridor with two OPPOSING streams, so the
+    // weave's LOOK can be plotted (trails) and judged before wiring it into the recorder / synthetic mesh.
+    // CSV columns: ped,dir,x,y (dir = +1 eastbound / -1 westbound). A visual prototype tool; off the parity path.
+    private static int RunPedWeaveCsv(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-weave-csv requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        const double length = 60.0;   // corridor length (m)
+        const double halfWidth = 2.0; // sidewalk half-width (m) -> 4 m walk
+        const int perStream = 40;     // peds per direction
+        const double ds = 0.5;        // trajectory sample step (m)
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("ped,dir,x,y\n");
+
+        // Eastbound (+x): right-normal (rotate tangent -90 deg) = (0,-1) -> right side is -y.
+        // Westbound (-x): right-normal = (0,+1) -> right side is +y. Opposing streams therefore separate to
+        // -y and +y by travel-direction keep-right, with no coordination.
+        for (var stream = 0; stream < 2; stream++)
+        {
+            var dir = stream == 0 ? 1 : -1;
+            var rightY = dir == 1 ? -1.0 : 1.0;
+            for (var i = 0; i < perStream; i++)
+            {
+                var seed = (ulong)((stream * 100_000) + i + 1);
+                var pedId = (stream * perStream) + i;
+                for (var s = 0.0; s <= length + 1e-9; s += ds)
+                {
+                    var cx = dir == 1 ? s : length - s; // centreline x by travel direction
+                    var off = Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth, wp);
+                    var y = rightY * off;
+                    sb.Append(pedId).Append(',').Append(dir).Append(',')
+                      .Append(cx.ToString("F3", inv)).Append(',')
+                      .Append(y.ToString("F3", inv)).Append('\n');
+                }
+            }
+        }
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}  streams=2 perStream={perStream} length={length} halfWidth={halfWidth}");
+        return 0;
+    }
+
     private static int RunPedSubareaFcd(string[] args)
     {
         if (args.Length < 2)
