@@ -1,8 +1,10 @@
 # PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md — low-power peds must stop passing through each other (PROBLEM + directions)
 
-**Status: OPEN task — problem recorded, needs a design + implementation.** Priority: **high** (a visible,
-pervasive realism failure). This is a problem statement and a survey of candidate directions, not an agreed
-design yet. Tracked in `PEDESTRIAN-TRACKER.md` as **PED-REALISM-1**.
+**Status: mechanism validated in a single-corridor prototype (§7); production seam requirements captured
+(§8); not yet promoted into the real multi-segment low-power motion path.** Priority: **high** (a visible,
+pervasive realism failure). §1–6 are the original problem + directions; §7 is the validated `LateralWeave`
+prototype; §8 is what the real product must add (route continuity, endpoint anchoring, junction hand-off).
+Tracked in `PEDESTRIAN-TRACKER.md` as **PED-REALISM-1**.
 
 ## 1. The problem (observed)
 
@@ -84,3 +86,46 @@ Ordered by how well they fit the purity constraint:
   decide behaviour there (likely: offset only on sidewalk legs, centerline through areas, or a slot that
   survives the crossing).
 - This is orthogonal to appearance-legitimacy (P8-2) and density (P8-4); it is a *motion realism* axis.
+
+## 7. Prototype 1 — validated mechanism (single corridor)
+
+Built as `Sim.Pedestrians.Lod.LateralWeave` + the `--ped-weave-csv` trails harness. Validated visually over
+two opposing streams on a straight corridor:
+- `Offset(s, seed, room)` — a keep-right-biased **lane plan** (seeded target per ~30 m, smooth transition),
+  **per-ped phase** (lane changes desynchronised), **micro-wander** (no dead-straight lines), `MinFrac=0` so
+  peds fill the width from the centreline outward (no dead middle channel). Pure, O(1)/sample, deterministic.
+- `CenterShift(x, now, globalSeed)` — a **shared moving interface** (dividing line) between the two
+  counterflows: a spatiotemporal field from ONE global seed, so it meanders along the corridor **and** drifts
+  in time; each stream keeps to its own side (squeeze/widen breathing). A shared deterministic field
+  (`PLANNING-INTENTS` §3) → both server and IG compute the identical `c(x, now)`; no per-ped/neighbour state.
+
+server==IG holds because every term is a pure function of the ped's own route+seed and the global-seed field,
+evaluated at the reconstruction `now`.
+
+## 8. Production requirements the prototype does NOT cover (CARRY FORWARD)
+
+The prototype tapers the offset **and** the interface to 0 at the corridor ends purely so a single straight
+corridor's spawn/arrival land cleanly. **That is a prototype convenience and must NOT survive into the real
+product** — a route is a chain of segments, and pinning to centreline at every join would funnel everyone to
+the middle at each junction (robotic). Required for production:
+
+1. **Weave continuously along the WHOLE ROUTE.** Arc-length `s` runs over the whole O→D route; the endpoint
+   taper/anchor applies ONLY at the true origin and destination, never at intermediate segment joins. Across
+   a join within a corridor the lateral offset is continuous (same value leaving segment A = entering B).
+2. **Anchor endpoints to the ACTUAL spawn/arrival lateral position, not centreline.** The origin/destination
+   are real points (a building doorway on the building side, a fringe/POI point) with their own lateral
+   position; the lead-in/out blends to THAT, not to y=0.
+3. **Smooth junction / walkingArea hand-off.** Where the route crosses an open area (a junction/crossing)
+   the "sides"/interface are undefined, so the offset must **blend smoothly through** the area (relax toward
+   a neutral, re-establish on the next edge) — a smooth interpolation, never a snap to centreline. A ped's
+   lateral "slot" ideally survives the crossing.
+4. **Per-edge (per-corridor) shared interface.** `CenterShift` is a property of an edge/corridor of collinear
+   edges, not the whole route: `c_edge(x_along_edge, now)`, seeded per edge (derivable from `edge_fields`).
+   A ped traversing a corridor shares one interface; at a turn onto a new corridor it transitions smoothly
+   between the two interfaces' frames. Still IG-reconstructable — the IG has the route (broadcast), the
+   broadcast-once `edge_fields`, and `now`.
+
+These are the seam requirements for promoting `LateralWeave` from the single-corridor prototype into the
+real low-power motion path (route-arc-length continuity + junction blend + endpoint anchoring). The next
+prototype should be a **multi-segment route with a bend**, showing the offset flow continuously across the
+join and anchor only at the true O/D.
