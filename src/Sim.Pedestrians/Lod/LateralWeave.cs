@@ -79,6 +79,15 @@ public static class LateralWeave
         }
 
         var s0 = s < 0.0 ? 0.0 : (s > routeLength ? routeLength : s);
+        return OffsetInterior(s0, seed, halfWidth, p) * EndpointTaper(s0, routeLength, p.EndpointTaperMeters);
+    }
+
+    // The un-tapered lane value (metres, right side) at arc-length `s` -- the keep-right lane plan + micro-wander,
+    // clamped to [0, halfWidth], BEFORE the endpoint taper. Split out so a resume leg (OffsetWithResume) can
+    // blend to the interior weave without re-imposing a START taper at a demote seam that is not a true endpoint
+    // (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md Section 8: anchor tapers to the ACTUAL O/D, not every leg).
+    private static double OffsetInterior(double s0, ulong seed, double halfWidth, in WeaveParams p)
+    {
         var wl = p.WavelengthMeters > 1e-6 ? p.WavelengthMeters : 1e-6;
 
         // Per-ped PHASE offset on the lane segmentation so peds do NOT all change lane at the same arc-length
@@ -112,9 +121,43 @@ public static class LateralWeave
         }
 
         // Keep it on the ped's own (right) half and inside the kerb: never cross the centreline (so opposing
-        // flows always separate) and never past halfWidth. MinFrac (> MicroAmp) keeps the lower clamp positive.
-        var clamped = lane < 0.0 ? 0.0 : (lane > halfWidth ? halfWidth : lane);
-        return clamped * EndpointTaper(s0, routeLength, p.EndpointTaperMeters);
+        // flows always separate) and never past halfWidth.
+        return lane < 0.0 ? 0.0 : (lane > halfWidth ? halfWidth : lane);
+    }
+
+    // The DEMOTE-RESTORE (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md Section 10.2, the load-bearing "restore"
+    // step of Prototype D): after a reactive ORCA excursion (e.g. a stream-crossing) the ped is re-anchored on a
+    // FRESH low-power leg. `sPrime` is arc-length along that fresh leg (0 at the demote instant). `resumeLateral`
+    // (l_r) is the ped's projected lateral offset at demote -- the ONE extra scalar on the wire. The pose blends
+    // (smoothstep over `leadInMeters`) from l_r to the ordinary interior weave, so it is CONTINUOUS across the
+    // demote (NO POP: at sPrime==0 this returns exactly l_r) and converges to the pure lane plan. Pure +
+    // deterministic => server==IG is exact again from the demote instant. The ARRIVAL endpoint still tapers to 0
+    // (true O/D anchoring), but there is deliberately no START taper -- the demote is not a true endpoint.
+    public static double OffsetWithResume(
+        double sPrime, double routeLength, ulong seed, double halfWidth,
+        double resumeLateral, double leadInMeters, in WeaveParams p)
+    {
+        if (routeLength <= 0.0)
+        {
+            return 0.0;
+        }
+
+        var s0 = sPrime < 0.0 ? 0.0 : (sPrime > routeLength ? routeLength : sPrime);
+        var lane = halfWidth <= 0.0 ? 0.0 : OffsetInterior(s0, seed, halfWidth, p);
+
+        double blended;
+        if (leadInMeters > 1e-6 && s0 < leadInMeters)
+        {
+            var u = SmoothStep(s0 / leadInMeters); // 0 at demote -> 1 after the lead-in
+            blended = resumeLateral + ((lane - resumeLateral) * u);
+        }
+        else
+        {
+            blended = lane;
+        }
+
+        // Only the ARRIVAL end tapers (converge to the true endpoint); the demote seam does not.
+        return blended * ArrivalTaper(s0, routeLength, p.EndpointTaperMeters);
     }
 
     // The SHARED, moving interface between two counterflowing streams (PED-REALISM-1: "the crowd has a moving
@@ -173,6 +216,19 @@ public static class LateralWeave
         var down = (routeLength - s) / taper;
         var t = Math.Min(up, down);
         return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    }
+
+    // Only the ARRIVAL-end ramp (0 at s==routeLength, 1 by `taper` metres before it) -- used by the resume leg,
+    // whose START is a demote seam (no taper) but whose END is a true arrival (must converge to the endpoint).
+    private static double ArrivalTaper(double s, double routeLength, double taper)
+    {
+        if (taper <= 1e-6)
+        {
+            return 1.0;
+        }
+
+        var down = (routeLength - s) / taper;
+        return down < 0.0 ? 0.0 : (down > 1.0 ? 1.0 : down);
     }
 
     private static double SmoothStep(double x)

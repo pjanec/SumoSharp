@@ -107,6 +107,45 @@ public class LateralWeaveTests
     }
 
     [Fact]
+    public void OffsetWithResume_NoPop_AtDemoteSeam()
+    {
+        // Prototype D restore (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md 10.2): at sPrime==0 the resume leg
+        // must return EXACTLY the resume-lateral l_r -- the pose is continuous across the demote (no pop),
+        // whatever l_r the ORCA excursion projected to.
+        foreach (var lr in new[] { 0.0, 0.3, 1.1, 1.9, -0.5 })
+        {
+            var at0 = LateralWeave.OffsetWithResume(0.0, RouteLen, seed: 55, HalfWidth, resumeLateral: lr, leadInMeters: 8.0, P);
+            Assert.Equal(lr, at0, precision: 12);
+        }
+    }
+
+    [Fact]
+    public void OffsetWithResume_ConvergesToPureWeave_AfterLeadIn()
+    {
+        // After the lead-in the resume leg must equal the ordinary interior weave (the l_r memory is gone) --
+        // so the ped is back on its deterministic lane plan, server==IG exact. Compared against the plain Offset
+        // in the interior (away from either endpoint taper, where Offset == its own interior value).
+        const double leadIn = 8.0;
+        for (var sp = leadIn + 2.0; sp <= RouteLen - 10.0; sp += 0.5)
+        {
+            var resume = LateralWeave.OffsetWithResume(sp, RouteLen, seed: 55, HalfWidth, resumeLateral: 1.7, leadInMeters: leadIn, P);
+            var pure = LateralWeave.Offset(sp, RouteLen, seed: 55, HalfWidth, P);
+            Assert.Equal(pure, resume, precision: 12);
+        }
+    }
+
+    [Fact]
+    public void OffsetWithResume_Deterministic_AndArrivalTapersToZero()
+    {
+        // Pure/deterministic (server==IG rests on it) and the ARRIVAL end still converges to the true endpoint,
+        // even though the demote START does not taper.
+        var a = LateralWeave.OffsetWithResume(12.0, RouteLen, seed: 9, HalfWidth, 1.2, 8.0, P);
+        var b = LateralWeave.OffsetWithResume(12.0, RouteLen, seed: 9, HalfWidth, 1.2, 8.0, P);
+        Assert.Equal(a, b, precision: 15);
+        Assert.Equal(0.0, LateralWeave.OffsetWithResume(RouteLen, RouteLen, seed: 9, HalfWidth, 1.2, 8.0, P), precision: 12);
+    }
+
+    [Fact]
     public void DifferentSeeds_DifferentLaneSequences()
     {
         // Two peds fan into a band: their lane sequences differ, so a same-direction flow is not a single line.

@@ -290,10 +290,34 @@ stopped ped so local followers promote, avoid, and demote when it clears — rar
 | A | straight-corridor weave + moving interface *(BUILT — `--ped-weave-csv`)* | §7 | opposing flows separate; bands not lanes; centre populated; interface meanders in space+time | the core weave look | — |
 | B | multi-segment route with a bend *(BUILT — `--ped-weave-bend-csv`)* | §8-1/§8-3 | offset flows continuously through the corner; anchors only at true O/D | route continuity + junction hand-off | — |
 | C | **activity lateral-override (low-power)** | §9a, §10.1 | a ped drifts to the kerb → Pause(phone) → rejoins; a ped drifts to a doorway → hidden; neighbours unaffected; **server==IG exact** (bit-identical reconstruction) | the lateral-profile API; that most behaviours need NO ORCA | §10.1 API |
-| D | **cross-stream ORCA excursion + restore** | §9b, §10.2 | a low-power ped promotes, reactively crosses the counterflow to a far-side POI, demotes; resumes the deterministic weave **with no pop**; server==IG **exact before promote and after demote**, within-tolerance during | the promote/demote/re-anchor loop; the "restore" | §10.2 wire delta (`l_r`), P3-3 |
+| D | **cross-stream ORCA excursion + restore** *(BUILT — `--ped-weave-cross-csv`)* | §9b, §10.2 | a low-power ped promotes, reactively crosses the counterflow to a far-side POI, demotes; resumes the deterministic weave **with no pop**; server==IG **exact before promote and after demote**, within-tolerance during | the promote/demote/re-anchor loop; the "restore" | §10.2 wire delta (`l_r`), P3-3 |
 | E | **composed demo on the synthetic mesh** | §9 all + density | weave + all 9a behaviours + a few 9b crossings at the calibrated density read as a believable crowd; no pass-throughs in the low-power bulk; crossings avoid cleanly | the whole story end-to-end | SumoData synthetic mesh + `edge_fields.json` |
 
 Sequencing: C is next and unblocked (pure low-power, on a clean box) — it proves the lateral-profile API and
 that 9a needs no ORCA. D follows (the one genuinely-reactive case, end-to-end). E is the acceptance demo and
 waits on the synthetic mesh. Each prototype must show its **server==IG** column literally (a reconstruction
 diff), not just look right — the same "necessary, not sufficient" discipline as the navmesh witnesses.
+
+### 11.1 Prototype D result (measured)
+`--ped-weave-cross-csv` runs the whole loop on a 50 m corridor: an eastbound low-power ped weaving on the
+south half is assigned a café POI on the north kerb; it promotes at arc 24 m, crosses the westbound
+counterflow via the **real `OrcaCrowd` solver** (the local stream cohort is promoted with it and reciprocally
+parts), reaches the café (≈9.4 s excursion), then demotes onto a fresh eastbound low-power leg that resumes
+the weave on the north half via `LateralWeave.OffsetWithResume(l_r=1.85 m, leadIn=8 m)`. The command prints
+the §11 server==IG column literally:
+
+| span | max ‖server − IG‖ | why |
+|---|---|---|
+| before promote | **0** (exact) | pure `Offset` — IG recomputes bit-identically |
+| during excursion | **0.10 m** | broadcast high-power samples (0.4 s), DR-interpolated — within the P3-3 ≤0.25 m render tolerance |
+| after demote | **0** (exact) | fresh leg + the one `l_r` scalar — IG recomputes `OffsetWithResume` bit-identically |
+
+And the two seams that de-risk the "no pop" claim:
+- **promote seam** ‖Δ‖ = 3.6×10⁻¹⁵ m — ORCA is seeded at the exact weave pose.
+- **demote seam** ‖Δ‖ = 0 m — `l_r` is *defined* as the ORCA arrival lateral, and `OffsetWithResume(sPrime=0)==l_r`
+  by construction, so position is continuous to machine precision; the lane plan then blends in over `leadIn`.
+
+The load-bearing restore math (`OffsetWithResume`, `OffsetInterior`, arrival-only taper) is a pure function in
+`LateralWeave`, unit-pinned in `LateralWeaveTests` (no-pop at the seam; convergence to the pure weave after the
+lead-in; arrival taper; determinism). This is the concrete evidence for §10.2/§10.3: the exactly-reconstructed
+low-power spans dominate, and only the broadcast excursion is (bounded) approximate.

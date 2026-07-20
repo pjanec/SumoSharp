@@ -72,6 +72,7 @@ internal static class Program
             "--ped-weave-bend-csv" => RunPedWeaveBendCsv(args),
             "--ped-weave-anim-csv" => RunPedWeaveAnimCsv(args),
             "--ped-weave-density-csv" => RunPedWeaveDensityCsv(args),
+            "--ped-weave-cross-csv" => RunPedWeaveCrossCsv(args),
             _ => RunSingle(args),
         };
     }
@@ -710,6 +711,240 @@ internal static class Program
         System.IO.File.WriteAllText(outPath, sb.ToString());
         Console.WriteLine($"wrote {outPath}  spawnEvery={spawnEvery.ToString("F2", inv)}s length={length} (pure ambient counterflow)");
         return 0;
+    }
+
+    // PROTOTYPE D (docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md §9b / §10.2 / §11 row D): the one genuinely-
+    // reactive case, end to end. A low-power eastbound ped, weaving on the south half, is assigned a far-side
+    // café POI on the north kerb. It (1) PROMOTES, (2) crosses the westbound counterflow via the REAL OrcaCrowd
+    // solver -- the stream reciprocally parts -- reaching the café, then (3) DEMOTES onto a fresh low-power leg
+    // that RESUMES the deterministic weave via LateralWeave.OffsetWithResume, blending from the resume-lateral
+    // l_r with NO POP. The command also emits the IG RECONSTRUCTION of the crosser and prints the literal
+    // server==IG report (§11's mandatory column): EXACT (~1e-12) before promote and after demote (pure weave),
+    // within render tolerance during the excursion (the broadcast high-power samples, DR-interpolated).
+    private static int RunPedWeaveCrossCsv(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --ped-weave-cross-csv requires an output path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        const double length = 50.0, halfWidth = 2.0, dt = 0.2, radius = 0.25;
+        const double crosserSpeed = 1.4, streamSpeed = 1.2;
+        const double sxPromote = 24.0;              // arc where the crosser starts heading for the café
+        const double xPoi = 32.0, yPoi = halfWidth - 0.15; // café entrance on the north kerb
+        const double leadIn = 8.0;                  // resume blend length (metres)
+        const double broadcastEvery = 0.4;          // high-power sample period during the excursion (s)
+        const ulong seedC = 1234UL, seedR = 5678UL, streamSeed0 = 900UL;
+        var wp = Sim.Pedestrians.Lod.WeaveParams.Default;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("frame,x,y,kind\n");
+
+        // --- crosser low-power pose helpers (pure weave; server==IG exact) ---
+        double SouthWeaveY(double s) => -Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seedC, halfWidth, wp);
+
+        // Promote instant.
+        var tPromote = sxPromote / crosserSpeed;
+        var p0x = sxPromote;
+        var p0y = SouthWeaveY(sxPromote);
+
+        // --- run the REAL ORCA excursion once, up front, recording the crosser path + the parting cohort ---
+        var crowd = new Sim.Core.Orca.OrcaCrowd(capacity: 32) { RemoveOnArrival = false, ArrivalRadius = 0.25 };
+        var crosser = crowd.Add(new Sim.Core.Orca.Vec2(p0x, p0y), radius, crosserSpeed, new Sim.Core.Orca.Vec2(xPoi, yPoi));
+
+        // A localized westbound cohort near the café is promoted with the crosser (§9c: the region promotes).
+        // Deterministic placement + goals (walk west), so the run is reproducible; no System.Random.
+        var cohort = new List<Sim.Core.Orca.OrcaHandle>();
+        for (var j = 0; j < 11; j++)
+        {
+            var cx = (xPoi - 9.0) + (j * 1.8);
+            var cs = length - cx;                                   // westbound arc at that x
+            var cy = Sim.Pedestrians.Lod.LateralWeave.Offset(cs, length, streamSeed0 + (ulong)j, halfWidth, wp); // north half
+            cohort.Add(crowd.Add(new Sim.Core.Orca.Vec2(cx, cy), radius, streamSpeed, new Sim.Core.Orca.Vec2(-100.0, cy)));
+        }
+
+        // Step until the crosser reaches the café (bounded). Record per-step positions keyed by excursion frame.
+        var exCrosser = new List<(double x, double y)>();
+        var exCohort = new List<List<(double x, double y)>>();
+        var maxExSteps = (int)(14.0 / dt);
+        for (var step = 0; step < maxExSteps; step++)
+        {
+            var pc = crowd.Position(crosser);
+            exCrosser.Add((pc.X, pc.Y));
+            var row = new List<(double x, double y)>();
+            foreach (var h in cohort)
+            {
+                var pp = crowd.Position(h);
+                row.Add((pp.X, pp.Y));
+            }
+            exCohort.Add(row);
+
+            var d = new Sim.Core.Orca.Vec2(xPoi, yPoi) - pc;
+            if (d.Abs <= 0.25)
+            {
+                break;
+            }
+
+            crowd.Step(dt);
+        }
+
+        var exSteps = exCrosser.Count;
+        var tDemote = tPromote + ((exSteps - 1) * dt);
+        var (xEnd, yEnd) = exCrosser[exSteps - 1];   // actual ORCA arrival -> the demote anchor (exact seam)
+        var lr = yEnd;                                // resume-lateral l_r: the ONE extra wire scalar (§10.2)
+        var resumeLen = length - xEnd;                // remaining corridor for the fresh eastbound leg
+
+        // --- resume (post-demote) pose: fresh low-power leg on the NORTH side, blends l_r -> lane plan, no pop ---
+        (double x, double y) ResumePose(double now)
+        {
+            var sp = crosserSpeed * (now - tDemote);
+            var off = Sim.Pedestrians.Lod.LateralWeave.OffsetWithResume(sp, resumeLen, seedR, halfWidth, lr, leadIn, wp);
+            return (xEnd + sp, off); // north side (+y)
+        }
+
+        // --- IG reconstruction of the crosser: pure weave before/after (exact); DR-interpolated broadcast during.
+        // Broadcast sample indices (every `broadcastEvery`s) of the excursion; IG lerps between the last two.
+        (double x, double y) IgReconExcursion(double now)
+        {
+            var tt = now - tPromote;
+            var last = (int)Math.Floor(tt / broadcastEvery) * (int)Math.Round(broadcastEvery / dt);
+            var next = last + (int)Math.Round(broadcastEvery / dt);
+            last = Math.Clamp(last, 0, exSteps - 1);
+            next = Math.Clamp(next, 0, exSteps - 1);
+            var tLast = last * dt;
+            var frac = next == last ? 0.0 : Clamp01((tt - tLast) / ((next - last) * dt));
+            var a = exCrosser[last];
+            var b = exCrosser[next];
+            return (Lerp(a.x, b.x, frac), Lerp(a.y, b.y, frac));
+        }
+
+        // --- emit the animation + the reconstruction overlay, and accumulate the server==IG error report ---
+        double errBefore = 0, errDuring = 0, errAfter = 0;
+        var tMax = tDemote + (resumeLen / crosserSpeed) + 1.0;
+        for (var f = 0; f * dt <= tMax + 1e-9; f++)
+        {
+            var now = f * dt;
+
+            // Ambient counterflow context (pure weave), suppressed in the café window during the excursion.
+            EmitAmbientStreams(sb, f, now, length, halfWidth, wp, inv, xPoi, tPromote, tDemote, streamSeed0);
+
+            // Café marker.
+            sb.Append(f).Append(',').Append(xPoi.ToString("F2", inv)).Append(',')
+              .Append(yPoi.ToString("F2", inv)).Append(",poi\n");
+
+            // SERVER crosser pose by phase.
+            double sx, sy; string kind;
+            if (now < tPromote)
+            {
+                var s = crosserSpeed * now;
+                sx = s; sy = SouthWeaveY(s); kind = "cx_weave";
+            }
+            else if (now <= tDemote + 1e-9)
+            {
+                var idx = Math.Clamp((int)Math.Round((now - tPromote) / dt), 0, exSteps - 1);
+                (sx, sy) = exCrosser[idx]; kind = "cx_orca";
+            }
+            else
+            {
+                (sx, sy) = ResumePose(now); kind = "cx_resume";
+            }
+
+            if (sx <= length + 1e-9)
+            {
+                sb.Append(f).Append(',').Append(sx.ToString("F3", inv)).Append(',')
+                  .Append(sy.ToString("F3", inv)).Append(',').Append(kind).Append('\n');
+            }
+
+            // IG RECONSTRUCTION crosser pose + running max error vs server.
+            double rx, ry;
+            if (now < tPromote)
+            {
+                var s = crosserSpeed * now; rx = s; ry = SouthWeaveY(s);
+                errBefore = Math.Max(errBefore, Math.Abs(rx - sx) + Math.Abs(ry - sy));
+            }
+            else if (now <= tDemote + 1e-9)
+            {
+                (rx, ry) = IgReconExcursion(now);
+                errDuring = Math.Max(errDuring, Math.Sqrt(((rx - sx) * (rx - sx)) + ((ry - sy) * (ry - sy))));
+            }
+            else
+            {
+                (rx, ry) = ResumePose(now); // IG recomputes the identical fresh leg from (xEnd, l_r, seedR, leadIn)
+                errAfter = Math.Max(errAfter, Math.Abs(rx - sx) + Math.Abs(ry - sy));
+            }
+
+            if (rx <= length + 1e-9)
+            {
+                sb.Append(f).Append(',').Append(rx.ToString("F3", inv)).Append(',')
+                  .Append(ry.ToString("F3", inv)).Append(",recon\n");
+            }
+
+            // ORCA cohort (the parting stream) during the excursion window.
+            if (now >= tPromote && now <= tDemote + 1e-9)
+            {
+                var idx = Math.Clamp((int)Math.Round((now - tPromote) / dt), 0, exSteps - 1);
+                foreach (var (cx, cy) in exCohort[idx])
+                {
+                    sb.Append(f).Append(',').Append(cx.ToString("F3", inv)).Append(',')
+                      .Append(cy.ToString("F3", inv)).Append(",west_orca\n");
+                }
+            }
+        }
+
+        // --- the two NO-POP seams, measured exactly ---
+        var promoteJump = Math.Sqrt(((p0x - (crosserSpeed * tPromote)) * (p0x - (crosserSpeed * tPromote)))
+                                    + ((p0y - SouthWeaveY(crosserSpeed * tPromote)) * (p0y - SouthWeaveY(crosserSpeed * tPromote))));
+        var (r0x, r0y) = ResumePose(tDemote + (dt * 0)); // resume at s'=0
+        var demoteJump = Math.Sqrt(((xEnd - r0x) * (xEnd - r0x)) + ((yEnd - r0y) * (yEnd - r0y)));
+
+        System.IO.File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"wrote {outPath}  excursion={exSteps} steps  tPromote={tPromote:F1}s tDemote={tDemote:F1}s  l_r={lr:F3}m");
+        Console.WriteLine("server==IG reconstruction (§11 column):");
+        Console.WriteLine($"  before promote : max|Δ| = {errBefore:E2} m   (pure weave -> EXACT)");
+        Console.WriteLine($"  during excursion: max|Δ| = {errDuring:F3} m   (broadcast DR-interp -> within render tol ≤0.25 m)");
+        Console.WriteLine($"  after demote   : max|Δ| = {errAfter:E2} m   (fresh leg + l_r -> EXACT)");
+        Console.WriteLine("no-pop seams:");
+        Console.WriteLine($"  promote seam   : |Δ| = {promoteJump:E2} m   (ORCA seeded at the weave pose)");
+        Console.WriteLine($"  demote  seam   : |Δ| = {demoteJump:E2} m   (l_r := ORCA arrival -> OffsetWithResume(0)==l_r)");
+        return 0;
+    }
+
+    // Ambient counterflow context for Prototype D: an eastbound (south) + westbound (north) weave stream, but the
+    // westbound peds are SUPPRESSED inside the café x-window during the excursion (that region is the ORCA cohort).
+    private static void EmitAmbientStreams(
+        System.Text.StringBuilder sb, int f, double now, double length, double halfWidth,
+        Sim.Pedestrians.Lod.WeaveParams wp, System.Globalization.CultureInfo inv,
+        double xPoi, double tPromote, double tDemote, ulong streamSeed0)
+    {
+        const double dt = 0.2, spawnEvery = 1.6, speed = 1.25;
+        for (var stream = 0; stream < 2; stream++)
+        {
+            var dir = stream == 0 ? 1 : -1;
+            for (var k = -30; k <= 30; k++)
+            {
+                var startT = k * spawnEvery;
+                var seed = (ulong)((stream * 5000) + k + 100000);
+                var s = speed * (now - startT);
+                if (s < 0.0 || s > length)
+                {
+                    continue;
+                }
+
+                var a = dir == 1 ? s : length - s;
+                var off = Sim.Pedestrians.Lod.LateralWeave.Offset(s, length, seed, halfWidth, wp);
+                var y = dir == 1 ? -off : off; // east south, west north
+                // Suppress westbound peds in the café window during the excursion (they ARE the ORCA cohort).
+                if (dir == -1 && now >= tPromote && now <= tDemote + 1e-9 && a > xPoi - 10.0 && a < xPoi + 10.0)
+                {
+                    continue;
+                }
+
+                sb.Append(f).Append(',').Append(a.ToString("F3", inv)).Append(',')
+                  .Append(y.ToString("F3", inv)).Append(',').Append(dir == 1 ? "east" : "west").Append('\n');
+            }
+        }
     }
 
     private static void AppendPhoneActor(
