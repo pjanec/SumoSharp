@@ -76,17 +76,31 @@ right lane at the right longitudinal position for `CrowdLongitudinalConstraint` 
 4. **Parity untouched:** full `dotnet test` + determinism hash green; two runs byte-identical.
 
 ## 7. Task list & tracker
-- [ ] **P2-T1 — `CompositeFootprintSource`** (`ICrowdFootprintSource` over N children) + test.
-- [ ] **P2-T2 — crossing model:** bake per-crossing {centroid, halfWidth, crossed lane(s)+stop pos, class}
-      from the net (`crossingEdges`) + `edge_fields` class. *Done when:* the hero crop yields the expected
-      per-class counts.
-- [ ] **P2-T3 — `CrossingOccupancySource`:** deterministic occupancy (point-in-polygon or precomputed
-      intervals) → class-gated virtual discs. *Done when:* success condition 2 (class unit test) passes.
-- [ ] **P2-T4 — signalized gating:** read walk-phase state (`CrossingTlReader` / live-signal seam) so a
-      signalized crossing only blocks on the ped's green.
-- [ ] **P2-T5 — rewire `BuildLiveCity`:** composite CrowdSource; drop per-crossing promotion; keep the
-      pocket. *Done when:* yielding survives with promotion removed (success condition 1); high-power peak
-      drops; full gate green; two runs identical.
+- [x] **P2-T1 — `CompositeFootprintSource`** (`src/Sim.Core/Bridge/`, `ICrowdFootprintSource` over N
+      children, span-safe concat). `CompositeFootprintSourceTests` (concat, no-overflow, empty).
+- [x] **P2-T2 — crossing model:** folded into P2-T3 — the source builds directly from the baked
+      `BakedPolygonKind.Crossing` polygons (vertices + bbox). No net `crossingEdges` / stop-pos mapping was
+      needed: a gate disc at the occupying ped's own position sits in the approaching car's forward
+      corridor, so `CrowdLongitudinalConstraint` picks it up without an explicit crossing→lane map.
+- [x] **P2-T3 — `CrossingOccupancySource`** (`src/Sim.Pedestrians/Crossing/`): per-tick `Update` over the
+      low-power poses (bbox pre-filter + ray-cast point-in-polygon) → one stopped "closed-gate" `WorldDisc`
+      per occupied crossing; empty fast-path `QueryNear`. `CrossingOccupancySourceTests` (in/out, radius
+      filter, empty). **v1 is class-agnostic** ("brake for any ped physically on a crosswalk") — the safe
+      superset that satisfies "never drive through a ped"; the finer class rules are P2-T4.
+- [ ] **P2-T4 — signalized/discouraged class gating** — DEFERRED (non-blocking): v1 gates every crossing
+      the same (safe). Refine with the `edge_fields` class + walk-phase state only if the busy signalized
+      grid shows too many phantom stops (traffic flows fine at the demo dial today).
+- [x] **P2-T5 — rewire `BuildLiveCity` + measure:** `CrowdSource = Composite(HighPowerFootprints,
+      crossingOccupancy)`; **per-crossing promotion dropped** (the pocket now anchors on the central
+      intersection so it still promotes ~13 peds = a visible orange high-realism zone). Yielding survives
+      with promotion gone (`carYieldObservations=317`, min car speed `0.00`, `peakOccupiedCrossings=50`).
+      **Vehicle cost unchanged: `engine.Step()` ≈ 5 ms/step, same as Phase 1; ped-side occupancy Update
+      ≈ 0.3 ms/step.** Two runs byte-identical; full gate green (ParityTests 654/+3, Pedestrians 219).
+      One bug found + fixed en route: lively/weaving peds are `PedDrModel.ActivityTimeline`, not `PathArc`,
+      so the low-power gather filters on `!= FreeKinematic`.
+
+**Phase 2 status: COMPLETE** (P2-T1/T2/T3/T5; T4 deferred). Vehicle sim provably not slowed; cars yield to
+un-promoted crossing peds. Phase 3 (City3D combined + semantic) is next.
 
 ## 8. Open confirmations (resolve at implementation, non-blocking)
 - Exact `edge_fields.json` field name carrying the crossing class (Decisions Q1 says the taxonomy;

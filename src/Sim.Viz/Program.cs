@@ -376,6 +376,11 @@ internal static class Program
             $"wrote {outPath}  ({size} bytes)  frames={scene.Frames.Length} view={scene.View[0]},{scene.View[1]}..{scene.View[2]},{scene.View[3]} "
             + $"crossings={crossings.Count} maxCars={maxCars} maxPeds={maxPeds} maxHighPower={maxHigh} "
             + $"carYieldObservations={yieldObservations} minCarSpeedNearOccupiedCrossing={minSpeedStr} m/s");
+        // Phase-2 vehicle-cost evidence: the cars' engine.Step() total vs the ped-side occupancy Update.
+        Console.WriteLine(
+            $"  vehicle cost: engineStepTotal={SceneGen.LastEngineStepMillis:F0} ms over {scene.Frames.Length} steps "
+            + $"(~{SceneGen.LastEngineStepMillis / Math.Max(1, scene.Frames.Length):F2} ms/step); "
+            + $"crossingOccupancyUpdate(ped-side)={SceneGen.LastCrossingUpdateMillis:F0} ms; peakOccupiedCrossings={SceneGen.LastPeakOccupiedCrossings}");
         return 0;
     }
 

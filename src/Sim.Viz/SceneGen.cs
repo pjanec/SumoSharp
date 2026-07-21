@@ -39,6 +39,14 @@ internal static class SceneGen
     internal const int KindPedWaiter = 17;     // #fbbf24 -- LIVE-POC-3 waiter micro-scenario actor
     internal const int KindSafeZone = 18;      // #22c55e -- evac-district safe-zone (corner) marker
 
+    // Phase-2 live-city vehicle-cost diagnostics: total engine.Step() wall time (the cars' work, which now
+    // queries the composite CrowdSource) vs the ped-side crossing-occupancy Update time, plus the peak
+    // number of crossings occupied at once. Set by BuildLiveCity, read by Program.RunLiveCity. Timing only
+    // -- never affects the payload.
+    internal static double LastEngineStepMillis;
+    internal static double LastCrossingUpdateMillis;
+    internal static int LastPeakOccupiedCrossings;
+
     // ---------------------------------------------------------------------------------------
     // Scene C -- "Car avoids a pedestrian": the cross-regime bridge. A laneless-RVO lane vehicle
     // swerves around a person crossing the bridge lane. Driven end-to-end through the real Engine
@@ -1872,33 +1880,43 @@ internal static class SceneGen
         var demand = new Sim.Pedestrians.Demand.PedDemand(config, nav, manager, startTime: 0.0);
         var noEntities = Array.Empty<WorldDisc>();
 
-        // ---- W-A: seed the InterestField so peds promote to high-power ORCA (static sources, once) ----
-        var field = new InterestField();
-        // (i) per-crossing: any ped stepping onto a crosswalk promotes -> visible to cars -> car yields.
-        var cropCrossings = new List<Vec2>();
+        // Phase 2 crossing-yield: a cheap deterministic occupancy source over the crop's crossings. Each
+        // tick Update() (ped side) turns any low-power ped standing on a crosswalk into a virtual gate
+        // disc; the vehicle only ever pays a small QueryNear with an empty fast-path.
+        var cropCrossingPolys = new List<BakedPolygon>();
         foreach (var poly in polygons)
         {
-            if (poly.Kind != BakedPolygonKind.Crossing) continue;
-            if (!InV(poly.Centroid)) continue;
-            cropCrossings.Add(poly.Centroid);
-            // Tight promote radius (only peds actually on/entering the crosswalk go ORCA, so cars yield
-            // there) -- kept small on the dense downtown grid so the LOD contrast survives (a wide radius
-            // on 66 crossings would promote the whole crop).
-            var promote = poly.HalfWidth + 8.0;
-            field.Register(new InterestSource(poly.Centroid, promote, 2.0 * promote));
+            if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
         }
 
-        // (ii) high-realism pocket: one source at the crop centre -> a visible ORCA district amid the
-        // low-power weave (the LOD contrast). A pocket (~1/7 of the 840 m crop), not the whole block.
-        field.Register(new InterestSource(new Vec2(cx, cy), promoteRadius: 60.0, demoteRadius: 90.0));
+        // ---- W-A (Phase 2): promotion happens ONLY in the high-realism pocket, for realism -- NOT at
+        // crossings. Crossing-yield is handled by the CrossingOccupancySource, so a ped on a crosswalk
+        // stops cars WITHOUT being promoted (cheaper, and it works at every crossing). The pocket is
+        // anchored on the crop's central intersection (where pedestrians actually walk -- the geometric
+        // crop centre can fall mid-block), so a visible orange ORCA district sits amid the grey low-power
+        // weave: the LOD contrast, and a live demo of the OTHER yield path (cars yield to the promoted
+        // peds there via HighPowerFootprints). ----
+        var pocketCentre = new Vec2(cx, cy);
+        var bestD2 = double.PositiveInfinity;
+        foreach (var poly in cropCrossingPolys)
+        {
+            var d2 = (poly.Centroid.X - cx) * (poly.Centroid.X - cx) + (poly.Centroid.Y - cy) * (poly.Centroid.Y - cy);
+            if (d2 < bestD2) { bestD2 = d2; pocketCentre = poly.Centroid; }
+        }
+
+        var field = new InterestField();
+        field.Register(new InterestSource(pocketCentre, promoteRadius: 70.0, demoteRadius: 100.0));
+
+        var crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
 
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
         var engine = new Engine();
         engine.LoadNetwork(netPath);
         var vtype = engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
-        // W-B: cars yield to the manager's promoted (high-power) peds via the existing CrowdSource seam.
-        engine.CrowdSource = manager.HighPowerFootprints;
+        // W-B: cars yield to BOTH promoted (high-power ORCA) peds AND low-power peds on a crosswalk, via
+        // one CrowdSource composed of the two footprint sources.
+        engine.CrowdSource = new CompositeFootprintSource(manager.HighPowerFootprints, crossingOccupancy);
 
         var routeEdges = ReadDrivableEdges(Path.Combine(boxDir, "scenario.rou.xml"));
         var cropEdges = new List<(string Id, int Lane)>();
@@ -1930,6 +1948,15 @@ internal static class SceneGen
         var slotByHandle = new Dictionary<uint, int>();
         var frames = new List<FramePayload>();
         var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+        var lowPowerPositions = new List<Vec2>(config.PopulationCap);
+
+        // Timing: prove Phase 2 doesn't slow the vehicle sim. `engineStepSw` sums ONLY engine.Step() (the
+        // vehicle work that now queries the composite CrowdSource); `crossingSw` sums the ped-side
+        // occupancy Update. Stopwatch is timing-only -- it never touches the payload, so the run stays
+        // byte-identical.
+        var engineStepSw = new System.Diagnostics.Stopwatch();
+        var crossingSw = new System.Diagnostics.Stopwatch();
+        var peakOccupied = 0;
 
         var now = 0.0;
         for (var step = 0; step < steps; step++)
@@ -1953,11 +1980,33 @@ internal static class SceneGen
                 }
             }
 
-            // Step ORDER (CrossRegimeCoupling discipline): advance the ped crowd FIRST so the promoted-ped
-            // footprints in `_highCrowd` are current when the engine reads `CrowdSource` this tick.
+            // Step ORDER (CrossRegimeCoupling discipline): advance the ped crowd FIRST, then refresh the
+            // crossing-occupancy gates from the low-power poses, so the engine's CrowdSource query sees the
+            // current gates + promoted peds when it steps the cars.
             demand.Step(now, Dt, field, noEntities);
+            var tNext = now + Dt;
+
+            crossingSw.Start();
+            lowPowerPositions.Clear();
+            foreach (var id in demand.LiveIds)
+            {
+                // Any ped NOT in the high-power ORCA crowd is low-power (PathArc or ActivityTimeline/weave)
+                // -- the engine can't otherwise see it, so it's the one we gate crossings on. High-power
+                // peds are already in HighPowerFootprints (the other composite child).
+                if (manager.ModelOf(id) != PedDrModel.FreeKinematic)
+                {
+                    lowPowerPositions.Add(manager.PositionOf(id, tNext));
+                }
+            }
+
+            crossingOccupancy.Update(lowPowerPositions);
+            crossingSw.Stop();
+            if (crossingOccupancy.OccupiedCount > peakOccupied) peakOccupied = crossingOccupancy.OccupiedCount;
+
+            engineStepSw.Start();
             engine.Step();
-            now += Dt;
+            engineStepSw.Stop();
+            now = tNext;
 
             if (step % Decimate != 0) continue;
 
@@ -2004,18 +2053,23 @@ internal static class SceneGen
         NormalizeVehicleSlots(frames, slotByHandle.Count);
         AssignStableDiscSlots(frames, discsKeyedPerFrame);
 
+        LastEngineStepMillis = engineStepSw.Elapsed.TotalMilliseconds;
+        LastCrossingUpdateMillis = crossingSw.Elapsed.TotalMilliseconds;
+        LastPeakOccupiedCrossings = peakOccupied;
+
         var cropNet = CropNetwork(fullNet, pedNetwork, netPath, x0, y0, x1, y1);
 
         return new ScenePayload(
             "Live city: cars yield to crossing pedestrians",
             "A block of the synthetic demo-city with dense car traffic AND a large weaving pedestrian "
-            + "crowd, coupled: pedestrians promote to reactive full-ORCA agents on every crosswalk and "
-            + "throughout a high-realism pocket, and the cars (real Engine + Krauss) brake for them via the "
-            + "same emergent avoidance seam the crossing-gate demo proves -- so a car visibly STOPS for a "
-            + "pedestrian on a crossing and resumes once it clears. Grey = low-power weaving ped (O(1), "
+            + "crowd, coupled so the cars (real Engine + Krauss) STOP for a pedestrian on a crosswalk and "
+            + "resume once it clears. The key move: a low-power (grey) pedestrian on a crossing is turned "
+            + "into a deterministic virtual gate the car brakes for -- cars yield to EVERY crossing "
+            + "pedestrian WITHOUT promoting it, at ~O(1) per car (the vehicle sim is not slowed). A small "
+            + "high-realism pocket at the central intersection promotes its peds to reactive full-ORCA "
+            + "(orange), the other yield path -- so both are on screen. Grey = low-power weaving ped (O(1), "
             + "server==IG), orange = promoted full-ORCA ped, yellow = paused; boxes = cars. The weave keeps "
-            + "the ambient crowd from passing through itself; the LOD promotion is where cars and people "
-            + "actually negotiate.",
+            + "the ambient crowd from passing through itself.",
             new double[] { R(x0), R(y0), R(x1), R(y1) },
             cropNet,
             new double[] { 5.0, 1.8 },
