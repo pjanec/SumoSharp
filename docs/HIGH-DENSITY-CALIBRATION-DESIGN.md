@@ -290,7 +290,14 @@ SumoShim). `LowDensityTeleportTests` tightened `<=5`→`<=2`.
 
 **Still open (Stage 4, broader):** the full `demo_city/box` runs end-to-end but is not yet at parity
 (SumoSharp 2 tp / 22 arr vs vanilla 0 / 36 at t=800) — additional issues beyond this dead-lane gap
-(other junction/pedestrian/parking dynamics), a separate calibration effort.
+(other junction/pedestrian/parking dynamics), a separate calibration effort. Validated the dead-lane fix's
+box impact directly (toggle both new mechanisms off): halting **396→365** (better), arrivals **21→22**
+(+1), teleports **0→2** (the stuck-reroute diverts a couple of box dead-lane cars into spots that later
+teleport). So the fix is net-neutral-to-slightly-positive on the box — correct, but the box's gap is
+**dominated by non-dead-lane causes**: its extra halting (365 vs vanilla's 165, ~200 cars) is DIFFUSE
+(worst single edge only ~6 halted cars at t=790, spread across rings/diagonals/garage stubs), not the
+concentrated dead-lane deadlock the synthetic isolates. Stage 4 = chase those diffuse junction/flow gaps
+(and, minor, the box's +2 dead-lane-reroute teleports) separately.
 
 ### 2.4 Success criteria (Gap 1)
 On the 2× dense synthetic: SumoSharp teleports ≈ 0 (was 10), no permanent gridlock (halting drains toward
