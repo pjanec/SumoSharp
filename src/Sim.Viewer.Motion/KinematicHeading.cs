@@ -220,6 +220,20 @@ public sealed class KinematicHeading
             s.Fy = predY + g * rY;
             s.Fvx += (h / dt) * rX;
             s.Fvy += (h / dt) * rY;
+
+            // Clamp the tracked velocity magnitude to the KNOWN vehicle speed — the front can never move
+            // faster than the vehicle. Without this, the velocity lags a hard deceleration, so the prediction
+            // shoots ahead and the front (hence the center) drifts back to correct — a stopped car appears to
+            // creep backward / "dance". As speed → 0 the clamp forces the velocity to 0, so a halted vehicle
+            // holds position exactly; normal cruising/turns sit at |v| ≈ speed, so the clamp is inert there.
+            var fv2 = s.Fvx * s.Fvx + s.Fvy * s.Fvy;
+            var vmax = speed + 0.05;
+            if (fv2 > vmax * vmax)
+            {
+                var kv = vmax / Math.Sqrt(fv2);
+                s.Fvx *= kv;
+                s.Fvy *= kv;
+            }
         }
 
         var smFrontX = s.Fx;

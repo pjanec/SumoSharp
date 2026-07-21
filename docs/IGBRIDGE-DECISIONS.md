@@ -298,6 +298,25 @@ lat-accel 1985 → 101** (all far below raw); the 253-turn no-slip fidelity is i
 the corrected input). A multi-vehicle debug hook (`IGBRIDGE_DEBUG_VEH=v18,v98,…`) captured all four at once.
 Render-side only. Motion 11/11, IgBridge 11/11, parity 654 / 4-skip byte-identical.
 
+### 5.9 As-built (stopped-vehicle drift — owner: "dancing on the spot" / "backward movement after the turn")
+Two more grid cars (v82 mid-junction, v94 after a turn) appeared to jitter/creep while halted. Instrumenting
+showed the CENTER drifting ~6 cm **backward** and back while `speed = 0`. Cause: the g-h front tracker's
+velocity term. During a hard deceleration the tracked velocity lags the real slow-down, so the prediction
+`F + v·dt` shoots *ahead* of the stopping front; the position gain then pulls it back — the front, and hence
+the center, creeps backward as it settles. Fix: **clamp the tracked front velocity magnitude to the known
+vehicle `speed`** (the front cannot move faster than the vehicle). As `speed → 0` the clamp forces the
+velocity to 0, so a halted vehicle holds position exactly; at cruising/turning `|v| ≈ speed` so the clamp is
+inert. Backward drift while stopped fell from ~6 cm to <1.5 cm; fleet aggregates unchanged-to-better
+(lat-accel max 101 → 58), no-slip still matches the ideal bicycle (10.79° vs 10.84°). Render-side only;
+parity 654 / 4-skip byte-identical.
+
+**Known limitation (logged, not yet fixed).** On *sharp low-radius* turns the rear off-tracks aggressively.
+This is faithful — the emitted body matches an ideal no-slip bicycle even there (drawn rear-bumper slip max
+57.6° vs ideal 57.9°) — but it looks like the back "skids", because the front reference follows the lane
+centerline, which turns *at* the corner, whereas a real driver takes a wider turn-in line. A future
+refinement (anticipatory turn-in: let the front lead a smoother racing-line path through the junction) would
+address it; it is a larger change and deferred past the `igbridge-v1-usable` tag.
+
 ---
 
 ## 6. Determinism & parity
