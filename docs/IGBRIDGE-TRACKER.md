@@ -21,7 +21,11 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
 - [ ] **T0.3** Fixed-10 Hz core loop + per-entity ring buffers + sim clock; determinism test
 
 ## Stage 1 — reconstruct + emit + FakeIg + baseline
-- [ ] **T1.1** `DrClock.ResolveAt(history, sampleT, lanes)` deterministic seam (pure refactor)
+- [x] **T1.1** `DrClock.ResolveAt(history, sampleT, lanes)` deterministic seam (pure refactor)
+      <!-- done: Resolve now delegates to ResolveAt(history, _renderSim-delay, lanes); EffectiveDelay
+           semantics preserved (unset on empty-history throw). 4-branch equivalence theory + 3 existing
+           regression pins green (7/7); solution builds; DrClock is render-side, not in parity path. -->
+
 - [ ] **T1.2** Vehicle reconstruct (ResolveAt + PoseResolver + DrPoseSmoother) + emit JSONL trace; byte-identical across runs
 - [ ] **T1.3** `FakeIg` replay: 2-most-recent interp @ `clock−igDelay`, shortest-arc heading, threshold-jump
 - [ ] **T1.4** Side-by-side render (raw vs FakeIg-reconstructed) via `Sim.Viz` two-scene payload
