@@ -305,6 +305,31 @@
   });
   window.addEventListener("mouseup", function () { dragging = false; });
 
+  // Click-to-identify (guarded): only active when the payload gives per-slot entity ids (scene.vehIds).
+  // Inert for every other viewer/scene, so this is a shared, no-cost addition. A left click that did not
+  // drag hit-tests the nearest vehicle at the current time and latches its id (kept across scene toggles
+  // so the SAME car can be compared raw vs smoothed). Click empty space to clear.
+  var pickedId = null, downX = 0, downY = 0;
+  canvas.addEventListener("mousedown", function (ev) {
+    if (ev.button === 0) { downX = ev.clientX; downY = ev.clientY; }
+  });
+  canvas.addEventListener("click", function (ev) {
+    if (ev.button !== 0 || !scene || !scene.vehIds) return;
+    if (Math.abs(ev.clientX - downX) > 4 || Math.abs(ev.clientY - downY) > 4) return; // was a drag, not a click
+    var rect = canvas.getBoundingClientRect();
+    var w = screenToWorld(ev.clientX - rect.left, ev.clientY - rect.top);
+    var vehs = interpolatedVehicles(simTime);
+    var best = -1, bestD = Infinity;
+    for (var i = 0; i < vehs.length; i++) {
+      if (!vehs[i]) continue;
+      var ddx = vehs[i].x - w[0], ddy = vehs[i].y - w[1];
+      var d = ddx * ddx + ddy * ddy;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    var reach = Math.max((vdim[0] || 5) * 1.2, 8); // metres: forgiving pick radius
+    pickedId = (best >= 0 && bestD <= reach * reach) ? (scene.vehIds[best] || null) : null;
+  });
+
   var touchState = null;
   canvas.addEventListener("touchstart", function (ev) {
     ev.preventDefault();
@@ -822,7 +847,31 @@
       if (vehicles[i]) { drawVehicle(vehicles[i]); vehCount++; }
     }
 
+    // Click-to-identify overlay: highlight the latched vehicle and label it with its id (guarded on
+    // scene.vehIds; a no-op for every other scene). Latched by id so it survives a scene toggle.
+    if (pickedId && scene.vehIds) {
+      var ps = scene.vehIds.indexOf(pickedId);
+      var pv = ps >= 0 ? vehicles[ps] : null;
+      if (pv) {
+        var sc = worldToScreen(pv.x, pv.y);
+        ctx.save();
+        ctx.strokeStyle = "#fde047";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sc[0], sc[1], Math.max((vdim[0] || 5) * camera.scale * 0.7, 12), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.font = "bold 13px system-ui, sans-serif";
+        var tw = ctx.measureText(pickedId).width;
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(sc[0] + 10, sc[1] - 22, tw + 10, 18);
+        ctx.fillStyle = "#fde047";
+        ctx.fillText(pickedId, sc[0] + 15, sc[1] - 9);
+        ctx.restore();
+      }
+    }
+
     var parts = [];
+    if (pickedId) parts.push("selected: " + pickedId);
     if (vdim[0] > 0) parts.push("vehicles: " + vehCount);
     if (discs.length > 0) parts.push("discs: " + discs.length);
     vehCountEl.textContent = parts.join("  ·  ") || "";

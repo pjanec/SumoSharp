@@ -48,14 +48,22 @@ internal static class VizExport
             slot[id] = slot.Count;
         }
 
+        // Slot-indexed id list so the viewer can label a clicked vehicle (click-to-identify). Same slot map
+        // in both scenes, so a latched id follows the same car across the raw/smoothed toggle.
+        var vehIdsBySlot = new string[slot.Count];
+        foreach (var kv in slot)
+        {
+            vehIdsBySlot[kv.Value] = kv.Key;
+        }
+
         var net = BuildNetwork(network);
         var view = ActivityView(sceneA.Ig, sceneB.Ig, startT, endT, fps);
         var dt = 1.0 / fps;
 
         var scenes = new[]
         {
-            BuildScene(sceneA.Name, sceneA.Desc, sceneA.Ig, slot, view, net, dt, startT, endT, fps),
-            BuildScene(sceneB.Name, sceneB.Desc, sceneB.Ig, slot, view, net, dt, startT, endT, fps),
+            BuildScene(sceneA.Name, sceneA.Desc, sceneA.Ig, slot, vehIdsBySlot, view, net, dt, startT, endT, fps),
+            BuildScene(sceneB.Name, sceneB.Desc, sceneB.Ig, slot, vehIdsBySlot, view, net, dt, startT, endT, fps),
         };
 
         var json = JsonSerializer.Serialize(new { scenes },
@@ -71,7 +79,7 @@ internal static class VizExport
     }
 
     private static object BuildScene(
-        string name, string desc, FakeIg ig, Dictionary<string, int> slot,
+        string name, string desc, FakeIg ig, Dictionary<string, int> slot, string[] vehIdsBySlot,
         double[] view, object net, double dt, double startT, double endT, double fps)
     {
         var frames = new List<object>();
@@ -111,6 +119,7 @@ internal static class VizExport
             view,
             network = net,
             vdim = new[] { 5.0, 1.9 }, // shared vehicle box (representative passenger dims)
+            vehIds = vehIdsBySlot,     // slot-indexed ids -> click-to-identify in the viewer
             dt,
             frames = frames.ToArray(),
         };

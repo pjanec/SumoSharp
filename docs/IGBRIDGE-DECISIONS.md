@@ -228,7 +228,36 @@ has on a 90° turn, not skid. Rear tracks inside (rear/front path-length ratio m
 smooth (median 0 yaw-accel reversals). `PositionSmoothTime` retuned to 0.40 s (matching §5.4); heading
 low-pass off (`HeadingSmoothTime = 0`, the substepped drag already yields a clean heading).
 
-All three additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
+### 5.6 As-built (post-turn overshoot — owner: "after the 90° turn it oscillates like a beginner driver")
+The front reference from PoseResolver is a **staircase** in heading — at a junction it jumps between polyline
+facets (e.g. −64° in one step) then holds flat for ~1 s. §5.4's projective blend predicted the front moving
+along the **body heading** `s.Deg`; while that heading lagged the travel direction (exactly the post-turn
+transient), the prediction sat off to one side and injected a *cross-track* push. That coupled front-position
+smoothing to the lagged heading and rang: the drawn heading sailed ~11° past the settled value and swung
+back — the owner's wobble. Fleet-wide it made reconstructed peaks *worse than raw* (max yaw-jerk 127 k vs
+raw 107 k).
+
+**Fix — track the front with a constant-velocity g-h filter keyed to its OWN velocity, not the body
+heading.** `pred = F + Fvel·dt`; correct toward the authoritative front by critically-damped gains
+(`g = 1 − e^(−dt/τ)`, `h = g²/(2−g)`). The velocity term carries the front through a turn (zero lag) and the
+prediction no longer depends on `s.Deg`, so the resonance is gone; cross-track jitter is still low-passed by
+the gains, and heading smoothing is left to the rear-axle drag (a stable follower that cannot overshoot).
+The lane-change ease just swaps τ (`PositionSmoothTime` → `LaneChangeSmoothTime`).
+
+**Measured (box, 120 s).** Overshoot on the representative turner fell 11° → ~3° with a *monotonic* settle
+(no sign reversals). Fleet-wide the pathological peaks collapsed below raw: reconstructed **max yaw-jerk
+127 k → 7.9 k** (raw 107 k), **max yaw-rate 2128 → 173** (raw 1790), **max lat-accel 3128 → 163** (raw 1922);
+medians held (yaw-jerk 41×, yaw-rate 4.2×, lat-accel 7.7× below raw). No-slip fidelity unchanged (drawn
+rear-bumper slip 10.77° vs ideal-bicycle 10.87° over 68 clean 90° turns), rear still tracks inside (0.96),
+heading still smooth (median 0 yaw-accel reversals). Motion 11/11, IgBridge 11/11, parity 654 / 4-skip
+byte-identical.
+
+**Viewer: click-to-identify.** To make "which car is misbehaving?" answerable, the side-by-side viewer now
+labels a clicked vehicle with its id (yellow ring + id, latched across the raw/smoothed toggle so the *same*
+car is compared). Guarded on a `vehIds` slot map the IgBridge export emits — inert (a no-op) for every other
+`Sim.Viz` scene, so it is a shared, zero-cost addition.
+
+All four additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
 every golden stay byte-identical (§6).
 
 ---

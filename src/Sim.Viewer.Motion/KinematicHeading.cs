@@ -68,9 +68,9 @@ public sealed class KinematicHeading
 {
     private struct State
     {
-        public double Fx;   // critically-damped front reference position
+        public double Fx;   // tracked front reference position (g-h filter)
         public double Fy;
-        public double Fvx;  // its velocity (SmoothDamp state)
+        public double Fvx;  // tracked front reference velocity (g-h filter)
         public double Fvy;
         public double Rx;   // rear-axle position
         public double Ry;
@@ -120,48 +120,58 @@ public sealed class KinematicHeading
 
         if (!s.Init)
         {
+            var (sdx, sdy) = Dir(laneHeadingDeg);
             s.Fx = frontX;
             s.Fy = frontY;
-            s.Fvx = 0.0;
-            s.Fvy = 0.0;
+            s.Fvx = speed * sdx;
+            s.Fvy = speed * sdy;
         }
 
-        // (0) PROJECTIVE error-blending of the FRONT reference. A genuine TURN moves the front continuously
-        // along its heading (no deviation), while a FACET kink or a LANE CHANGE is a *deviation* from that
-        // smooth motion. So predict where the rendered front should be (moving at `speed` along the last
-        // heading) and only absorb + critically-damp the DEVIATION of the authoritative front from that
-        // prediction. Result: zero lag on turns (no deviation to decay), and facets/lane-changes eased over
-        // ~2-3x the smoothing time. A teleport snaps.
-        var (hdx, hdy) = Dir(s.Init ? s.Deg : laneHeadingDeg);
-        var predX = s.Fx + speed * dt * hdx;
-        var predY = s.Fy + speed * dt * hdy;
-        var errX = predX - frontX;
-        var errY = predY - frontY;
+        // (0) CONSTANT-VELOCITY (g-h) tracking of the FRONT reference. The front is followed by a
+        // critically-damped position+velocity filter: predict it advancing at its OWN tracked velocity, then
+        // correct toward the authoritative front by the gains (g, h). Two properties matter here:
+        //   * ZERO lag on smooth motion — the velocity term carries the front through a turn, so there is no
+        //     deviation to decay and no catch-up lag;
+        //   * the prediction uses the front's OWN velocity, NOT the body heading. The old projective blend
+        //     predicted along the (lagged) body heading s.Deg, which injected a cross-track push whenever the
+        //     heading lagged the travel direction — right after a sharp turn that resonated into a heading
+        //     overshoot/oscillation (the owner's "beginner-driver" wobble). Decoupling the two removes it;
+        //     heading smoothing is left to the rear-axle drag, a stable follower that cannot overshoot.
+        // Cross-track jitter/facets are low-passed by the gains; a teleport (huge residual) snaps.
+        var predX = s.Fx + s.Fvx * dt;
+        var predY = s.Fy + s.Fvy * dt;
 
-        if (errX * errX + errY * errY > _p.ReseedJumpMeters * _p.ReseedJumpMeters)
+        if ((frontX - predX) * (frontX - predX) + (frontY - predY) * (frontY - predY)
+            > _p.ReseedJumpMeters * _p.ReseedJumpMeters)
         {
+            var (sdx, sdy) = Dir(laneHeadingDeg);
             s.Fx = frontX;
             s.Fy = frontY;
-            s.Fvx = 0.0;
-            s.Fvy = 0.0;
+            s.Fvx = speed * sdx;
+            s.Fvy = speed * sdy;
         }
         else
         {
-            // Lane-change ease: while the engine's lateral-straddle signal is active (or within the ease
-            // window after it), decay the deviation over the longer LaneChangeSmoothTime -> the ~3.2 m
-            // lateral slide spreads into a gentle ~1.3 s ease. Turns never set this, so they stay crisp.
+            // Lane-change ease: while the engine's lateral-straddle signal is active (or within its window),
+            // use the longer LaneChangeSmoothTime (smaller gains) so the ~3.2 m lateral slide spreads into a
+            // gentle ~1.3 s ease. Turns never set this, so they stay crisp.
             if (lateralEvent)
             {
                 s.EaseTimer = _p.LaneChangeEaseWindow;
             }
 
-            var smoothTime = s.EaseTimer > 0.0 ? _p.LaneChangeSmoothTime : _p.PositionSmoothTime;
+            var tau = s.EaseTimer > 0.0 ? _p.LaneChangeSmoothTime : _p.PositionSmoothTime;
             s.EaseTimer = Math.Max(0.0, s.EaseTimer - dt);
 
-            errX = SmoothDamp(errX, 0.0, ref s.Fvx, smoothTime, dt);
-            errY = SmoothDamp(errY, 0.0, ref s.Fvy, smoothTime, dt);
-            s.Fx = frontX + errX;
-            s.Fy = frontY + errY;
+            // g-h gains from the smoothing time; critically damped (h = g^2 / (2 - g)), no overshoot.
+            var g = tau > 1e-6 ? 1.0 - Math.Exp(-dt / tau) : 1.0;
+            var h = g * g / (2.0 - g);
+            var rX = frontX - predX;
+            var rY = frontY - predY;
+            s.Fx = predX + g * rX;
+            s.Fy = predY + g * rY;
+            s.Fvx += (h / dt) * rX;
+            s.Fvy += (h / dt) * rY;
         }
 
         var smFrontX = s.Fx;
