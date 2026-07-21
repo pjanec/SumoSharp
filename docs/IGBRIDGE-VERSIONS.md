@@ -26,3 +26,9 @@ Known residuals at this tag (see §5.9):
 - Fixed just after the tag (T2.0f): stationary vehicles drifted the center ~6 cm ("dancing on the
   spot" / "backward movement") — the g-h velocity overshooting a hard decel. Resolved by clamping the
   tracked front velocity to the known vehicle speed.
+
+## `igbridge-v2-usable` — commit `eab3ddc`
+**Second usable baseline.** Owner: *"dance is gone. Another one usable."* Adds to v1 the
+stopped-vehicle fix (front-velocity clamp → a halted car holds position exactly, no center drift);
+fleet maxes improved (lat-accel max 101 → 58). Render-side only; parity 654/4-skip byte-identical.
+Known residual carried forward: sharp low-radius turn-in line (see §5.9 / the experimental turn-in below).

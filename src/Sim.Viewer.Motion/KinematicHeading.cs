@@ -35,6 +35,20 @@ public sealed class KinematicHeadingParams
     // Hard cap (metres) on the absorbed lateral error, so back-to-back lane changes stay bounded and the error
     // can never approach the teleport threshold (which would make the reseed misfire). ~one lane width.
     public double LaneChangeErrorCapMeters { get; init; } = 3.4;
+
+    // Anticipatory turn-in (docs/IGBRIDGE-DECISIONS.md §5.10). A real car cannot yaw instantly, so on a SHARP
+    // corner it takes a wider line — continues a bit farther, then rounds the turn. The drawn front is modelled
+    // as a point whose heading chases the smoothed front's travel direction at THIS bounded turn-rate (deg/s);
+    // it advances at the vehicle speed and springs gently back to the lane so the wide line reconverges. A
+    // gentle turn (needed rate below this) is unaffected. Set ≤ 0 to DISABLE the stage entirely (the front
+    // then follows the smoothed lane line directly — the v2 default). EXPERIMENTAL: enabling it takes a wider,
+    // more driver-like line on sharp corners but reintroduces mild heading kinks from steering along the
+    // faceted lane heading (fleet median yaw-accel reversals 0 → 1). Off by default pending refinement.
+    public double TurnInRateDegPerSec { get; init; } = 0.0;
+
+    // Per-step spring gain pulling the wide steered line back toward the lane, so it reconverges after the
+    // corner (and a stopped car eases onto the lane point without drifting).
+    public double TurnInReconverge { get; init; } = 0.15;
 }
 
 // One reconstructed rigid-body pose: the vehicle geometric center (what the owner's IG models pivot on),
@@ -83,6 +97,9 @@ public sealed class KinematicHeading
         public double Fvy;
         public double Rx;   // rear-axle position
         public double Ry;
+        public double Sx;   // anticipatory-turn-in "steered" front (wide-line pursuit of the smoothed front)
+        public double Sy;
+        public float Sphi;  // steered front heading (rate-limited chase of the lane heading)
         public double PrevFaX; // previous front-axle position (for substepped drag integration)
         public double PrevFaY;
         public double PrevInX; // previous RAW front input (for single-step lane-change-snap detection)
@@ -239,9 +256,53 @@ public sealed class KinematicHeading
         var smFrontX = s.Fx;
         var smFrontY = s.Fy;
 
-        // Front axle = the smoothed drawn front reference.
-        var faX = smFrontX;
-        var faY = smFrontY;
+        // (2) ANTICIPATORY TURN-IN. A real car cannot yaw instantly: on a sharp corner it continues a bit
+        // farther and rounds the turn on a wider line, rather than pivoting on the lane-centerline apex. Model
+        // the drawn front as a point whose HEADING chases the smoothed front's travel direction at a bounded
+        // turn-rate; it advances at the vehicle speed and springs gently back to the lane so the wide line
+        // reconverges after the corner. On a gentle turn the needed rate is below the limit, so it tracks
+        // exactly (no change); on a sharp one the rate limit makes it overshoot the corner (go wide) then
+        // curve in. This feeds the no-slip drag a lower-curvature path, so the reconstruction looks like a
+        // driver taking the corner, not a body pinned to the centerline.
+        double faX, faY;
+        if (_p.TurnInRateDegPerSec <= 0.0)
+        {
+            // Disabled (v2 default): the front follows the smoothed lane line directly.
+            faX = smFrontX;
+            faY = smFrontY;
+        }
+        else
+        {
+            if (!s.Init)
+            {
+                s.Sx = smFrontX;
+                s.Sy = smFrontY;
+                s.Sphi = laneHeadingDeg;
+            }
+
+            // Steer toward the LANE heading (the lane's own direction), rate-limited.
+            var dPhi = ((laneHeadingDeg - s.Sphi + 540f) % 360f) - 180f;
+            var maxPhiStep = (float)(_p.TurnInRateDegPerSec * dt);
+            dPhi = Math.Clamp(dPhi, -maxPhiStep, maxPhiStep);
+            s.Sphi = (float)(((s.Sphi + dPhi) % 360.0 + 360.0) % 360.0);
+
+            if ((smFrontX - s.Sx) * (smFrontX - s.Sx) + (smFrontY - s.Sy) * (smFrontY - s.Sy)
+                > _p.ReseedJumpMeters * _p.ReseedJumpMeters)
+            {
+                s.Sx = smFrontX;
+                s.Sy = smFrontY;
+                s.Sphi = laneHeadingDeg;
+            }
+            else
+            {
+                var (spx, spy) = Dir(s.Sphi);
+                s.Sx += speed * dt * spx + _p.TurnInReconverge * (smFrontX - s.Sx);
+                s.Sy += speed * dt * spy + _p.TurnInReconverge * (smFrontY - s.Sy);
+            }
+
+            faX = s.Sx;
+            faY = s.Sy;
+        }
 
         if (!s.Init)
         {

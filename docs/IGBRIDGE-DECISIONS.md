@@ -310,12 +310,27 @@ inert. Backward drift while stopped fell from ~6 cm to <1.5 cm; fleet aggregates
 (lat-accel max 101 → 58), no-slip still matches the ideal bicycle (10.79° vs 10.84°). Render-side only;
 parity 654 / 4-skip byte-identical.
 
-**Known limitation (logged, not yet fixed).** On *sharp low-radius* turns the rear off-tracks aggressively.
-This is faithful — the emitted body matches an ideal no-slip bicycle even there (drawn rear-bumper slip max
-57.6° vs ideal 57.9°) — but it looks like the back "skids", because the front reference follows the lane
-centerline, which turns *at* the corner, whereas a real driver takes a wider turn-in line. A future
-refinement (anticipatory turn-in: let the front lead a smoother racing-line path through the junction) would
-address it; it is a larger change and deferred past the `igbridge-v1-usable` tag.
+**Known limitation (logged).** On *sharp low-radius* turns the rear off-tracks aggressively. This is faithful
+— the emitted body matches an ideal no-slip bicycle even there (drawn rear-bumper slip max 57.6° vs ideal
+57.9°) — but it looks like the back "skids", because the front reference follows the lane centerline, which
+turns *at* the corner, whereas a real driver takes a wider turn-in line. §5.10 prototypes a fix.
+
+### 5.10 Anticipatory turn-in (EXPERIMENTAL — off by default)
+A first cut at the wide-line turn-in the owner asked for ("a real car would go a bit farther before starting
+the turn"). After the smoothed front, a second stage models the drawn front as a point whose heading chases
+the lane heading at a bounded **turn-rate** (`TurnInRateDegPerSec`); it advances at the vehicle speed and
+springs back to the lane (`TurnInReconverge`) so the wide line reconverges. On a sharp corner the rate limit
+makes it overshoot the apex (go wide ~0.6–0.9 m, within the lane) then round in — visibly a driver taking the
+corner (verified on v108: peak front-path curvature 537 → 120 °/s, a clean wide arc that reconverges). Gentle
+turns need less than the limit, so they are geometrically unaffected.
+
+**Why it's off by default.** Steering along the *faceted* lane heading reintroduces mild heading kinks that
+the position-domain g-h had smoothed out — fleet median yaw-accel reversals rise 0 → 1 (max 2 → 13 on a few
+turns). That is a real smoothness regression for a sharp-turn-only visual gain, so the shipped default
+disables the stage (`TurnInRateDegPerSec = 0` → the front follows the smoothed lane line, exactly v2). It is
+enabled for evaluation via `IGBRIDGE_TURNIN=<deg/s>` (e.g. 65). Refinement to remove the kinks (steer along a
+*smoothed* heading / work in the position domain) is the next step before it can become the default.
+Render-side only; with the stage off, parity and all v2 metrics are byte-identical.
 
 ---
 
