@@ -45,7 +45,14 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
       <!-- done: FakeIg reconstructs each entity's displayed pose (2-sample linear pos, shortest-arc
            heading, jump-threshold snap for teleports, extrapolate when delay too small). 3 unit tests
            (interp, shortest-arc-through-north, jump-not-smear). -->
-- [ ] **T1.4** Side-by-side render (raw vs FakeIg-reconstructed) via `Sim.Viz` two-scene payload
+- [x] **T1.4** Side-by-side render (raw vs FakeIg-reconstructed) via `Sim.Viz` two-scene payload
+      <!-- done: VizExport builds a two-scene REPLAY_DATA (raw-fed-IG vs IgBridge-fed-IG, both FakeIg
+           reconstructions so only the input stream differs) and injects it into the committed Sim.Viz
+           template.html/js (same marker-injection as WriteHtml, no Sim.Viz change). Street-level camera
+           (median-centered ~320m crop) so junction turns/lane changes are watchable; lanes+junctions
+           backdrop, vehicles as oriented boxes, peds as discs, scene selector toggles. Verified rendering
+           headless via Chromium (no JS errors). Output artifacts/igbridge/sidebyside.html (gitignored). -->
+
 - [x] **T1.5** Baseline metrics pass (yaw-rate, yaw-jerk, lateral-accel, C1 gap) raw vs reconstructed
       <!-- done: raw engine @10Hz vs IgBridge-smoothed @20Hz, both reconstructed via FakeIg, compared.
            Honest finding at 10Hz: JUNCTION TURNS -> among turning vehicles 88% (68/77) improve, turner-

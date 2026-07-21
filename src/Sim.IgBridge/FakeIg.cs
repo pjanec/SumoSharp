@@ -78,6 +78,26 @@ public sealed class FakeIg
 
     public IgEntityModel ModelOf(string id) => _tracks[id].Model;
 
+    // The IG-displayed pose of one entity at play time `t`, or false if `t` is outside the entity's
+    // displayable span (before its first / after its last sample) -- used to bin poses into render frames.
+    public bool TryDisplayPose(string id, double t, out ReconPose pose)
+    {
+        pose = default;
+        if (!_tracks.TryGetValue(id, out var track) || track.Updates.Count < 2)
+        {
+            return false;
+        }
+
+        var upd = track.Updates;
+        if (t < upd[0].T || t > upd[upd.Count - 1].T)
+        {
+            return false;
+        }
+
+        pose = SampleAt(upd, t);
+        return true;
+    }
+
     // Reconstruct every entity's DISPLAYED pose timeline at RenderHz over its update span -- the poses the IG
     // would actually show. This is what the metrics pass (T1.5) measures for smoothness. The playout delay
     // is a uniform time shift (it does not change the reconstructed SHAPE while the cursor stays bracketed),

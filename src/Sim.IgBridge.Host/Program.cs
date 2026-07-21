@@ -73,6 +73,19 @@ Console.WriteLine("  MEDIAN drops sharply); mean lat-accel drops (instant lane c
 Console.WriteLine("  reflect genuine hairpin U-turns present in the RAW engine stream too (not an artifact).");
 Console.WriteLine($"(pedestrians, reconstructed: {smPed.Count} tracks -- smooth by construction)");
 
+// T1.4: side-by-side HTML render (raw-fed-IG vs IgBridge-fed-IG). Reconstruct for the viz at a display
+// frame rate over a focused window so the file stays manageable and the motion is watchable.
+var vizCfg = new FakeIgConfig { DelaySeconds = 0.75, JumpThresholdMeters = 8.0, RenderHz = 15.0 };
+var rawVizIg = new FakeIg(raw.Samples, vizCfg);
+var smVizIg = new FakeIg(smoothed, vizCfg);
+var htmlPath = Path.Combine(outDir, "sidebyside.html");
+VizExport.WriteSideBySide(
+    repoRoot, runner.Network,
+    ("raw (IG fed raw 10Hz)", "engine x/y/angle at 10 Hz -- junction snaps + instant lane changes", rawVizIg),
+    ("IgBridge (IG fed smoothed 20Hz)", "reused DrClock/PoseResolver/DrPoseSmoother reconstruction", smVizIg),
+    startT: 20.0, endT: 80.0, fps: 15.0, htmlPath);
+Console.WriteLine($"render: {htmlPath}  (toggle the two scenes to compare)");
+
 return 0;
 
 // Keep only the reconstructed streams whose entity model matches.
