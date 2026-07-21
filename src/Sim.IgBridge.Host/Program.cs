@@ -14,7 +14,7 @@ var cfg = new IgBridgeConfig(Path.Combine(boxDir, "net.xml"), Path.Combine(boxDi
 var emit = new IgEmitConfig { EmitHz = 20.0, LookaheadSeconds = 0.1 };
 var igCfg = new FakeIgConfig { DelaySeconds = 0.75, JumpThresholdMeters = 8.0, RenderHz = 60.0 };
 
-const int Steps = 1200; // 120 s @ 10 Hz
+var Steps = int.TryParse(Environment.GetEnvironmentVariable("IGBRIDGE_STEPS"), out var _st) ? _st : 1200; // 120 s @ 10 Hz
 
 var outDir = Path.Combine(repoRoot, "artifacts", "igbridge");
 Directory.CreateDirectory(outDir);
@@ -29,7 +29,16 @@ var raw = new RawStreamCollector();
 IReadOnlyList<IgSample> smoothed;
 using (var trace = new IgTraceWriter(tracePath))
 {
-    var session = new IgBridgeSession(runner, emit, trace, retainAll: true);
+    // Sweep knobs (env): position + heading smoothing times for the kinematic model.
+    double EnvD(string k, double def) =>
+        double.TryParse(Environment.GetEnvironmentVariable(k), System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : def;
+    var kin = new Sim.Viewer.Motion.KinematicHeadingParams
+    {
+        PositionSmoothTime = EnvD("IGBRIDGE_POS_SMOOTH", 0.18),
+        HeadingSmoothTime = EnvD("IGBRIDGE_HEAD_SMOOTH", 0.12),
+    };
+    var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin);
+    session.DebugVehicleId = Environment.GetEnvironmentVariable("IGBRIDGE_DEBUG_VEH"); // e.g. "v2"
     for (var step = 0; step < Steps; step++)
     {
         runner.Tick();
@@ -38,6 +47,13 @@ using (var trace = new IgTraceWriter(tracePath))
     }
 
     session.Finish();
+    if (session.DebugVehicleId is not null && session.DebugRows.Count > 0)
+    {
+        var dbgPath = Path.Combine(outDir, $"debug_{session.DebugVehicleId}.csv");
+        var header = "t,prX,prY,prH,smX,smY,cX,cY,cH,rearX,rearY,speed";
+        File.WriteAllLines(dbgPath, new[] { header }.Concat(session.DebugRows));
+        Console.WriteLine($"debug rows for {session.DebugVehicleId}: {session.DebugRows.Count} -> {dbgPath}");
+    }
     raw.Finish(runner.SimTime);
     smoothed = session.AllEmitted;
 

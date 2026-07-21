@@ -188,6 +188,26 @@ kinematically behind — a real-looking maneuver.
 **Tunables:** `wheelbaseFactor` (0.6), `frontOverhangFactor` (0.15), `holdSpeed` (~0.5 m/s), `reseedJump`
 (~7 m). All render-side; none affect parity.
 
+### 5.4 As-built (smoothness pass — measured, not eyeballed)
+The naive drag (§5.3) smooths *heading* but the rear POSITION still tracked the faceted-polyline kinks and
+straddle gaps → a visible tail wiggle (measured on a per-vehicle rear-bumper reversal/jerk gate). The
+shipped pipeline that drove the fleet to a **median of 0 visible rear-accel reversals** (≥2 m/s²; 67/85
+vehicles clean, 80/85 at ≥4 m/s²):
+1. **No emit gaps.** A lateral straddle is no longer skipped — both bracketing states are resolved on their
+   own lanes and Cartesian-lerped, so the front path is continuous (a skip punched a hole the IG
+   interpolated across and desynced the kinematic state).
+2. **Real elapsed dt.** The kinematic step is fed the actual time since the vehicle's last emit (≥ one emit
+   step, larger after a straddle), so SmoothDamp/drag integrate correctly instead of over/undershooting.
+3. **Projective error-blending** of the front position (replaces the absolute-position low-pass): predict
+   the front moving at `speed` along its heading, and critically-damp only the *deviation* of the
+   authoritative front from that prediction. A genuine turn has ~no deviation → **zero lag**; facet kinks
+   and lateral slides are deviations → absorbed and eased. Decay time `PositionSmoothTime = 0.40 s`.
+4. **Lane-change ease (§5.2, as-built).** The engine's lateral-straddle signal latches a
+   `LaneChangeEaseWindow = 1.3 s` during which the deviation decays over the longer
+   `LaneChangeSmoothTime = 0.55 s`, spreading SUMO's instant lane change into a gentle ~1.3 s slide (a real
+   car yaws ~10° into a lane change, not ~25). Turns never set this, so they stay crisp.
+A residual tail (~5/85: departure/complex-swerve edge cases) remains for later refinement.
+
 Both additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
 every golden stay byte-identical (§6).
 

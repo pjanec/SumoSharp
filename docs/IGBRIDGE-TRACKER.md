@@ -64,7 +64,9 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
 
 
 ## Stage 2 — kinematics + lane-change ease + lifecycle
-- [x] **T2.0** Kinematic rear-axle drag in `Sim.Viewer.Motion` (owner-reported "vehicle on rails"): front tows a no-slip rear axle → rear pivots, no swing/jump; emit vehicle Center + drag heading (IG center-pivot). Re-render + re-measure.
+- [x] **T2.0** Kinematic rear-axle drag in `Sim.Viewer.Motion` (owner-reported "vehicle on rails"): front tows a no-slip rear axle → rear pivots, no swing/jump; emit vehicle Center + drag heading (IG center-pivot).
+- [x] **T2.0b** Smoothness pass (owner: "front waving / back jumping"): per-vehicle rear-bumper reversal/jerk gate. Fixes: continuous straddle resolve (no emit gaps), real elapsed dt, projective front error-blending (0-lag on turns), lane-change ease. Fleet median 0 visible reversals (67/85 clean); clean turn = smooth heading S-ramp + arc rear path. Parity 654/4 byte-identical.
+- [x] **T2.1** Lane-change ease (folded into T2.0b): engine lateral-straddle latches a 1.3 s window of longer error-decay → SUMO's instant lane change spreads to a ~1.3 s slide.
       <!-- done: KinematicHeading (front tows a no-slip rear axle; heading=rear->front; center=midpoint of
            inset axles; hold<0.5m/s; reseed on teleport). IgBridgeSession: DrPoseSmoother for POSITION
            (absorbs facet/teleport jumps) then KinematicHeading for heading+center, emit center+drag

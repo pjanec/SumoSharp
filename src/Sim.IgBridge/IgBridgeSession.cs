@@ -34,11 +34,11 @@ public sealed class IgBridgeSession
     private readonly float _frameDt;
 
     private readonly DrClock _clock = new();               // used ONLY via ResolveAt (deterministic; no Pump)
-    private readonly DrPoseSmoother _posSmoother = new();   // capped position error-smoothing (absorbs facet/teleport jumps)
-    private readonly KinematicHeading _kinematic = new();   // rear-axle drag heading + center (docs/IGBRIDGE-DECISIONS §5.3)
+    private readonly KinematicHeading _kinematic;           // front-position smoothing + rear-axle drag (docs §5.3)
 
     private readonly HashSet<VehicleHandle> _vehNewEmitted = new();
     private readonly HashSet<VehicleHandle> _vehDone = new();
+    private readonly Dictionary<VehicleHandle, double> _lastEmitTau = new(); // for real elapsed dt across straddle gaps
     private readonly HashSet<int> _pedNewEmitted = new();
     private readonly HashSet<int> _pedDone = new();
 
@@ -50,13 +50,14 @@ public sealed class IgBridgeSession
     // `retainAll`: keep every emitted record in memory (AllEmitted) for the analysis/metrics pass. Off by
     // default -- the real IgBridge streams to the network and keeps only the bounded ring.
     public IgBridgeSession(IgBridgeRunner runner, IgEmitConfig emit, IgTraceWriter trace,
-        int ringCapacity = 20000, bool retainAll = false)
+        int ringCapacity = 20000, bool retainAll = false, KinematicHeadingParams? kinematics = null)
     {
         _runner = runner;
         _emit = emit;
         _trace = trace;
         _ringCapacity = ringCapacity;
         _retained = retainAll ? new List<IgSample>() : null;
+        _kinematic = new KinematicHeading(kinematics);
         _emitDt = 1.0 / emit.EmitHz;
         _frameDt = (float)_emitDt;
         _nextEmit = _emitDt; // first emit instant is one emit-step in (t=0 has no motion yet)
@@ -64,6 +65,13 @@ public sealed class IgBridgeSession
 
     public int EmittedCount { get; private set; }
     public IReadOnlyCollection<IgSample> Ring => _ring;
+
+    // Diagnostics (T2.0 smoothness investigation): when DebugVehicleId is set, every emit instant for that
+    // vehicle records a per-STAGE row so the jitter source can be localised (PoseResolver front -> position
+    // smoother -> kinematic center/heading -> drawn rear bumper). Off (null) by default.
+    public string? DebugVehicleId { get; set; }
+    private readonly List<string> _debugRows = new();
+    public IReadOnlyList<string> DebugRows => _debugRows;
 
     // The full emitted stream (only when constructed with retainAll: true; empty otherwise).
     public IReadOnlyList<IgSample> AllEmitted => (IReadOnlyList<IgSample>?)_retained ?? Array.Empty<IgSample>();
@@ -149,52 +157,121 @@ public sealed class IgBridgeSession
                 continue; // not yet interpolatable
             }
 
-            var resolved = _clock.ResolveAt(history, tau, _runner.Lanes);
-            if (resolved.IsLateralStraddle)
-            {
-                continue; // Stage-1 skip: the lane-change ease (T2.1) handles the straddle in Sim.Viewer.Motion
-            }
-
             if (!_runner.VehicleDims.TryGetValue(handle, out var dims))
             {
                 continue;
             }
 
-            var state = resolved.State with { Length = dims.Length, Width = dims.Width };
-            var n = resolved.Upcoming.CopyTo(upcoming);
-            if (n == 0)
+            var resolved = _clock.ResolveAt(history, tau, _runner.Lanes);
+
+            // Resolve a CONTINUOUS front pose. A lateral straddle (junction lane-cross or lane change) is
+            // NOT skipped -- skipping punches a hole in the emitted stream that the IG interpolates across,
+            // and (fed a constant dt) desyncs the kinematic state -> tail wobble. Instead resolve both
+            // bracketing states on their own lanes and Cartesian-lerp (the shipped lane-change reconstruction),
+            // so the front path is unbroken.
+            double frontX, frontY, frontZ;
+            float laneHeading;
+            double speed;
+            var lateralEvent = resolved.IsLateralStraddle;
+            if (resolved.IsLateralStraddle && resolved.SecondState is { } stateBraw)
             {
-                upcoming[0] = state.LaneHandle;
-                n = 1;
+                if (!TryResolveFront(resolved.State, resolved.Upcoming, dims, upcoming, out var pa) ||
+                    !TryResolveFront(stateBraw, resolved.SecondUpcoming, dims, upcoming, out var pb))
+                {
+                    continue;
+                }
+
+                var f = resolved.Blend;
+                frontX = pa.X + (pb.X - pa.X) * f;
+                frontY = pa.Y + (pb.Y - pa.Y) * f;
+                frontZ = pa.Z + (pb.Z - pa.Z) * f;
+                laneHeading = LerpHeadingDeg(pa.HeadingDeg, pb.HeadingDeg, f);
+                speed = resolved.State.Speed + (stateBraw.Speed - resolved.State.Speed) * f;
+            }
+            else
+            {
+                if (!TryResolveFront(resolved.State, resolved.Upcoming, dims, upcoming, out var pose))
+                {
+                    continue;
+                }
+
+                frontX = pose.X;
+                frontY = pose.Y;
+                frontZ = pose.Z;
+                laneHeading = pose.HeadingDeg;
+                speed = resolved.State.Speed;
             }
 
-            Pose pose;
-            try
-            {
-                pose = PoseResolver.Resolve(
-                    _runner.Lanes, state, upcoming[..n], ReadOnlySpan<int>.Empty, dt: 0.0,
-                    RenderRealism.ChordHeading);
-            }
-            catch (KeyNotFoundException)
-            {
-                continue;
-            }
+            // Real elapsed dt for this vehicle (>= one emit step; larger after a gap) so the kinematic
+            // SmoothDamp/drag integrate correctly instead of over/undershooting.
+            var realDt = _lastEmitTau.TryGetValue(handle, out var last)
+                ? (float)Math.Min(0.5, Math.Max(_emitDt, tau - last))
+                : _frameDt;
+            _lastEmitTau[handle] = tau;
 
-            // (a) Position error-smoothing on the FRONT reference (reused DrPoseSmoother): absorbs the
-            // sub-metre facet kinks / reconciliation jumps as a capped, forward-biased correction. We take
-            // only its smoothed POSITION and discard its (motion-tilt) heading -- heading comes from (b).
-            var (fx, fy, _) = _posSmoother.Smooth(handle, pose.X, pose.Y, pose.HeadingDeg, state.Speed, _frameDt);
-
-            // (b) Kinematic rear-axle drag (§5.3): the smoothed front tows a no-slip rear axle so the body
-            // pivots at the rear like a real car. Emit the vehicle CENTER (the IG's models pivot on center)
-            // + the drag heading. z (multi-level disambiguation, Q5) = PoseResolver's Pose.Z (lane surface /
-            // ground; 0 on a flat net).
-            var kp = _kinematic.Update(handle, fx, fy, pose.HeadingDeg, state.Speed, dims.Length, _frameDt);
+            // Kinematic rear-axle drag (§5.3): the front reference tows a no-slip rear axle so the body
+            // pivots at the rear like a real car. KinematicHeading also critically-damps the front POSITION
+            // (removes the faceted-polyline kinks that would ride through as a tail wiggle). Emit the vehicle
+            // CENTER (the IG's models pivot on center) + the drag heading; z (Q5) = the lane-surface ground z.
+            var kp = _kinematic.Update(handle, frontX, frontY, laneHeading, speed, dims.Length, realDt, lateralEvent);
             var id = _runner.IdOf(handle);
+
+            if (DebugVehicleId is not null && id == DebugVehicleId)
+            {
+                // rear bumper as the front-anchored template would draw it: center - (Length/2)*dir(heading)
+                var hr = kp.HeadingDeg * Math.PI / 180.0;
+                var dx = Math.Sin(hr);
+                var dy = Math.Cos(hr);
+                var rearBx = kp.CenterX - dims.Length * 0.5 * dx;
+                var rearBy = kp.CenterY - dims.Length * 0.5 * dy;
+                _debugRows.Add(string.Join(",", new[]
+                {
+                    tau.ToString("F4"), frontX.ToString("F4"), frontY.ToString("F4"), laneHeading.ToString("F4"),
+                    kp.FrontX.ToString("F4"), kp.FrontY.ToString("F4"),
+                    kp.CenterX.ToString("F4"), kp.CenterY.ToString("F4"), kp.HeadingDeg.ToString("F4"),
+                    rearBx.ToString("F4"), rearBy.ToString("F4"), speed.ToString("F4"),
+                }));
+            }
+
             Emit(_vehNewEmitted.Add(handle)
-                ? IgSample.Created(id, tau, IgEntityModel.Car, kp.CenterX, kp.CenterY, pose.Z, kp.HeadingDeg)
-                : IgSample.Updated(id, tau, kp.CenterX, kp.CenterY, pose.Z, kp.HeadingDeg));
+                ? IgSample.Created(id, tau, IgEntityModel.Car, kp.CenterX, kp.CenterY, frontZ, kp.HeadingDeg)
+                : IgSample.Updated(id, tau, kp.CenterX, kp.CenterY, frontZ, kp.HeadingDeg));
         }
+    }
+
+    // Resolve one bracketing state to a front pose via PoseResolver (ChordHeading). Returns false if the
+    // lane geometry isn't available.
+    private bool TryResolveFront(DrState rawState, UpcomingLanes upcomingLanes,
+        (double Length, double Width) dims, Span<int> scratch, out Pose pose)
+    {
+        var state = rawState with { Length = dims.Length, Width = dims.Width };
+        var n = upcomingLanes.CopyTo(scratch);
+        if (n == 0)
+        {
+            scratch[0] = state.LaneHandle;
+            n = 1;
+        }
+
+        try
+        {
+            pose = PoseResolver.Resolve(
+                _runner.Lanes, state, scratch[..n], ReadOnlySpan<int>.Empty, dt: 0.0, RenderRealism.ChordHeading);
+            return true;
+        }
+        catch (KeyNotFoundException)
+        {
+            pose = default;
+            return false;
+        }
+    }
+
+    // Shortest-arc heading interpolation (navi-degrees).
+    private static float LerpHeadingDeg(float a, float b, double f)
+    {
+        var d = ((b - a + 540f) % 360f) - 180f;
+        var h = a + (float)(d * f);
+        h %= 360f;
+        return h < 0f ? h + 360f : h;
     }
 
     private void EmitPeds(double tau)
