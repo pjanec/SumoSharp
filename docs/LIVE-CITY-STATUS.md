@@ -186,6 +186,12 @@ example: veh18 stopped on lane `_1`; veh49 changes `_2→_1` and lands at the **
 - **The real fix = the §7 follow-up: port SUMO cooperative lane-changing** (follower-gap veto + the
   follower making room). Substantial, parity-sensitive engine feature → **design-first task**, not an
   ad-hoc patch. This is what gates a *serious* high-density multi-lane live-city demo.
+- **HANDOFF PACKAGE WRITTEN** → `docs/LANE-CHANGE-OVERLAP-SPEC.md` (self-contained: repro on the committed
+  `scenarios/_diag/willpass-saturation` = SumoSharp ~197–258 overlaps vs vanilla SUMO **0**; exact engine
+  seams; the SUMO `checkChange`+`informFollower`/`saveBlockerLength` algorithm to port; the "both-halves
+  veto without cooperation gridlocks 0→30 stuck" trap; 4-stage plan; acceptance criteria). Acceptance
+  harness committed + skipped: `tests/Sim.ParityTests/LaneChangeOverlapDiagTests.cs` (unskip → assert 0).
+  **Hand this spec to a fresh focused session.**
 - **Interim options for a presentable demo now:** (a) lower `LIVECITY_CARS` (e.g. 40–60) — fewer but still
   some overlaps; (b) restrict the car flow to single-lane corridors (no lane changes → no overlaps);
   (c) keep it as a moderate-density showcase until the cooperative-LC port lands.
