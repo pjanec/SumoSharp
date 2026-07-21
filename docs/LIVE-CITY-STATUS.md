@@ -137,5 +137,36 @@ dotnet test Traffic.sln -c Release                                              
 Determinism check: generate twice, `cmp -s`. Current gate: ParityTests 654/+3, Pedestrians 224 (incl. the
 P2b-T1 5), DotRecast 2, Host 1 (recount after each add).
 
+## Vehicle realism pass (post-2b) — DONE
+Owner reported cars looking wrong at junctions (sliding onto the sidewalk / "entering on red" / changing
+lanes while stopped). Diagnosed with an env-gated raw dump (`LIVECITY_DUMP="x,y"`) + a vanilla-SUMO FCD
+comparison. Findings + fixes (all committed; **parity byte-identical** — engine additions default to old
+behaviour, ParityTests 654/+3 green; two demo runs byte-identical):
+- **Not a sim error:** 0 cars ever on a ped lane; stopped cars hold at the stop line; only moving cars
+  (green) cross. The on-screen "sidewalk drift / enter-on-red" was viewer **Catmull-Rom overshoot** of the
+  engine's lane-centre snaps + the coarse tick.
+- **Fix 1 — tick:** `Engine.LoadNetwork(net, ScenarioConfig)` overload; demo runs step-length **0.5** (== ped/
+  frame Dt) via `ScenarioConfigParser.ParseXml`. Cars were ~2× too fast (engine default 1.0 s).
+- **Fix 2 — de-oscillate:** `lanechange.duration 2.0` (commit-and-hold; kills per-step lane flip-flop). NOTE:
+  the engine emits lane-**centre** positions (no sublane lateral), so a change is still a one-step lateral
+  snap — duration only de-oscillates.
+- **Fix 3 — viewer:** clamp vehicle interpolation to its two real endpoints' bbox (no overshoot onto the
+  sidewalk) + keep FCD heading on lateral-dominated steps (no sideways yaw). `src/Sim.Viz/template.js`.
+- **Root over-production (owner's insight, DATA-CONFIRMED):** vanilla SUMO on the box net = 156 lateral
+  changes/200s, **12%** at <0.1 m/s (median 13 m/s). Demo was 813/120s, **51%** at a dead stop. Fixes:
+  - **A — `departLane="best"`**: `SpawnVehicle(..., departBestLane:true)` (exposes `ResolveBestDepartLane`);
+    cars enter on the route-continuing lane, not always leftmost. (Alone: 813→731 — mid-route sorting
+    remained.)
+  - **`Engine.LaneChangeMinSpeed`** (0 = off = **parity-identical**; demo sets **1.0 m/s**): a car may not
+    INITIATE a discrete change, and an in-progress maneuver is HELD, while below the threshold — so it never
+    snaps sideways at a standstill; it sorts while moving (mirrors SUMO sublane `maxSpeedLatStanding=0`).
+  - **Result:** 813→**264** changes, dead-stop snaps 412→**84** (−80%); residual = cars finishing a change
+    mid-brake (diagonal, not a dead-stop teleport). `--live-city` prints the lane-change realism metric.
+- **Still deferred (crossing-yield residual, unchanged by this pass):** ~80 ped-on-**green** near-collisions
+  = turning cars + tunneling (13 m/s car > 4 m crosswalk per step); needs the tunneling-proof stop-line or a
+  finer engine step. ped-on-RED near-collisions = **0** (2b compliance holds).
+- **Open lever if owner wants fewer still:** raise `LaneChangeMinSpeed` (2.0) or the full **sublane model**
+  (continuous lateral posLat) — the only thing that makes a lane change a genuinely smooth slide. Big port.
+
 ## Phase 3 (later): City3D combined cars+peds + semantic (enter buildings, dine at terraces, meet). Data is
 in the box (buildings.json, entrances, venue table_cluster/service_door). Not started.
