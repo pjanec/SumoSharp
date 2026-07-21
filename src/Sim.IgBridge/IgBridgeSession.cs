@@ -33,8 +33,9 @@ public sealed class IgBridgeSession
     private readonly double _emitDt;
     private readonly float _frameDt;
 
-    private readonly DrClock _clock = new();          // used ONLY via ResolveAt (deterministic; no Pump)
-    private readonly DrPoseSmoother _smoother = new(); // per-handle chase state, shared across vehicles
+    private readonly DrClock _clock = new();               // used ONLY via ResolveAt (deterministic; no Pump)
+    private readonly DrPoseSmoother _posSmoother = new();   // capped position error-smoothing (absorbs facet/teleport jumps)
+    private readonly KinematicHeading _kinematic = new();   // rear-axle drag heading + center (docs/IGBRIDGE-DECISIONS §5.3)
 
     private readonly HashSet<VehicleHandle> _vehNewEmitted = new();
     private readonly HashSet<VehicleHandle> _vehDone = new();
@@ -179,14 +180,20 @@ public sealed class IgBridgeSession
                 continue;
             }
 
-            var (sx, sy, sdeg) = _smoother.Smooth(handle, pose.X, pose.Y, pose.HeadingDeg, state.Speed, _frameDt);
+            // (a) Position error-smoothing on the FRONT reference (reused DrPoseSmoother): absorbs the
+            // sub-metre facet kinks / reconciliation jumps as a capped, forward-biased correction. We take
+            // only its smoothed POSITION and discard its (motion-tilt) heading -- heading comes from (b).
+            var (fx, fy, _) = _posSmoother.Smooth(handle, pose.X, pose.Y, pose.HeadingDeg, state.Speed, _frameDt);
 
-            // z (multi-level disambiguation, Q5-revised): from lane geometry via PoseResolver's Pose.Z
-            // (0 on a flat net). The smoother corrects x,y only; z rides the arc geometry, which is smooth.
+            // (b) Kinematic rear-axle drag (§5.3): the smoothed front tows a no-slip rear axle so the body
+            // pivots at the rear like a real car. Emit the vehicle CENTER (the IG's models pivot on center)
+            // + the drag heading. z (multi-level disambiguation, Q5) = PoseResolver's Pose.Z (lane surface /
+            // ground; 0 on a flat net).
+            var kp = _kinematic.Update(handle, fx, fy, pose.HeadingDeg, state.Speed, dims.Length, _frameDt);
             var id = _runner.IdOf(handle);
             Emit(_vehNewEmitted.Add(handle)
-                ? IgSample.Created(id, tau, IgEntityModel.Car, sx, sy, pose.Z, sdeg)
-                : IgSample.Updated(id, tau, sx, sy, pose.Z, sdeg));
+                ? IgSample.Created(id, tau, IgEntityModel.Car, kp.CenterX, kp.CenterY, pose.Z, kp.HeadingDeg)
+                : IgSample.Updated(id, tau, kp.CenterX, kp.CenterY, pose.Z, kp.HeadingDeg));
         }
     }
 

@@ -145,6 +145,49 @@ Today an instant lane change reconstructs as a lateral move over the **straddle 
 - Lives in `Sim.Viewer.Motion` (new small `LaneChangeEaser` or folded into a resolve-side helper), so
   the 2D native/web viewers inherit it. **Not** in IgBridge. `W` is a tunable (§7).
 
+### 5.3 Kinematic reconstruction — rear-axle drag (the "vehicle on rails" fix)
+**Problem (owner-reported).** The reconstruction emits SUMO's **front reference point** as the position and
+derives heading from the back→front chord *sampled on the lane polyline*. The renderer draws the body
+backward from the front, so the **front is pinned to the polyline ("on rails") and the rear swings/jumps**
+around the front pivot at every faceted internal-lane vertex / route-segment boundary — as if the rear
+wheels steered. The same front-pivot rotation makes lane changes look like the rear slews sideways.
+
+**Fix — a kinematic single-track (bicycle) model with the rear axle as a *towed* point.** The front
+reference (reliable, follows the lane) tows a rear axle that **cannot slip sideways** — exactly a car's
+unsteered rear wheels. Per vehicle, integrated at the emit cadence Δ:
+```
+Lwb        = wheelbaseFactor · Length            // ~0.6·Length; axles inset like an ordinary car
+Fa         = Pfront − frontOverhang · dir(θ_prev) // front axle, inset from the front ref by ~0.15·Length
+Ra(t)      = Fa − Lwb · unit( Fa − Ra(t−Δ) )      // rear axle DRAGGED, stays Lwb behind, no lateral slip
+θ          = navi( Fa − Ra )                        // body heading = rear→front (forward)
+Center     = (Fa + Ra) / 2                          // ≈ vehicle geometric center
+```
+Properties (why it's right): the rear follows a **smooth path and cuts inside the corner** (real
+off-tracking) while the front rides the geometry — **no rear swing, no jump**; heading changes
+*continuously* across polyline facets because the drag integrates them away; and on a lane change the
+towed rear lags → the body **yaws into the change and back** (natural S-curve). 10 Hz core + 20 Hz emit is
+ample — the drag integrates at 50 ms steps, far finer than the turn dynamics.
+
+**Guards** (from the DR doc's hard-won lessons): below a small speed **hold heading** (no spin at a red
+light); a supra-threshold front jump (teleport/handle reuse) **reseeds** `Ra` from the lane heading rather
+than dragging across the gap; deterministic seeding at spawn (`Ra = Fa − Lwb·dir(laneHeading)`), no
+`System.Random`, per-entity state → order-independent.
+
+**Where it lives / reference point.** A new stateful per-handle component in **`Sim.Viewer.Motion`**
+(`KinematicHeading`), so the 2D web/native and 3D City3D viewers inherit the identical model — fix once,
+fix all. It **replaces** the chord-heading + motion-tilt heuristic (§10.3 of the DR doc) for this path,
+kept selectable so the viewers can A/B. IgBridge emits the **vehicle Center + θ** (the owner's IG models
+pivot at center; `z` = lane-surface/ground z, wheels-on-ground is the IG's job). The 2D `Sim.Viz` render
+converts Center→front-ref only if the template anchors at the front (a fixed `±Length/2·dir(θ)` offset).
+
+**Composition with §5.2 (ease).** Complementary: the **drag model fixes body orientation** (the rear
+jump) for turns *and* lane changes; the **ease spreads the front's instant lateral jump** over ~1.3 s so
+the front *path* is smooth. Together a lane change is a front sliding over ~1.3 s with the rear dragging
+kinematically behind — a real-looking maneuver.
+
+**Tunables:** `wheelbaseFactor` (0.6), `frontOverhangFactor` (0.15), `holdSpeed` (~0.5 m/s), `reseedJump`
+(~7 m). All render-side; none affect parity.
+
 Both additions are renderer-side, outside `Sim.Core`'s parity path; the offline `dotnet test` gate and
 every golden stay byte-identical (§6).
 

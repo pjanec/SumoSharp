@@ -63,7 +63,17 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
            the ease to exist). -->
 
 
-## Stage 2 — lane-change ease + lifecycle
+## Stage 2 — kinematics + lane-change ease + lifecycle
+- [x] **T2.0** Kinematic rear-axle drag in `Sim.Viewer.Motion` (owner-reported "vehicle on rails"): front tows a no-slip rear axle → rear pivots, no swing/jump; emit vehicle Center + drag heading (IG center-pivot). Re-render + re-measure.
+      <!-- done: KinematicHeading (front tows a no-slip rear axle; heading=rear->front; center=midpoint of
+           inset axles; hold<0.5m/s; reseed on teleport). IgBridgeSession: DrPoseSmoother for POSITION
+           (absorbs facet/teleport jumps) then KinematicHeading for heading+center, emit center+drag
+           heading. VizExport converts center->front for the front-anchored template. Re-measured: ALL
+           aggregates far below raw -- yaw-rate median 3.9x (max 1790->242), yaw-jerk median 8.2x
+           (max 107k->12k, the old hairpin regression GONE), lat-accel mean 4.7x. 4 KinematicHeading unit
+           tests + 11 IgBridge tests green (determinism preserved); full gate green, parity 654/4-skip
+           byte-identical. -->
+
 - [ ] **T2.1** Lane-change ease over ~1.3 s in `Sim.Viewer.Motion` (detect perpendicular snap → smoothstep); duration ∈ [1.2,1.5] s
 - [ ] **T2.2** Lifecycle (`new`/`del`) from SimEvent/ped add-remove + non-lane-change discontinuity handling (no 60 m/s slide)
 

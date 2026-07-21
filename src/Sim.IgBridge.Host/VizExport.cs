@@ -13,6 +13,15 @@ internal static class VizExport
 {
     private static double R(double v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
 
+    private const double HalfBoxLen = 2.5; // half of the shared vdim length (5.0) -- center -> front anchor
+
+    // Navi-degree (0 = north, clockwise) unit vector.
+    private static (double X, double Y) NaviDir(double naviDeg)
+    {
+        var m = (90.0 - naviDeg) * Math.PI / 180.0;
+        return (Math.Cos(m), Math.Sin(m));
+    }
+
     public static void WriteSideBySide(
         string repoRoot, NetworkModel network,
         (string Name, string Desc, FakeIg Ig) sceneA,
@@ -73,7 +82,13 @@ internal static class VizExport
             {
                 if (ig.TryDisplayPose(kv.Key, t, out var p) && ig.ModelOf(kv.Key) == IgEntityModel.Car)
                 {
-                    v[kv.Value] = new[] { R(p.X), R(p.Y), R(p.HeadingDeg) };
+                    // The trace carries the vehicle CENTER (IG pivots on center); the Sim.Viz template
+                    // anchors the box at the FRONT (rect extends backward), so shift forward by half the
+                    // shared box length along the heading.
+                    var (dx, dy) = NaviDir(p.HeadingDeg);
+                    var fx = p.X + HalfBoxLen * dx;
+                    var fy = p.Y + HalfBoxLen * dy;
+                    v[kv.Value] = new[] { R(fx), R(fy), R(p.HeadingDeg) };
                 }
             }
 
