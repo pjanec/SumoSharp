@@ -213,6 +213,13 @@ public sealed partial class Engine : IEngine
     // once over it, it reroutes.
     private const double DeadLaneRerouteWaitSeconds = 5.0;
 
+    // GAP-1: the LONGER last-resort gate for a dead-lane car held short of the lane end by a junction
+    // yield / red light (TryRerouteStuckDeadLane). It never reaches the boundary, so the 5 s gate
+    // above does not apply to it; instead it is rerouted only when it nears time-to-teleport (120 s),
+    // so only the cars that would otherwise jam-teleport are diverted -- an eager stuck-reroute churns
+    // the dense case. Swept: see docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.5.
+    private const double StuckDeadLaneRerouteWaitSeconds = 90.0;
+
     // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C, §2, §5): the persistent teleport transfer queue --
     // the MSVehicleTransfer::myVehicles analog. A vehicle picked for a jam-teleport is lifted off
     // its lane (InTransfer=true) and appended here with the route-edge index of the edge it has
@@ -4844,6 +4851,12 @@ public sealed partial class Engine : IEngine
         // roundabout (32), whose curved internal ring lanes drop the speed limit.
         vPos = Math.Min(vPos, SuccessiveLaneSpeedConstraint(v, lane, dt));
 
+        // GAP-1 (dead-lane merge brake): decelerate smoothly toward the forced-merge point when
+        // stuck on a lane that cannot reach the next route edge, so the vehicle falls back to
+        // re-try its strategic merge instead of slamming into the lane end and deadlocking.
+        // +infinity (inert) for every vehicle on an on-route lane -- see the method's own header.
+        vPos = Math.Min(vPos, DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
+
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
@@ -6009,6 +6022,87 @@ public sealed partial class Engine : IEngine
         }
 
         return result;
+    }
+
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.5): a vehicle stuck on a lane whose
+    // connections do NOT include its next ROUTE edge -- a "dead lane" for its route (e.g. veh 295
+    // forced onto 30_1 while its route needs 30->124, which leaves only from 30_0) -- must
+    // decelerate SMOOTHLY toward the forced-merge point (the end of its usable on-route distance)
+    // instead of barreling to the lane end at full speed and slamming to a clamp. Ported from
+    // MSLCM_LC2013::informLeader (MSLCM_LC2013.cpp:471-472): an URGENT strategic changer that is
+    // blocked brakes via `stopSpeed(myLeftSpace)` (myLeftSpace = currentDist - posOnLane, the
+    // remaining on-route distance on the current lane; myLeadingBlockerLength == 0 here, no
+    // counter-lane-change reservation modeled) so it falls back and re-tries the merge into its
+    // target lane every step rather than overshooting. Without this the dense-flow synthetic
+    // HARD-DEADLOCKS: cars slam into dead-lane ends at speed, clamp to 0, and gridlock.
+    //
+    // PROVABLY INERT for every committed golden: returns +infinity unless the vehicle's CURRENT
+    // lane has NO connection to its next ROUTE edge (a genuine dead lane). Every committed golden's
+    // vehicle is always on a lane that continues its route (they converge onto their pool lane and
+    // never strand), so this branch is never entered and vPos is unchanged -- verified by the full
+    // suite staying byte-identical.
+    private double DeadLaneMergeBrakeConstraint(VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Already on the route pool's target lane for this edge -- converged (every golden
+        // vehicle at every junction). Cheapest common-case exit.
+        if (_laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex] == v.LaneHandle)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // No strategic merge inside a junction interior (mirrors the DecideSpeedGainChanges
+        // internal-lane guard); its edge is never on the route anyway.
+        if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+        {
+            return double.PositiveInfinity;
+        }
+
+        // The next NORMAL route edge after the current one.
+        string? nextRouteEdge = null;
+        for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
+        {
+            var seqLane = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            if (seqLane.EdgeId.Length > 0 && seqLane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (seqLane.EdgeId != lane.EdgeId)
+            {
+                nextRouteEdge = seqLane.EdgeId;
+                break;
+            }
+        }
+
+        if (nextRouteEdge is null)
+        {
+            return double.PositiveInfinity;   // current edge is the last route edge -- no forced merge
+        }
+
+        // Dead lane iff the current lane has NO connection to the next route edge. If it DOES
+        // connect (an on-route but non-ideal lane), the vehicle crosses via its own connection and
+        // never gridlocks (TryReResolveFromActualLane handles it at the boundary) -- no brake.
+        if (_network!.ConnectionsByFromLaneTo.ContainsKey((lane.EdgeId, lane.Index, nextRouteEdge)))
+        {
+            return double.PositiveInfinity;
+        }
+
+        var usableDist = lane.Length - v.Kinematics.Pos;
+        if (usableDist <= 0.0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var stopSpeed = StopSpeedFor(v.VType, v.Kinematics.Speed, usableDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+        var vMinComfortable = v.VType.CarFollowModel is "IDM" or "IDMM"
+            ? IdmModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt)
+            : KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        return Math.Max(stopSpeed, vMinComfortable);
     }
 
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
@@ -9209,6 +9303,85 @@ public sealed partial class Engine : IEngine
             // Rung 8b/A2: keep-right and speed-gain lane changes are no longer decided here --
             // both now run in the post-move DecideSpeedGainChanges phase (see Run()'s comment and
             // that method's header comment for why keep-right moved out of Plan/MoveIntent).
+
+            // GAP-1: a vehicle stuck on a DEAD LANE that never reaches the lane end (held short by a
+            // junction yield / red light -- e.g. veh 95 on -2437_1 wanting -2337, which leaves only
+            // from -2437_0, held at the tl=2336 junction) would otherwise wait out time-to-teleport
+            // and jam-teleport. The boundary reroute above only fires once the vehicle crosses pos >=
+            // laneLength, which such a vehicle never does. So ALSO offer the dead-lane reroute here,
+            // when the vehicle has genuinely stalled (WaitingTime >= DeadLaneRerouteWaitSeconds, the
+            // same last-resort gate the boundary path uses): commit it to a connection its ACTUAL
+            // lane HAS (getBestLanesContinuation semantics), so next step it plans a valid junction
+            // link and crosses instead of teleporting. INERT for every committed golden: gated on the
+            // current lane having no connection to the next route edge (a dead lane), which no golden
+            // vehicle is ever on. See TryRerouteStuckDeadLane.
+            TryRerouteStuckDeadLane(v);
+    }
+
+    // GAP-1: reroute a vehicle that is STALLED on a dead lane (its current lane cannot reach its next
+    // route edge) short of the lane end -- held by a junction yield or red light so the boundary
+    // reroute never fires. Mirrors TryReResolveFromActualLane's drop-lane detection, then defers to
+    // TryRerouteFromDeadLane (which enforces the WaitingTime >= DeadLaneRerouteWaitSeconds last-resort
+    // gate, the per-vehicle reroute cap, the U-turn skip and the live-weight cost routing). No-op
+    // unless the vehicle is on a genuine dead lane AND has stalled -- so byte-identical for every
+    // committed golden (none strands on a dead lane). Execute phase, mutates only this vehicle's own
+    // LaneSeq* (same discipline as TryReResolveFromActualLane).
+    private void TryRerouteStuckDeadLane(VehicleRuntime v)
+    {
+        if (v.Arrived || v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return;
+        }
+
+        var currentLane = _network!.LanesByHandle[v.LaneHandle];
+        if (currentLane.EdgeId.Length > 0 && currentLane.EdgeId[0] == ':')
+        {
+            return;   // inside a junction interior -- no reroute
+        }
+
+        // The remaining NORMAL route edges from the current slot onward (skip internal ':'-lanes).
+        var remaining = new List<string>();
+        string? lastEdge = null;
+        for (var k = v.LaneSeqIndex; k < v.LaneSeqLen; k++)
+        {
+            var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]];
+            if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (lane.EdgeId != lastEdge)
+            {
+                remaining.Add(lane.EdgeId);
+                lastEdge = lane.EdgeId;
+            }
+        }
+
+        if (remaining.Count < 2 || remaining[0] != currentLane.EdgeId)
+        {
+            return;   // on the last route edge (no forced merge) or malformed -- nothing to do
+        }
+
+        // Only a genuine dead lane (current lane has NO connection to the next route edge) reroutes.
+        // A lane that DOES connect will cross via its own connection at the boundary -- leave it.
+        if (_network.ConnectionsByFromLaneTo.ContainsKey((currentLane.EdgeId, currentLane.Index, remaining[1])))
+        {
+            return;
+        }
+
+        // Last-resort gate: a stalled dead-lane car held at a yield/red is rerouted only when it is
+        // close to teleporting (StuckDeadLaneRerouteWaitSeconds), NOT at the boundary path's 5 s. An
+        // eager stuck-reroute churns the dense case (it pipes stalled cars onto alternate corridors
+        // that then jam -- measured 2x teleports 3->6). Deferring to just before time-to-teleport
+        // reroutes only the cars that would otherwise teleport, leaving the rest to drain normally.
+        if (v.WaitingTime < StuckDeadLaneRerouteWaitSeconds)
+        {
+            return;
+        }
+
+        // Defer to the boundary reroute's own logic (cap + U-turn skip + cost routing); its internal
+        // 5 s gate is already satisfied here.
+        TryRerouteFromDeadLane(v, currentLane, remaining);
     }
 
     // C4-vii-c: re-resolve a vehicle's remaining route starting from the lane it is ACTUALLY on when
