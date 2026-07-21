@@ -33,7 +33,14 @@ stated success conditions are verified first-hand (per CLAUDE.md: read the diff,
            semantics preserved (unset on empty-history throw). 4-branch equivalence theory + 3 existing
            regression pins green (7/7); solution builds; DrClock is render-side, not in parity path. -->
 
-- [ ] **T1.2** Vehicle reconstruct (ResolveAt + PoseResolver + DrPoseSmoother) + emit JSONL trace; byte-identical across runs
+- [x] **T1.2** Vehicle reconstruct (ResolveAt + PoseResolver + DrPoseSmoother) + emit JSONL trace; byte-identical across runs
+      <!-- done: IgBridgeSession resamples the reused stack at 20 Hz (shared tQuery/instant, coherent),
+           vehicles via ResolveAt->PoseResolver(ChordHeading)->DrPoseSmoother (straddle skipped, = viewer
+           Stage 1; T2.1 adds the ease), peds via linear resample of PedSampleHistory (velocity heading).
+           IgTraceWriter = deterministic JSONL (new/upd/del, planar x,y,h). Host writes a 269k-record
+           120s trace; 2 runs byte-identical. Tests 7/7: emit determinism + lifecycle-correct
+           (0 upd-before-new / new-after-upd / upd-after-del, new==del) non-vacuous JSONL. -->
+
 - [ ] **T1.3** `FakeIg` replay: 2-most-recent interp @ `clock−igDelay`, shortest-arc heading, threshold-jump
 - [ ] **T1.4** Side-by-side render (raw vs FakeIg-reconstructed) via `Sim.Viz` two-scene payload
 - [ ] **T1.5** Baseline metrics pass (yaw-rate, yaw-jerk, lateral-accel, C1 gap, lane-change duration) raw vs reconstructed

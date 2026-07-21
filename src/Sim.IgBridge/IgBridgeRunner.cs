@@ -78,6 +78,7 @@ public sealed class IgBridgeRunner
 
     private readonly Dictionary<VehicleHandle, VehicleSampleHistory> _histories = new();
     private readonly Dictionary<VehicleHandle, string> _idByHandle = new();
+    private readonly Dictionary<VehicleHandle, (double Length, double Width)> _dims = new();
     private readonly List<SpawnInfo> _spawnedThisTick = new();
     private readonly List<DespawnInfo> _despawnedThisTick = new();
     private HashSet<VehicleHandle> _live = new();
@@ -117,6 +118,7 @@ public sealed class IgBridgeRunner
     public int PendingDemand => _demand.Count - _cursor;
 
     public IReadOnlyDictionary<VehicleHandle, VehicleSampleHistory> VehicleHistories => _histories;
+    public IReadOnlyDictionary<VehicleHandle, (double Length, double Width)> VehicleDims => _dims;
     public IReadOnlyCollection<VehicleHandle> LiveVehicles => _live;
     public IReadOnlyList<SpawnInfo> SpawnedThisTick => _spawnedThisTick;
     public IReadOnlyList<DespawnInfo> DespawnedThisTick => _despawnedThisTick;
@@ -178,6 +180,8 @@ public sealed class IgBridgeRunner
         var speed = _engine.Speed;
         var accel = _engine.Acceleration;
         var drModels = _engine.DrModels;
+        var lengths = _engine.VehicleLengths;
+        var widths = _engine.VehicleWidths;
         var t = _engine.CurrentTime;
         Span<int> upcoming = stackalloc int[UpcomingLanes.Count];
 
@@ -190,6 +194,7 @@ public sealed class IgBridgeRunner
             {
                 history = new VehicleSampleHistory(_historyCapacity);
                 _histories[handle] = history;
+                _dims[handle] = (lengths[i], widths[i]); // once per vehicle -- for PoseResolver ChordHeading
                 _spawnedThisTick.Add(new SpawnInfo(handle, IdOf(handle), IgEntityModel.Car));
             }
 

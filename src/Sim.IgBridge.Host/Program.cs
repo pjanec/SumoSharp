@@ -1,11 +1,10 @@
 using System.Text;
-using Sim.Core;
 using Sim.IgBridge;
-using Sim.Replication;
 
-// IgBridge verification host (docs/IGBRIDGE-TASKS.md). T0.3 smoke: drive the fixed-10 Hz runner over the
-// box scenario, report entity/tick stats, and prove the buffered sample stream is deterministic across
-// two runs. Reconstruct/emit/FakeIg/render/metrics land in T1.2+.
+// IgBridge verification host (docs/IGBRIDGE-TASKS.md). T0.3+T1.2 smoke: drive the fixed-10 Hz runner over
+// the box scenario, resample the reused reconstruction stack at the emit cadence, write an IG-native
+// new/upd/del trace, and prove the emitted trace is byte-deterministic across two runs. FakeIg replay +
+// side-by-side render + metrics land in T1.3-T1.5.
 var repoRoot = FindRepoRoot();
 var boxDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box");
 var cfg = new IgBridgeConfig(Path.Combine(boxDir, "net.xml"), Path.Combine(boxDir, "scenario.rou.xml"))
@@ -13,73 +12,60 @@ var cfg = new IgBridgeConfig(Path.Combine(boxDir, "net.xml"), Path.Combine(boxDi
     StepLength = 0.1,
     Seed = 42,
 };
+var emit = new IgEmitConfig { EmitHz = 20.0, LookaheadSeconds = 0.1 };
 
 const int Steps = 1200; // 120 s @ 10 Hz
 
-Console.WriteLine($"box={boxDir}");
-var (fingerprint, stats) = RunAndFingerprint(cfg, Steps, verbose: true);
-Console.WriteLine(stats);
+var outDir = Path.Combine(repoRoot, "artifacts", "igbridge");
+Directory.CreateDirectory(outDir);
+var tracePath = Path.Combine(outDir, "trace.jsonl");
 
-// Determinism: a second independent run must produce a byte-identical buffered-sample fingerprint.
-var (fingerprint2, _) = RunAndFingerprint(cfg, Steps, verbose: false);
-Console.WriteLine(fingerprint == fingerprint2
-    ? $"DETERMINISM OK: two runs identical (fingerprint len={fingerprint.Length}, hash={fingerprint.GetHashCode():X8})"
-    : "DETERMINISM FAILED: runs diverged");
+Console.WriteLine($"box={boxDir}");
+
+// Run 1: write the trace to disk (the replayable artifact) and capture its text for the determinism check.
+string traceText1;
+using (var sw = new StringWriter())
+{
+    var stats = RunSession(cfg, emit, Steps, new IgTraceWriter(sw));
+    traceText1 = sw.ToString();
+    File.WriteAllText(tracePath, traceText1);
+    Console.WriteLine(stats);
+    Console.WriteLine($"trace written: {tracePath} ({traceText1.Length:N0} chars)");
+}
+
+// Run 2: emit-stream determinism.
+string traceText2;
+using (var sw = new StringWriter())
+{
+    RunSession(cfg, emit, Steps, new IgTraceWriter(sw));
+    traceText2 = sw.ToString();
+}
+
+Console.WriteLine(traceText1 == traceText2
+    ? "EMIT DETERMINISM OK: two runs produced a byte-identical trace"
+    : "EMIT DETERMINISM FAILED: traces diverged");
 
 return 0;
 
-static (string fingerprint, string stats) RunAndFingerprint(IgBridgeConfig cfg, int steps, bool verbose)
+static string RunSession(IgBridgeConfig cfg, IgEmitConfig emit, int steps, IgTraceWriter trace)
 {
     var runner = new IgBridgeRunner(cfg);
-    var sb = new StringBuilder();
-    int maxLive = 0, totalSpawned = 0, totalDespawned = 0;
-    int maxLivePeds = 0, totalPedSpawned = 0, totalPedDespawned = 0;
-    double firstTickTime = double.NaN, lastTickTime = double.NaN;
+    var session = new IgBridgeSession(runner, emit, trace);
 
     for (var step = 0; step < steps; step++)
     {
         runner.Tick();
-        if (step == 0) firstTickTime = runner.SimTime;
-        lastTickTime = runner.SimTime;
-        maxLive = Math.Max(maxLive, runner.LiveVehicles.Count);
-        totalSpawned += runner.SpawnedThisTick.Count;
-        totalDespawned += runner.DespawnedThisTick.Count;
-        maxLivePeds = Math.Max(maxLivePeds, runner.LivePeds.Count);
-        totalPedSpawned += runner.PedSpawnedThisTick.Count;
-        totalPedDespawned += runner.PedDespawnedThisTick.Count;
+        session.Advance();
     }
 
-    // Fingerprint: for every buffered sample of every entity (id-sorted), fold in the quantized state.
-    // This is what the determinism check compares -- any divergence in timing or motion flips it.
-    var fp = new StringBuilder();
-    foreach (var kv in runner.VehicleHistories.OrderBy(k => runner.IdOf(k.Key), StringComparer.Ordinal))
-    {
-        fp.Append(runner.IdOf(kv.Key)).Append('|');
-        var h = kv.Value;
-        for (var i = 0; i < h.Count; i++)
-        {
-            var s = h[i];
-            fp.Append(s.TimestampSeconds.ToString("F3")).Append(',')
-              .Append(s.Record.LaneHandle).Append(',')
-              .Append(s.Record.Pos.ToString("F4")).Append(',')
-              .Append(s.Record.PosLat.ToString("F4")).Append(',')
-              .Append(s.Record.Speed.ToString("F4")).Append(';');
-        }
-        fp.Append('\n');
-    }
+    session.Finish();
 
-    if (verbose)
-    {
-        sb.AppendLine($"ticks={steps} firstTickTime={firstTickTime:F3} lastTickTime={lastTickTime:F3} "
-            + $"(expect first=0.100, last={0.1 * steps:F3})");
-        sb.AppendLine($"maxLiveVehicles={maxLive} totalSpawned={totalSpawned} totalDespawned={totalDespawned} "
-            + $"pendingDemand={runner.PendingDemand} distinctEntities={runner.VehicleHistories.Count}");
-        sb.AppendLine($"livePeds={runner.LivePeds.Count} maxLivePeds={maxLivePeds} "
-            + $"totalPedSpawned={totalPedSpawned} totalPedDespawned={totalPedDespawned} "
-            + $"distinctPeds={runner.PedHistories.Count}");
-    }
-
-    return (fp.ToString(), sb.ToString());
+    var sb = new StringBuilder();
+    sb.AppendLine($"ticks={steps} simTime={runner.SimTime:F3} "
+        + $"veh(distinct={runner.VehicleHistories.Count}, maxLive={runner.LiveVehicles.Count}) "
+        + $"ped(distinct={runner.PedHistories.Count}, live={runner.LivePeds.Count})");
+    sb.Append($"emitted records={session.EmittedCount} (EmitHz={emit.EmitHz}, lookahead={emit.LookaheadSeconds}s)");
+    return sb.ToString();
 }
 
 static string FindRepoRoot()
