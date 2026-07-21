@@ -9177,7 +9177,30 @@ public sealed partial class Engine : IEngine
                 // where the successive-lane cap sets speed = remaining distance to the lane end).
                 if (v.Kinematics.Pos <= currentLane.Length)
                 {
-                    break;
+                    // GAP-4 (box ring-fringe exit deadlock): on the FINAL route edge, arrival is
+                    // position-based -- SUMO removes the vehicle when `pos >= arrivalPos`
+                    // (MSVehicle::hasArrived, lane-AGNOSTIC), which for the default arrivalPos ==
+                    // laneLength means a vehicle HALTED EXACTLY at the lane end (pos == length) has
+                    // arrived. It must NOT be gated behind the strict lane-CROSSING boundary (pos >
+                    // length) that governs advancing to a NEXT lane: a vehicle that brakes to a stop
+                    // exactly at its last edge's end (e.g. the box's e_ring_N/W/E_fringe dead-end
+                    // exits, whose outer lanes have no onward connection) never satisfies the strict
+                    // `>` and freezes there forever, backing up the whole exit queue and starving the
+                    // sink (measured: ring-fringe arrivals 4/4/2 vs vanilla 24/18/14). So let a
+                    // final-edge vehicle sitting AT the lane end fall through to the arrival branch
+                    // below; every other case still breaks (a non-final edge crosses next step; a
+                    // final-edge vehicle still short of the end keeps approaching). Measure-zero in
+                    // free flow -- vehicles overshoot (pos > length) and arrive via the normal path --
+                    // so byte-identical for every committed golden (verified by the full suite).
+                    var atFinalEdgeEnd = v.LaneSeqIndex + 1 >= v.LaneSeqLen
+                        && v.Kinematics.Pos >= currentLane.Length;
+                    if (!atFinalEdgeEnd)
+                    {
+                        break;
+                    }
+
+                    // else: fall through to the last-edge arrival branch below (which still applies
+                    // the park-and-stay residency guard before DestroyWithArrival).
                 }
 
                 if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
