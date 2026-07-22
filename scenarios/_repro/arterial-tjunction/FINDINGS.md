@@ -68,3 +68,31 @@ sumo   -c art.sumocfg --fcd-output /tmp/v.xml --summary-output /tmp/vs.xml --no-
 dotnet ../../../$DLL -c art.sumocfg --fcd-output /tmp/s.xml --summary-output /tmp/ss.xml --no-step-log true
 # compare running/arrived/meanSpeed at t=999; lane-distribution of f_wsc (left) vs f_we (through) on BC.
 ```
+
+---
+
+## UPDATE 2026-07-22 (session 5) — root cause CORRECTED + faithful rule-2 fix (byte-identical), knee residual is DISCHARGE not lane-choice
+
+**The earlier "getBestLanes under-values the turn lane" framing was wrong.** Traced the pool directly:
+`ComputeBestLanes` assigns the CORRECT offsets — a left-turner's pool targets `AB_2 → BC_2`; the desirability
+is right. The real free-flow bug is that **keep-right pulls the turner back OFF its turn lane**.
+
+**FCD trace (free-flow `art_lo`, `f_wsc.1`):** lands `BC_1`, changes to `BC_2` (pos 82), **keep-rights back to
+`BC_1`** (pos 90), oscillates. Vanilla lands `BC_1`, moves to `BC_2`, stays. Mechanism: SUMO has THREE
+strategic stay-on-best rules (`MSLCM_LC2013.cpp:1398-1440`); SumoSharp ported only VARIANT_21
+(`neighDist < TURN_LANE_DIST=200`), which cannot fire on the 272.8 m `BC` edge. The missing **rule 2**
+(`bestLaneOffset==0 && neighLeftPlace*2 < laDist`, POSITION-relative) is what keeps vanilla's turner on the
+turn lane as it nears the junction. Confirmed by experiment (force-suppress keep-right when eligible →
+oscillation gone, `BC_2` 87%→97%).
+
+**Fix implemented (faithful port of rule 2 into `ApplyKeepRightDecision`):**
+- Byte-identical: full suite **657 parity + 227 pedestrian, 0 failed**. Deterministic (serial == `-p 8`).
+- Free-flow left-turners on `BC_2`: **87% → 95%** (vanilla 99%); through correctly off `BC_2` (4% = vanilla).
+
+**Knee residual is NOT lane-choice.** High density barely moves (running 462→460, meanSpeed 2.69→2.84):
+under a jam speed→low→`laDist`→small, so rule 2 correctly/faithfully rarely fires. With free-flow lane
+discipline now ≈ vanilla yet the deficit persisting, **the knee's dominant cause is a separate
+saturation/discharge mechanism** (on-junction yield / LCA_URGENT blocker-cooperation / insertion), matching
+SumoData's original "through-discharge deficit" and Geneva's "additional discharge component" caveat. The
+high-density `BC_2`=26% through-occupancy is gridlock-confounded (Geneva's warning), NOT a clean lane-choice
+signal. Next localization should target discharge under saturation, on the now-free-flow-clean engine.

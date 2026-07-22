@@ -3,6 +3,19 @@
 **Written 2026-07-22 to survive context compaction.** Self-contained: a fresh session resumes from this file
 (plus `docs/CALIBRATION-KNEE-INDEX.md` for the full arc). SUMO source: `/sumo` (v1_20_0).
 
+> **UPDATE 2026-07-22 (session 5) — READ FIRST. The "getBestLanes under-values the turn lane" hypothesis
+> below is FALSIFIED.** Traced the pool: `ComputeBestLanes` offsets are CORRECT (a turner's pool targets
+> `AB_2 → BC_2`). The real free-flow bug is **keep-right pulling the turner back off its turn lane** — SUMO's
+> stayOnBest **rule 2** (`MSLCM_LC2013.cpp:1410-1418`, `bestLaneOffset==0 && neighLeftPlace*2 < laDist`,
+> position-relative) was never ported (only VARIANT_21's static `neighDist<200`, which can't fire on the
+> 272 m edge). **A faithful port of rule 2 is implemented in `ApplyKeepRightDecision` (byte-identical: 657+227
+> goldens pass; deterministic; free-flow `BC_2` 87%→95%).** BUT it barely moves the high-density knee
+> (running 462→460): under a jam `laDist` shrinks so rule 2 rightly rarely fires. **Conclusion: the knee's
+> dominant cause is NOT lane-choice but a separate saturation/DISCHARGE mechanism** (on-junction yield /
+> LCA_URGENT blocker-cooperation / insertion). Next localization → discharge, on the free-flow-clean engine.
+> Full detail: `scenarios/_repro/arterial-tjunction/FINDINGS.md` (UPDATE 2026-07-22 session 5). The
+> lane-desirability investigation below (§2–§8) is kept for history but is NOT the root cause.
+
 ---
 
 ## RESUME PROMPT (paste to restart)

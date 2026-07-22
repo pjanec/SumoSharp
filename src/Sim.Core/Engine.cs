@@ -10452,18 +10452,65 @@ public sealed partial class Engine : IEngine
         if (v.KeepRightStayCacheLane != v.LaneHandle)
         {
             v.KeepRightStayCacheLane = v.LaneHandle;
-            v.KeepRightStaySuppress = KeepRightStrategicStay(v, lane, rightLane.Index);
+            v.KeepRightStaySuppress = KeepRightStrategicStay(
+                v, lane, rightLane.Index, out var rule2Eligible, out var rightContLength);
+            v.KeepRightStayRule2Eligible = rule2Eligible;
+            v.KeepRightStayRightContLength = rightContLength;
         }
         if (v.KeepRightStaySuppress)
         {
             return;
         }
 
-        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
+        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder). Declared here
+        // (moved up from the keep-right accumulator below) so the rule-2 look-ahead-speed decay can
+        // read it.
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        // Turn-lane segregation fix: SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418) --
+        // `bestLaneOffset == 0 && (neighLeftPlace * 2. < laDist)`. Unlike VARIANT_21 (rule 3, the
+        // static `neighDist < TURN_LANE_DIST` above), this is POSITION-relative: it keeps ego on its
+        // best (route-continuing) lane once it is close enough to that lane's end that leaving it for
+        // the route-LEAVING right neighbour would risk not getting back in time. On a >200 m approach
+        // (rule 3 can't fire) this is the rule that stops a turner from keep-righting off its turn lane
+        // as it nears the junction; without it a left-turner on its dedicated lane oscillates back onto
+        // a through lane and serial-blocks it -- the arterial calibration-knee deficit. `neighLeftPlace
+        // = MAX2(0, neighDist - posOnLane - maxJam)` with maxJam = 0 (empty-road occupation scope, as
+        // every other keep-right term here). laDist is the RIGHT-direction look-ahead distance
+        // (MSLCM_LC2013.cpp:1238-1239): myLookAheadSpeed * LOOK_FORWARD * myStrategicParam * 1 +
+        // 2*lengthWithGap. myLookAheadSpeed is maintained here exactly as SUMO does at the top of every
+        // _wantsChange (grows instantly toward a higher speed, decays slowly otherwise); for an
+        // already-converged turner TryStrategicLaneChange returns before touching it, so this is that
+        // vehicle's sole update and no double-decay occurs. Inert for every vehicle not on a best lane
+        // with a route-leaving right neighbour (Eligible=false) -- byte-identical there.
+        if (v.KeepRightStayRule2Eligible)
+        {
+            if (v.Kinematics.Speed > v.LookAheadSpeed)
+            {
+                v.LookAheadSpeed = v.Kinematics.Speed;
+            }
+            else
+            {
+                const double lookAheadSpeedMemory = 0.9; // LOOK_AHEAD_SPEED_MEMORY
+                var memoryFactor = 1.0 - (1.0 - lookAheadSpeedMemory) * actionStepLengthSecs;
+                v.LookAheadSpeed = Math.Max(0.0, (memoryFactor * v.LookAheadSpeed) + ((1.0 - memoryFactor) * v.Kinematics.Speed));
+            }
+
+            const double lookForward = 10.0;    // LOOK_FORWARD
+            const double strategicParam = 1.0;  // myStrategicParam ctor default
+            var lengthWithGap = v.VType.Length + v.VType.MinGap;
+            // Right direction: the (right ? 1 : myLookaheadLeft) factor is 1.
+            var laDistRight = (v.LookAheadSpeed * lookForward * strategicParam) + (2.0 * lengthWithGap);
+            var neighLeftPlace = Math.Max(0.0, v.KeepRightStayRightContLength - v.Kinematics.Pos);
+            if (neighLeftPlace * 2.0 < laDistRight)
+            {
+                return;
+            }
+        }
+
         const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
         const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
         const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
-        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
         var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
         var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
@@ -10657,8 +10704,16 @@ public sealed partial class Engine : IEngine
             downstream, new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
     }
 
-    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
+    // Turn-lane segregation fix: `rule2Eligible` (currContinues && rightLeavesRoute) and
+    // `rightContLength` (the right lane's best-lanes continuation length) are the position-INDEPENDENT
+    // inputs ApplyKeepRightDecision needs to also evaluate SUMO's stayOnBest rule 2 -- computed here in
+    // the SAME allocating pass so the memo covers both rules. Return value = VARIANT_21 (rule 3),
+    // unchanged.
+    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool rule2Eligible, out double rightContLength)
     {
+        rule2Eligible = false;
+        rightContLength = 0.0;
+
         var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
         var route = _routesById[routeId];
         if (route.Edges.Count <= 1)
@@ -10681,9 +10736,11 @@ public sealed partial class Engine : IEngine
             {
                 rightLeavesRoute = !continuation.AllowsContinuation;
                 rightSoon = continuation.Length < KeepRightTurnLaneDist;
+                rightContLength = continuation.Length;
             }
         }
 
+        rule2Eligible = currContinues && rightLeavesRoute;
         return currContinues && rightLeavesRoute && rightSoon;
     }
 

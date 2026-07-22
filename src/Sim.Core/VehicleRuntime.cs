@@ -137,6 +137,21 @@ internal sealed class VehicleRuntime
     public int KeepRightStayCacheLane = -1;
     public bool KeepRightStaySuppress;
 
+    // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT
+    // components of SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418: `bestLaneOffset == 0 &&
+    // neighLeftPlace * 2 < laDist`), cached alongside the VARIANT_21 memo above (same LaneHandle key,
+    // same reroute invalidation). `KeepRightStayRule2Eligible` = ego is on a route-continuing lane
+    // (own offset 0) whose right neighbour leaves the route (!AllowsContinuation) -- the same
+    // (currContinues && rightLeavesRoute) predicate VARIANT_21 needs, minus its static <200 m gate.
+    // `KeepRightStayRightContLength` = that right lane's best-lanes continuation length (SUMO's
+    // neigh.length), from which ApplyKeepRightDecision derives the POSITION-dependent
+    // neighLeftPlace = MAX2(0, length - posOnLane) fresh each step. Both are pure functions of
+    // (lane, remaining route), so they memoize on the same key; the per-step part is only the cheap
+    // distance compare + laDist. Inert (Eligible=false) for single-edge routes and any lane whose
+    // right neighbour continues the route -- byte-identical there.
+    public bool KeepRightStayRule2Eligible;
+    public double KeepRightStayRightContLength;
+
     // Rung A2: SUMO's MSLCM_LC2013::mySpeedGainProbability -- a stateful per-vehicle accumulator
     // for the speed-gain (overtaking) lane-change incentive. Starts at 0 (SUMO's ctor default);
     // unlike KeepRightProbability (plan-phase, pre-move), this is decided/written by the new
