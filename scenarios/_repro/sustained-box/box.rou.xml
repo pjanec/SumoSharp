@@ -1,0 +1,19 @@
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5" minGap="2.5" maxSpeed="13.89" tau="1.0"/>
+  <route id="we0" edges="bottom0A0 A0B0 B0C0 C0D0 D0bottom3"/>
+  <route id="we1" edges="left1A1 A1B1 B1C1 C1D1 D1right1"/>
+  <route id="we2" edges="left2A2 A2B2 B2C2 C2D2 D2right2"/>
+  <route id="we3" edges="left3A3 A3B3 B3C3 C3D3 D3right3"/>
+  <route id="snA" edges="bottom0A0 A0A1 A1A2 A2A3 A3left3"/>
+  <route id="snB" edges="bottom1B0 B0B1 B1B2 B2B3 B3top1"/>
+  <route id="snC" edges="bottom2C0 C0C1 C1C2 C2C3 C3top2"/>
+  <route id="snD" edges="bottom3D0 D0D1 D1D2 D2D3 D3right3"/>
+  <flow id="f_we0" type="car" route="we0" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_we1" type="car" route="we1" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_we2" type="car" route="we2" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_we3" type="car" route="we3" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_snA" type="car" route="snA" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_snB" type="car" route="snB" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_snC" type="car" route="snC" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+  <flow id="f_snD" type="car" route="snD" begin="0" end="1000" vehsPerHour="1100" departLane="best" departSpeed="max"/>
+</routes>
