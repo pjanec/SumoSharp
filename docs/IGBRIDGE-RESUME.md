@@ -13,8 +13,23 @@ live in `docs/IGBRIDGE-VERSIONS.md` (the durable record) — keep tagging locall
 **Direction 1 (longer vehicles) is DONE and shipped in v5** — see the v5 entry in VERSIONS.md. Env:
 `IGBRIDGE_BUS_IDS=213,239` (promote demand ids to a long vehicle), `IGBRIDGE_BUS_LEN` (12),
 `IGBRIDGE_BUS_VCLASS` (bus|coach|truck|trailer), `IGBRIDGE_LOOKAHEAD_LENFAC` (0.5). Viewer: amber long
-vehicles + a find-by-id follow box + camera/time sync across the A/B toggle. **Direction 2 (organic net) is
-the next item.**
+vehicles + a find-by-id follow box + camera/time sync across the A/B toggle.
+
+**Direction 2 (organic nets) is DONE** — test beds under `scenarios/_ig/` (`organic` = 112 irregular
+junctions, `round12` = 12-gon roundabout, `roundabout` = diamond). Result: reconstruction generalizes off
+the grid — fleet yaw-accel reversals median 0 (85% clean on organic, 67% on the roundabout), rear-axle
+no-slip holds, deterministic. **Finding → F3 below** (look-ahead under-used on sustained curvature). Next
+open item is F3 (optional) or whatever the owner picks; the PoC's requested directions are all delivered.
+
+### F3 — Look-ahead on sustained curvature (roundabouts): temporal-smooth instead of hard-reject
+On roundabout rings the spatial look-ahead is REJECTED ~45% of the time: the ring is a chain of short
+per-node junction connectors, and the look-ahead point hops onto them, jumping the predictor bearing past
+the 250°/s frame-to-frame guard, so it falls back to the reactive lane heading. This does NOT visibly hurt
+(the reactive predictor is smooth on continuous curvature — the look-ahead's real win is *faceted* junctions,
+which a ring doesn't have), so it's parked, not urgent. Fix per DECISIONS §5.13: instead of a hard reject,
+**temporally smooth** the look-ahead heading (low-pass / rate-limit toward the new bearing) so a genuine
+sustained curve is followed while transient cross-connector blips are still damped. Gate: the ring
+look-ahead-rejection rate should drop well below 45% with fleet reversals staying median 0.
 
 The IgBridge subsystem: embeds SumoSharp, ticks the core at 10 Hz over the clean **6×6 grid `subarea-box`**,
 reconstructs each vehicle into a smooth IG-native `[id, x, y, z, headingDeg, t]` stream with all SUMO motion
