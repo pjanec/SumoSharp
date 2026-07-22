@@ -56,3 +56,27 @@ through junctions (v49 offset 1.15 → 0.49 m, v229 1.52 → 0.33 m — no late/
 fleet is smoother than v3 (mean yaw-accel reversals 0.48 → 0.31, lat-accel max 70 → 32, yaw-jerk max 2244 →
 1629). Deterministic (two runs byte-identical); render-side only; parity 654/4-skip byte-identical.
 `LookAheadMeters = 0` falls back to exactly v3.
+
+## `igbridge-v5-usable` — commit `c663996`
+**Fifth usable baseline — long vehicles + a usable A/B viewer.** Owner: *"very nice long vehicle turning,
+realistic, very good job! … current state is very good, a new baseline."* Adds Direction 1 (longer
+vehicles) plus viewer polish, all render-side; parity 654/4-skip byte-identical, cars byte-identical to v4.
+
+Long-vehicle probe (`IGBRIDGE_BUS_IDS` promotes named demand ids to a bus/coach/truck/trailer vType;
+`IGBRIDGE_BUS_LEN`, `IGBRIDGE_BUS_VCLASS`):
+- The kinematic reconstruction needed **no core change** — wheelbase (0.6·length) and center offset
+  (length/2 behind front) already scale with length, so a 12 m body off-tracks correctly. Verified on
+  promoted buses v213/v239: rear-**axle** no-slip holds (median 0.05–0.06 m/s lateral, tighter than a 5 m
+  car's 0.095); turns smooth (0–2 yaw-accel reversals); the larger rear-**bumper** sweep is real
+  rear-overhang tail-swing (bumper 0.4·length behind the axle) and scales with length.
+- **Length-scaled look-ahead**: effective look-ahead = `max(LookAheadMeters, LookAheadLengthFactor·length)`
+  (0.5). A ~5 m car stays on the flat 3 m (byte-identical v4); a 12 m bus anticipates ~6 m and starts its
+  swing earlier (in-turn lead 37–55° over the reactive lane heading).
+- **True per-vehicle footprint in the render**: VizExport emits a 5-tuple `[x,y,heading,length,width]`;
+  `template.js` draws each at its own length (center-pivoted; long vehicles in amber). 3-/4-tuple (City3D /
+  panic-evac fear) paths untouched.
+
+Viewer: **find-by-id follow box** (type `v213` → pans + rings + follows the vehicle so it can't hide
+off-view) and **camera+time sync across the raw↔IgBridge toggle** (A/B compares at the same place & moment).
+
+`IGBRIDGE_BUS_IDS` empty ⇒ exactly v4.

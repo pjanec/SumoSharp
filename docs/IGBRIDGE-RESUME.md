@@ -5,10 +5,16 @@ next exploration directions with concrete plans.
 
 ## Where we are
 
-Branch `claude/spectacle-ig-binding-poc-cf3fm4`. Current baseline **`igbridge-v4-usable`** (commit
-`87418e4`) — owner-signed-off ("looks realistic for the cars and for the junctions"). Local git tags
-`igbridge-v1..v4-usable` exist; **the remote git proxy rejects non-branch refs (tags 403)**, so milestones
+Branch `claude/spectacle-ig-binding-poc-cf3fm4`. Current baseline **`igbridge-v5-usable`** (commit
+`c663996`) — owner-signed-off ("very nice long vehicle turning, realistic … a new baseline"). Local git tags
+`igbridge-v1..v5-usable` exist; **the remote git proxy rejects non-branch refs (tags 403)**, so milestones
 live in `docs/IGBRIDGE-VERSIONS.md` (the durable record) — keep tagging locally AND appending there.
+
+**Direction 1 (longer vehicles) is DONE and shipped in v5** — see the v5 entry in VERSIONS.md. Env:
+`IGBRIDGE_BUS_IDS=213,239` (promote demand ids to a long vehicle), `IGBRIDGE_BUS_LEN` (12),
+`IGBRIDGE_BUS_VCLASS` (bus|coach|truck|trailer), `IGBRIDGE_LOOKAHEAD_LENFAC` (0.5). Viewer: amber long
+vehicles + a find-by-id follow box + camera/time sync across the A/B toggle. **Direction 2 (organic net) is
+the next item.**
 
 The IgBridge subsystem: embeds SumoSharp, ticks the core at 10 Hz over the clean **6×6 grid `subarea-box`**,
 reconstructs each vehicle into a smooth IG-native `[id, x, y, z, headingDeg, t]` stream with all SUMO motion
@@ -106,6 +112,31 @@ connectors — to see what breaks (the grid is very regular; real nets aren't).
 **Watch for:** the look-ahead point stability on tight/curved connectors (the jump guard is the safety net;
 may need the temporal-smoothing upgrade noted in §5.13 if the guard rejects too often and the front reverts
 to reactive tracking on a curve).
+
+## Future work (owner-requested, parked — do when scheduled, not now)
+
+### F1 — One reusable SumoSharp visualization tool (consolidate the ad-hoc players)
+Owner (v5): *"This player would be nice to have as a separate tool … it would need to show pedestrians,
+crosswalks, POIs, parking places etc. … taking all the ad-hoc players and make one reusable tool from them
+(something that consumes all the road nets and SumoSharp outputs and produces the HTML)."*
+**Scope:** promote the side-by-side `Sim.Viz` HTML player (currently driven ad-hoc by `Sim.IgBridge.Host`
+`VizExport` and separately by `Sim.Viz` `SceneGen`/`Program` for the ped test beds) into ONE reusable
+command-line tool: input = a SUMO net + SumoSharp outputs (vehicle + ped streams, and the scenario's
+`*.add.xml` for POIs / parking areas / crossings); output = the self-contained HTML. It must render
+**pedestrians, crosswalks/zebra, POIs, parking areas** (the ped test bed already draws peds + crossings;
+`scenario.add.xml`/`pois.add.xml` carry POIs + parking) as well as the vehicle layer. Design-first per
+CLAUDE.md: a design doc for the unified scene payload + input adapters, then tasks. Note `template.js`/
+`template.html` are already the shared front-end; the work is mostly a clean **input/adapter layer** + a CLI,
+not new rendering.
+
+### F2 — Render-side articulated vehicles (tractor + trailer hinge)
+Neither SUMO nor SumoSharp simulate articulation — a vehicle is ONE rigid `length` (vClass `trailer` is just
+16.5 m rigid; SUMO's GUI "carriages" for trains rigidly follow the lead path, no joint dynamics). If a
+believable **articulated** truck/bus is wanted, model it **render-side** as two coupled no-slip bicycle
+segments (tractor + trailer joined at a fifth-wheel/hinge: the trailer's front pinned to the tractor's rear
+axle, each segment no-slip). Extends `KinematicHeading`; emit two boxes (or a hinged shape) to the viewer.
+This would show the trailer cutting further inside than a rigid body on a sharp turn (classic off-tracking).
+Not needed for the current PoC; a rigid 16.5 m `trailer` already off-tracks (just without the mid-body bend).
 
 ## How to resume
 Read this file + `IGBRIDGE-DECISIONS.md` §5.11–5.13 + `IGBRIDGE-TRACKER.md` (T2.x). Confirm on branch
