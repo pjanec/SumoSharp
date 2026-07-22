@@ -42,9 +42,17 @@ At any threshold that isolates *visible* jerk (≥300°/s²) the after-median is
 >30 count is a threshold artifact (the new smoother's harmless noise floor), not a smoothness regression.
 
 ## S2 — City3D 3D swap
-- [ ] T2.1 Package the facade; bump City3D local feed
-- [ ] T2.2 Reconstructor: straddle-lerp + facade + center-pivot; CityLib.Tests green
-- [ ] T2.3 Godot headless smoke
+- [x] T2.1 Package the facade; bump City3D local feed ✓ (`build.sh --pack-only` packs SumoSharp.Viewer.Motion@0.1.0 w/ KinematicReconstructor & no DrPoseSmoother into local-nuget/; cache cleared; CityLib restores + compiles; SumoSharp.*→local pin holds)
+- [x] T2.2 Reconstructor: straddle-lerp + facade + center-pivot; CityLib.Tests green ✓ (straddle `continue` removed → one `_recon.Resolve` for both cases; feeds `r.CenterX/Y`; `CoarseFeed=true`, delay 0.4; CityLib.Tests 54/54 green incl. 6 new S2 cases; 3x stable)
+- [x] T2.3 Godot headless smoke ✓ (Godot 4.7.1 mono fetched; `run-smoke.sh` PASS: 200 frames, vehicles=1/cars=1, no ERROR, clean quit; Viewer builds against the bumped package)
+
+### S2 new CityLib.Tests (ReconstructorS2Tests.cs) — verified numbers
+- pivot (facade): straight-vehicle center sits L/2 behind the front reference (|front−center|≈L/2, <0.1 m).
+- pivot (end-to-end): stopped 09 veh0 center is L/2 behind the SUMO snapshot front (median 2.500 m = L/2; ≈0 would mean the front is still fed — the old bug).
+- lane change (12 veh1): ≥1 lateral-straddle frame occurs (was `continue`d pre-S2), vehicle now gapless through its window, ~one lane-width (3.2 m) of lateral travel, no back-jump — eased & continuous, not skipped.
+- junction (44 veh0): >90° turn, center stays <0.6 m off the nearest lane centerline (measured ~0.48 m), no sideways slide.
+- stop (09 veh0): no creep (max <0.12 m/frame; measured ~0.05 m settle only).
+- determinism: fixed frame-dt + fixed packet stream → bit-identical ReconstructedVehicle transforms across two runs.
 
 ## S3 — tune, prove, sign-off
 - [ ] T3.1 Render-rate + stutter robustness (30/60/144 Hz + stall)
