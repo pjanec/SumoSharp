@@ -120,6 +120,7 @@ internal static class VizExport
             network = net,
             vdim = new[] { 5.0, 1.9 }, // shared vehicle box (representative passenger dims)
             vehIds = vehIdsBySlot,     // slot-indexed ids -> click-to-identify in the viewer
+            useDataHeading = true,     // draw the emitted (kinematic) heading, NOT the front-anchor path tangent
             dt,
             frames = frames.ToArray(),
         };

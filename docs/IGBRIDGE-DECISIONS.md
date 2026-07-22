@@ -333,6 +333,24 @@ tail more (a few maxes rise — yaw-jerk max 2.9 k → 3.7 k, no-slip max 58° �
 maneuvers, not the normal turns. `TurnInSmoothTime = 0` disables the stage (front follows the smoothed lane
 line); `IGBRIDGE_TURNIN=<seconds>` overrides it. Render-side only; parity 654 / 4-skip byte-identical.
 
+### 5.11 As-built (the render was ignoring the emitted heading — owner: "turning cars still heavily skidding the back")
+A long-standing eyes-vs-metrics mismatch: every measure said the emitted rear was no-slip and the heading
+smooth (median 0 yaw-accel reversals), yet the owner kept seeing the back skid on turns. Cause was **in the
+viewer, not the stream**. `Sim.Viz`'s `template.js` derives each vehicle box's orientation from the *path
+tangent* of its (front-anchored) position, deliberately ignoring the reported heading — correct for the
+City3D FCD data whose reported angle is faceted, but wrong for IgBridge, whose emitted heading IS the
+authoritative kinematic body orientation. Drawing the box along the front-anchor tangent pins the front to
+its path and rigidly trails the rear ("on rails"), and — because the front anchor is `center + ½·len·dir(h)`,
+so differencing it amplifies noise — the tangent itself is violently jittery: measured over the 258 grid
+turners, the **tangent heading has median 158 yaw-accel reversals (max 615, and up to 180° off the true
+heading), versus median 0 for the emitted heading**. That jitter, rendered, is the "heavy skid".
+
+Fix: a per-scene `useDataHeading` flag (set by the IgBridge export, absent on every City3D scene) makes the
+viewer draw the **interpolated emitted heading** instead of the tangent. The rendered box then matches the
+emitted body exactly (front bumper, inside-tracking rear, kinematic heading + turn-in) — i.e. what the
+offline onion plots always showed. Guarded, so all other `Sim.Viz` consumers are unchanged; render-side only,
+parity untouched.
+
 ---
 
 ## 6. Determinism & parity

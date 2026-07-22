@@ -476,7 +476,17 @@
       var along = Math.abs(segDx * fwdX + segDy * fwdY);
       var lateral = Math.abs(segDx * -fwdY + segDy * fwdX);
       var lateralSnap = lateral > along + 1e-6;
-      var angle = (moving && !lateralSnap) ? headingFromDelta(dx, dy) : shortestArcDeg(a[2], b[2]);
+      var angle;
+      if (scene && scene.useDataHeading) {
+        // Use the REPORTED heading (interpolated), not the path tangent. For streams whose heading is already
+        // the authoritative body orientation (e.g. IgBridge's kinematic reconstruction), the tangent of the
+        // front-anchor path is NOT the body heading — using it draws the rear rigidly trailing the front
+        // ("on rails" / rear-swing). Interpolate the emitted heading along the shortest arc instead.
+        var b2 = (b && b.length > 2) ? b[2] : a[2];
+        angle = a[2] + (((b2 - a[2] + 540) % 360) - 180) * frac;
+      } else {
+        angle = (moving && !lateralSnap) ? headingFromDelta(dx, dy) : shortestArcDeg(a[2], b[2]);
+      }
 
       // Speed (m/s) derived from step displacement -- drives the optional speed heatmap.
       var segDx = p2[0] - p1[0], segDy = p2[1] - p1[1];
