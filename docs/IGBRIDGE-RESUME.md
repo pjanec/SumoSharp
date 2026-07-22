@@ -68,6 +68,24 @@ reversals/turner) and was the real "skidding". Guarded; other Sim.Viz consumers 
 - `src/Sim.Viz/template.js` — shared viewer (the `useDataHeading` branch ~line 479).
 - Docs: `IGBRIDGE-DECISIONS.md` (§5.3–5.13 = the as-built story), `-TASKS.md`, `-TRACKER.md`, `-VERSIONS.md`.
 
+### Feed/emit-rate tests (owner: "run at 1 Hz", "emit 10 Hz")
+`IGBRIDGE_FEED_HZ` (default 10) decimates the rate state is sampled into the reconstruction + raw stream
+(core still steps at 10 Hz, so dynamics are correct); `IGBRIDGE_EMIT_HZ` (default 20) sets the output rate.
+Result (grid, display-level FakeIg metrics): a **1 Hz feed** is catastrophic for the *raw* dumb-IG path
+(lat-accel median 1533, vel-gap 833 m/s — it teleports across 1 s gaps) but the prediction-driven
+reconstruction from the SAME feed stays smooth (lat-accel 21, vel-gap 4.5 — 71–184× better, near the 10 Hz
+baseline). **Emit 10 Hz** stays smooth (median yaw-rate unchanged) but ~doubles lat-accel/yaw-jerk vs 20 Hz
+(the FakeIg only linear-interpolates 2 samples, so denser emit rounds curves better; 20 Hz is the sweet spot).
+Fixed a latent bug the coarse feed exposed: the emit lookahead now tracks the feed interval (was fixed 0.1 s),
+else at 1 Hz `tau > newest` spuriously retired live vehicles (emitted 0).
+
+**Look-ahead lead-bound (`IGBRIDGE_MAX_LEAD`, default 70°):** the per-frame jump guard only catches SUDDEN
+look-ahead hops; on a coarse feed the look-ahead can DRIFT gradually (each step under the guard) to a bearing
+pointing the wrong way through a junction, dragging the body off then snapping back (the "dance", owner saw
+v90 @1 Hz). Rejecting a look-ahead that diverges > MaxAnticipationLeadDeg from the reactive lane heading kills
+it (v90 peak yaw 243→64°/s). Legit anticipation ≤ ~60° at 10 Hz, so 70° leaves the v5 baseline byte-identical.
+This is the same family of fix F3 wants for roundabouts (drift on sustained curvature).
+
 ### Env knobs (all read in `Program.cs`)
 `IGBRIDGE_SCENARIO` (default `_ped/subarea-box`), `IGBRIDGE_PEDS` (0), `IGBRIDGE_STEPS` (1200 = 120 s),
 `IGBRIDGE_LOOKAHEAD` (3.0; 0 = v3), `IGBRIDGE_POS_SMOOTH` (0.60), `IGBRIDGE_LANEPRED` (0.18),
