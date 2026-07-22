@@ -76,6 +76,8 @@ Result (grid, display-level FakeIg metrics): a **1 Hz feed** is catastrophic for
 reconstruction from the SAME feed stays smooth (lat-accel 21, vel-gap 4.5 — 71–184× better, near the 10 Hz
 baseline). **Emit 10 Hz** stays smooth (median yaw-rate unchanged) but ~doubles lat-accel/yaw-jerk vs 20 Hz
 (the FakeIg only linear-interpolates 2 samples, so denser emit rounds curves better; 20 Hz is the sweet spot).
+**Combined 1 Hz feed + 10 Hz emit** (the coarsest realistic case) still holds: lat-accel median 39 (vs raw
+1533 = 39×), vel-gap 4.4 (188×), median yaw-rate 55, dance-free (the lead-bound holds), deterministic.
 Fixed a latent bug the coarse feed exposed: the emit lookahead now tracks the feed interval (was fixed 0.1 s),
 else at 1 Hz `tau > newest` spuriously retired live vehicles (emitted 0).
 
@@ -172,7 +174,8 @@ This would show the trailer cutting further inside than a rigid body on a sharp 
 Not needed for the current PoC; a rigid 16.5 m `trailer` already off-tracks (just without the mid-body bend).
 
 ## How to resume
-Read this file + `IGBRIDGE-DECISIONS.md` §5.11–5.13 + `IGBRIDGE-TRACKER.md` (T2.x). Confirm on branch
+Read this file + **`IGBRIDGE-METHODOLOGY.md`** (how we tune — invariants, metrics, the diagnostic loop, and
+the 2D-visualization recipe) + `IGBRIDGE-DECISIONS.md` §5.11–5.13 + `IGBRIDGE-TRACKER.md` (T2.x). Confirm on branch
 `claude/spectacle-ig-binding-poc-cf3fm4` at/after `87418e4`. Run the render + gates once to re-baseline, then
 pick Direction 1 or 2. Keep the discipline: measure numerically, gate median-0 reversals + parity byte-
 identical, commit + append to VERSIONS.md at each usable step, ask the owner in plain chat (no widgets).
