@@ -45,3 +45,14 @@ Render-side only; parity 654/4-skip byte-identical; fleet reversals median 0, no
 Known residual: the front tracks ~1.1–1.5 m off the CONNECTING-lane centerline through a junction (turns in a
 touch late / overshoots, then compensates over ~3 s) — the reactive predictor doesn't yet read the path
 *through* the junction. Addressed by spatial look-ahead (§5.13).
+
+## `igbridge-v4-usable` — commit `87418e4`
+**Fourth usable baseline — prediction-driven anticipation.** Owner: *"wow… looks realistic for the cars and
+for the junctions."* Adds to v3 the **spatial look-ahead** (§5.13): the front predictor aims at a point 3 m
+ahead ON the upcoming lane centerline — free from `PoseResolver` (advance the front arc position; the chord
+to it is the predictor direction), the same forward path a DDS producer ships to IGs. A frame-to-frame jump
+guard rejects the occasional spurious cross-junction resolve. Cars now ride the connecting-lane centerline
+through junctions (v49 offset 1.15 → 0.49 m, v229 1.52 → 0.33 m — no late/overshoot-and-compensate) AND the
+fleet is smoother than v3 (mean yaw-accel reversals 0.48 → 0.31, lat-accel max 70 → 32, yaw-jerk max 2244 →
+1629). Deterministic (two runs byte-identical); render-side only; parity 654/4-skip byte-identical.
+`LookAheadMeters = 0` falls back to exactly v3.
