@@ -1,0 +1,10 @@
+<nodes>
+  <node id="A"  x="0"    y="0"/>
+  <node id="B"  x="300"  y="0" type="traffic_light"/>
+  <node id="C"  x="600"  y="0" type="traffic_light"/>
+  <node id="D"  x="900"  y="0" type="traffic_light"/>
+  <node id="E"  x="1200" y="0"/>
+  <node id="Sb" x="300"  y="300"/>
+  <node id="Sc" x="600"  y="300"/>
+  <node id="Sd" x="900"  y="300"/>
+</nodes>
