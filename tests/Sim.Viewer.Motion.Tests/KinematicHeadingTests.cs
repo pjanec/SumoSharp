@@ -46,7 +46,9 @@ public sealed class KinematicHeadingTests
         // The raw front tangent would snap 90 deg in one step here; the drag must spread it.
         var headings = new System.Collections.Generic.List<float>();
         double x = 0, y = 0;
-        for (var i = 0; i < 120; i++)
+        // 200 steps: ~60 to reach the corner (x=30 at 0.5 m/step), then long enough north for the heading to
+        // fully settle to north — the anticipatory turn-in (on by default) adds a little convergence lag.
+        for (var i = 0; i < 200; i++)
         {
             if (x < 30.0)
             {

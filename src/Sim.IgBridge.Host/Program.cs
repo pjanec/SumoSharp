@@ -47,9 +47,8 @@ using (var trace = new IgTraceWriter(tracePath))
     {
         LaneChangeDecayTau = EnvD("IGBRIDGE_LC_TAU", 2.0),
         HeadingSmoothTime = EnvD("IGBRIDGE_HEAD_SMOOTH", 0.0),
-        // Experimental anticipatory turn-in (wider line on sharp corners). Off by default; IGBRIDGE_TURNIN=65
-        // enables it at 65 deg/s.
-        TurnInRateDegPerSec = EnvD("IGBRIDGE_TURNIN", 0.0),
+        // Anticipatory turn-in (wider line on sharp corners); value = heading smoothing time (s). 0 disables.
+        TurnInSmoothTime = EnvD("IGBRIDGE_TURNIN", 0.45),
     };
     var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin);
     // IGBRIDGE_DEBUG_VEH: one id or a comma-separated list (e.g. "v18,v98,v213,v321"); each gets its own CSV.

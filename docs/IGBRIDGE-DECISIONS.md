@@ -315,22 +315,23 @@ parity 654 / 4-skip byte-identical.
 57.9°) — but it looks like the back "skids", because the front reference follows the lane centerline, which
 turns *at* the corner, whereas a real driver takes a wider turn-in line. §5.10 prototypes a fix.
 
-### 5.10 Anticipatory turn-in (EXPERIMENTAL — off by default)
-A first cut at the wide-line turn-in the owner asked for ("a real car would go a bit farther before starting
-the turn"). After the smoothed front, a second stage models the drawn front as a point whose heading chases
-the lane heading at a bounded **turn-rate** (`TurnInRateDegPerSec`); it advances at the vehicle speed and
-springs back to the lane (`TurnInReconverge`) so the wide line reconverges. On a sharp corner the rate limit
-makes it overshoot the apex (go wide ~0.6–0.9 m, within the lane) then round in — visibly a driver taking the
-corner (verified on v108: peak front-path curvature 537 → 120 °/s, a clean wide arc that reconverges). Gentle
-turns need less than the limit, so they are geometrically unaffected.
+### 5.10 Anticipatory turn-in (on by default)
+The wide-line turn-in the owner asked for ("a real car would go a bit farther before starting the turn").
+After the smoothed front, a second stage models the drawn front as a point whose heading chases the lane
+heading through a **critically-damped (C1) smoother** (`TurnInSmoothTime = 0.45 s`); it advances at the
+vehicle speed and springs back to the lane (`TurnInReconverge`) so the wide line reconverges. The heading lag
+is what makes the front overshoot the apex and take a wider, rounded line (verified on v108: peak front-path
+curvature 537 → ~120 °/s, a clean wide arc that reconverges); a *critically-damped* chase is essential — the
+first cut used a hard turn-rate clamp, whose slope discontinuities on the faceted lane heading reintroduced
+yaw-accel kinks (fleet median reversals 0 → 1, max 13). The C1 smoother removes them entirely.
 
-**Why it's off by default.** Steering along the *faceted* lane heading reintroduces mild heading kinks that
-the position-domain g-h had smoothed out — fleet median yaw-accel reversals rise 0 → 1 (max 2 → 13 on a few
-turns). That is a real smoothness regression for a sharp-turn-only visual gain, so the shipped default
-disables the stage (`TurnInRateDegPerSec = 0` → the front follows the smoothed lane line, exactly v2). It is
-enabled for evaluation via `IGBRIDGE_TURNIN=<deg/s>` (e.g. 65). Refinement to remove the kinks (steer along a
-*smoothed* heading / work in the position domain) is the next step before it can become the default.
-Render-side only; with the stage off, parity and all v2 metrics are byte-identical.
+**As-built (grid, 120 s), turn-in ON vs the prior default:** the everyday feel is *smoother*, not just the
+sharp corners — fleet median yaw-jerk 386 → 263, and heading yaw-accel reversals fall to **median 0, mean
+0.03, max 1** (better than the 0.26 / max 2 without it). No-slip median holds (10.53° vs 10.79°) and the rear
+still tracks inside (0.97). The only cost is on the very sharpest hairpins, where the wider line swings the
+tail more (a few maxes rise — yaw-jerk max 2.9 k → 3.7 k, no-slip max 58° → 80°); those are the genuine tight
+maneuvers, not the normal turns. `TurnInSmoothTime = 0` disables the stage (front follows the smoothed lane
+line); `IGBRIDGE_TURNIN=<seconds>` overrides it. Render-side only; parity 654 / 4-skip byte-identical.
 
 ---
 

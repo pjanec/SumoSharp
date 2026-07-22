@@ -41,10 +41,8 @@ public sealed class KinematicHeadingParams
     // as a point whose heading chases the smoothed front's travel direction at THIS bounded turn-rate (deg/s);
     // it advances at the vehicle speed and springs gently back to the lane so the wide line reconverges. A
     // gentle turn (needed rate below this) is unaffected. Set ≤ 0 to DISABLE the stage entirely (the front
-    // then follows the smoothed lane line directly — the v2 default). EXPERIMENTAL: enabling it takes a wider,
-    // more driver-like line on sharp corners but reintroduces mild heading kinks from steering along the
-    // faceted lane heading (fleet median yaw-accel reversals 0 → 1). Off by default pending refinement.
-    public double TurnInRateDegPerSec { get; init; } = 0.0;
+    // then follows the smoothed lane line directly — the pre-turn-in behavior).
+    public double TurnInSmoothTime { get; init; } = 0.45;
 
     // Per-step spring gain pulling the wide steered line back toward the lane, so it reconverges after the
     // corner (and a stopped car eases onto the lane point without drifting).
@@ -99,7 +97,8 @@ public sealed class KinematicHeading
         public double Ry;
         public double Sx;   // anticipatory-turn-in "steered" front (wide-line pursuit of the smoothed front)
         public double Sy;
-        public float Sphi;  // steered front heading (rate-limited chase of the lane heading)
+        public float Sphi;  // steered front heading (critically-damped chase of the lane heading)
+        public double SphiVel; // angular SmoothDamp velocity for the steered heading
         public double PrevFaX; // previous front-axle position (for substepped drag integration)
         public double PrevFaY;
         public double PrevInX; // previous RAW front input (for single-step lane-change-snap detection)
@@ -265,7 +264,7 @@ public sealed class KinematicHeading
         // curve in. This feeds the no-slip drag a lower-curvature path, so the reconstruction looks like a
         // driver taking the corner, not a body pinned to the centerline.
         double faX, faY;
-        if (_p.TurnInRateDegPerSec <= 0.0)
+        if (_p.TurnInSmoothTime <= 0.0)
         {
             // Disabled (v2 default): the front follows the smoothed lane line directly.
             faX = smFrontX;
@@ -278,13 +277,16 @@ public sealed class KinematicHeading
                 s.Sx = smFrontX;
                 s.Sy = smFrontY;
                 s.Sphi = laneHeadingDeg;
+                s.SphiVel = 0.0;
             }
 
-            // Steer toward the LANE heading (the lane's own direction), rate-limited.
+            // Chase the lane heading with a CRITICALLY-DAMPED (C1) smoother rather than a hard rate limit: the
+            // steered heading lags the lane heading (that lag is what makes the front overshoot the apex and
+            // take a wide line), but with a continuous derivative — a hard rate-clamp's slope discontinuities
+            // are what re-introduced the yaw-accel kinks. Larger TurnInSmoothTime → more lag → wider line.
             var dPhi = ((laneHeadingDeg - s.Sphi + 540f) % 360f) - 180f;
-            var maxPhiStep = (float)(_p.TurnInRateDegPerSec * dt);
-            dPhi = Math.Clamp(dPhi, -maxPhiStep, maxPhiStep);
-            s.Sphi = (float)(((s.Sphi + dPhi) % 360.0 + 360.0) % 360.0);
+            var smPhi = SmoothDamp(0.0, dPhi, ref s.SphiVel, _p.TurnInSmoothTime, dt);
+            s.Sphi = (float)(((s.Sphi + smPhi) % 360.0 + 360.0) % 360.0);
 
             if ((smFrontX - s.Sx) * (smFrontX - s.Sx) + (smFrontY - s.Sy) * (smFrontY - s.Sy)
                 > _p.ReseedJumpMeters * _p.ReseedJumpMeters)
@@ -292,6 +294,7 @@ public sealed class KinematicHeading
                 s.Sx = smFrontX;
                 s.Sy = smFrontY;
                 s.Sphi = laneHeadingDeg;
+                s.SphiVel = 0.0;
             }
             else
             {
