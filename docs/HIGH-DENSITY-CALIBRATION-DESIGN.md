@@ -374,6 +374,67 @@ running vehicle count under sustained load. **Confirmed and localized precisely*
   pipeline), not a safe ad-hoc edit. SumoData's interim guidance holds: **calibrate the knee with vanilla,
   serve/run with SumoSharp** (the box now loads + runs).
 
+### 2.3.8 PERMISSIVE-YIELD PARITY (2026-07-22, session 4) — LANDED, realism win, a SEPARATE axis from the knee
+Micro-benchmark (`scenarios/_repro/saturation-flow/lt.sumocfg`, a permissive left across dense oncoming):
+SumoSharp let **112** left-turns through vs vanilla's **7** (16×) — it under-yielded, ignoring the oncoming
+stream and blasting the junction (the same class of wrongness as the car-on-sidewalk bug; on the live-demo
+critical path). Root cause was **foe SELECTION + missing gap acceptance**, NOT `havePriority()` (already
+correct): `FindFoeVehicle` returned a foe that had ALREADY crossed (now on the exit lane but still listing
+the crossing lane in its *traversed* route), so a saturated permissive left never saw the real approaching
+stream. Three ported pieces in `Engine.JunctionYieldConstraint`'s crossing arm:
+1. **`FindCrossFoeVehicle`** — a crossing-only foe index (`_foeCrossFirst/Second`) that excludes
+   already-crossed foes (`i >= LaneSeqIndex`); the shared `FindFoeVehicle` (sameTarget-merge arm) is
+   untouched → every FCD golden byte-identical.
+2. **`BlockedByCrossingFoe`** — `MSLink::blockedByFoe` arrival-time window for a crossing
+   (`sameTargetLane=false`), using **vLinkPass** (not current speed) for arrival/leave times so a STOPPED
+   car can restart across a gap.
+3. **Impatience** (`MSBaseVehicle::getImpatience`, `--time-to-impatience` 300 s).
+Result: `lt` 112 → **7** (exact vanilla parity); `sat`/`sat2` straight-through unchanged; goldens
+byte-identical; suite green (657 parity); deterministic. Anchor: `scenarios/_repro/saturation-flow/`.
+**CRITICAL axis note (SumoData cross-check):** this is a REALISM win that makes junction yielding *more*
+conservative → it *reduces* throughput. It is **NOT the knee fix** — on a sustained-load grid it is a ~12%
+tempo regression, and SumoData confirmed the real knee's 5.5× overshoot is fully present *without* it (ran
+the pre-yield-fix commit `3cbc8b9` through their pipeline → identical 538% / 382 tp). So: **land it for
+realism, calibrate the knee on vanilla; it does not move `peak_veh_lkm 33→6`.** Full write-up:
+`docs/DISCHARGE-YIELD-RESUME.md` (header marked SOLVED). The dense-synthetic anchor
+(`DenseFlowDeadLaneDrainTests`) was re-encoded to its intent — full drainage (arrivals ≥ 290) is the hard
+invariant; teleports a documented bounded allowance (≤ 2) — because the faithful yield shifts one dead-lane
+car's TL arrival by ~1 s in the 2× torture scenario (recovered teleports; arrivals stay 290 == vanilla).
+
+### 2.3.9 THE KNEE BLOCKER — signalized-discharge redistribution: ROOT-CAUSED + FIXED (2026-07-22, session 4)
+**This is the actual calibration-knee fix.** SumoData localized their real-box 5.5× overshoot to a discharge
+**REDISTRIBUTION at signalized junctions** (NOT a uniform slowdown, NOT an exotic junction type — the crop is
+only `traffic_light` + `dead_end`): SumoSharp piled **8–10× on 3-way T-light approaches** while keeping the
+4-way center at parity; network-wide only ~1.22× (so it hid in aggregate metrics — and in the first
+`sustained-box` grid, which had no connectivity asymmetry).
+
+- **Faithful repro built:** `scenarios/_repro/signalized-asymmetry/` — a 5×5 `netgenerate` grid with **NO
+  fringe attach** so the interior 3×3 junctions are 4-way and the border edge-mids are 3-way T (the mixed
+  topology SumoData specified), 3-lane approaches, 12 held crossing corridors. It reproduced the signature:
+  edges feeding **3-way T-lights accumulated 2.45× vanilla (locally 3.2×)**, 4-way at parity (1.03×).
+- **Root cause (from the FCD):** on a corridor-END edge (route arrives there at a border T-light), vanilla
+  flows arriving vehicles at 13.9 m/s to the exit; SumoSharp braked them to 6.4 at the border TL stop line.
+  **`RedLightConstraint` braked vehicles whose route ENDS at that edge** — arriving/exiting vehicles that
+  never cross the downstream TL. SUMO `MSVehicle::planMoveInternal` (MSVehicle.cpp:2587) `break`s out of the
+  link walk on the FINAL route edge and approaches `arrivalPos` at `arrivalSpeed` (default laneMaxV — no
+  brake). Cost: +~45 s/trip (`we1` 90→135 s), backing up every arrival approach. Because arrival edges
+  concentrate at low-degree border T-junctions (routes terminate there), the backup reads as "3-way T-lights
+  pile up" — SumoData's connectivity-asymmetry signature is a **correlated proxy**; the causal driver is
+  **arrival edges at TLs**.
+- **The fix (`Engine.RedLightConstraint`):** skip the TL brake when `v.LaneSeqIndex + 1 >= v.LaneSeqLen`
+  (ego on its last route lane = the arrival edge) — the same "no upcoming lane" test
+  `SuccessiveLaneSpeedConstraint` already uses; a faithful port of SUMO's final-edge `break`. Every through
+  vehicle (internal lane + next edge ahead) is unaffected.
+- **Result on the faithful repro — SumoSharp matches vanilla on EVERY axis:** accumulation 385→**274**
+  (van 279), arrivals 3215→**3326** (van 3321), meanSpeed 5.91→**8.44** (van 8.17), 3-way ratio
+  2.45×→**1.01×**, `we1` duration 135→**90 s** (== vanilla). Every committed golden **byte-identical** (no
+  golden vehicle arrives at a red-held TL edge); suite green (657 parity + 227 pedestrian); deterministic.
+  Committed `ca8d515`. Full write-up: `scenarios/_repro/signalized-asymmetry/FINDINGS.md`.
+- **PENDING:** SumoData to re-run the real sub-area calibration on `ca8d515` — this fix touches every vehicle
+  whose randomTrips destination sits on a TL edge (a large share of their pile-up), so the 5.5% / 538% should
+  drop substantially. Any residual is a smaller separate contributor, localized the same way (per-edge
+  density → find the pile → read the FCD).
+
 ### 2.4 Success criteria (Gap 1)
 On the 2× dense synthetic: SumoSharp teleports ≈ 0 (was 10), no permanent gridlock (halting drains toward
 0 like vanilla, not stuck at ~45), arrivals ≈ vanilla (≈290, was 275). Full `dotnet test Traffic.sln`

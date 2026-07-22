@@ -1,5 +1,8 @@
 # HIGH-DENSITY-CALIBRATION-TRACKER.md — checklist
 
+**New here? Read `docs/CALIBRATION-KNEE-INDEX.md` first** — it maps this whole multi-session investigation
+(gaps, what worked / what didn't, repro witnesses, current open state).
+
 Goal: SumoSharp auto-calibrates the highest believable traffic density (matches vanilla's knee).
 See `-DESIGN.md` (HOW), `-TASKS.md` (success conditions), `DENSE-FLOW-THROUGHPUT-DIAGNOSIS.md` (Gap 1
 evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
@@ -74,6 +77,25 @@ evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
         them). Fix = make the dead-lane reroute (and re-resolve) route via the next unreached stop's edge
         first. Deferred: involved, and must not regress the Gap-1 synthetic parity. Also minor: box teleports
         3 vs vanilla 1.
+
+- [x] **Stage 5 — permissive-yield parity** (session 4, `f69a58d`). `saturation-flow/lt` permissive-left
+      **112 → 7** = vanilla (was under-yielding, ignoring oncoming). Fix = `FindCrossFoeVehicle` (crossing-only
+      foe index excluding already-crossed foes) + `BlockedByCrossingFoe` arrival-time window (vLinkPass) +
+      impatience — ports `MSLink::blockedByFoe`. Goldens byte-identical; suite green (657); deterministic.
+      **Realism win, SEPARATE axis from the knee** (makes yielding more conservative → *reduces* throughput;
+      SumoData confirmed the knee's 5.5× is present without it). `DenseFlowDeadLaneDrainTests` re-encoded to
+      intent (arrivals ≥ 290 hard, teleports ≤ 2 documented). See design §2.3.8, `DISCHARGE-YIELD-RESUME.md`.
+- [x] **Stage 6 — THE KNEE BLOCKER: signalized-discharge redistribution** (session 4, `ca8d515`).
+      SumoData localized the real-box 5.5× / 538% overshoot to a discharge **redistribution** — SumoSharp
+      piled 8–10× on 3-way T-light approaches, 4-way at parity (network-wide only ~1.22×). Reproduced
+      faithfully (`scenarios/_repro/signalized-asymmetry/`, mixed 3-way/4-way TL grid): 3-way approaches
+      2.45× vanilla. **Root cause:** `RedLightConstraint` braked ARRIVING vehicles at red TL edges (routes
+      that END there and never cross the TL). SUMO breaks out of the link walk on the final edge
+      (MSVehicle.cpp:2587). **Fix:** skip the TL brake when `LaneSeqIndex+1 >= LaneSeqLen`. Repro now matches
+      vanilla on every axis (3-way 2.45×→1.01×, `we1` 135→90 s); goldens byte-identical; suite green;
+      deterministic. **PENDING:** SumoData re-run the real box on `ca8d515`. See design §2.3.9,
+      `signalized-asymmetry/FINDINGS.md`. (The first `sustained-box/` grid was unfaithful — no connectivity
+      asymmetry — and is kept as a labeled lesson.)
 
 ## Standing measurements (baseline, main 8bb8219, 2× dense synthetic)
 | | teleports | arrivals | halting steady |

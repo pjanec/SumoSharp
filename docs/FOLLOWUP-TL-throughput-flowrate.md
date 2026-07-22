@@ -1,6 +1,15 @@
 # Follow-up: traffic-light approach throughput / flow-rate residual
 
-**Status:** OPEN — the **sole remaining follow-up** from the serve-path drop-in work, deferred to a
+> **STATUS 2026-07-22: LARGELY SUPERSEDED.** The "~27% one-shot through-trip deficit" measured here is
+> **stale** — after Gap-1, parking, and the permissive-yield + arrival-TL fixes, the non-dense synthetic is
+> now **290/290 arrivals vs vanilla** (SumoSharp slightly *faster* on mean speed). The sustained-load
+> discharge deficit this doc anticipated was root-caused and fixed in **DESIGN §2.3.9** (the
+> `RedLightConstraint` arrival-edge exemption — SumoSharp braked vehicles arriving at red TL edges). Read
+> **`docs/CALIBRATION-KNEE-INDEX.md`** for the current map. Candidate-mechanism list below is kept for
+> provenance; candidate 1 (permissive-green approach-speed) was addressed by the permissive-yield fix
+> (DESIGN §2.3.8). Do not re-chase the numbers below without re-measuring on current HEAD.
+
+**Status (original):** OPEN — the **sole remaining follow-up** from the serve-path drop-in work, deferred to a
 later performance/parity pass. Everything else is done and on `main`: the drop-in (GAP-1/2/3) + the
 P2-G junction fixes (Bug-1/2/3) are merged and were accepted **GREEN** by the Geneva acceptance seat
 (see `docs/SERVE-PATH-PLAN.md` top section); the now-obsolete cooperative `informFollower` was retired
