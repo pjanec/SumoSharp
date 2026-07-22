@@ -1,0 +1,5 @@
+<configuration>
+  <input><net-file value="net2.net.xml"/><route-files value="sat2.rou.xml"/></input>
+  <time><begin value="0"/><end value="600"/></time>
+  <processing><time-to-teleport value="-1"/></processing>
+</configuration>
