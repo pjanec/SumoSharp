@@ -88,6 +88,16 @@ v90 @1 Hz). Rejecting a look-ahead that diverges > MaxAnticipationLeadDeg from t
 it (v90 peak yaw 243→64°/s). Legit anticipation ≤ ~60° at 10 Hz, so 70° leaves the v5 baseline byte-identical.
 This is the same family of fix F3 wants for roundabouts (drift on sustained curvature).
 
+**Coarse-feed junction-straddle absorption (`CoarseFeed` + `MaxStraddleLaneChangeHeadingDeg`=20°):** owner
+saw v250 @1 Hz ride the lane-division line for ~5 s after a left turn. A junction-turn straddle spans ~1 s of
+travel at a coarse feed, so its lateral arc motion was absorbed into the lane-change error E (τ=2 s), parking
+the front ~1.8 m off-lane. Fix (coarse-feed only, so v5 byte-identical): a straddle whose incoming/outgoing
+lane poses diverge > 20° is a turn, not a lane change → not absorbed (v250 off-lane integral 6.30→2.02 m·s).
+**Latent v5 finding (→ possible F4):** at the dense feed the SAME junction straddles are absorbed too, parking
+the front ~0.3 m off-lane through *every* junction (84% of samples move ~0.32 m if the discriminator is
+applied at 10 Hz). Removing that would be a real junction-fidelity improvement but is a **new baseline (v6)** —
+needs owner sign-off, not silent. Parked as F4 in case we want it.
+
 ### Env knobs (all read in `Program.cs`)
 `IGBRIDGE_SCENARIO` (default `_ped/subarea-box`), `IGBRIDGE_PEDS` (0), `IGBRIDGE_STEPS` (1200 = 120 s),
 `IGBRIDGE_LOOKAHEAD` (3.0; 0 = v3), `IGBRIDGE_POS_SMOOTH` (0.60), `IGBRIDGE_LANEPRED` (0.18),
