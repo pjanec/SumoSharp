@@ -242,7 +242,7 @@ for oriented shapes (buses/obstacles via `drawShaped`). Discs occupy fixed slots
 
 ### 10.6 The FakeIg (why the comparison is honest)
 Both scenes are **`FakeIg` reconstructions** — the deterministic 2-sample linear interpolator that models a
-"dumb" downstream IG (a playout `DelaySeconds` ≈ 0.75 s + a `JumpThresholdMeters` teleport cutoff, resampled
+non-predictive downstream IG (a playout `DelaySeconds` ≈ 0.75 s + a `JumpThresholdMeters` teleport cutoff, resampled
 at `RenderHz`). The **only** difference between the two scenes is the *input stream* (raw engine @ feed-rate
 vs IgBridge-smoothed @ emit-rate), so toggling shows exactly what IgBridge buys through an unchanged, honest
 consumer. This is also why emit rate matters (§4B): the IG only linear-interpolates, so denser emit rounds

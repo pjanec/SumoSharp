@@ -1,8 +1,10 @@
-# IgBridge ↔ proprietary IG binding — DESIGN (the HOW)
+# IgBridge ↔ external 3D image-generator (IG) binding — DESIGN (the HOW)
 
-How to feed a proprietary 2-sample IG from SumoSharp with all core motion artifacts smoothed, and build a
-PoC that proves it without the real IG. Requirements (the WHAT) are in `IGBRIDGE-REQUIREMENTS.md`;
-read it first. This doc references, and deliberately **reuses**, the existing viewer reconstruction stack.
+How to feed an **external 3D image generator (IG)** from SumoSharp with all core motion artifacts smoothed,
+and build a PoC that proves it without the real IG. The target is any IG that has **no protocol for
+predictive dead-reckoning** and consumes only plain position/orientation/timestamp samples — nothing
+IG-specific is assumed. Requirements (the WHAT) are in `IGBRIDGE-REQUIREMENTS.md`; read it first. This doc
+references, and deliberately **reuses**, the existing viewer reconstruction stack.
 
 > **AS-BUILT (2026-07) — read this first.** This is the original plan. The PoC shipped and was tuned to an
 > owner-signed-off **v5** baseline. Its reconstruction outgrew the old `DrPoseSmoother`: it became a no-slip
@@ -16,7 +18,9 @@ read it first. This doc references, and deliberately **reuses**, the existing vi
 > 2D-visualization recipe), and `VIEWER-KINEMATIC-SMOOTHING-DESIGN.md` (the viewer swap).
 
 ## 0. The load-bearing insight
-The IG is a **dumb 2-most-recent-sample interpolator with no prediction fields**. It cannot fix anything.
+The IG does **no prediction**: it consumes plain position/orientation/timestamp samples and interpolates
+between its two most recent — there are no velocity/acceleration/curvature prediction fields. It cannot fix
+anything.
 Therefore **all smoothing must be baked into the sample stream IgBridge emits** — the emitted samples must
 lie on a smooth curve, dense enough that the IG's linear/slerp between any two consecutive samples already
 looks right. IgBridge is a **reconstruction + resampling stage**, not a passthrough. In particular a

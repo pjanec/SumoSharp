@@ -70,11 +70,13 @@ doesn't have. Highlights below; precise scope after that.
   vehicle-motion reconstruction** both viewers now smooth with).
 - **🏙️ [`demos/City3D`](demos/City3D)** — a Godot 4 (.NET) 3D city viewer consuming the SumoSharp
   packages from a local feed.
-- **🛰️ IgBridge** ([`docs/IGBRIDGE-DESIGN.md`](docs/IGBRIDGE-DESIGN.md)) — feeds a proprietary "dumb"
-  2-sample-interpolating **3D image-generator** a smooth, IG-native pose stream: it reconstructs SUMO's
-  stepwise motion (junction facet-snaps, instant lane changes) into a continuous curve using the **same
-  kinematic reconstructor the viewers use**, so a passthrough IG shows artifact-free motion. Tuning
-  methodology + metrics: [`docs/IGBRIDGE-METHODOLOGY.md`](docs/IGBRIDGE-METHODOLOGY.md).
+- **🛰️ IgBridge** ([`docs/IGBRIDGE-DESIGN.md`](docs/IGBRIDGE-DESIGN.md)) — a producer-side feed for an
+  **external 3D image generator** that has **no protocol for sophisticated predictive dead-reckoning** and
+  consumes only plain `position / orientation / timestamp` samples (interpolating between its two most recent).
+  IgBridge bakes all the smoothing in *before* the wire: it reconstructs SUMO's stepwise motion (junction
+  facet-snaps, instant lane changes) into a continuous curve with the **same kinematic reconstructor the
+  viewers use** and resamples it densely, so an IG that does no prediction of its own still shows artifact-free
+  motion. Tuning methodology + metrics: [`docs/IGBRIDGE-METHODOLOGY.md`](docs/IGBRIDGE-METHODOLOGY.md).
 - **🔧 Build & run it from a fresh clone** (build, tests, the demo viewer, the live browser viewer):
   see [Install → *See it run*](#install).
 
