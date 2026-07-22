@@ -336,6 +336,37 @@ destination. Deferred here: it must not regress the Gap-1 synthetic parity (§2.
 design pass. Note `--stop-output` is not implemented in SumoSharp, so parking must be verified via
 trajectories/tripinfo, not stopinfo. Also minor: box teleports 3 vs vanilla 1.
 
+### 2.3.7 SUSTAINED-INSERTION (2026-07-22, session 3) — SumoData NEED confirmed; fix is a COUPLED two-parter
+SumoData ran their sub-area **calibration** pipeline (sustained insertion held at the calibrated density
+knee, not one-shot demand) on the box crop and reported: SumoSharp `1468f7f` overshoots **540%** of target
+with **364 teleports** vs vanilla **100.1% / 0** (their metric ≠ the Stage-4 one-shot arrivals metric,
+which passed 106 vs 96). Their top hypothesis: the reroute-drops-parking residual (§2.3.6) inflates the
+running vehicle count under sustained load. **Confirmed and localized precisely** (see
+`SUMOSHARP-NEED-sustained-insertion...` in uploads / the reply committed alongside):
+
+- There are **THREE** reroute sites that shortest-path `currentEdge → finalDest` and collapse a mid-route
+  parking detour, not one: **`PreInsertionReroute`** (the dominant one — reroutes at departure; traced
+  `v2_mall_shop_3`: its mall+parking route is replaced at insertion by a fringe→fringe loop), plus
+  **`UpdatePeriodicReroutes`** and **`TryRerouteFromDeadLane`**. `ResolveSequenceCore` itself is index-based
+  and preserves the route — the drop is purely the routers' shortest-path. (Also found: SumoSharp's CLI
+  ignores `--device.rerouting.probability`, so "rerouting off" A/Bs are actually rerouting-on — device
+  rerouting cannot currently be disabled from the command line.)
+- **But preserving the parking is a two-part fix, not a one-part fix.** A WIP that holds mid-route-parking
+  cars on their stop-visiting route across all three reroute sites (branch
+  `claude/reroute-with-stops-wip`) makes the box cars keep their mall route — but **regresses the Gap-1
+  synthetic witness** (which has **10 mid-route-parking cars**): 2× `0/290 → 3/289`, 1× `1/290 → 5/288`
+  with **new jam teleports**. Root: SumoSharp's **mid-route parking does not run cleanly under load** — a
+  preserved-parking car tries to park mid-route and gets stuck/jams. The old behavior (reroute AROUND the
+  parking) hid this by never parking. So the sustained-insertion fix REQUIRES both (a) reroute-with-stops
+  (route via the next unreached stop, preserving congestion-awareness — NOT a blanket skip, which also
+  loses the Gap-1 drainage rerouting) AND (b) mid-route parking correctness (a car parks off-lane at its
+  lot without jamming the through lane). Either alone regresses parity.
+- **Kept main at clean parity** (`1468f7f`: 2× 0/290, 1× 1/290, full suite green). The WIP is preserved on
+  its own branch (golden-breaking, do-not-merge) as the diagnostic + starting point. This is the next
+  DESIGNED work item (reroute-with-stops + mid-route-parking correctness, verified against SumoData's
+  pipeline), not a safe ad-hoc edit. SumoData's interim guidance holds: **calibrate the knee with vanilla,
+  serve/run with SumoSharp** (the box now loads + runs).
+
 ### 2.4 Success criteria (Gap 1)
 On the 2× dense synthetic: SumoSharp teleports ≈ 0 (was 10), no permanent gridlock (halting drains toward
 0 like vanilla, not stuck at ~45), arrivals ≈ vanilla (≈290, was 275). Full `dotnet test Traffic.sln`
