@@ -9253,8 +9253,21 @@ public sealed partial class Engine : IEngine
                     // being BOTH unreached AND IsParking -- every existing scenario either has no
                     // stop on its final edge, or already has it Reached/non-parking by the time
                     // arrival is checked, so this is byte-identical elsewhere.
+                    // GAP-4 NARROWING: the residency guard must only hold a vehicle whose unreached
+                    // parking stop is on THIS (the final/arrival) edge -- i.e. it is genuinely trying
+                    // to park HERE and must not be vanished mid-park. A vehicle whose unreached parking
+                    // stop is on an EARLIER route edge (it drove past a full mid-route lot without
+                    // parking, e.g. the box's mall/garage cars whose pa_v2_mall_lot it could not claim)
+                    // has already passed its parking opportunity; clamping it here traps it forever at
+                    // its destination's lane end (never arriving, backing up the whole exit queue --
+                    // the dominant box throughput loss). SUMO arrives such a vehicle at its route end.
+                    // So only clamp when the stop is on the current edge; otherwise fall through to
+                    // arrival. Byte-identical for every committed golden (none reaches its final edge
+                    // with an unreached parking stop sitting on an earlier edge).
                     var frontStopAtArrival = GetStops(v) is { Count: > 0 } arrivalStops ? arrivalStops.Peek() : null;
-                    if (frontStopAtArrival is { Reached: false, IsParking: true })
+                    if (frontStopAtArrival is { Reached: false, IsParking: true }
+                        && _network.LanesById.TryGetValue(frontStopAtArrival.LaneId, out var arrivalStopLane)
+                        && arrivalStopLane.EdgeId == currentLane.EdgeId)
                     {
                         v.Kinematics.Pos = currentLane.Length;
                         v.Kinematics.Speed = 0.0;
