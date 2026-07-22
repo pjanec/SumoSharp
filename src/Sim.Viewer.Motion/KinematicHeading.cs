@@ -10,10 +10,13 @@ public sealed class KinematicHeadingParams
     public double HoldSpeed { get; init; } = 0.5;            // below this: hold heading (no spin at stops)
     public double ReseedJumpMeters { get; init; } = 7.0;     // front jump beyond this -> reseed (teleport)
 
-    // g-h tracking time (s) for the (lane-change-corrected) front position: low-passes the faceted-polyline
-    // micro-kinks that would otherwise ride through as a tail wiggle, while the velocity term keeps zero lag
-    // through turns. Short — the input is already continuous, this only removes jitter.
-    public double PositionSmoothTime { get; init; } = 0.40;
+    // Position-gain smoothing time (s) for the (lane-change-corrected) front: low-passes residual jitter.
+    public double PositionSmoothTime { get; init; } = 0.60;
+
+    // Smoothing time (s) for the lane-DIRECTION used as the front predictor. De-facets the staircase lane
+    // heading so the front follows a smooth arc through a turn (no corner-overshoot into the parallel lane)
+    // without the facet jitter that predicting along the raw lane heading would inject.
+    public double LanePredictSmoothTime { get; init; } = 0.18;
 
     // Critically-damped smoothing time (s) for the output HEADING. The drawn body extends a full length
     // from the pivot, so any residual heading micro-step is amplified into a tail wiggle; a light heading
@@ -40,13 +43,21 @@ public sealed class KinematicHeadingParams
     // corner it takes a wider line — continues a bit farther, then rounds the turn. The drawn front is modelled
     // as a point whose heading chases the smoothed front's travel direction at THIS bounded turn-rate (deg/s);
     // it advances at the vehicle speed and springs gently back to the lane so the wide line reconverges. A
-    // gentle turn (needed rate below this) is unaffected. Set ≤ 0 to DISABLE the stage entirely (the front
-    // then follows the smoothed lane line directly — the pre-turn-in behavior).
-    public double TurnInSmoothTime { get; init; } = 0.45;
+    // gentle turn (needed rate below this) is unaffected. Set ≤ 0 to DISABLE the stage entirely. Default OFF:
+    // the lane-heading predictor (§1) already gives a natural, in-lane wide line through corners, so the
+    // explicit turn-in double-counts and pushes the front toward the parallel lane. Kept for experimentation.
+    public double TurnInSmoothTime { get; init; } = 0.0;
 
     // Per-step spring gain pulling the wide steered line back toward the lane, so it reconverges after the
     // corner (and a stopped car eases onto the lane point without drifting).
     public double TurnInReconverge { get; init; } = 0.15;
+
+    // Hard cap (metres) on how far the drawn FRONT may sit LATERALLY (perpendicular to travel) from the raw
+    // lane front, so the front stays in its lane however sharp the corner — the rear still off-tracks inside.
+    // This bounds BOTH the anticipatory wide line and the g-h tracker's natural corner-overshoot (its velocity
+    // feed-forward rides wide of a tight arc); without it a sharp junction turn drifts ~1.8 m toward the
+    // parallel lane. The along-track part ("go a bit farther before turning") is not capped. ~a fifth of a lane.
+    public double TurnInMaxOffsetMeters { get; init; } = 0.6;
 }
 
 // One reconstructed rigid-body pose: the vehicle geometric center (what the owner's IG models pivot on),
@@ -89,10 +100,10 @@ public sealed class KinematicHeading
     {
         public double Ex;   // decaying LATERAL error absorbed from lane-change snaps (input = raw - E)
         public double Ey;
-        public double Fx;   // g-h-smoothed front position (facet-jitter low-pass over raw - E)
+        public double Fx;   // smoothed front position (lane-heading-predicted, facet-jitter low-pass over raw - E)
         public double Fy;
-        public double Fvx;  // g-h-tracked front velocity
-        public double Fvy;
+        public double LdirX; // smoothed lane-heading unit vector (predictor direction; de-facets the lane heading)
+        public double LdirY;
         public double Rx;   // rear-axle position
         public double Ry;
         public double Sx;   // anticipatory-turn-in "steered" front (wide-line pursuit of the smoothed front)
@@ -201,55 +212,43 @@ public sealed class KinematicHeading
         var inX = frontX - s.Ex;
         var inY = frontY - s.Ey;
 
+        var (rawLx, rawLy) = Dir(laneHeadingDeg);
         if (!s.Init)
         {
-            var (sdx, sdy) = Dir(laneHeadingDeg);
             s.Fx = inX;
             s.Fy = inY;
-            s.Fvx = speed * sdx;
-            s.Fvy = speed * sdy;
+            s.LdirX = rawLx;
+            s.LdirY = rawLy;
         }
 
-        // (1) CONSTANT-VELOCITY (g-h) tracking of the (continuous) front input: predict it advancing at its
-        // own tracked velocity, correct toward the input by critically-damped gains. Zero lag through turns
-        // (the velocity term carries it), while the faceted-polyline micro-kinks that ride through as a tail
-        // wiggle are low-passed. The prediction uses the front's OWN velocity, not the body heading, so it
-        // cannot resonate into a post-turn overshoot. A genuine teleport snaps.
-        var predX = s.Fx + s.Fvx * dt;
-        var predY = s.Fy + s.Fvy * dt;
+        // (1) Track the (continuous) front input by predicting it advancing at the resolved speed ALONG THE
+        // LANE HEADING, then correcting toward the input with a critically-damped position gain. Predicting
+        // along the lane — which curves through a turn — makes the front follow the ARC, so it does not ride
+        // wide of a tight corner into the next lane the way a straight constant-velocity prediction does (its
+        // tangent overshoot was the bulk of the "drifts toward the parallel lane"). The predictor is the lane
+        // INPUT, not the fed-back body heading, so it cannot resonate into a post-turn overshoot. The lane
+        // heading is a facet staircase, though, so we predict along a low-passed lane DIRECTION (EMA of the
+        // unit vector) — that de-facets the predictor without lagging the arc, keeping the front smooth. At a
+        // standstill speed → 0, so the front just eases onto the lane point (no drift). A teleport snaps.
+        var aDir = _p.LanePredictSmoothTime > 1e-6 ? 1.0 - Math.Exp(-dt / _p.LanePredictSmoothTime) : 1.0;
+        s.LdirX += aDir * (rawLx - s.LdirX);
+        s.LdirY += aDir * (rawLy - s.LdirY);
+        var lnrm = Math.Sqrt(s.LdirX * s.LdirX + s.LdirY * s.LdirY);
+        var lhx = lnrm > 1e-9 ? s.LdirX / lnrm : rawLx;
+        var lhy = lnrm > 1e-9 ? s.LdirY / lnrm : rawLy;
+        var predX = s.Fx + speed * dt * lhx;
+        var predY = s.Fy + speed * dt * lhy;
         if ((inX - predX) * (inX - predX) + (inY - predY) * (inY - predY)
             > _p.ReseedJumpMeters * _p.ReseedJumpMeters)
         {
-            var (sdx, sdy) = Dir(laneHeadingDeg);
             s.Fx = inX;
             s.Fy = inY;
-            s.Fvx = speed * sdx;
-            s.Fvy = speed * sdy;
         }
         else
         {
             var g = _p.PositionSmoothTime > 1e-6 ? 1.0 - Math.Exp(-dt / _p.PositionSmoothTime) : 1.0;
-            var h = g * g / (2.0 - g);
-            var rX = inX - predX;
-            var rY = inY - predY;
-            s.Fx = predX + g * rX;
-            s.Fy = predY + g * rY;
-            s.Fvx += (h / dt) * rX;
-            s.Fvy += (h / dt) * rY;
-
-            // Clamp the tracked velocity magnitude to the KNOWN vehicle speed — the front can never move
-            // faster than the vehicle. Without this, the velocity lags a hard deceleration, so the prediction
-            // shoots ahead and the front (hence the center) drifts back to correct — a stopped car appears to
-            // creep backward / "dance". As speed → 0 the clamp forces the velocity to 0, so a halted vehicle
-            // holds position exactly; normal cruising/turns sit at |v| ≈ speed, so the clamp is inert there.
-            var fv2 = s.Fvx * s.Fvx + s.Fvy * s.Fvy;
-            var vmax = speed + 0.05;
-            if (fv2 > vmax * vmax)
-            {
-                var kv = vmax / Math.Sqrt(fv2);
-                s.Fvx *= kv;
-                s.Fvy *= kv;
-            }
+            s.Fx = predX + g * (inX - predX);
+            s.Fy = predY + g * (inY - predY);
         }
 
         var smFrontX = s.Fx;

@@ -351,6 +351,35 @@ emitted body exactly (front bumper, inside-tracking rear, kinematic heading + tu
 offline onion plots always showed. Guarded, so all other `Sim.Viz` consumers are unchanged; render-side only,
 parity untouched.
 
+### 5.12 As-built (front drifts toward the parallel lane — owner: "mild turners go way into the parallel lane")
+With the render finally drawing the true heading (§5.11), a new artifact became visible: on a junction turn
+the drawn FRONT rode ~1.9 m wide of the lane, toward the parallel lane. Diagnosis split it: the anticipatory
+turn-in contributed ~0.8 m, but the bulk (~1.9 m) was the **front tracker's own corner-overshoot** — the
+constant-velocity (g-h) predictor extrapolates along a *straight* tangent, so through a tight arc it rides
+wide before the position gain reels it in. (It was present since v2, only masked by the tangent-heading
+render.)
+
+Fix: **predict along the lane heading, not a straight tracked velocity.** The front is advanced at the
+resolved speed along a low-passed lane *direction* (an EMA of the lane-heading unit vector, `LanePredictSmoothTime`
+= 0.18 s, to de-facet the staircase without lagging the arc), then corrected toward the input by the position
+gain. Because the predictor curves with the lane, the front follows the arc instead of overshooting it; and
+because it is the lane *input* (not the fed-back body heading), it cannot resonate into the §5.6 post-turn
+overshoot. This also subsumes the stopped-vehicle handling (speed → 0 ⇒ prediction = held position ⇒ ease
+onto the lane point, no drift) and removed the velocity-clamp special-case. `PositionSmoothTime` raised to
+0.60 s (the predictor now controls corner behavior, so the gain is free to smooth harder).
+
+Result: the turn front-offset falls from **1.9 m → 1.1 m** (comfortably in-lane, ~⅓ of a 3.2 m lane) while
+fleet heading yaw-accel reversals return to **median 0** (max 2), no-slip median holds (10.5° vs ideal), and
+the sharpest-hairpin maxes improve (yaw-jerk max 2.9 k → 2.2 k). The explicit **anticipatory turn-in is now
+OFF by default** — the lane-heading predictor already yields a natural in-lane driver's line, so the separate
+stage just double-counted and pushed the front toward the next lane; it is retained behind `TurnInSmoothTime`
+for experimentation. Motion 11/11, IgBridge 11/11, parity 654 / 4-skip byte-identical.
+
+**On true look-ahead.** This predictor curves with the *current* lane heading — reactive, not yet reading the
+*upcoming* path (the forward trajectory a DDS producer ships to IGs). A genuinely anticipatory version would
+gate/scale the wide line by the upcoming curvature from `PoseResolver`'s forward lane geometry; logged as the
+next refinement.
+
 ---
 
 ## 6. Determinism & parity

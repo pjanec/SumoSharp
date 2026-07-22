@@ -48,7 +48,10 @@ using (var trace = new IgTraceWriter(tracePath))
         LaneChangeDecayTau = EnvD("IGBRIDGE_LC_TAU", 2.0),
         HeadingSmoothTime = EnvD("IGBRIDGE_HEAD_SMOOTH", 0.0),
         // Anticipatory turn-in (wider line on sharp corners); value = heading smoothing time (s). 0 disables.
-        TurnInSmoothTime = EnvD("IGBRIDGE_TURNIN", 0.45),
+        // Off by default — the lane-heading predictor already gives an in-lane driver's line.
+        TurnInSmoothTime = EnvD("IGBRIDGE_TURNIN", 0.0),
+        PositionSmoothTime = EnvD("IGBRIDGE_POS_SMOOTH", 0.60),
+        LanePredictSmoothTime = EnvD("IGBRIDGE_LANEPRED", 0.18),
     };
     var session = new IgBridgeSession(runner, emit, trace, retainAll: true, kinematics: kin);
     // IGBRIDGE_DEBUG_VEH: one id or a comma-separated list (e.g. "v18,v98,v213,v321"); each gets its own CSV.
