@@ -304,6 +304,23 @@ public partial class Main : Node3D
     private double _liveCityAccumulator;
     private int _liveCityFrame;
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the two INDEPENDENT tick-rate knobs, resolved once
+    // at the top of _Ready (ValidateSimHz/ValidateRenderHz, mirroring src/Sim.Viewer/Program.cs's own
+    // helpers) so every downstream path (local live, remote, replay) sees the same values. `_simHz` is
+    // CLI-only/display -- `_liveCityDt` (the value ProcessLiveCity's accumulator actually loops on, in
+    // place of the old hardcoded `LiveCityTickSeconds` const) is set from it once in ReadyLiveCityLive,
+    // after building the LiveCityConfig the Hz maps through (Dt = 1/Hz). `_renderHz` IS live -- the
+    // on-screen slider (BuildRateControlUi) pushes straight to Godot.Engine.MaxFps at runtime.
+    private int _simHz = 2;
+    private int _renderHz = 60;
+    private double _liveCityDt = LiveCityTickSeconds;
+
+    // The on-screen render-hz control (BuildRateControlUi) -- built once from ReadyLiveCityLive/
+    // ReadyLiveCityReplay, mirrors _playbackUi/_timelineSlider's own field shape.
+    private CanvasLayer? _rateUi;
+    private HSlider? _renderHzSlider;
+    private Label? _rateLabel;
+
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
     // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
     // PedFrameTrack (peds), both from the packaged SumoSharp.Replication (Sim.Replication.Recording).
@@ -348,6 +365,17 @@ public partial class Main : Node3D
 
     public override void _Ready()
     {
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): resolved FIRST, before any mode dispatch, so
+        // every path (local/dds, live/replay/remote) sees the same validated values. `_renderHz` is applied
+        // to Godot's global frame-rate cap immediately (render-hz is a general viewer knob, not scoped to
+        // `--live-city`, exactly like the Raylib viewer's own render-fps-cap default of 60 applies to every
+        // mode); `_simHz` only has an effect inside the live-city path (ReadyLiveCityLive), so it is display-
+        // only elsewhere.
+        _simHz = ValidateSimHz(ParseSimHzArg());
+        _renderHz = ValidateRenderHz(ParseRenderHzArg());
+        Godot.Engine.MaxFps = _renderHz;
+        GD.Print($"Main: tick rates -- sim-hz={_simHz} (live-city only) render-hz={_renderHz} (Engine.MaxFps).");
+
         _transport = ParseTransportArg();
         _peds = ParsePedsArg();
         _liveCity = ParseLiveCityArg();
@@ -666,7 +694,16 @@ public partial class Main : Node3D
     {
         try
         {
-            _liveCitySource = new LiveCitySource(repoRoot);
+            // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `_simHz` (resolved in _Ready, before this
+            // ever runs) sets LiveCityConfig.SimHz => Dt = 1/Hz -- the SAME Dt that flows into BOTH the
+            // engine step-length AND the ped demand's stepDt inside LiveCitySim's own ctor (the coupling
+            // invariant), so this one assignment is enough; no separate ped-side knob needed here. `_liveCityDt`
+            // mirrors it back out for ProcessLiveCity's accumulator (replacing the old hardcoded
+            // `LiveCityTickSeconds` const read).
+            var liveCfg = LiveCityConfig.ForRepoRoot(repoRoot);
+            liveCfg.SimHz = _simHz;
+            _liveCityDt = liveCfg.Dt;
+            _liveCitySource = new LiveCitySource(liveCfg);
         }
         catch (Exception ex)
         {
@@ -710,6 +747,7 @@ public partial class Main : Node3D
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
+        BuildRateControlUi();
 
         // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- ReadyLocal/ReadyRemote already wire
         // this; `--live-city` (local live) never did, so TrafficLightPlacer/BuildTrafficLights/
@@ -730,7 +768,9 @@ public partial class Main : Node3D
 
         SetupOrbitCamera(liveOverviewCamera, frameBbox);
 
-        GD.Print("Main: --live-city active (coupled cars+peds+crossing-yield, transport=local).");
+        GD.Print(
+            $"Main: --live-city active (coupled cars+peds+crossing-yield, transport=local, " +
+            $"sim-hz={_simHz} dt={_liveCityDt.ToString("F3", CultureInfo.InvariantCulture)} render-hz={_renderHz}).");
 
         _shotPath = ParseShotArg();
         if (_shotPath is not null)
@@ -782,6 +822,13 @@ public partial class Main : Node3D
             _clock.Dt = _replaySource.Dt;
         }
 
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): replay has no live LiveCityConfig to read a
+        // Hz off of -- the rate readout (BuildRateControlUi below) instead shows the RECORDING's own
+        // cadence, straight off the file's Dt, overriding _Ready's CLI-resolved `_simHz`/`_liveCityDt`
+        // (which describe a live host that doesn't exist in this path).
+        _liveCityDt = _clock.Dt;
+        _simHz = _clock.Dt > 0.0 ? (int)Math.Round(1.0 / _clock.Dt) : _simHz;
+
         _reconstructor = new Reconstructor();
         _lanes = new ReplicationLaneShapeSource(_replaySource.Geometry);
         _source = _replaySource;
@@ -819,6 +866,7 @@ public partial class Main : Node3D
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
         BuildPlaybackUi();
+        BuildRateControlUi();
 
         // Deliverable 2 -- same TL wiring gap as ReadyLiveCityLive, replay flavor. `network` above is
         // parsed straight from the SAME net.xml the live path uses (this method's own "still parse the
@@ -1161,9 +1209,11 @@ public partial class Main : Node3D
     }
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the per-frame `--live-city` body: advance the
-    // coupled sim on ITS OWN fixed sim-cadence accumulator (LiveCityTickSeconds=0.5, matching
-    // LiveCityConfig.Dt -- a SEPARATE accumulator/frame pair from _accumulator/_frame, per design §6's
-    // "split per-domain accumulator" requirement), reconstruct cars through the SAME Reconstructor/UpdateCars
+    // coupled sim on ITS OWN fixed sim-cadence accumulator (_liveCityDt, docs/LIVE-CITY-VISUALS-NOTES.md
+    // tick-rate task -- `--sim-hz`-selected, LiveCityTickSeconds=0.5's old hardcoded value is now only the
+    // field's pre-ReadyLiveCityLive default -- matching LiveCityConfig.Dt -- a SEPARATE accumulator/frame
+    // pair from _accumulator/_frame, per design §6's "split per-domain accumulator" requirement), reconstruct
+    // cars through the SAME Reconstructor/UpdateCars
     // the --scenario path uses (LiveCitySource.Source/LocalLanes are the SAME shapes SimSource exposes), and
     // rewrite the ped MultiMesh via UpdateLivePeds off LiveCitySource.Peds. Both MultiMeshes render in ONE
     // scene every frame -- no `if(_peds){...return;}` mutual exclusion.
@@ -1188,11 +1238,15 @@ public partial class Main : Node3D
             return; // _Ready already reported the error.
         }
 
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `_liveCityDt` (set from LiveCityConfig.Dt in
+        // ReadyLiveCityLive, per `--sim-hz`) replaces the old hardcoded `LiveCityTickSeconds` const read --
+        // the accumulator now advances the coupled sim in whatever increment `--sim-hz` selected instead of
+        // always 0.5s.
         _liveCityAccumulator += delta;
-        while (_liveCityAccumulator >= LiveCityTickSeconds)
+        while (_liveCityAccumulator >= _liveCityDt)
         {
             _liveCitySource.Tick();
-            _liveCityAccumulator -= LiveCityTickSeconds;
+            _liveCityAccumulator -= _liveCityDt;
         }
 
         var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, PlayoutDelaySeconds);
@@ -1688,6 +1742,62 @@ public partial class Main : Node3D
         _selectionLabelNode.AddThemeConstantOverride("outline_size", 4);
         _selectionLabelNode.AddThemeFontSizeOverride("font_size", 18);
         _selectionLabelLayer.AddChild(_selectionLabelNode);
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the on-screen rate control -- a small top-left
+    // Godot Control mirroring src/Sim.Viewer's DrawLiveCityRatePanel one-for-one: a display-only sim-hz
+    // label (sim-hz is baked into the engine's step-length at LiveCitySim construction time, so there is
+    // no live knob to turn here -- "relaunch --sim-hz=N to change", same hint the Raylib panel gives) and
+    // an HSlider that pushes render-hz straight to Godot.Engine.MaxFps INSTANTLY, clamped to the same
+    // [15,60] band ValidateRenderHz enforces at startup. Called once from ReadyLiveCityLive (and, for
+    // parity, ReadyLiveCityReplay) -- works in both live and replay live-city modes.
+    private void BuildRateControlUi()
+    {
+        _rateUi = new CanvasLayer { Name = "RateUi" };
+        AddChild(_rateUi);
+
+        var panel = new PanelContainer { Name = "RatePanel" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+        panel.OffsetLeft = 16f;
+        panel.OffsetTop = 16f;
+        panel.OffsetRight = 316f;
+        panel.OffsetBottom = 100f;
+        _rateUi.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        _rateLabel = new Label { Text = $"sim: {_simHz} Hz (dt={_liveCityDt:F3}s) -- relaunch --sim-hz=N to change" };
+        vbox.AddChild(_rateLabel);
+
+        var renderRow = new HBoxContainer();
+        vbox.AddChild(renderRow);
+
+        var renderLabel = new Label { Text = "render (Hz):" };
+        renderRow.AddChild(renderLabel);
+
+        _renderHzSlider = new HSlider
+        {
+            MinValue = 15,
+            MaxValue = 60,
+            Step = 1,
+            Value = _renderHz,
+            CustomMinimumSize = new Vector2(180f, 20f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _renderHzSlider.ValueChanged += OnRenderHzSliderChanged;
+        renderRow.AddChild(_renderHzSlider);
+
+        GD.Print("Main: rate control UI built (sim-hz display + render-hz slider).");
+    }
+
+    // Runtime render-hz change (task deliverable: "render-hz adjustable at runtime (instant)") -- pushes
+    // straight to Godot.Engine.MaxFps, exactly like the Raylib viewer's DrawLiveCityRatePanel slider pushes
+    // to Raylib.SetTargetFPS. No rebuild/relaunch needed.
+    private void OnRenderHzSliderChanged(double value)
+    {
+        _renderHz = Math.Clamp((int)value, 15, 60);
+        Godot.Engine.MaxFps = _renderHz;
     }
 
     // Called every live-city render frame (both live and replay). Repositions the ring above the selected
@@ -2817,6 +2927,91 @@ public partial class Main : Node3D
         }
 
         return false;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--sim-hz=<N>` USER cmdline arg -- the live-city
+    // coupled sim's tick rate (Hz), which LiveCityConfig.Dt = 1/Hz derives from (ReadyLiveCityLive). Same
+    // `--foo=` OS.GetCmdlineUserArgs() mechanism as --scenario/--camera/--shot. Absent -> null
+    // (ValidateSimHz's default, 2 Hz, applies).
+    private static int? ParseSimHzArg()
+    {
+        const string prefix = "--sim-hz=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(arg[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hz))
+            {
+                return hz;
+            }
+        }
+
+        return null;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--render-hz=<N>` USER cmdline arg -- Godot's
+    // Engine.MaxFps cap, applied in _Ready (before mode dispatch) and INDEPENDENT of --sim-hz (render rate
+    // is decoupled from sim rate by design -- the kinematic reconstructor interpolates between sparse sim
+    // samples). Same mechanism as --sim-hz above. Absent -> null (ValidateRenderHz's default, 60).
+    private static int? ParseRenderHzArg()
+    {
+        const string prefix = "--render-hz=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(arg[prefix.Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var hz))
+            {
+                return hz;
+            }
+        }
+
+        return null;
+    }
+
+    // Mirrors src/Sim.Viewer/Program.cs's ValidateSimHz one-for-one (same allowed set {1,2,5,10,20}, same
+    // clamp-to-nearest-with-a-reported-message behaviour rather than a hard failure over a typo'd flag) --
+    // just logged through GD.Print/GD.PrintErr instead of Console, since this is the Godot side.
+    private static int ValidateSimHz(int? requested)
+    {
+        const int defaultHz = 2;
+        if (requested is not { } hz)
+        {
+            return defaultHz;
+        }
+
+        var allowed = new[] { 1, 2, 5, 10, 20 };
+        if (Array.IndexOf(allowed, hz) >= 0)
+        {
+            return hz;
+        }
+
+        var nearest = allowed[0];
+        var bestDiff = Math.Abs(hz - nearest);
+        foreach (var candidate in allowed)
+        {
+            var diff = Math.Abs(hz - candidate);
+            if (diff < bestDiff)
+            {
+                nearest = candidate;
+                bestDiff = diff;
+            }
+        }
+
+        GD.PrintErr($"Main: --sim-hz={hz} is not one of {{1,2,5,10,20}} -- clamped to {nearest} Hz.");
+        return nearest;
+    }
+
+    // Mirrors src/Sim.Viewer/Program.cs's ValidateRenderHz -- clamped (not a discrete set) to [15,60]; 60
+    // is the hard cap, 15 a usability floor. Absent -> 60.
+    private static int ValidateRenderHz(int? requested)
+    {
+        var hz = requested ?? 60;
+        var clamped = Math.Clamp(hz, 15, 60);
+        if (clamped != hz)
+        {
+            GD.PrintErr($"Main: --render-hz={hz} clamped to {clamped} (allowed 15..60).");
+        }
+
+        return clamped;
     }
 
     // `--camera=<mode>` USER cmdline arg (task T1.6 Part C): "overview" (default, the whole-network

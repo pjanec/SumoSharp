@@ -92,6 +92,16 @@ var perf = false;
 double? simRate = null;
 double? stepLen = null;
 string? traceVeh = null;
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s two INDEPENDENT rate knobs.
+// `--sim-hz` (validated to {1,2,5,10,20}, see ValidateSimHz) sets LiveCityConfig.Dt = 1/Hz -- BOTH the
+// vehicle engine step-length and the ped demand Dt, which must stay equal (the coupling invariant).
+// `--render-hz` (clamped to [15,60]) sets Raylib's target FPS. Render rate is decoupled from sim rate
+// by design (the kinematic reconstructor interpolates smooth motion between sparse sim samples), so
+// these are two separate CLI flags, not one. Both default to null here and are resolved to a concrete
+// Hz (2 / 60) by ValidateSimHz/ValidateRenderHz right before dispatch, only for `--mode live-city`
+// (other modes have their own, older sim-rate/render-fps-cap knobs -- unchanged by this task).
+int? simHz = null;
+int? renderHz = null;
 // docs/SUMOSHARP-PACKAGING-DESIGN.md D10 (P3.1): hidden proof-of-seam flag -- installs a trivial
 // MarkerOverlay (a bright magenta dot at the net centre) through the generic IRenderOverlay hook, so a
 // screenshot can confirm a domain-agnostic overlay renders through the seam without the render loop
@@ -147,6 +157,17 @@ for (var i = 0; i < args.Length; i++)
         // truth) and its DR-reconstructed render pose (DRTRACE) each frame, for the DR/lane-change analysis.
         case "--trace-veh":
             traceVeh = args[++i];
+            break;
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s sim tick rate (Hz),
+        // validated/clamped to {1,2,5,10,20} by ValidateSimHz right before dispatch -- see the field's own
+        // comment above for the coupling-invariant rationale.
+        case "--sim-hz":
+            simHz = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--mode live-city`'s render frame-rate cap
+        // (fps), clamped to [15,60] by ValidateRenderHz right before dispatch -- independent of --sim-hz.
+        case "--render-hz":
+            renderHz = int.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
         case "--drop-obstacle":
             var parts = args[++i].Split(',');
@@ -217,16 +238,21 @@ if (mode == "ped-publish")
 // `--record <file>` stays a modifier of the LIVE path (RunLiveCity/RunLiveCitySmoke both accept it).
 if (mode == "live-city")
 {
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): resolved ONCE, here, so every live-city entry
+    // point (live/replay/smoke) sees the same validated Hz regardless of which branch below runs.
+    var resolvedSimHz = ValidateSimHz(simHz);
+    var resolvedRenderHz = ValidateRenderHz(renderHz);
+
     if (replayPath is not null)
     {
         return liveCitySmoke
             ? RunLiveCityReplaySmoke(replayPath)
-            : RunLiveCityReplay(replayPath, screenshotPath, frames);
+            : RunLiveCityReplay(replayPath, screenshotPath, frames, resolvedRenderHz);
     }
 
     return liveCitySmoke
-        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath)
-        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath);
+        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath, resolvedSimHz)
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -272,6 +298,59 @@ static string ResolveNetPath(string path)
     }
 
     return path;
+}
+
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--sim-hz` must be one of {1,2,5,10,20} -- these are
+// the discrete step-lengths (Dt = 1/Hz) LiveCitySim's engine config is built for; anything else still
+// runs (Engine.Step tolerates any positive step-length), but is outside the set the task pins, so an
+// unrecognized value is CLAMPED to its nearest neighbour with a reported message rather than silently
+// accepted or hard-failing the whole viewer over a typo'd flag. Omitted (null) -> the existing default,
+// 2 Hz (Dt=0.5), byte-identical to pre-task behaviour.
+static int ValidateSimHz(int? requested)
+{
+    const int defaultHz = 2;
+    if (requested is not { } hz)
+    {
+        return defaultHz;
+    }
+
+    var allowed = new[] { 1, 2, 5, 10, 20 };
+    if (Array.IndexOf(allowed, hz) >= 0)
+    {
+        return hz;
+    }
+
+    var nearest = allowed[0];
+    var bestDiff = Math.Abs(hz - nearest);
+    foreach (var candidate in allowed)
+    {
+        var diff = Math.Abs(hz - candidate);
+        if (diff < bestDiff)
+        {
+            nearest = candidate;
+            bestDiff = diff;
+        }
+    }
+
+    Console.Error.WriteLine(
+        $"Sim.Viewer: --sim-hz {hz} is not one of {{1,2,5,10,20}} -- clamped to {nearest} Hz.");
+    return nearest;
+}
+
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--render-hz` is clamped (not validated against a
+// discrete set) to [15,60] -- 60 is the hard cap (rendering faster than that is wasted GPU work for a
+// sparse-sample sim), 15 is a usability floor (below it panning/clicking feels broken). Omitted (null)
+// -> 60, the existing default.
+static int ValidateRenderHz(int? requested)
+{
+    var hz = requested ?? 60;
+    var clamped = Math.Clamp(hz, 15, 60);
+    if (clamped != hz)
+    {
+        Console.Error.WriteLine($"Sim.Viewer: --render-hz {hz} clamped to {clamped} (allowed 15..60).");
+    }
+
+    return clamped;
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `netPath` is the ad-hoc "(custom)" path (today's
@@ -781,10 +860,15 @@ static int RunPedPublish(double? secondsCap)
 // lifecycle + frames, written once per LiveCitySim.Step()), and this loop writes one PEDFRAME per Step()
 // too (sim.Sample().Peds converted to the neutral tuple PedFrameTrack/SimRecWriter expect) -- both tracks
 // share the ONE writer/file so they interleave by time.
-static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath)
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `simHz`/`renderHz` are the CLI-validated Hz values
+// from ValidateSimHz/ValidateRenderHz -- simHz sets cfg.SimHz (=> cfg.Dt, which both the engine's
+// step-length AND the ped-publish Dt derive from, keeping the live-city coupling invariant); renderHz
+// seeds the window's initial target FPS and the runtime-adjustable slider in the diagnostics panel below.
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz)
 {
     var repoRoot = DemoCatalog.RepoRoot();
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    cfg.SimHz = simHz;
 
     RecordingReplicationSink? recorder = recordPath is not null
         ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
@@ -808,11 +892,18 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
     var speed = speedFactor is > 0.0 ? speedFactor.Value : 1.0;
     var accumWall = 0.0;
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): render-hz is runtime-adjustable (the diagnostics
+    // panel's slider below calls Raylib.SetTargetFPS directly, mirroring DrawControlsPanel's own fpsCap
+    // radios); sim-hz is CLI-only (cfg.Dt is already baked into the engine's step-length by the time this
+    // runs -- LiveCitySim's ctor -- so it is display-only here, per the task's explicit allowance).
+    var liveRenderHz = renderHz;
+
     var cfgHost = new ViewerHostConfig
     {
         WindowTitle = "SumoSharp - native viewer (live city)",
         ScreenshotPath = screenshotPath,
         Frames = frames,
+        TargetFps = renderHz,
 
         InitialCameraBounds = () => (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1),
 
@@ -856,7 +947,7 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
             {
                 var (min, avg, p99) = frameStats.Compute();
                 ImGui.SetNextWindowPos(new System.Numerics.Vector2(10, 410), ImGuiCond.FirstUseEver);
-                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 170), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new System.Numerics.Vector2(360, 210), ImGuiCond.FirstUseEver);
                 ImGui.Begin("SumoSharp - diagnostics");
                 ImGui.Text($"fps: {Raylib.GetFPS()}");
                 ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
@@ -867,6 +958,8 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
                 {
                     ImGui.Text($"recording: {recordPath}");
                 }
+
+                ViewerControlsPanels.DrawLiveCityRatePanel(simHz, cfg.Dt, ref liveRenderHz);
                 ImGui.End();
             }
         },
@@ -912,10 +1005,17 @@ static IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string Ani
 // `--smoke`) is an OPTIONAL tee, identical in spirit to RunLiveCity's -- null reproduces Stage B's
 // behaviour byte-for-byte; set, it records the whole smoke run to a `.simrec` and reports its record
 // counts, giving a headless (no window, no Xvfb) way to produce+verify a recording end-to-end.
-static int RunLiveCitySmoke(int steps, string? recordPath = null)
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `simHz` (ValidateSimHz-resolved, default 2) sets
+// cfg.SimHz before construction so the headless smoke run exercises the SAME Dt->step-length plumbing
+// the windowed RunLiveCity does -- the printed LIVECITY-SMOKE line reports both simHz and the resulting
+// Dt so a scripted run can confirm the cadence actually changed (a finer Dt means `steps` covers less
+// sim-time, or -- held constant via `Math.Max(frames,120)` steps -- the SAME step count now spans a
+// different amount of sim-time; either is visible in the reported `dt=`/`simTime=`).
+static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
 {
     var repoRoot = DemoCatalog.RepoRoot();
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    cfg.SimHz = simHz;
 
     RecordingReplicationSink? recorder = recordPath is not null
         ? new RecordingReplicationSink(recordPath, cfg.Dt, datasetId: cfg.DatasetDir)
@@ -951,8 +1051,10 @@ static int RunLiveCitySmoke(int steps, string? recordPath = null)
     var sampledCars = snap.Cars.Count;
 
     Console.WriteLine(
-        $"LIVECITY-SMOKE: steps={steps} sampledCars={sampledCars} reconstructedCars={reconstructedCars} " +
-        $"sampledPeds={sampledPeds} occupiedCrossings(final)={snap.OccupiedCrossings} " +
+        $"LIVECITY-SMOKE: simHz={simHz} dt={cfg.Dt.ToString(CultureInfo.InvariantCulture)} steps={steps} " +
+        $"simTime={sim.Time.ToString("F2", CultureInfo.InvariantCulture)} sampledCars={sampledCars} " +
+        $"reconstructedCars={reconstructedCars} sampledPeds={sampledPeds} " +
+        $"occupiedCrossings(final)={snap.OccupiedCrossings} " +
         $"peakOccupiedCrossings={sim.PeakOccupiedCrossings} carYieldObservations={sim.CarYieldObservations} " +
         $"peakCars={sim.PeakCars} peakPeds={sim.PeakPeds}");
 
@@ -983,7 +1085,11 @@ static int RunLiveCitySmoke(int steps, string? recordPath = null)
 // 2-D geometry, exactly like loopback/remote already do. LiveCityOverlay is reused UNCHANGED (design §5) --
 // only the LiveCitySnapshot it is fed differs (built from the reconstructed draws' Handle + the
 // PedFrameTrack's frame at Clock.Now, rather than from LiveCitySim.Sample()).
-static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames)
+// docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `renderHz` seeds the window's initial target FPS and
+// the runtime-adjustable slider in the playback panel below. Replay has no sim-hz CLI knob of its own --
+// the recording's own Dt (clock.Dt, read from the file) is displayed instead, exactly like the live
+// path's `--sim-hz` display line, just sourced from the file rather than a live LiveCityConfig.
+static int RunLiveCityReplay(string replayPath, string? screenshotPath, int frames, int renderHz)
 {
     var clock = new PlaybackClock();
     using var fileSource = new ReplicationFileSource(replayPath, clock);
@@ -1000,12 +1106,15 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
     var draggingSlider = false;
     var wasPlayingBeforeDrag = false;
     var cameraFitted = false;
+    var replayRenderHz = renderHz;
+    var replaySimHz = clock.Dt > 0.0 ? (int)Math.Round(1.0 / clock.Dt) : 0;
 
     var cfgHost = new ViewerHostConfig
     {
         WindowTitle = "SumoSharp - native viewer (live city replay)",
         ScreenshotPath = screenshotPath,
         Frames = frames,
+        TargetFps = renderHz,
 
         InitialCameraBounds = () => null,
 
@@ -1065,7 +1174,8 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
 
         DrawImGui = showDiagnostics =>
         {
-            ViewerControlsPanels.DrawPlaybackPanel(clock, ref draggingSlider, ref wasPlayingBeforeDrag);
+            ViewerControlsPanels.DrawPlaybackPanel(clock, ref draggingSlider, ref wasPlayingBeforeDrag,
+                rateFooter: () => ViewerControlsPanels.DrawLiveCityRatePanel(replaySimHz, clock.Dt, ref replayRenderHz));
             overlay.DrawUi();
             if (showDiagnostics)
             {

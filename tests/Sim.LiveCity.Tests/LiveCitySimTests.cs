@@ -47,10 +47,15 @@ public class LiveCitySimTests
         throw new InvalidOperationException("could not resolve the SumoSharp repo root.");
     }
 
-    private static LiveCityConfig MakeConfig(bool yield = true)
+    private static LiveCityConfig MakeConfig(bool yield = true, double? dt = null)
     {
         var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
         cfg.YieldEnabled = yield;
+        if (dt is { } d)
+        {
+            cfg.Dt = d;
+        }
+
         return cfg;
     }
 
@@ -114,6 +119,54 @@ public class LiveCitySimTests
                 Assert.Equal(a.Regime, b.Regime);
             }
         }
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task), deliverable 1: the SAME determinism proof as
+    // TwoRuns_SameConfig_AreByteExactDeterministic above, but at Dt=0.1 (10 Hz, cfg.SimHz's non-default
+    // side) instead of the 0.5 (2 Hz) default -- proves LiveCityConfig.Dt/SimHz plumbs all the way through
+    // to LiveCitySim's engine step-length (via the InvariantCulture-formatted config XML) and the ped
+    // demand's stepDt without breaking either the coupled sim's liveness (cars>0 && peds>0) or its
+    // byte-exact determinism (same seed+Dt => identical run).
+    [Fact]
+    public void TwoRuns_AtTenHz_AreByteExactDeterministic_AndProduceCarsAndPeds()
+    {
+        using var simA = new LiveCitySim(MakeConfig(yield: true, dt: 0.1));
+        using var simB = new LiveCitySim(MakeConfig(yield: true, dt: 0.1));
+
+        for (var step = 0; step < 120; step++)
+        {
+            simA.Step();
+            simB.Step();
+
+            var snapA = simA.Sample();
+            var snapB = simB.Sample();
+
+            Assert.Equal(snapA.Cars.Count, snapB.Cars.Count);
+            for (var i = 0; i < snapA.Cars.Count; i++)
+            {
+                var a = snapA.Cars[i];
+                var b = snapB.Cars[i];
+                Assert.Equal(a.Handle, b.Handle);
+                Assert.Equal(a.X, b.X);
+                Assert.Equal(a.Y, b.Y);
+                Assert.Equal(a.Z, b.Z);
+                Assert.Equal(a.AngleDeg, b.AngleDeg);
+            }
+
+            Assert.Equal(snapA.Peds.Count, snapB.Peds.Count);
+            for (var i = 0; i < snapA.Peds.Count; i++)
+            {
+                var a = snapA.Peds[i];
+                var b = snapB.Peds[i];
+                Assert.Equal(a.Id, b.Id);
+                Assert.Equal(a.X, b.X);
+                Assert.Equal(a.Y, b.Y);
+                Assert.Equal(a.Regime, b.Regime);
+            }
+        }
+
+        Assert.True(simA.PeakCars > 0, $"expected PeakCars > 0 at Dt=0.1, got {simA.PeakCars}");
+        Assert.True(simA.PeakPeds > 0, $"expected PeakPeds > 0 at Dt=0.1, got {simA.PeakPeds}");
     }
 
     [Fact]

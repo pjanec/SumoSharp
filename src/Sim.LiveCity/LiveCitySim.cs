@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 using Sim.Core;
@@ -181,8 +182,17 @@ public sealed class LiveCitySim : IDisposable
 
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
         _engine = new Engine();
+        // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): step-length now tracks cfg.Dt instead of the
+        // old hardcoded "0.5" literal -- the live-city coupling invariant (car Dt == ped Dt) requires the
+        // engine's own resolution to move with LiveCityConfig.Dt, not just the ped publisher (which
+        // already read cfg.Dt, see `stepDt: cfg.Dt` below). InvariantCulture is mandatory here: this
+        // string is spliced into XML the engine re-parses with double.Parse -- a locale that renders
+        // '.' as ',' (ToString() under a non-invariant thread culture) would corrupt the XML attribute
+        // (e.g. "0,1" splitting into two malformed tokens), never a locale-dependent path.
+        var stepLengthText = cfg.Dt.ToString(CultureInfo.InvariantCulture);
         var engineConfig = ScenarioConfigParser.ParseXml(
-            "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\"0.5\"/></time>"
+            "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\""
+            + stepLengthText + "\"/></time>"
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/></processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;

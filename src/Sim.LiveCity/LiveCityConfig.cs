@@ -38,6 +38,19 @@ public sealed class LiveCityConfig
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().
     public double Dt { get; set; } = 0.5;
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): a convenience Hz view of Dt -- Dt = 1.0/Hz, so
+    // SimHz = 20 <=> Dt = 0.05. This is the SAME knob as Dt, just expressed the way a CLI flag
+    // (`--sim-hz`) or a viewer control naturally wants it; setting either one is visible through the
+    // other immediately (no separate backing field). LiveCityConfig itself does NOT validate Hz against
+    // the allowed set {1,2,5,10,20} -- any positive Dt/Hz is accepted here -- the CLI layer
+    // (Sim.Viewer/Program.cs, City3D/Viewer/Main.cs) is where that enum is enforced, per the design's
+    // "LiveCityConfig itself just takes a Dt" instruction.
+    public double SimHz
+    {
+        get => Dt > 0.0 ? 1.0 / Dt : 0.0;
+        set { if (value > 0.0) Dt = 1.0 / value; }
+    }
+
     // Ped demand seed (SceneGen.BuildLiveCity's PedDemandConfig.Seed).
     public ulong PedSeed { get; set; } = 20260721UL;
 
@@ -64,6 +77,15 @@ public sealed class LiveCityConfig
         }
 
         cfg.YieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";
+
+        // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via
+        // SimHz) rather than raw Dt seconds since that's how a shell habit is more likely to want it.
+        // No {1,2,5,10,20} validation here -- ForRepoRoot mirrors LIVECITY_CARS/LCMIN's own "any parsed
+        // value is accepted" behavior; the CLI-facing --sim-hz flags do the enum validation.
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_HZ"), out var hz) && hz > 0.0)
+        {
+            cfg.SimHz = hz;
+        }
 
         return cfg;
     }

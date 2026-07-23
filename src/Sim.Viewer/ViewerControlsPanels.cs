@@ -278,10 +278,16 @@ public static class ViewerControlsPanels
     // releasing restores that prior state (a drag that started while paused stays paused after release).
     // `draggingSlider`/`wasPlayingBeforeDrag` are ref because Program.cs's replay loop owns them across
     // frames, same convention as `fpsCap`/`smooth` above.
-    public static void DrawPlaybackPanel(PlaybackClock clock, ref bool draggingSlider, ref bool wasPlayingBeforeDrag)
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `rateFooter`, when supplied, draws the sim-hz/
+    // render-hz readout+slider (DrawLiveCityRatePanel) INSIDE this same window, right before ImGui.End() --
+    // `--mode live-city --replay` (RunLiveCityReplay) passes one; every other caller omits it (null),
+    // byte-identical to pre-task behaviour. A plain `Action` (not ref params) because ref locals can't be
+    // captured by a lambda -- RunLiveCityReplay's closure mutates its own `replayRenderHz` local directly.
+    public static void DrawPlaybackPanel(
+        PlaybackClock clock, ref bool draggingSlider, ref bool wasPlayingBeforeDrag, Action? rateFooter = null)
     {
         ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(420, 190), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(420, rateFooter is null ? 190 : 230), ImGuiCond.FirstUseEver);
         ImGui.Begin("SumoSharp - live-city replay");
 
         ImGui.Text("mode: REPLAY (from a .simrec recording)");
@@ -350,6 +356,7 @@ public static class ViewerControlsPanels
 
         ImGui.Text($"t = {clock.Now:F2}s / {clock.Duration:F2}s   {(clock.Playing ? "PLAYING" : "PAUSED")}");
         ImGui.TextWrapped("drag the timeline to scrub - left/right arrows or the buttons frame-step");
+        rateFooter?.Invoke();
         ImGui.End();
 
         if (global::Raylib_cs.Raylib.IsKeyPressed(global::Raylib_cs.KeyboardKey.Left))
@@ -362,6 +369,27 @@ public static class ViewerControlsPanels
         {
             clock.Pause();
             clock.StepFrame(1);
+        }
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the live-city sim-hz/render-hz readout + runtime
+    // render-hz control, shared by RunLiveCity's diagnostics panel and RunLiveCityReplay's playback panel
+    // (via `rateFooter` above) -- MUST be called between an already-open ImGui.Begin()/End() pair (it does
+    // neither itself), mirroring DrawControlsPanel's own "render fps cap" radios just below its sim
+    // resolution block. `simHz`/`dtSeconds` are DISPLAY-ONLY: unlike render-hz, sim-hz is baked into the
+    // engine's step-length at LiveCitySim construction time (or, for replay, is simply whatever the
+    // recording was made at) -- there is no live knob to turn, hence the "relaunch to change" hint rather
+    // than a control. `renderHz` IS live: the slider pushes straight to Raylib.SetTargetFPS, exactly like
+    // DrawControlsPanel's fpsCap radios do, clamped to the same [15,60] band ValidateRenderHz enforces at
+    // startup so a runtime drag can't exceed the hard cap or undershoot the usability floor.
+    public static void DrawLiveCityRatePanel(int simHz, double dtSeconds, ref int renderHz)
+    {
+        ImGui.Separator();
+        ImGui.Text($"sim tick rate: {simHz} Hz (dt={dtSeconds:F3}s) -- relaunch --sim-hz N to change");
+        if (ImGui.SliderInt("render rate (Hz)", ref renderHz, 15, 60))
+        {
+            renderHz = Math.Clamp(renderHz, 15, 60);
+            global::Raylib_cs.Raylib.SetTargetFPS(renderHz);
         }
     }
 }
