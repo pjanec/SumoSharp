@@ -58,6 +58,12 @@ public sealed class LiveCitySource : IDisposable
     // comment in Sim.LiveCity/LiveCitySnapshot.cs).
     public IReadOnlyList<LiveCityPed> Peds => _sim.Sample().Peds;
 
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D4 -- the full coupled-scene sample (cars incl. Name + peds) for one
+    // render frame, in ONE call (so a caller building the D4 Handle->Name table doesn't have to sample
+    // twice per frame the way `Peds` alone would if a caller also wanted `Cars`). `Peds` above is kept as
+    // the pre-D4 convenience accessor; callers that need both cars and peds this frame should prefer this.
+    public LiveCitySnapshot Sample() => _sim.Sample();
+
     // Advances the coupled sim one Dt=0.5s tick (LiveCityConfig.Dt) and publishes the resulting frame onto
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();

@@ -8,6 +8,7 @@ using Sim.Core;
 using Sim.Ingest;
 using Sim.LiveCity;
 using Sim.Replication;
+using Sim.Replication.Recording;
 #if CITY3D_REMOTE
 using CycloneDDS.Runtime;
 using Sim.Replication.Dds;
@@ -91,6 +92,14 @@ public partial class Main : Node3D
     private static readonly Color LiveCityPedHighPowerColor = new(0.92f, 0.55f, 0.12f); // orange
     private static readonly Color LiveCityPedPausedColor = new(0.92f, 0.85f, 0.20f);    // yellow
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the click-to-identify highlight ring/label
+    // colour (a distinct cyan, unused by any car/ped/TL palette above so a selected vehicle never blends
+    // into its own body colour) and the pick radius in SCREEN pixels (mirrors LiveCityOverlay's world-space
+    // `DefaultPickRadius`, just in screen units since Main.cs has no physics colliders to ray-pick against
+    // -- design §5: "camera ray -> nearest instance").
+    private static readonly Color SelectionColor = new(0.20f, 0.85f, 0.95f);
+    private const float PickPixelRadius = 24f;
+
     // docs/LIVE-CITY-VIEWERS-TASKS.md D1 -- the coupled sim's own tick length (Sim.LiveCity.LiveCityConfig.Dt
     // default). The live-city accumulator advances LiveCitySource.Tick() in this many whole increments,
     // exactly like AdvanceLocalSim/ProcessPeds' own fixed sim-cadence accumulators, just on ITS OWN fields
@@ -100,15 +109,36 @@ public partial class Main : Node3D
     // Half-extent (metres) of the tight box the `--live-city` OVERVIEW camera frames, centred on the crop
     // (see ReadyLiveCity's remark): small enough that cars/peds are legible in a fixed-resolution
     // screenshot, large enough to still show several intersections' worth of the coupled scene.
-    private const float LiveCityFrameHalfExtentMeters = 180f;
+    //
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D "visibility polish"): the original 180m
+    // half-extent (360m box) put a 4.5m car at a few dozen pixels and a person at sub-pixel scale in a
+    // fixed-resolution screenshot. Halved to a ~180m box (a "mid-zoom that frames ~150-200m of the crop",
+    // the task's stated alternative to switching the default `--camera` mode itself) -- `--camera=close`/
+    // `--camera=overview` both keep working unchanged, this only tightens what "overview" frames.
+    private const float LiveCityFrameHalfExtentMeters = 90f;
+
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D) -- the live-city overview camera's own
+    // (heightFactor, backFactor) pair, LOWER/more-oblique than the whole-network CameraHeightFactor/
+    // CameraBackFactor above (1.1/0.9, a near-vertical "satellite" angle where a true-scale car/ped is a
+    // sub-pixel dot regardless of zoom): a lower angle actually shows their silhouette height, while still
+    // framing the WHOLE tightened crop box (LiveCityFrameHalfExtentMeters), unlike `--camera=close` (which
+    // tracks a single vehicle/signal up close, not the crowd as a whole).
+    private const float LiveCityCameraHeightFactor = 0.55f;
+    private const float LiveCityCameraBackFactor = 1.15f;
 
     // Viewer-only LEGIBILITY render scale for the ped avatars (docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians
     // (P7-3)"): the tested CityLib.PedTransform keeps the true ~0.5x1.8 m avatar, but at plaza camera range a
     // 0.5 m figure is barely a pixel, so the Viewer draws a scaled-up slim avatar purely for on-screen
     // legibility -- the exact same idea src/Sim.Viewer/RemotePedOverlay.cs uses (it renders peds at a 1.2 m
     // disc vs the 0.3 m physical radius). Proportions stay slim/upright so it still reads as a pedestrian.
-    private const float PedRenderHeightMeters = 3.2f;
-    private const float PedRenderWidthMeters = 1.1f;
+    //
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D): bumped further (3.2->4.0m tall,
+    // 1.1->1.6m wide) and -- see BuildPedMultiMesh -- given a CylinderMesh instead of a BoxMesh, so the
+    // `--live-city` crowd (both this and the plaza `--peds` path share one MultiMesh builder) reads as a
+    // crowd of upright figures instead of a scatter of near-invisible slivers at the tighter live-city
+    // camera range (see LiveCityFrameHalfExtentMeters above) as well as at plaza range.
+    private const float PedRenderHeightMeters = 4.0f;
+    private const float PedRenderWidthMeters = 1.6f;
 
     // The ped camera frames a tight box around the crossing plaza (peds only ever cross the central ~40 m;
     // the road arms extend ~240 m, so framing the whole road bbox -- as the vehicle path does -- would leave
@@ -229,6 +259,48 @@ public partial class Main : Node3D
     private LiveCitySource? _liveCitySource;
     private double _liveCityAccumulator;
     private int _liveCityFrame;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
+    // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
+    // PedFrameTrack (peds), both from the packaged SumoSharp.Replication (Sim.Replication.Recording).
+    // Live vs. replay differ ONLY in the source (design tenet 2) -- ProcessLiveCity dispatches to
+    // ProcessLiveCityReplay below, which still drives the SAME _reconstructor/UpdateCars/UpdateLivePeds-
+    // shaped rendering, just off these fields instead of `_liveCitySource`.
+    private bool _replay;
+    private PlaybackClock? _clock;
+    private ReplicationFileSource? _replaySource;
+    private PedFrameTrack? _pedTrack;
+
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D3 -- the Godot playback UI (Play/Pause, Restart, frame-step, speed,
+    // timeline slider + a "t = .../..." label), built ONLY in replay mode (BuildPlaybackUi, called from
+    // ReadyLiveCityReplay) and updated every ProcessLiveCityReplay frame (UpdatePlaybackUi).
+    private CanvasLayer? _playbackUi;
+    private HSlider? _timelineSlider;
+    private Label? _timeLabel;
+    private Button? _playPauseButton;
+    private bool _sliderDragging;
+    private bool _wasPlayingBeforeDrag;
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the stable instance-index -> VehicleHandle map
+    // (design §5: "Maintain a stable instance-index -> VehicleHandle map in UpdateCars") plus each car's
+    // last-known WORLD position (for the click-pick's screen projection and for positioning the selection
+    // ring/label every frame without a second Reconstruct pass) -- both rebuilt every UpdateCars call, in
+    // the SAME order as the car MultiMesh's own instance indices, so index i here always means "car
+    // MultiMesh instance i" for exactly one frame. `_vehicleNames` is the separate Handle->SUMO-id table
+    // (design §5's "resolves handle -> human-readable id"): populated from LiveCitySource.Sample().Cars
+    // each live-mode frame (the LIVE path has real names on LiveCitySnapshot -- design §3.1 note); left
+    // empty in replay (the wire carries no name yet, Stage E) so NameFor's handle-string fallback applies.
+    private readonly List<VehicleHandle> _carHandles = new();
+    private readonly List<Vector3> _carWorldPositions = new();
+    private readonly Dictionary<VehicleHandle, string> _vehicleNames = new();
+
+    // The click-latched selection (design §5: "latch its VehicleHandle") + the highlight ring/label nodes,
+    // built once (BuildSelectionUi, called from both ReadyLiveCityLive/ReadyLiveCityReplay) and repositioned
+    // every frame by UpdateSelectionHighlight -- works in BOTH live and replay modes (task D4).
+    private VehicleHandle? _selectedHandle;
+    private MeshInstance3D? _selectionRing;
+    private CanvasLayer? _selectionLabelLayer;
+    private Label? _selectionLabelNode;
 
     public override void _Ready()
     {
@@ -498,6 +570,24 @@ public partial class Main : Node3D
         }
     }
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1/D2/D3 -- the `--live-city` setup entry point.
+    // `--replay <file.simrec>` (D3) takes the file-backed replay path; otherwise the LOCAL live path (D1).
+    // Live vs. replay differ ONLY in the source (design tenet 2) -- see ReadyLiveCityLive/ReadyLiveCityReplay.
+    private void ReadyLiveCity(string repoRoot)
+    {
+        var replayPath = ParseReplayArg();
+        _replay = replayPath is not null;
+
+        if (_replay)
+        {
+            ReadyLiveCityReplay(repoRoot, replayPath!);
+        }
+        else
+        {
+            ReadyLiveCityLive(repoRoot);
+        }
+    }
+
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1/D2 -- the `--live-city` LOCAL setup. Builds a
     // CityLib.LiveCitySource (wraps Sim.LiveCity.LiveCitySim over scenarios/_ped/demo_city/box), the road
     // meshes from ITS NetworkModel (the same RoadMeshBuilder entry point the vehicle path uses, so
@@ -506,7 +596,7 @@ public partial class Main : Node3D
     // path's empty-at-load build), and points the generic `_reconstructor`/`_source`/`_lanes` fields at the
     // live-city source so the SAME Reconstructor/UpdateCars render live-city cars -- only ProcessLiveCity
     // (its own accumulator) ticks the sim and calls them, never AdvanceLocalSim/RenderFrame.
-    private void ReadyLiveCity(string repoRoot)
+    private void ReadyLiveCityLive(string repoRoot)
     {
         try
         {
@@ -548,9 +638,12 @@ public partial class Main : Node3D
             Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
             Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
 
-        BuildCameraAndLight(frameBbox, makeCurrent: _cameraMode != "close");
+        BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
 
         if (_cameraMode == "close")
         {
@@ -561,6 +654,106 @@ public partial class Main : Node3D
         }
 
         GD.Print("Main: --live-city active (coupled cars+peds+crossing-yield, transport=local).");
+
+        _shotPath = ParseShotArg();
+        if (_shotPath is not null)
+        {
+            var shotDelaySeconds = ParseShotDelayArg();
+            GD.Print(
+                $"Main: --shot requested, will capture to '{_shotPath}' " +
+                $"(shot-delay={shotDelaySeconds:F1}s real wall-clock before capture).");
+            CaptureScreenshotAsync(_shotPath, shotDelaySeconds);
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file>` REPLAY
+    // setup. Builds a PlaybackClock (the slider/buttons' authority) + a ReplicationFileSource (cars, over
+    // its OWN received wire geometry -- exactly the remote path's ReplicationLaneShapeSource shape, design
+    // tenet 2) + a PedFrameTrack (peds). Roads are still parsed straight off net.xml (this task's own
+    // "simplest" option: "still parse the same net for roads") via the SAME pinned crop
+    // LiveCityConfig.ForRepoRoot resolves -- cheap (no Engine/navmesh bake), and the recording's own crop
+    // is that exact pinned rect by construction (LiveCitySim publishes the FULL net's geometry, so the
+    // recording's wire geometry is NOT pre-cropped; framing/road-mesh-building off the parsed net + the
+    // known crop keeps the replay scene identical in extent to the live one without waiting on
+    // GeometryComplete or hard-coding a duplicate crop rect).
+    private void ReadyLiveCityReplay(string repoRoot, string replayPath)
+    {
+        if (!File.Exists(replayPath))
+        {
+            GD.PrintErr($"Main: --replay file not found: '{replayPath}'.");
+            GetTree().Quit(1);
+            return;
+        }
+
+        _clock = new PlaybackClock();
+
+        try
+        {
+            _replaySource = new ReplicationFileSource(replayPath, _clock);
+            _pedTrack = new PedFrameTrack(replayPath);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Main: failed to open replay '{replayPath}': {ex}");
+            GetTree().Quit(1);
+            return;
+        }
+
+        _clock.Duration = _replaySource.Duration;
+        if (_replaySource.Dt > 0.0)
+        {
+            _clock.Dt = _replaySource.Dt;
+        }
+
+        _reconstructor = new Reconstructor();
+        _lanes = new ReplicationLaneShapeSource(_replaySource.Geometry);
+        _source = _replaySource;
+
+        _cameraMode = ParseCameraArg();
+
+        var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+        NetworkModel network;
+        try
+        {
+            network = NetworkParser.Parse(netPath);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"Main: --replay could not parse '{netPath}' for road geometry: {ex}");
+            GetTree().Quit(1);
+            return;
+        }
+
+        var roadBbox = BuildRoadMeshesCropped(network, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1);
+        _sceneBbox = roadBbox;
+
+        var cropCenter = new Vector3(
+            (roadBbox.Min.X + roadBbox.Max.X) / 2f, 0f, (roadBbox.Min.Z + roadBbox.Max.Z) / 2f);
+        var frameHalf = LiveCityFrameHalfExtentMeters;
+        var frameBbox = (
+            Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
+            Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
+
+        BuildCameraAndLight(
+            frameBbox, makeCurrent: _cameraMode != "close",
+            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
+        _carMultiMesh = BuildCarMultiMesh();
+        _pedMultiMesh = BuildPedMultiMesh();
+        BuildSelectionUi();
+        BuildPlaybackUi();
+
+        if (_cameraMode == "close")
+        {
+            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+            AddChild(_closeCamera);
+            UpdateCloseCameraFraming(_closeCamera, null);
+            GD.Print("Main: --camera=close active (low angled close-up framing).");
+        }
+
+        GD.Print(
+            $"Main: --live-city --replay '{replayPath}' active (duration={_clock.Duration:F1}s, " +
+            $"dt={_clock.Dt:F2}s, {_pedTrack.FrameCount} ped frame(s)).");
 
         _shotPath = ParseShotArg();
         if (_shotPath is not null)
@@ -794,6 +987,12 @@ public partial class Main : Node3D
     // scene every frame -- no `if(_peds){...return;}` mutual exclusion.
     private void ProcessLiveCity(double delta)
     {
+        if (_replay)
+        {
+            ProcessLiveCityReplay(delta);
+            return;
+        }
+
         if (_liveCitySource is null || _reconstructor is null || _lanes is null)
         {
             return; // _Ready already reported the error.
@@ -809,8 +1008,19 @@ public partial class Main : Node3D
         var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, PlayoutDelaySeconds);
         UpdateCars(vehicles);
 
-        var peds = _liveCitySource.Peds;
-        UpdateLivePeds(peds);
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- ONE Sample() this frame gives both the
+        // peds AND the live Handle->Name table (LiveCityCar.Name is the real SUMO id, straight off
+        // Engine.VehicleIds -- design §3.1's "local/live viewers can also read the name directly from
+        // LiveCitySim ... without the wire"). Entries are never removed, so a car that despawns between
+        // this frame and a later click still resolves to its last-known name rather than the raw handle.
+        var snap = _liveCitySource.Sample();
+        foreach (var car in snap.Cars)
+        {
+            _vehicleNames[car.Handle] = car.Name;
+        }
+
+        UpdateLivePeds(snap.Peds);
+        UpdateSelectionHighlight();
 
         if (_closeCamera is not null)
         {
@@ -819,7 +1029,51 @@ public partial class Main : Node3D
 
         GD.Print(
             $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
-            $"cars={vehicles.Count} peds={peds.Count}");
+            $"cars={vehicles.Count} peds={snap.Peds.Count}");
+
+        _liveCityFrame++;
+
+        if (_liveCityFrame >= QuitAfterFrames && _shotPath is null)
+        {
+            GD.Print($"Main: reached {QuitAfterFrames} frames, quitting.");
+            DisposeSources();
+            GetTree().Quit();
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the per-frame `--live-city --replay` body:
+    // advance the PlaybackClock by wall delta (a no-op while paused), pump the file source (SeekTo(Now)
+    // internally), reconstruct cars through the SAME Reconstructor/UpdateCars the live path uses (over the
+    // file source + its wire-fed ReplicationLaneShapeSource -- design tenet 2), and rewrite the ped
+    // MultiMesh from PedFrameTrack.PedsAt(clock.Now). No LiveCitySource/Engine here at all -- replay never
+    // steps a sim, only reads the recording.
+    private void ProcessLiveCityReplay(double delta)
+    {
+        if (_clock is null || _replaySource is null || _pedTrack is null
+            || _reconstructor is null || _lanes is null)
+        {
+            return; // _Ready already reported the error.
+        }
+
+        _clock.Tick(delta);
+        _replaySource.Pump();
+
+        var vehicles = _reconstructor.Reconstruct(_replaySource, _lanes, PlayoutDelaySeconds);
+        UpdateCars(vehicles);
+
+        var peds = _pedTrack.PedsAt(_clock.Now);
+        UpdateReplayPeds(peds);
+        UpdateSelectionHighlight();
+        UpdatePlaybackUi();
+
+        if (_closeCamera is not null)
+        {
+            UpdateCloseCameraFraming(_closeCamera, vehicles);
+        }
+
+        GD.Print(
+            $"Main: replay frame={_liveCityFrame} t={_clock.Now:F2}/{_clock.Duration:F2} " +
+            $"playing={_clock.Playing} speed={_clock.Speed:F1} cars={vehicles.Count} peds={peds.Count}");
 
         _liveCityFrame++;
 
@@ -911,6 +1165,8 @@ public partial class Main : Node3D
         _pedSim = null;
         _liveCitySource?.Dispose();
         _liveCitySource = null;
+        _replaySource?.Dispose();
+        _replaySource = null;
 #if CITY3D_REMOTE
         _ddsPedSource?.Dispose();
         _ddsPedSource = null;
@@ -919,6 +1175,346 @@ public partial class Main : Node3D
         _ddsParticipant?.Dispose();
         _ddsParticipant = null;
 #endif
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- left-click picks the nearest car (screen-space,
+    // see CityLib.VehiclePicker's own remark on why there's no physics collider to ray-pick against); in
+    // replay mode (D3) Space/Left/Right additionally drive the playback clock, mirroring the on-screen
+    // buttons for a keyboard-only interaction. `_UnhandledInput` (not `_Input`) so a click that lands on a
+    // playback-UI Control (a Button/HSlider) is consumed by that Control first and never double-fires a
+    // vehicle pick underneath it.
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (!_liveCity)
+        {
+            return;
+        }
+
+        switch (@event)
+        {
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mouseButton:
+                TryPickVehicleAt(mouseButton.Position);
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when _replay && _clock is not null:
+                if (key.Keycode == Key.Space)
+                {
+                    TogglePlayPause();
+                    GetViewport().SetInputAsHandled();
+                }
+                else if (key.Keycode == Key.Left)
+                {
+                    _clock.StepFrame(-1);
+                    GetViewport().SetInputAsHandled();
+                }
+                else if (key.Keycode == Key.Right)
+                {
+                    _clock.StepFrame(1);
+                    GetViewport().SetInputAsHandled();
+                }
+
+                break;
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the click-pick itself: project every currently-
+    // rendered car's WORLD origin (`_carWorldPositions`, written by UpdateCars this same frame or the last
+    // one) to SCREEN space via the active Camera3D's own UnprojectPosition (design §5's literal
+    // suggestion: "camera ray -> nearest instance", done here as "nearest screen-projected instance" since
+    // there is no physics collider to actually ray-cast against), skip anything behind the camera
+    // (IsPositionBehind -- an UnprojectPosition of a behind-camera point is not a meaningful screen pixel),
+    // and hand the filtered list to CityLib.VehiclePicker.PickNearestScreen (the pure, unit-tested part of
+    // this path). A miss (nothing within PickPixelRadius) leaves the previous selection untouched --
+    // mirrors LiveCityOverlay.OnWorldClick's own "clicking empty road should not blank out an already-
+    // identified vehicle" rule.
+    private readonly List<(float X, float Y)> _pickScreenScratch = new();
+    private readonly List<int> _pickIndexScratch = new();
+
+    private void TryPickVehicleAt(Vector2 mousePos)
+    {
+        var camera = GetViewport().GetCamera3D();
+        if (camera is null || _carWorldPositions.Count == 0)
+        {
+            return;
+        }
+
+        _pickScreenScratch.Clear();
+        _pickIndexScratch.Clear();
+
+        for (var i = 0; i < _carWorldPositions.Count; i++)
+        {
+            var pos = _carWorldPositions[i];
+            if (camera.IsPositionBehind(pos))
+            {
+                continue;
+            }
+
+            var screen = camera.UnprojectPosition(pos);
+            _pickScreenScratch.Add((screen.X, screen.Y));
+            _pickIndexScratch.Add(i);
+        }
+
+        var localIdx = CityLib.VehiclePicker.PickNearestScreen(
+            _pickScreenScratch, mousePos.X, mousePos.Y, PickPixelRadius);
+        if (localIdx < 0)
+        {
+            return;
+        }
+
+        var carIdx = _pickIndexScratch[localIdx];
+        var handle = _carHandles[carIdx];
+        _selectedHandle = handle;
+        GD.Print($"Main: picked vehicle {NameFor(handle)} at screen ({mousePos.X:F0},{mousePos.Y:F0}).");
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5 -- "A viewer-side Dictionary<VehicleHandle,string> Names ...
+    // resolves handle -> human-readable id ... in every mode/transport". `_vehicleNames` is populated every
+    // live-mode frame from LiveCitySource.Sample().Cars (real SUMO ids); it stays empty in replay (the
+    // wire's LifecycleRecord carries no name yet -- Stage E, out of scope here), so this falls back to
+    // VehicleHandle.ToString()'s own "Vehicle#{Index}.{Generation}" -- exactly the task's stated
+    // acceptable-for-now replay label.
+    private string NameFor(VehicleHandle handle)
+        => _vehicleNames.TryGetValue(handle, out var name) ? name : handle.ToString();
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- builds the selection ring (a small emissive
+    // torus, hidden until a pick happens) + the identity label (a screen-space Godot Label in its own
+    // CanvasLayer, so it always faces the viewer and stays legible regardless of camera distance/angle --
+    // same "label drawn in screen space" choice LiveCityOverlay.DrawWorldOver makes). Called once from both
+    // ReadyLiveCityLive and ReadyLiveCityReplay -- works in BOTH modes (task D4's explicit requirement).
+    private void BuildSelectionUi()
+    {
+        var ringMaterial = new StandardMaterial3D
+        {
+            AlbedoColor = SelectionColor,
+            EmissionEnabled = true,
+            Emission = SelectionColor,
+            EmissionEnergyMultiplier = 2.5f,
+        };
+        _selectionRing = new MeshInstance3D
+        {
+            Mesh = new TorusMesh { InnerRadius = 1.5f, OuterRadius = 2.0f, Rings = 16, RingSegments = 8 },
+            Name = "SelectionRing",
+            Visible = false,
+        };
+        _selectionRing.SetSurfaceOverrideMaterial(0, ringMaterial);
+        AddChild(_selectionRing);
+
+        _selectionLabelLayer = new CanvasLayer { Name = "SelectionLabelLayer" };
+        AddChild(_selectionLabelLayer);
+
+        _selectionLabelNode = new Label { Text = string.Empty, Visible = false };
+        _selectionLabelNode.AddThemeColorOverride("font_color", new Color(1f, 1f, 1f));
+        _selectionLabelNode.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f));
+        _selectionLabelNode.AddThemeConstantOverride("outline_size", 4);
+        _selectionLabelNode.AddThemeFontSizeOverride("font_size", 18);
+        _selectionLabelLayer.AddChild(_selectionLabelNode);
+    }
+
+    // Called every live-city render frame (both live and replay). Repositions the ring above the selected
+    // vehicle's CURRENT world position (re-resolved by VehicleHandle via `_carHandles`/`_carWorldPositions`
+    // every frame, per UpdateCars' own remark on why instance index is never cached across frames) and the
+    // label at its screen projection; hides both while nothing is selected or the selected vehicle isn't
+    // present in this exact frame's render set (e.g. transiently out of the crop/reconstruction window).
+    private void UpdateSelectionHighlight()
+    {
+        if (_selectionRing is null || _selectionLabelNode is null)
+        {
+            return;
+        }
+
+        if (_selectedHandle is not { } handle)
+        {
+            _selectionRing.Visible = false;
+            _selectionLabelNode.Visible = false;
+            return;
+        }
+
+        var idx = _carHandles.IndexOf(handle);
+        if (idx < 0)
+        {
+            _selectionRing.Visible = false;
+            _selectionLabelNode.Visible = false;
+            return;
+        }
+
+        var pos = _carWorldPositions[idx];
+        _selectionRing.Visible = true;
+        _selectionRing.Position = pos + new Vector3(0f, CarHeightMeters + 0.8f, 0f);
+
+        var camera = GetViewport().GetCamera3D();
+        if (camera is not null && !camera.IsPositionBehind(pos))
+        {
+            var screen = camera.UnprojectPosition(pos);
+            _selectionLabelNode.Text = NameFor(handle);
+            _selectionLabelNode.Position = new Vector2(screen.X + 14f, screen.Y - 28f);
+            _selectionLabelNode.Visible = true;
+        }
+        else
+        {
+            _selectionLabelNode.Visible = false;
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §4, -TASKS.md D3 -- the Godot playback UI: a CanvasLayer/Control
+    // panel built in code (Play/Pause, Restart, frame-step x2, a 0.5x/1x/2x speed row, a "t = .../..." time
+    // label, and an HSlider timeline bound to clock.Now over [0, clock.Duration]). Built ONLY from
+    // ReadyLiveCityReplay -- this UI shows ONLY in replay mode, per the task spec.
+    private void BuildPlaybackUi()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        var canvas = new CanvasLayer { Name = "PlaybackUi" };
+        AddChild(canvas);
+        _playbackUi = canvas;
+
+        var panel = new PanelContainer { Name = "PlaybackPanel" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+        panel.OffsetTop = -76f;
+        panel.OffsetBottom = -12f;
+        panel.OffsetLeft = 16f;
+        panel.OffsetRight = -16f;
+        canvas.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        var row = new HBoxContainer();
+        vbox.AddChild(row);
+
+        _playPauseButton = new Button { Text = "Pause" };
+        _playPauseButton.Pressed += TogglePlayPause;
+        row.AddChild(_playPauseButton);
+
+        var restartButton = new Button { Text = "Restart" };
+        restartButton.Pressed += () => _clock?.Restart();
+        row.AddChild(restartButton);
+
+        var stepBack = new Button { Text = "<< Frame" };
+        stepBack.Pressed += () => _clock?.StepFrame(-1);
+        row.AddChild(stepBack);
+
+        var stepFwd = new Button { Text = "Frame >>" };
+        stepFwd.Pressed += () => _clock?.StepFrame(1);
+        row.AddChild(stepFwd);
+
+        foreach (var speed in new[] { 0.5, 1.0, 2.0 })
+        {
+            var speedButton = new Button { Text = $"{speed:0.0}x" };
+            speedButton.Pressed += () =>
+            {
+                if (_clock is not null)
+                {
+                    _clock.Speed = speed;
+                }
+            };
+            row.AddChild(speedButton);
+        }
+
+        _timeLabel = new Label { Text = "t = 0.0s / 0.0s" };
+        row.AddChild(_timeLabel);
+
+        _timelineSlider = new HSlider
+        {
+            MinValue = 0.0,
+            MaxValue = Math.Max(_clock.Duration, 0.01),
+            Step = 0.01,
+            CustomMinimumSize = new Vector2(0f, 24f),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _timelineSlider.DragStarted += OnTimelineDragStarted;
+        _timelineSlider.DragEnded += OnTimelineDragEnded;
+        _timelineSlider.ValueChanged += OnTimelineValueChanged;
+        vbox.AddChild(_timelineSlider);
+
+        GD.Print("Main: --replay playback UI built (Play/Pause, Restart, frame-step, speed, timeline slider).");
+    }
+
+    private void TogglePlayPause()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        if (_clock.Playing)
+        {
+            _clock.Pause();
+        }
+        else
+        {
+            _clock.Play();
+        }
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §4 -- "dragging it calls clock.SeekTo (pause while dragging, restore
+    // on release)". DragStarted latches whether the clock was playing so DragEnded can restore it exactly.
+    private void OnTimelineDragStarted()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        _sliderDragging = true;
+        _wasPlayingBeforeDrag = _clock.Playing;
+        _clock.Pause();
+    }
+
+    // Live-scrub: while dragging, every slider value change seeks the clock immediately so the rendered
+    // scene tracks the thumb instead of only updating on release.
+    private void OnTimelineValueChanged(double value)
+    {
+        if (_sliderDragging)
+        {
+            _clock?.SeekTo(value);
+        }
+    }
+
+    private void OnTimelineDragEnded(bool valueChanged)
+    {
+        if (_clock is null || _timelineSlider is null)
+        {
+            return;
+        }
+
+        _sliderDragging = false;
+        _clock.SeekTo(_timelineSlider.Value);
+        if (_wasPlayingBeforeDrag)
+        {
+            _clock.Play();
+        }
+    }
+
+    // Called every ProcessLiveCityReplay frame: refreshes the "t = .../..." label, the Play/Pause button's
+    // own text, and the slider thumb position from clock.Now -- via SetValueNoSignal so this write never
+    // re-fires ValueChanged (which would otherwise feed back into OnTimelineValueChanged's own SeekTo and
+    // fight the clock every frame). Skipped entirely while the user is actively dragging the thumb, so the
+    // thumb only ever reflects either the clock (not dragging) or the user's own drag (dragging), never both.
+    private void UpdatePlaybackUi()
+    {
+        if (_clock is null)
+        {
+            return;
+        }
+
+        if (_timeLabel is not null)
+        {
+            _timeLabel.Text = $"t = {_clock.Now:F1}s / {_clock.Duration:F1}s";
+        }
+
+        if (_playPauseButton is not null)
+        {
+            _playPauseButton.Text = _clock.Playing ? "Pause" : "Play";
+        }
+
+        if (_timelineSlider is not null && !_sliderDragging)
+        {
+            _timelineSlider.SetValueNoSignal(_clock.Now);
+        }
     }
 
     // Resolve the repo root by searching upward from this project's own directory for Traffic.sln --
@@ -1209,6 +1805,15 @@ public partial class Main : Node3D
 
         _carMultiMesh.VisibleInstanceCount = vehicles.Count;
 
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- rebuilt every frame, in lockstep with the
+        // MultiMesh instance indices above, so index i here means "car MultiMesh instance i" for exactly
+        // this frame (a car's instance index is NOT stable across frames -- Reconstructor.Reconstruct
+        // iterates `source.History`, a dictionary, so insertion/removal can reshuffle order -- the pick
+        // path and the selection highlight both re-resolve by VehicleHandle every frame, never by a cached
+        // index, which is exactly why this list is thrown away and rebuilt rather than diffed).
+        _carHandles.Clear();
+        _carWorldPositions.Clear();
+
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];
@@ -1221,13 +1826,22 @@ public partial class Main : Node3D
 
             var paletteIndex = (int)(v.Handle.Index % (uint)CarPalette.Length);
             _carMultiMesh.SetInstanceColor(i, CarPalette[paletteIndex]);
+
+            _carHandles.Add(v.Handle);
+            _carWorldPositions.Add(origin);
         }
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians (P7-3)" -- ONE ped MultiMeshInstance3D, the ped analog of
-    // BuildCarMultiMesh: built once as an EMPTY MultiMesh (no peds at load), a unit BoxMesh scaled per
-    // instance by CityLib.PedTransform into a slim upright avatar; UpdatePeds (below) writes the live
-    // transforms + regime colours each frame.
+    // BuildCarMultiMesh: built once as an EMPTY MultiMesh (no peds at load), a unit mesh scaled per instance
+    // by CityLib.PedTransform (plaza path) / UpdateLivePeds/UpdateReplayPeds (live-city path) into a slim
+    // upright avatar; the per-frame Update* methods write the live transforms + regime colours.
+    //
+    // Visibility polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D): a unit CYLINDER, not a unit BOX -- a
+    // round cross-section reads as an upright figure rather than a slab, and (unlike a box) looks the same
+    // from every yaw, which matters here since peds are drawn axis-aligned (no per-instance yaw, see
+    // UpdatePeds/UpdateLivePeds/UpdateReplayPeds's own remarks on why heading is skipped). A LOW segment
+    // count keeps the per-instance triangle cost negligible at the crowd sizes this demo renders (<=160).
     private MultiMesh BuildPedMultiMesh()
     {
         var material = new StandardMaterial3D
@@ -1240,7 +1854,8 @@ public partial class Main : Node3D
         {
             TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
             UseColors = true,
-            Mesh = new BoxMesh { Size = Vector3.One }, // unit box; per-instance transform scales it to the slim avatar dims
+            // unit cylinder (radius 0.5, height 1); per-instance transform scales it to the avatar dims
+            Mesh = new CylinderMesh { TopRadius = 0.5f, BottomRadius = 0.5f, Height = 1f, RadialSegments = 10 },
             InstanceCount = 0,
         };
 
@@ -1332,6 +1947,48 @@ public partial class Main : Node3D
         }
     }
 
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.1, -TASKS.md D3 -- the REPLAY analog of UpdateLivePeds: consumes
+    // PedFrameTrack.PedsAt's plain neutral tuple (int Id, float X, float Y, float Z, byte Regime, string
+    // AnimTag) -- deliberately Sim.LiveCity-free on the record/replay side (PedFrameTrack.cs's own doc
+    // comment) -- rather than Sim.LiveCity.LiveCityPed. The `Regime` byte maps directly onto
+    // Sim.LiveCity.PedRegime's own numeric values (LowPowerWalking=0, HighPower=1, Paused=2, guaranteed by
+    // PedFrameTrack's doc comment), so a straight cast reproduces UpdateLivePeds' grey/orange/yellow
+    // mapping without re-deriving it. Same build-once/grow-only/VisibleInstanceCount discipline.
+    private void UpdateReplayPeds(
+        IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)> peds)
+    {
+        if (_pedMultiMesh is null)
+        {
+            return;
+        }
+
+        if (peds.Count > _pedMultiMesh.InstanceCount)
+        {
+            _pedMultiMesh.InstanceCount = peds.Count;
+        }
+
+        _pedMultiMesh.VisibleInstanceCount = peds.Count;
+
+        for (var i = 0; i < peds.Count; i++)
+        {
+            var p = peds[i];
+            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(p.X, p.Y, p.Z);
+
+            var scale = new Vector3(PedRenderWidthMeters, PedRenderHeightMeters, PedRenderWidthMeters);
+            var basis = Basis.Identity.Scaled(scale);
+            var origin = new Vector3(gx, gy + PedRenderHeightMeters / 2f, gz);
+            _pedMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
+
+            var color = (Sim.LiveCity.PedRegime)p.Regime switch
+            {
+                Sim.LiveCity.PedRegime.HighPower => LiveCityPedHighPowerColor,
+                Sim.LiveCity.PedRegime.Paused => LiveCityPedPausedColor,
+                _ => LiveCityPedLowPowerColor,
+            };
+            _pedMultiMesh.SetInstanceColor(i, color);
+        }
+    }
+
     // Merges two Godot-space bounding boxes (component-wise min/max). An all-(+inf,+inf,+inf)/
     // (-inf,-inf,-inf) box (BuildBuildings' "no buildings" case) is the neutral element -- combining with
     // it leaves the other box untouched.
@@ -1349,7 +2006,17 @@ public partial class Main : Node3D
     // non-Current (in favour of the separate close-up camera built in _Ready) rather than forking the
     // environment/light setup, so run-smoke.sh's default (`--camera=overview`, `makeCurrent: true`) is
     // byte-identical to the pre-T1.6 behavior.
-    private void BuildCameraAndLight((Vector3 Min, Vector3 Max) bbox, bool makeCurrent)
+    //
+    // `heightFactor`/`backFactor` default to the original whole-network values (CameraHeightFactor/
+    // CameraBackFactor) so every pre-existing caller (--scenario, --peds) is BYTE-IDENTICAL. Visibility
+    // polish (docs/LIVE-CITY-VIEWERS-TASKS.md Stage D): the live-city callers pass a LOWER, more oblique
+    // pair (see LiveCityCameraHeightFactor/BackFactor below) -- the original near-vertical satellite angle
+    // reads true-scale cars/peds as a scatter of a few pixels each regardless of how tight the frame box is
+    // (a top-down view of a person is a dot no matter the zoom); a lower angle shows their actual silhouette
+    // height instead.
+    private void BuildCameraAndLight(
+        (Vector3 Min, Vector3 Max) bbox, bool makeCurrent,
+        float heightFactor = CameraHeightFactor, float backFactor = CameraBackFactor)
     {
         // A soft sky-coloured background + a little ambient fill light (docs/DEMO-CITY3D-DESIGN.md's
         // "Roads" only specifies the asphalt material; a bare gl_compatibility clear colour with pure
@@ -1374,7 +2041,7 @@ public partial class Main : Node3D
         var camera = new Camera3D { Name = "FramingCamera" };
         AddChild(camera);
 
-        var camPos = center + new Vector3(0f, extent * CameraHeightFactor, extent * CameraBackFactor);
+        var camPos = center + new Vector3(0f, extent * heightFactor, extent * backFactor);
         camera.Position = camPos;
         camera.LookAt(center, Vector3.Up);
         camera.Current = makeCurrent;
@@ -1655,6 +2322,34 @@ public partial class Main : Node3D
         }
 
         return false;
+    }
+
+    // docs/LIVE-CITY-VIEWERS-TASKS.md D3 -- `--live-city --replay <file.simrec>` (a TWO-TOKEN arg, per the
+    // task spec, unlike --shot=/--scenario=/--camera='s `=`-joined form) selects the file-backed replay
+    // path instead of a live LiveCitySource. `--replay=<file>` (the `=`-joined form, for consistency with
+    // this file's other args/shell habits that quote a single token) is also accepted. Returns null when
+    // absent -- ReadyLiveCity's `_replay = replayPath is not null` is the single source of truth for which
+    // branch runs.
+    private static string? ParseReplayArg()
+    {
+        const string eqPrefix = "--replay=";
+        var args = OS.GetCmdlineUserArgs();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
+            {
+                var v = arg[eqPrefix.Length..].Trim();
+                return v.Length > 0 ? v : null;
+            }
+
+            if (arg == "--replay" && i + 1 < args.Length)
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
     }
 
     // `--transport=<local|dds>` USER cmdline arg (task T2.2b): default "local" (today's in-process
