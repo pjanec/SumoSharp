@@ -131,6 +131,42 @@ public sealed class OrbitCameraController
         Distance = Clamp(Distance * factor, MinDistance, MaxDistance);
     }
 
+    // Unity-Scene-view FLY: translate the whole rig (focus + camera together, so the orbit pose is
+    // unchanged) forward along the view direction. Positive `meters` flies toward where the camera looks.
+    // Used by the scroll wheel ("fly closer/farther", speed ∝ distance) — unlike Zoom (which shrinks the
+    // distance to a FIXED focus and asymptotes at it), this actually moves through space.
+    public void DollyForward(float meters)
+    {
+        var (_, _, fwd) = Axes();
+        FocusX += fwd.X * meters;
+        FocusY += fwd.Y * meters;
+        FocusZ += fwd.Z * meters;
+    }
+
+    // Unity-Scene-view WASD/QE FLY: translate the whole rig in the camera's own right / forward axes plus
+    // WORLD up (Q/E), so W flies where you look (incl. pitch), A/D strafe, E/Q rise/fall vertically.
+    public void FlyLocal(float dRight, float dForward, float dWorldUp)
+    {
+        var (right, _, fwd) = Axes();
+        FocusX += (right.X * dRight) + (fwd.X * dForward);
+        FocusY += (right.Y * dRight) + (fwd.Y * dForward) + dWorldUp;
+        FocusZ += (right.Z * dRight) + (fwd.Z * dForward);
+    }
+
+    // Unity-Scene-view RMB LOOK-AROUND: rotate yaw/pitch while keeping the CAMERA position fixed (FPS-style
+    // look in place), i.e. swing the focus around the camera. Contrast Orbit(), which keeps the focus fixed
+    // and swings the camera. Pitch clamped like Orbit so it can't flip.
+    public void LookInPlace(float deltaYawRad, float deltaPitchRad)
+    {
+        var cam = CameraPosition();
+        YawRad = WrapAngle(YawRad + deltaYawRad);
+        PitchRad = Clamp(PitchRad + deltaPitchRad, -MaxPitchRad, MaxPitchRad);
+        var (_, _, fwd) = Axes();
+        FocusX = cam.X + (fwd.X * Distance);
+        FocusY = cam.Y + (fwd.Y * Distance);
+        FocusZ = cam.Z + (fwd.Z * Distance);
+    }
+
     // The reset key's target: back to exactly the pose this controller was constructed with.
     public void Reset()
     {
@@ -143,6 +179,16 @@ public sealed class OrbitCameraController
     }
 
     public (float X, float Y, float Z) Focus => (FocusX, FocusY, FocusZ);
+
+    // The camera's own UP axis for the current yaw/pitch -- always perpendicular to Forward (never
+    // parallel), so a Godot LookAt fed THIS up never degenerates at a near-top-down pitch (feeding it the
+    // world +Y up does: near straight-down, Forward is nearly parallel to +Y, LookAt's basis goes singular
+    // and the camera freezes/flips -- the "unusable looking down" bug). Use this, not Vector3.Up, in LookAt.
+    public (float X, float Y, float Z) UpVector()
+    {
+        var (_, up, _) = Axes();
+        return up;
+    }
 
     // The camera's world position for the CURRENT yaw/pitch/distance/focus -- Main.cs assigns this to the
     // Camera3D node's Position every frame, then LookAt(Focus, up).

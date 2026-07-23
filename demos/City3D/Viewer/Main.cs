@@ -266,6 +266,10 @@ public partial class Main : Node3D
     private const float PanMetersPerPixelPerDistance = 0.0016f;
     private const float ZoomStepFactor = 0.9f; // one wheel notch: *0.9 to zoom in, /0.9 to zoom out
     private const float ClickDragThresholdPixels = 5f;
+    // Unity-Scene-view camera scheme (RMB look+WASD/QE fly, MMB pan, Alt+LMB orbit, scroll dolly, F frame).
+    private const float DollyStepFraction = 0.12f;          // scroll notch = ±12% of current distance, flown forward
+    private const float FlyDistanceFractionPerSecond = 1.0f; // WASD/QE fly speed = 100% of distance per second
+    private const float FlyShiftMultiplier = 4f;             // Shift = 4× faster fly (Unity's "sprint")
 
     // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
     // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
@@ -330,6 +334,7 @@ public partial class Main : Node3D
     private Vector2? _leftButtonDownPos;
     private bool _leftButtonDown;
     private bool _middleButtonDown;
+    private bool _rightButtonDown; // Unity RMB flythrough: held = FPS look + WASD/QE fly
 
     // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- `--transport=local|dds`.
     // "local" (default) preserves today's behavior byte-for-byte. "dds" only works in a build compiled
@@ -1234,6 +1239,7 @@ public partial class Main : Node3D
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
+        BuildRateControlUi(); // for the live playout-delay slider (sim-hz label is display-only / N/A on remote)
 
         // Fix 6 (Windows GPU testing session) -- the remote path never called this before, so it had no
         // rate panel / playout-delay slider at all. Mirrors ReadyLiveCityLive/ReadyLiveCityReplay's own
@@ -1362,6 +1368,8 @@ public partial class Main : Node3D
 
     public override void _Process(double delta)
     {
+        PollCameraFlyKeys(delta); // Unity RMB+WASD/QE flythrough (mutates the orbit rig; applied this frame below)
+
         if (_liveCity)
         {
             ProcessLiveCity(delta);
@@ -1929,31 +1937,46 @@ public partial class Main : Node3D
                 GetViewport().SetInputAsHandled();
                 break;
 
+            case InputEventMouseButton { ButtonIndex: MouseButton.Right } rightButton:
+                // Unity flythrough: RMB held = FPS look (mouse) + WASD/QE fly (polled per-frame in _Process).
+                _rightButtonDown = rightButton.Pressed;
+                GetViewport().SetInputAsHandled();
+                break;
+
             case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelUp }:
-                _orbitController?.Zoom(ZoomStepFactor);
+                _orbitController?.DollyForward(_orbitController.Distance * DollyStepFraction); // fly IN
+                ApplyOrbitCamera();
                 GetViewport().SetInputAsHandled();
                 break;
 
             case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelDown }:
-                _orbitController?.Zoom(1f / ZoomStepFactor);
+                _orbitController?.DollyForward(-_orbitController.Distance * DollyStepFraction); // fly OUT
+                ApplyOrbitCamera();
                 GetViewport().SetInputAsHandled();
                 break;
 
             case InputEventMouseMotion motion:
                 if (_orbitController is not null)
                 {
-                    if (_middleButtonDown || (_leftButtonDown && motion.ShiftPressed))
+                    if (_rightButtonDown)
                     {
-                        // Pan: world-space delta scaled by the CURRENT distance so the pan speed feels
-                        // consistent whether zoomed in close or far out (a fixed pixel->metre scale would
-                        // crawl when zoomed out and overshoot wildly when zoomed in).
+                        // Unity RMB look-around: FPS-style rotate-in-place (camera stays, view swings).
+                        _orbitController.LookInPlace(-motion.Relative.X * OrbitYawRadPerPixel, motion.Relative.Y * OrbitPitchRadPerPixel);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                    else if (_middleButtonDown)
+                    {
+                        // Unity MMB pan: world-space delta scaled by CURRENT distance so pan speed feels
+                        // consistent whether zoomed in or out.
                         var scale = PanMetersPerPixelPerDistance * _orbitController.Distance;
                         _orbitController.Pan(-motion.Relative.X * scale, motion.Relative.Y * scale);
                         ApplyOrbitCamera();
                         GetViewport().SetInputAsHandled();
                     }
-                    else if (_leftButtonDown)
+                    else if (_leftButtonDown && motion.AltPressed)
                     {
+                        // Unity Alt+LMB orbit: swing the camera around the focus.
                         _orbitController.Orbit(-motion.Relative.X * OrbitYawRadPerPixel, motion.Relative.Y * OrbitPitchRadPerPixel);
                         ApplyOrbitCamera();
                         GetViewport().SetInputAsHandled();
@@ -1962,7 +1985,8 @@ public partial class Main : Node3D
 
                 break;
 
-            case InputEventKey { Pressed: true } key when key.Keycode == Key.Home:
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.Home || key.Keycode == Key.F:
+                // Unity F = frame/recenter (here: back to the initial framed pose).
                 _orbitController?.Reset();
                 ApplyOrbitCamera();
                 GetViewport().SetInputAsHandled();
@@ -3814,11 +3838,48 @@ public partial class Main : Node3D
         var pos = _orbitController.CameraPosition();
         _orbitCamera.Position = new Vector3(pos.X, pos.Y, pos.Z);
         var focus = _orbitController.Focus;
-        _orbitCamera.LookAt(new Vector3(focus.X, focus.Y, focus.Z), Vector3.Up);
+        // Use the controller's OWN up axis (always perpendicular to forward), NOT Vector3.Up: near a
+        // top-down pitch, forward ~parallel to world +Y makes LookAt(., Vector3.Up) degenerate -> the camera
+        // froze/flipped and zoom/pan appeared dead (the "unusable looking down" bug).
+        var up = _orbitController.UpVector();
+        _orbitCamera.LookAt(new Vector3(focus.X, focus.Y, focus.Z), new Vector3(up.X, up.Y, up.Z));
 
         // Bug fix: track the far plane to the live orbit distance so dollying out never clips the scene
         // (see the `_orbitBaseFar`/`_orbitSceneExtent` fields' doc comment for the formula's reasoning).
         _orbitCamera.Far = Mathf.Max(_orbitBaseFar, (_orbitController.Distance * 2.5f) + _orbitSceneExtent);
+    }
+
+    // Unity RMB flythrough: while RMB is held, WASD flies in the camera's right/forward plane and Q/E move
+    // world down/up, Shift sprints. Speed ∝ current orbit distance so it feels consistent at any zoom.
+    // Polled per-frame (keys are HELD, not one-shot events); mutates the orbit rig, applied via
+    // ApplyOrbitCamera this frame (both here and by the per-frame body's own tail call).
+    private void PollCameraFlyKeys(double delta)
+    {
+        if (_orbitController is null || !_rightButtonDown)
+        {
+            return;
+        }
+
+        float right = 0f, forward = 0f, up = 0f;
+        if (Input.IsKeyPressed(Key.W)) { forward += 1f; }
+        if (Input.IsKeyPressed(Key.S)) { forward -= 1f; }
+        if (Input.IsKeyPressed(Key.D)) { right += 1f; }
+        if (Input.IsKeyPressed(Key.A)) { right -= 1f; }
+        if (Input.IsKeyPressed(Key.E)) { up += 1f; }
+        if (Input.IsKeyPressed(Key.Q)) { up -= 1f; }
+        if (right == 0f && forward == 0f && up == 0f)
+        {
+            return;
+        }
+
+        var speed = _orbitController.Distance * FlyDistanceFractionPerSecond * (float)delta;
+        if (Input.IsKeyPressed(Key.Shift))
+        {
+            speed *= FlyShiftMultiplier;
+        }
+
+        _orbitController.FlyLocal(right * speed, forward * speed, up * speed);
+        ApplyOrbitCamera();
     }
 
     // `--cam-yaw=<deg>`/`--cam-pitch=<deg>`/`--cam-dist=<m>` -- headless verification hooks (task
