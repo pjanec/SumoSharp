@@ -1978,6 +1978,40 @@ public sealed partial class Engine : IEngine
     private void MarkStrandReason(int idx) => System.Threading.Interlocked.Increment(ref _strandReasonHist[idx]);
     private int _strandDumpCount; // #15: caps the one-shot STRANDDUMP diagnostic lines (gated on WrongLaneRerouteAtApproach)
 
+    // #15 float/swap ANALYSIS (parity-neutral, gated off by default): PROVE whether the engine commits
+    // lateral lane swaps while the changer itself is stopped/slow (a stopped changer => pure-lateral
+    // swap = the unrealistic "float"), and by WHICH path. Histogram every committed change by
+    // [path][changer-speed bucket] AND record the nearest target-lane car's speed (was it into an
+    // occupied stretch?). Off on every golden (byte-identical). Paths: 0 overtake 1 speedGain 2 strategic
+    // 3 keepRight. Changer-speed buckets: 0 stopped(<0.5) 1 slow(<2) 2 moving. Flattened idx = path*3+spd.
+    public bool DiagLaneChangeLog { get; set; }
+    private readonly long[] _lcByPathChangerSpeed = new long[12];
+    private readonly long[] _lcTargetNearStopped = new long[4]; // per path: commits with a target car <20m going <0.5
+    private void RecordLaneChangeCommit(int path, VehicleRuntime v, VehicleRuntime? nLead, VehicleRuntime? nFollow)
+    {
+        if (!DiagLaneChangeLog) return;
+        var spd = v.Kinematics.Speed;
+        var sb = spd < 0.5 ? 0 : spd < 2.0 ? 1 : 2;
+        System.Threading.Interlocked.Increment(ref _lcByPathChangerSpeed[path * 3 + sb]);
+        var nearGap = double.PositiveInfinity; var nearSpd = -1.0;
+        if (nLead is not null)
+        {
+            var g = Math.Abs((nLead.Kinematics.Pos - nLead.VType.Length) - v.Kinematics.Pos);
+            if (g < nearGap) { nearGap = g; nearSpd = nLead.Kinematics.Speed; }
+        }
+        if (nFollow is not null)
+        {
+            var g = Math.Abs((v.Kinematics.Pos - v.VType.Length) - nFollow.Kinematics.Pos);
+            if (g < nearGap) { nearGap = g; nearSpd = nFollow.Kinematics.Speed; }
+        }
+        if (nearGap <= 20.0 && nearSpd >= 0.0 && nearSpd < 0.5)
+        {
+            System.Threading.Interlocked.Increment(ref _lcTargetNearStopped[path]);
+        }
+    }
+    public System.ReadOnlySpan<long> LaneChangeByPathChangerSpeed => _lcByPathChangerSpeed;
+    public System.ReadOnlySpan<long> LaneChangeTargetNearStopped => _lcTargetNearStopped;
+
     // #15 prong-1 diagnostic (parity-neutral, gated off by default): pinpoint the OPERATION that first
     // desyncs a vehicle's LaneSeqIndex from its physical edge (pool[LaneSeqIndex].edge != LaneHandle.edge).
     // Flip-detection (synced->desynced) attributes each creation to exactly ONE site tag. Off on every
@@ -5584,6 +5618,7 @@ public sealed partial class Engine : IEngine
             var neighFollow = neighbors.GetNeighborFollower(v, targetHandle);
             if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt))
             {
+                RecordLaneChangeCommit(0, v, neighLead, neighFollow); // #15 float analysis (EV give-way vacate)
                 CommitLaneChange(v, targetHandle, target.Id);
                 return true;
             }
@@ -10547,6 +10582,7 @@ public sealed partial class Engine : IEngine
                 var neighFollow = postMoveNeighbors.GetNeighborFollower(v, leftLane.Handle);
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt))
                 {
+                    RecordLaneChangeCommit(1, v, neighLead, neighFollow); // #15 float analysis (speed-gain left)
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
@@ -10795,6 +10831,7 @@ public sealed partial class Engine : IEngine
                 // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
                 // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
                 // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
+                RecordLaneChangeCommit(3, v, neighLead, neighFollowKr); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
                 v.LaneId = rightLane.Id;
                 // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
                 v.LaneHandle = rightLane.Handle;
@@ -11316,6 +11353,7 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
+        RecordLaneChangeCommit(2, v, neighLead, neighFollow); // #15 float analysis (strategic/urgent)
         CommitLaneChange(v, neighborLane.Handle, neighborLane.Id);
         // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
         v.SpeedGainProbability = 0.0;

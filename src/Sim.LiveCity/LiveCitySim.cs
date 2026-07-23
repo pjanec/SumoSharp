@@ -219,6 +219,7 @@ public sealed class LiveCitySim : IDisposable
         _engine.DeadLaneDriveThrough = cfg.DeadLaneDriveThrough;
         _engine.WrongLaneRerouteAtApproach = cfg.WrongLaneRerouteAtApproach;
         _engine.DiagSeqDesync = Environment.GetEnvironmentVariable("LIVECITY_SEQDESYNC") == "1"; // #15 prong-1
+        _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         _engine.CrowdSource = cfg.YieldEnabled
@@ -293,6 +294,12 @@ public sealed class LiveCitySim : IDisposable
     // lane end (indices per Engine.StrandReasonHistogram). Read as deltas across samples to see the live
     // mix of recovered-vs-stranded and, among strands, the dominant cause.
     public System.ReadOnlySpan<long> StrandReasonHistogram => _engine.StrandReasonHistogram;
+
+    // #15 float/swap analysis passthrough: committed lane changes by [path][changer-speed] (flattened
+    // path*3+spd; path 0 overtake 1 speedGain 2 strategic 3 keepRight; spd 0 stopped<0.5 1 slow<2 2 moving)
+    // and, per path, commits where a target-lane car <20m is stopped (swap into an occupied stretch).
+    public System.ReadOnlySpan<long> LaneChangeByPathChangerSpeed => _engine.LaneChangeByPathChangerSpeed;
+    public System.ReadOnlySpan<long> LaneChangeTargetNearStopped => _engine.LaneChangeTargetNearStopped;
 
     // DIAGNOSTIC (#15 SUMO cross-check): when non-null, every successful car spawn is appended here
     // (departTime, fromEdge, toEdge) so the exact procedural demand can be exported to a SUMO .rou.xml

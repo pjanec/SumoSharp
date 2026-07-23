@@ -1327,6 +1327,21 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                         if (srHist[r] > 0) Console.Write($" {srNames[r]}={srHist[r]}");
                     Console.WriteLine();
 
+                    // #15 float/swap ANALYSIS (LIVECITY_LCLOG=1): committed lane changes by path + the
+                    // CHANGER's own speed at commit. A commit while the changer is STOPPED = a pure-lateral
+                    // swap (the float); intoStoppedTarget = a swap next to a standing target-lane car.
+                    var lcBy = sim.LaneChangeByPathChangerSpeed;
+                    var lcNear = sim.LaneChangeTargetNearStopped;
+                    string[] pathNames = { "overtake", "speedGain", "strategic", "keepRight" };
+                    var lcAny = false; for (var li = 0; li < lcBy.Length; li++) if (lcBy[li] > 0) lcAny = true;
+                    if (lcAny)
+                    {
+                        Console.Write("LIVECITY-LCSWAP(cumulative):");
+                        for (var p = 0; p < 4; p++)
+                            Console.Write($" {pathNames[p]}[stop={lcBy[p * 3]},slow={lcBy[p * 3 + 1]},move={lcBy[p * 3 + 2]},intoStoppedTgt={lcNear[p]}]");
+                        Console.WriteLine();
+                    }
+
                     // COMPREHENSIVE (owner request): analyze EVERY car stuck with a CLEAR road (speed<0.3,
                     // own-lane gap>15 AND exit-mouth>15), whatever its TL. Break down by binding constraint;
                     // for the junction-yield foe arms, bucket the bound FOE's speed (moving cross traffic vs a
