@@ -17,9 +17,9 @@ Re-capture fresh per task (other sessions may edit the engine).
 - [x] **A1** project scaffold (`src/Sim.LiveCity`, packs `SumoSharp.LiveCity.0.1.0`, net8.0;netstandard2.1)
 - [x] **A2** `LiveCitySim`/`LiveCityConfig`/`LiveCitySnapshot` — coupled recipe, exact per-tick order, publishes cars+peds on the in-mem wire + direct `Sample()` read-back. Opus-verified first-hand: 3/3 tests green (PeakCars=163/PeakPeds=160/PeakOccupiedCrossings + CarYieldObservations ON=763 vs OFF=220; float-exact determinism; YIELD A/B), wire non-vacuous (History>0, crowd frame>0). **Zero existing files touched → parity gate unaffected by construction** (ParityTests 654/4 + hash `D96213B7BB4021A7` intact).
 
-## Stage B — Raylib 2D live-city (real-time)
-- [ ] **B1** `DemoKind.LiveCity` + `LiveCityOverlay` — cars + peds drawn in one frame; smoke cars>0 && peds>0
-- [ ] **B2** click-select vehicle + SUMO-id label; hit-test unit test
+## Stage B — Raylib 2D live-city (real-time)  ✅ (commit 3757508)
+- [x] **B1** `--mode live-city` + `LiveCityOverlay` (dedicated mode, NOT DemoKind — LiveCitySim owns its coupled engine + pre-step gate). Cars via the shared KinematicReconstructor path (`RenderHelpers.PumpAndBuildVehicleDraws` widened DdsSubscriber→IReplicationSource, backward-compatible), peds regime-colored discs. Opus-verified: headless smoke reconstructedCars=161/peds=160/peakOccupied=46; Xvfb screenshot shows both (HUD cars:148 peds:160); ParityTests 654/4 + hash intact.
+- [x] **B2** click-select vehicle + SUMO-id label; `PickNearest` pure helper, 5/5 unit tests (incl. tie-break fix). Opus-verified.
 
 ## Stage C — Shared record/replay + playback (Raylib)
 - [ ] **C1** `.simrec` format + `ReplicationRecorder` (cars + peds); round-trip test
