@@ -360,6 +360,16 @@ public partial class Main : Node3D
     private double _liveCityAccumulator;
     private int _liveCityFrame;
 
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent): peds used to be drawn straight from
+    // LiveCitySource.Sample().Peds (the raw per-sim-tick snapshot) every render frame -- a step function at
+    // the render frame rate, the same jump the Raylib viewer had. Fed one sim tick at a time in
+    // ProcessLiveCity's accumulator loop below, then queried each render frame at _reconstructor's own
+    // LastQueryTime (the SAME playout instant the cars just resolved against) so a ped on a crosswalk and
+    // the car yielding to it stay temporally aligned. Shared with the replay path is NOT needed -- replay
+    // interpolates via PedFrameTrack.PedsAtInterpolated instead (its own frame-track history), so this
+    // field is only constructed/used by the LOCAL live path (ReadyLiveCityLive/ProcessLiveCity).
+    private Sim.LiveCity.PedInterpolator? _pedInterpolator;
+
     // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): the two INDEPENDENT tick-rate knobs, resolved once
     // at the top of _Ready (ValidateSimHz/ValidateRenderHz, mirroring src/Sim.Viewer/Program.cs's own
     // helpers) so every downstream path (local live, remote, replay) sees the same values. `_simHz` is
@@ -760,6 +770,7 @@ public partial class Main : Node3D
             liveCfg.SimHz = _simHz;
             _liveCityDt = liveCfg.Dt;
             _liveCitySource = new LiveCitySource(liveCfg);
+            _pedInterpolator = new Sim.LiveCity.PedInterpolator();
         }
         catch (Exception ex)
         {
@@ -1352,7 +1363,7 @@ public partial class Main : Node3D
         }
 #endif
 
-        if (_liveCitySource is null || _reconstructor is null || _lanes is null)
+        if (_liveCitySource is null || _reconstructor is null || _lanes is null || _pedInterpolator is null)
         {
             return; // _Ready already reported the error.
         }
@@ -1366,23 +1377,33 @@ public partial class Main : Node3D
         {
             _liveCitySource.Tick();
             _liveCityAccumulator -= _liveCityDt;
+
+            // Ped-smoothing fix: feed the interpolator one sim tick at a time (its own Sample() this tick),
+            // NOT once per render frame -- a stalled/late render frame that lets this loop run more than
+            // once must not silently drop an intermediate tick's ped positions from the history.
+            _pedInterpolator.Push(_liveCitySource.Time, ToPedInterpFrames(_liveCitySource.Peds));
         }
 
+        // Reconstruct cars FIRST -- it pumps _reconstructor's own DrClock and sets LastQueryTime, which the
+        // ped query just below reads to stay in lockstep with whatever instant the cars just resolved
+        // against (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent fix's explicit requirement).
         var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, PlayoutDelaySeconds);
         UpdateCars(vehicles);
 
-        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- ONE Sample() this frame gives both the
-        // peds AND the live Handle->Name table (LiveCityCar.Name is the real SUMO id, straight off
-        // Engine.VehicleIds -- design §3.1's "local/live viewers can also read the name directly from
-        // LiveCitySim ... without the wire"). Entries are never removed, so a car that despawns between
-        // this frame and a later click still resolves to its last-known name rather than the raw handle.
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table (LiveCityCar.
+        // Name is the real SUMO id, straight off Engine.VehicleIds -- design §3.1's "local/live viewers can
+        // also read the name directly from LiveCitySim ... without the wire"). Entries are never removed,
+        // so a car that despawns between this frame and a later click still resolves to its last-known name
+        // rather than the raw handle. Peds no longer come from this same Sample() call (that was the raw,
+        // stepped snapshot) -- they come from the interpolator, queried at _reconstructor.LastQueryTime.
         var snap = _liveCitySource.Sample();
         foreach (var car in snap.Cars)
         {
             _vehicleNames[car.Handle] = car.Name;
         }
 
-        UpdateLivePeds(snap.Peds);
+        var interpPeds = ToLiveCityPeds(_pedInterpolator.Sample(_reconstructor.LastQueryTime));
+        UpdateLivePeds(interpPeds);
         UpdateSelectionHighlight();
 
         // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- mirrors RenderFrame's own
@@ -1403,7 +1424,7 @@ public partial class Main : Node3D
 
         GD.Print(
             $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
-            $"cars={vehicles.Count} peds={snap.Peds.Count}");
+            $"cars={vehicles.Count} peds={interpPeds.Count}");
 
         _liveCityFrame++;
 
@@ -1510,7 +1531,7 @@ public partial class Main : Node3D
     // advance the PlaybackClock by wall delta (a no-op while paused), pump the file source (SeekTo(Now)
     // internally), reconstruct cars through the SAME Reconstructor/UpdateCars the live path uses (over the
     // file source + its wire-fed ReplicationLaneShapeSource -- design tenet 2), and rewrite the ped
-    // MultiMesh from PedFrameTrack.PedsAt(clock.Now). No LiveCitySource/Engine here at all -- replay never
+    // MultiMesh from PedFrameTrack.PedsAtInterpolated. No LiveCitySource/Engine here at all -- replay never
     // steps a sim, only reads the recording.
     private void ProcessLiveCityReplay(double delta)
     {
@@ -1523,10 +1544,15 @@ public partial class Main : Node3D
         _clock.Tick(delta);
         _replaySource.Pump();
 
+        // Reconstruct cars first -- it pumps _reconstructor's DrClock and sets LastQueryTime, the SAME
+        // instant the ped query below reads (ped-smoothing fix: PedsAtInterpolated replaces the old
+        // nearest-frame PedsAt, which stepped exactly like the live path used to). LastQueryTime tracks
+        // _clock.Now closely (delaySeconds=0.4 here is the SAME PlayoutDelaySeconds both car and ped
+        // queries are implicitly behind), so the two stay in lockstep by construction.
         var vehicles = _reconstructor.Reconstruct(_replaySource, _lanes, PlayoutDelaySeconds);
         UpdateCars(vehicles);
 
-        var peds = _pedTrack.PedsAt(_clock.Now);
+        var peds = _pedTrack.PedsAtInterpolated(_reconstructor.LastQueryTime);
         UpdateReplayPeds(peds);
         UpdateSelectionHighlight();
         UpdatePlaybackUi();
@@ -2847,6 +2873,34 @@ public partial class Main : Node3D
         }
     }
 
+    // Ped-smoothing fix: LiveCityPed -> Sim.LiveCity.PedInterpolator's PedInterpFrame (drops Z -- the ped
+    // net is flat, PedInterpolator interpolates X/Y only).
+    private static IReadOnlyList<Sim.LiveCity.PedInterpFrame> ToPedInterpFrames(IReadOnlyList<LiveCityPed> peds)
+    {
+        var arr = new Sim.LiveCity.PedInterpFrame[peds.Count];
+        for (var i = 0; i < peds.Count; i++)
+        {
+            var p = peds[i];
+            arr[i] = new Sim.LiveCity.PedInterpFrame(p.Id, p.X, p.Y, p.Regime, p.AnimTag);
+        }
+
+        return arr;
+    }
+
+    // The inverse of ToPedInterpFrames -- PedInterpolator.Sample's output back into the LiveCityPed shape
+    // UpdateLivePeds expects. Z is always 0 (the ped net is flat, matching LiveCitySim.Sample's own peds).
+    private static IReadOnlyList<LiveCityPed> ToLiveCityPeds(IReadOnlyList<Sim.LiveCity.PedInterpFrame> peds)
+    {
+        var arr = new LiveCityPed[peds.Count];
+        for (var i = 0; i < peds.Count; i++)
+        {
+            var p = peds[i];
+            arr[i] = new LiveCityPed(p.Id, p.X, p.Y, 0.0, p.Regime, p.AnimTag);
+        }
+
+        return arr;
+    }
+
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §6, -TASKS.md D1 -- the ped analog of UpdateCars for the
     // `--live-city` path. Unlike UpdatePeds (which consumes CityLib.ReconstructedPed, already run through
     // CityLib.PedReconstructor's DR smoothing over a wire), a live-city ped's pose comes straight off
@@ -2854,7 +2908,8 @@ public partial class Main : Node3D
     // method applies CoordinateTransform.SumoToGodot itself and colors each instance by its
     // Sim.LiveCity.PedRegime (grey low-power / orange high-power / yellow paused) rather than reusing
     // CityLib.PedTransform's two-state (low/high) regime enum. Same build-once/grow-only/
-    // VisibleInstanceCount discipline as UpdateCars/UpdatePeds.
+    // VisibleInstanceCount discipline as UpdateCars/UpdatePeds. As of the ped-smoothing fix, `peds` here is
+    // ALREADY the interpolated render pose (ToLiveCityPeds(_pedInterpolator.Sample(...))), not a raw sample.
     private void UpdateLivePeds(IReadOnlyList<LiveCityPed> peds)
     {
         if (_pedMultiMesh is null)

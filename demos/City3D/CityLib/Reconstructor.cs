@@ -54,6 +54,18 @@ public sealed class Reconstructor
     private readonly Stopwatch _wall = Stopwatch.StartNew();
     private double _lastWallSec = -1.0;
 
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent): the render-time instant THIS call
+    // resolved vehicles against -- `_clock.RenderSim - delaySeconds` in the normal (wall-clock) path, or
+    // `deterministicSampleT` in the fixed-dt path. Exposed so a caller (Main.cs's ProcessLiveCity/
+    // ProcessLiveCityReplay -- the two paths that use THIS Reconstructor for cars) can query its
+    // Sim.LiveCity.PedInterpolator / PedFrameTrack.PedsAtInterpolated at the SAME instant the cars above
+    // were just resolved against, keeping cars and peds in lockstep (a ped on a crosswalk and the car
+    // yielding to it must not drift apart in render time). ProcessLiveCityRemote does NOT use this --
+    // it reconstructs peds via PedRemoteReconstructor, which already interpolates off its own render
+    // clock (see that class's own remarks). Set at the END of Reconstruct, right before returning, so it
+    // always reflects the call that just ran.
+    public double LastQueryTime { get; private set; }
+
     // Call once per render frame. Mirrors the design's data-path recipe exactly:
     //   source.Pump() -> DrClock.Pump(newest) -> per vehicle: DrClock.Resolve -> KinematicReconstructor.Resolve
     // `delaySeconds` is the playout delay (design "Playout delay": a stable manual knob, ~0.3-0.5s).
@@ -77,6 +89,7 @@ public sealed class Reconstructor
             // Deterministic query instant: `delay` behind the newest sample seen, from the packet stream alone
             // (no Stopwatch). Analogous to IgBridge's `tau`. Null (no samples yet) -> nothing resolves anyway.
             deterministicSampleT = source.LatestVehicleSampleTime is { } newest ? newest - delaySeconds : null;
+            LastQueryTime = deterministicSampleT ?? LastQueryTime;
         }
         else
         {
@@ -84,6 +97,7 @@ public sealed class Reconstructor
             var nowWall = _wall.Elapsed.TotalSeconds;
             frameDt = _lastWallSec >= 0.0 ? (float)(nowWall - _lastWallSec) : 0f;
             _lastWallSec = nowWall;
+            LastQueryTime = _clock.RenderSim - delaySeconds;
         }
 
         _scratch.Clear();

@@ -910,6 +910,12 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
     // VIEWER-KINEMATIC-SMOOTHING §1.1/§2.2: CoarseFeed=true, same as loopback/remote -- this is a sparse
     // (Dt=0.5s => 2 Hz) DR consumer, so the junction-turn-straddle discriminator must be active.
     var recon = new KinematicReconstructor { CoarseFeed = true };
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent): peds used to be drawn straight from
+    // sim.Sample().Peds (the raw per-tick snapshot) -- a step function at the render frame rate. Fed one
+    // sim tick at a time below (in the accumulator loop), then queried each render frame at the SAME
+    // playout instant the cars render at (drClock.RenderSim - delaySeconds) so a ped on a crosswalk and the
+    // car yielding to it stay temporally aligned.
+    var pedInterp = new PedInterpolator();
 
     // Real-time step accumulator: LiveCitySim.Step() always advances exactly cfg.Dt of sim time -- pace it
     // to WALL time (honoring `speedFactor`, the same knob `--sim-rate` drives for `--mode local`) instead
@@ -955,19 +961,27 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
                 sim.Step();
                 accumWall -= cfg.Dt;
 
-                // One PEDFRAME per sim tick (matching the car track's own per-Step() cadence), not per
+                // One ped snapshot per sim tick (matching the car track's own per-Step() cadence), not per
                 // render frame -- a stalled/late render frame that lets this loop run more than once must
-                // not silently drop the intermediate steps' ped positions from the recording.
+                // not silently drop the intermediate steps' ped positions from the recording OR from the
+                // interpolator's history (both are fed from the SAME sim.Sample() call this tick).
+                var stepPeds = sim.Sample().Peds;
+                pedInterp.Push(sim.Time, ToPedInterpFrames(stepPeds));
                 if (recorder is not null)
                 {
-                    recorder.WritePedFrame(sim.Time, ToPedTuples(sim.Sample().Peds));
+                    recorder.WritePedFrame(sim.Time, ToPedTuples(stepPeds));
                 }
             }
 
-            overlay.UpdateSnapshot(sim.Sample());
-
+            // PumpAndBuildVehicleDraws pumps drClock (advances RenderSim) internally -- do this FIRST so the
+            // ped query below reads the SAME playout instant the cars just resolved against, keeping the two
+            // domains in lockstep (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent fix's explicit requirement).
             RenderHelpers.PumpAndBuildVehicleDraws(sim.VehicleSource, drClock, delaySeconds, smooth: true,
                 frameStats, recon, draws, paused: false, laneSource: sim.LocalLanes);
+
+            var carPlayoutTime = drClock.RenderSim - delaySeconds;
+            var raw = sim.Sample();
+            overlay.UpdateSnapshot(new LiveCitySnapshot(raw.Cars, ToLiveCityPeds(pedInterp.Sample(carPlayoutTime)), raw.OccupiedCrossings));
         },
 
         DrawWorld = (camera, draws) =>
@@ -1035,6 +1049,35 @@ static IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string Ani
     {
         var p = peds[i];
         arr[i] = (p.Id, (float)p.X, (float)p.Y, (float)p.Z, (byte)p.Regime, p.AnimTag);
+    }
+
+    return arr;
+}
+
+// Ped-smoothing fix: LiveCityPed -> PedInterpolator's neutral-within-Sim.LiveCity PedInterpFrame (drops Z --
+// the ped net is flat, PedInterpolator interpolates X/Y only, same as PedFrameTrack.PedsAtInterpolated).
+static IReadOnlyList<PedInterpFrame> ToPedInterpFrames(IReadOnlyList<LiveCityPed> peds)
+{
+    var arr = new PedInterpFrame[peds.Count];
+    for (var i = 0; i < peds.Count; i++)
+    {
+        var p = peds[i];
+        arr[i] = new PedInterpFrame(p.Id, p.X, p.Y, p.Regime, p.AnimTag);
+    }
+
+    return arr;
+}
+
+// The inverse of ToPedInterpFrames -- PedInterpolator.Sample's output back into the LiveCityPed shape
+// LiveCityOverlay/DrawWorldOver expect. Z is always 0 (the ped net is flat, matching LiveCitySim.Sample's
+// own peds.Add(new LiveCityPed(..., 0.0, ...))).
+static IReadOnlyList<LiveCityPed> ToLiveCityPeds(IReadOnlyList<PedInterpFrame> peds)
+{
+    var arr = new LiveCityPed[peds.Count];
+    for (var i = 0; i < peds.Count; i++)
+    {
+        var p = peds[i];
+        arr[i] = new LiveCityPed(p.Id, p.X, p.Y, 0.0, p.Regime, p.AnimTag);
     }
 
     return arr;
@@ -1234,14 +1277,19 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
             // Build the LiveCitySnapshot LiveCityOverlay expects from what replay actually has: the
             // reconstructed cars' Handle+pose (identity label falls back to the handle's own ToString --
             // the wire carries no vehicle NAME yet, docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1 is a separate,
-            // not-yet-landed stage) and the PedFrameTrack frame nearest the clock's current time.
+            // not-yet-landed stage) and the PedFrameTrack frame INTERPOLATED at the SAME instant the cars
+            // above just resolved against (drClock.RenderSim, delaySeconds=0 here) -- not the raw
+            // nearest-frame PedsAt, which stepped exactly like the live path used to (docs/LIVE-CITY-VISUALS-
+            // NOTES.md-adjacent fix). drClock.RenderSim tracks clock.Now closely (delay=0, same file-sourced
+            // LatestVehicleSampleTime feeds both), but querying it directly keeps peds and cars in lockstep
+            // by construction rather than by coincidence.
             var cars = new List<LiveCityCar>(draws.Count);
             foreach (var d in draws)
             {
                 cars.Add(new LiveCityCar(d.Handle, d.FrontX, d.FrontY, 0.0, d.HeadingDeg, d.Length, d.Width, d.Handle.ToString()));
             }
 
-            var pedFrame = pedTrack.PedsAt(clock.Now);
+            var pedFrame = pedTrack.PedsAtInterpolated(drClock.RenderSim);
             var peds = new List<LiveCityPed>(pedFrame.Count);
             foreach (var p in pedFrame)
             {
@@ -1296,7 +1344,7 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
                 ImGui.Text($"fps: {Raylib.GetFPS()}");
                 ImGui.Text($"frame ms  min {min * 1000f:F2}  avg {avg * 1000f:F2}  p99 {p99 * 1000f:F2}");
                 ImGui.Text($"replay: {replayPath}");
-                ImGui.Text($"cars in view: {fileSource.History.Count}   peds: {pedTrack.PedsAt(clock.Now).Count}");
+                ImGui.Text($"cars in view: {fileSource.History.Count}   peds: {pedTrack.PedsAtInterpolated(drClock.RenderSim).Count}");
                 ImGui.End();
             }
         },
@@ -1335,7 +1383,7 @@ static int RunLiveCityReplaySmoke(string replayPath)
         RenderHelpers.PumpAndBuildVehicleDraws(fileSource, drClock, delaySeconds: 0.5f, smooth: true,
             frameStats, recon, draws, paused: false);
         reconstructedCars = Math.Max(reconstructedCars, draws.Count);
-        peds = Math.Max(peds, pedTrack.PedsAt(t).Count);
+        peds = Math.Max(peds, pedTrack.PedsAtInterpolated(t).Count);
     }
 
     Console.WriteLine(

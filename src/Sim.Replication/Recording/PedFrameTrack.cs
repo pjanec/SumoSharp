@@ -60,4 +60,85 @@ public sealed class PedFrameTrack
 
         return _frames[best].Peds;
     }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md-adjacent fix (ped smoothing task) -- PedsAt's nearest-frame-<=-t is a
+    // step function (a ped holds its position for a whole recorded tick, then snaps), the exact same
+    // visible jump the live path had before Sim.LiveCity.PedInterpolator. This is that interpolator's logic
+    // reproduced here rather than shared: PedFrameTrack is deliberately Sim.LiveCity-free (this file's own
+    // top-of-file doc comment), so it cannot reference Sim.LiveCity.PedInterpolator/PedInterpFrame; the
+    // algorithm is the same (linear-by-id lerp between the two bracketing frames, hold at the ends, new ids
+    // appear at the later position, missing ids are dropped) just re-expressed over the neutral tuple this
+    // class already stores. `Z`/`AnimTag`/`Regime` are NOT interpolated (Z is always 0 on a flat ped net;
+    // Regime/AnimTag are discrete state, taken from the LATER bracketing frame, same as PedInterpolator).
+    public IReadOnlyList<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)> PedsAtInterpolated(double t)
+    {
+        if (_frames.Count == 0)
+        {
+            return Array.Empty<(int, float, float, float, byte, string)>();
+        }
+
+        var oldest = _frames[0];
+        if (_frames.Count == 1 || t <= oldest.Time)
+        {
+            return oldest.Peds;
+        }
+
+        var newest = _frames[^1];
+        if (t >= newest.Time)
+        {
+            return newest.Peds;
+        }
+
+        var ai = 0;
+        var lo = 0;
+        var hi = _frames.Count - 1;
+        while (lo <= hi)
+        {
+            var mid = (lo + hi) / 2;
+            if (_frames[mid].Time <= t)
+            {
+                ai = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+
+        var a = _frames[ai];
+        var b = _frames[ai + 1];
+        var span = b.Time - a.Time;
+        var f = span > 1e-9 ? (float)((t - a.Time) / span) : 1f;
+
+        var bById = new Dictionary<int, (int Id, float X, float Y, float Z, byte Regime, string AnimTag)>(b.Peds.Length);
+        foreach (var pb in b.Peds)
+        {
+            bById[pb.Id] = pb;
+        }
+
+        var result = new List<(int Id, float X, float Y, float Z, byte Regime, string AnimTag)>(b.Peds.Length);
+        var seenInA = new HashSet<int>();
+
+        foreach (var pa in a.Peds)
+        {
+            seenInA.Add(pa.Id);
+            if (!bById.TryGetValue(pa.Id, out var pb))
+            {
+                continue; // gone in the later frame -> dropped
+            }
+
+            result.Add((pa.Id, pa.X + (pb.X - pa.X) * f, pa.Y + (pb.Y - pa.Y) * f, pb.Z, pb.Regime, pb.AnimTag));
+        }
+
+        foreach (var pb in b.Peds)
+        {
+            if (!seenInA.Contains(pb.Id))
+            {
+                result.Add(pb); // new since `a` -> appears at the later position
+            }
+        }
+
+        return result;
+    }
 }

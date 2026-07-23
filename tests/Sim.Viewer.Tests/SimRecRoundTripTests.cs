@@ -301,4 +301,93 @@ public sealed class SimRecRoundTripTests
             File.Delete(path);
         }
     }
+
+    // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent task) -- PedsAtInterpolated is the replay
+    // analog of Sim.LiveCity.PedInterpolator: a mid-frame query must land STRICTLY between the two recorded
+    // frames bracketing it, not snap to the nearest one (PedsAt's old step-function behaviour).
+    [Fact]
+    public void PedFrameTrack_PedsAtInterpolated_LerpsStrictlyBetweenBracketingFrames()
+    {
+        var (path, _, _) = RecordRun(steps: 40);
+        try
+        {
+            var track = new PedFrameTrack(path);
+            Assert.True(track.FrameCount >= 2, "expected >=2 recorded PEDFRAMEs to bracket a mid-frame query");
+
+            // Find a ped id present across two consecutive recorded frames whose position actually differs
+            // (a still-paused ped's before/after positions would trivially "match" the endpoints too).
+            var found = false;
+            for (var i = 0; i < track.FrameCount - 1 && !found; i++)
+            {
+                var tA = i * 0.5; // RecordRun uses LiveCityConfig's default Dt=0.5s.
+                var tB = (i + 1) * 0.5;
+                var before = track.PedsAt(tA);
+                var after = track.PedsAt(tB);
+
+                foreach (var pb in before)
+                {
+                    var match = false;
+                    (int Id, float X, float Y, float Z, byte Regime, string AnimTag) pa = default;
+                    foreach (var candidate in after)
+                    {
+                        if (candidate.Id == pb.Id)
+                        {
+                            match = true;
+                            pa = candidate;
+                            break;
+                        }
+                    }
+
+                    if (!match)
+                    {
+                        continue;
+                    }
+
+                    var dx = pa.X - pb.X;
+                    var dy = pa.Y - pb.Y;
+                    if (Math.Sqrt(dx * dx + dy * dy) < 0.01)
+                    {
+                        continue; // this ped didn't move between the two frames -- not a useful case.
+                    }
+
+                    var mid = track.PedsAtInterpolated((tA + tB) / 2.0);
+                    (int Id, float X, float Y, float Z, byte Regime, string AnimTag)? midEntry = null;
+                    foreach (var m in mid)
+                    {
+                        if (m.Id == pb.Id)
+                        {
+                            midEntry = m;
+                            break;
+                        }
+                    }
+
+                    Assert.True(midEntry.HasValue, $"ped {pb.Id} missing from the interpolated mid-frame result");
+
+                    var loX = Math.Min(pb.X, pa.X);
+                    var hiX = Math.Max(pb.X, pa.X);
+                    var loY = Math.Min(pb.Y, pa.Y);
+                    var hiY = Math.Max(pb.Y, pa.Y);
+
+                    Assert.True(midEntry!.Value.X >= loX && midEntry.Value.X <= hiX,
+                        $"ped {pb.Id}: mid X={midEntry.Value.X} not within [{loX},{hiX}] (before X={pb.X}, after X={pa.X})");
+                    Assert.True(midEntry.Value.Y >= loY && midEntry.Value.Y <= hiY,
+                        $"ped {pb.Id}: mid Y={midEntry.Value.Y} not within [{loY},{hiY}] (before Y={pb.Y}, after Y={pa.Y})");
+
+                    // At the exact midpoint fraction (f=0.5) the interpolated value should be the arithmetic
+                    // mean, up to float roundtrip -- a stronger check than just "inside the bracket".
+                    Assert.Equal((pb.X + pa.X) / 2.0, midEntry.Value.X, 3);
+                    Assert.Equal((pb.Y + pa.Y) / 2.0, midEntry.Value.Y, 3);
+
+                    found = true;
+                    break;
+                }
+            }
+
+            Assert.True(found, "expected at least one moving ped across two consecutive recorded frames");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }
