@@ -1313,6 +1313,20 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     for (var a = 0; a < 7; a++) if (armCount[a] > 0) Console.Write($" {armNames[a]}={armCount[a]}(prio{armPrio[a]})");
                     Console.WriteLine();
 
+                    // #15 wrong-lane-strand REASON histogram (cumulative). Distinguishes "recovered"
+                    // (reResolveOK/rerouteOK -- car proceeded, NOT stranded) from the strand causes. If the
+                    // dominant STRAND cause is capSpent/waitGate -> a policy gate is freezing an otherwise
+                    // routable car; if noRouteToTarget/noOutgoingConn -> the lane genuinely can't reach the
+                    // dest (route-topology). Answers: are strands recoverable-but-gated, or truly dead?
+                    string[] srNames = { "reResolveOK", "rerouteOK", "onDestEdge", "waitGate", "capSpent",
+                        "noOutgoingConn", "noRouteToTarget", "reResolveThrew", "remainingLt2",
+                        "remainingCountLt2", "poolEdgeMismatch" };
+                    var srHist = sim.StrandReasonHistogram;
+                    Console.Write("LIVECITY-STRANDREASON(cumulative):");
+                    for (var r = 0; r < srHist.Length && r < srNames.Length; r++)
+                        if (srHist[r] > 0) Console.Write($" {srNames[r]}={srHist[r]}");
+                    Console.WriteLine();
+
                     // COMPREHENSIVE (owner request): analyze EVERY car stuck with a CLEAR road (speed<0.3,
                     // own-lane gap>15 AND exit-mouth>15), whatever its TL. Break down by binding constraint;
                     // for the junction-yield foe arms, bucket the bound FOE's speed (moving cross traffic vs a

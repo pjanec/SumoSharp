@@ -459,3 +459,91 @@ not a reroute artifact.)
   box-blocks can't seed the cascade). This is the next target: port SUMO's "don't block the junction"
   entry gate faithfully, THEN re-enable (A) so a genuinely wrong-lane car reroutes AND queues cleanly
   instead of either freezing or box-blocking.
+
+## DESIGN PRINCIPLES for the #15 cure (owner-stated, binding — honor these over any SUMO shortcut)
+These are the owner's hard constraints on HOW the wrong-lane/gridlock problem may be solved. A fix that
+violates any of them is wrong even if it improves the metric:
+
+1. **No fake congestion excuse.** There are only ~160 cars on a rectangular grid with abundant alternative
+   routes to any point -- it is *physically impossible* to genuinely congest it (SUMO drains the identical
+   demand, running->12). So any "terminal gridlock" is a BUG (a freeze-cascade or a circular deadlock),
+   never real saturation. Do not explain it away as congestion/discharge limits.
+
+2. **A wrong-lane car MUST NOT stop.** A car that ended up on a lane with no connection to its next route
+   edge must NOT freeze at the stop line. It must **reroute its trajectory** onto one of the grid's many
+   alternatives and keep moving. Permanent Speed=0 clamp is a bug.
+
+3. **NO lane changes while slow or stationary.** A car may only change lanes while moving -- shoving
+   sideways through a stopped/crawling queue is unrealistic and forbidden, *even though SUMO does it*.
+   (So the `LaneChangeMinSpeed` gate STAYS; LCMIN=0 is NOT an acceptable fix.) Corollary: cars must be
+   sorted into their turn lane EARLY, while still cruising, well before the approach queue forms.
+
+4. **A needed-but-blocked lane change must be COOPERATIVE.** If a moving car needs to change into an
+   occupied lane, the fix is the target-lane car opening a gap by waiting a while (SUMO LC2013
+   cooperative `informFollower`), NOT force-insertion and NOT a slow-speed snap. NB: this repo has a
+   RETIRED cooperative channel (`VehicleRuntime.CoopSpeedAdvice` + `CommandBuffer.SpeedAdvice`, git
+   `afec614`) that is a determinism-safe template to revive if cooperation is the chosen lever.
+
+5. **Verify every hypothesis against the per-car state dump BEFORE chasing it.** No knob-sweep-driven
+   conclusions. Confirm the mechanism in `LIVECITY-STUCKCLEAR` / `LIVECITY-STRANDREASON` / the per-car
+   `CAR` dumps first, then act. (This is why the strand-reason histogram below was added.)
+
+## Instrumentation added to serve principle #5: LIVECITY-STRANDREASON histogram
+`Engine.StrandReasonHistogram` (parity-neutral cumulative counters, Interlocked; exposed via
+`LiveCitySim.StrandReasonHistogram`, printed by the smoke probe as `LIVECITY-STRANDREASON`). At each
+lane-end resolution of a wrong-lane car it records WHICH branch fired:
+`reResolveOK`/`rerouteOK` (recovered, NOT stranded) vs the strand causes
+`onDestEdge`/`waitGate`/`capSpent`/`noOutgoingConn`/`noRouteToTarget`/`reResolveThrew`/`remainingLt2`.
+This decides the open fork: are the strands **recoverable-but-gated** (capSpent/waitGate -> lift a
+policy gate) or **route-topology dead** (noRouteToTarget/noOutgoingConn -> the lane truly can't reach
+the destination, so only a reroute-from-actual-lane or an upstream lane-sort helps)? Result to be read
+next run.
+
+## ROOT CAUSE CORRECTED (per-car verified): the dominant strand is a POOL/EDGE DESYNC, not a turn-lane issue
+Ran the new `LIVECITY-STRANDREASON` histogram (baseline, knob off) + a `STRANDDUMP` of concrete cars.
+Result overturns the earlier "wrong-turn-lane" writeup:
+- The dominant strand reason by FAR is `remainingLt2`, and splitting it shows it is ~entirely
+  **`poolEdgeMismatch`** (`remaining[0] != currentLane.EdgeId`), NOT `remainingCountLt2`, and NOT the
+  turn-lane causes (`capSpent` only appears LATE, t>900, as a small secondary; `noRouteToTarget`/
+  `noOutgoingConn` ~never). Cumulative `poolEdgeMismatch` climbs into the thousands while `reResolveOK`
+  (recovered) stays ~120-170.
+- Concrete `STRANDDUMP` examples (knob on to enable the dump; the branch is knob-independent):
+  ```
+  actualLane=e_d_6_3_d_5_3_2 edge=e_d_6_3_d_5_3 seqIdx=1/16 remaining.Count=6 remaining[0]=e_d_5_3_d_4_3
+     pool=[:d_5_3_5_0, e_d_5_3_d_4_3_3, :d_4_3_1_2, e_d_4_3_d_3_3_1, ...]
+  actualLane=e_d_4_5_d_3_5_2 edge=e_d_4_5_d_3_5 seqIdx=1/17 remaining[0]=e_d_3_5_d_2_5
+     pool=[:d_3_5_6_0, e_d_3_5_d_2_5_2, ...]
+  ```
+  Read: the car is PHYSICALLY on edge `e_d_6_3_d_5_3` (approaching junction d_5_3), but its
+  `LaneSeqIndex` (=1) already points ONE JUNCTION AHEAD to `e_d_5_3_d_4_3`, and **its route pool does
+  not even contain the edge it is standing on** (pool[0] is the internal `:d_5_3`, pool's first normal
+  edge is the one LEAVING d_5_3). So the car's lane-sequence index is desynced one edge ahead of its
+  physical edge.
+
+### Mechanism & why it gridlocks
+When such a car reaches its lane end, the boundary guard (`Engine.cs` ~9647,
+`v.LaneHandle != _laneSeqPool[seqIdx]`) sends it to `TryReResolveFromActualLane`, which only handles a
+wrong LANE on the SAME edge; for a wrong EDGE it bails immediately (`remaining[0] != currentLane.EdgeId`
+-> return false) and the caller clamps `Pos=laneLength; Speed=0` **forever**. That is the "frozen on
+green, nowhere to go" car -- but the true cause is that its route pool/index no longer matches the edge
+it is on, NOT that its turn lane lacks a connection. A stream of these desynced cars freeze and wall
+their corridors -> the whole grid cascades (exactly the owner's "160 cars can't really congest -> it
+must be a bug" -- it is: a route-tracking desync). This supersedes the earlier commit's turn-lane
+framing (that path -- capSpent/noRoute -- is real but minor and late).
+
+### Fix direction (next, design-first)
+Two prongs, in order:
+1. **Find WHY LaneSeqIndex desyncs one edge ahead of the physical edge** (the true root). Suspects: a
+   cross-boundary lane change, or a reroute/re-resolve splice that sets `LaneSeqIndex`/pool so the
+   current edge is dropped. Instrument the transition that produces the first mismatch for one car.
+2. **Make recovery robust (owner principle #2 "must not stop"):** when `poolEdgeMismatch` is detected,
+   re-route the remaining trajectory from the car's ACTUAL current edge (it clearly connects onward on a
+   grid) instead of bailing to the dead clamp -- i.e. generalise `TryReResolveFromActualLane` to the
+   wrong-EDGE case, reusing `TryRerouteFromDeadLane`'s Router-from-actual-edge. Must respect principles
+   #3/#4 (no slow lane snap; cooperative if a change is needed) and stay parity-safe (gated, the branch
+   is inert on every golden).
+
+### Instrumentation landed this step (parity-safe, 657/4, byte-identical)
+`Engine.StrandReasonHistogram` (+ `MarkStrandReason`, indices incl. 9 remainingCountLt2 / 10
+poolEdgeMismatch) and the gated `STRANDDUMP` line; surfaced via `LiveCitySim.StrandReasonHistogram` and
+the probe's `LIVECITY-STRANDREASON`. Also added `LIVECITY_DRIVETHROUGH` env override.

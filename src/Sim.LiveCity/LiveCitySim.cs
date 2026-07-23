@@ -288,6 +288,11 @@ public sealed class LiveCitySim : IDisposable
     // measuring it against the total stuck-on-green count decides whether that fix is the right lever.
     public int StrandedOffRouteLastStep => _engine.StrandedOffRouteThisStep;
 
+    // #15 diagnostic passthrough: cumulative histogram of WHY wrong-lane cars resolved as they did at a
+    // lane end (indices per Engine.StrandReasonHistogram). Read as deltas across samples to see the live
+    // mix of recovered-vs-stranded and, among strands, the dominant cause.
+    public System.ReadOnlySpan<long> StrandReasonHistogram => _engine.StrandReasonHistogram;
+
     // DIAGNOSTIC (#15 SUMO cross-check): when non-null, every successful car spawn is appended here
     // (departTime, fromEdge, toEdge) so the exact procedural demand can be exported to a SUMO .rou.xml
     // and run through vanilla SUMO for an apples-to-apples throughput comparison. Null (default) = no

@@ -146,6 +146,14 @@ public sealed class LiveCityConfig
             cfg.WrongLaneRerouteAtApproach = wrongLaneEnv != "0";
         }
 
+        // LIVECITY_DRIVETHROUGH: experimental "never freeze -- take any forward connection" fallback
+        // (Engine.DeadLaneDriveThrough). Only overrides when explicitly set.
+        var driveThroughEnv = Environment.GetEnvironmentVariable("LIVECITY_DRIVETHROUGH");
+        if (driveThroughEnv != null)
+        {
+            cfg.DeadLaneDriveThrough = driveThroughEnv != "0";
+        }
+
         // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via
         // SimHz) rather than raw Dt seconds since that's how a shell habit is more likely to want it.
         // No {1,2,5,10,20} validation here -- ForRepoRoot mirrors LIVECITY_CARS/LCMIN's own "any parsed

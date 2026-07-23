@@ -1966,6 +1966,18 @@ public sealed partial class Engine : IEngine
     private int _strandedOffRouteThisStep;
     public int StrandedOffRouteThisStep => _strandedOffRouteThisStep;
 
+    // DIAGNOSTIC (#15, parity-neutral -- never read by sim logic): cumulative histogram of WHY a
+    // wrong-lane car resolved the way it did at a lane end, so the per-car autopsy can distinguish
+    // "recovered via re-resolve" from the several strand causes. Indices:
+    //   0 reResolveOK (recovered, NOT stranded)  1 rerouteOK (dead-lane reroute succeeded, NOT stranded)
+    //   2 onDestEdge  3 waitGate  4 capSpent  5 noOutgoingConn (true dead end)
+    //   6 noRouteToTarget (has a forward conn but no path reaches dest)  7 reResolveThrew  8 remainingLt2
+    // Interlocked because ExecuteMoves is region-parallel. Cumulative (not per-step); read as deltas.
+    private readonly long[] _strandReasonHist = new long[11];
+    public System.ReadOnlySpan<long> StrandReasonHistogram => _strandReasonHist;
+    private void MarkStrandReason(int idx) => System.Threading.Interlocked.Increment(ref _strandReasonHist[idx]);
+    private int _strandDumpCount; // #15: caps the one-shot STRANDDUMP diagnostic lines (gated on WrongLaneRerouteAtApproach)
+
     // DIAGNOSTIC (#15): per-vehicle argmin of ComputeMoveIntent's constraint fold (which constraint bound
     // each vehicle's speed), aligned to the read columns. See ComputeMoveIntent's binder for the id map.
     public ReadOnlySpan<byte> BindingConstraints => _readBuffer.BindingConstraint.AsSpan(0, _readBuffer.Count);
@@ -9835,6 +9847,16 @@ public sealed partial class Engine : IEngine
         // returned for a route end, so a next edge must exist. Bail defensively otherwise.
         if (remaining.Count < 2 || remaining[0] != currentLane.EdgeId)
         {
+            MarkStrandReason(remaining.Count < 2 ? 9 : 10); // 9 remainingCountLt2 | 10 poolEdgeMismatch
+            if (WrongLaneRerouteAtApproach && System.Threading.Interlocked.Increment(ref _strandDumpCount) <= 8)
+            {
+                var poolEdges = new List<string>();
+                for (var k = v.LaneSeqIndex; k < v.LaneSeqLen && poolEdges.Count < 6; k++)
+                    poolEdges.Add(_network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]].Id);
+                Console.WriteLine($"STRANDDUMP remainingLt2: actualLane={currentLane.Id} edge={currentLane.EdgeId} " +
+                    $"seqIdx={v.LaneSeqIndex}/{v.LaneSeqLen} remaining.Count={remaining.Count} " +
+                    $"remaining[0]={(remaining.Count > 0 ? remaining[0] : "-")} pool=[{string.Join(",", poolEdges)}]");
+            }
             return false;
         }
 
@@ -9868,6 +9890,7 @@ public sealed partial class Engine : IEngine
         }
         catch (InvalidDataException)
         {
+            MarkStrandReason(7); // reResolveThrew
             return false;
         }
 
@@ -9889,6 +9912,7 @@ public sealed partial class Engine : IEngine
         // The remaining route's lane assignment changed -> the keep-right stayOnBest memo may be
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
+        MarkStrandReason(0); // reResolveOK -- recovered, NOT stranded
         return true;
     }
 
@@ -9917,6 +9941,7 @@ public sealed partial class Engine : IEngine
         var destEdge = remaining[remaining.Count - 1];
         if (destEdge == currentLane.EdgeId)
         {
+            MarkStrandReason(2); // onDestEdge
             return false;   // already on the destination edge -- nothing to reroute toward
         }
 
@@ -9955,6 +9980,7 @@ public sealed partial class Engine : IEngine
         // only at the lane end" requirement -- skip this wait while the knob is on.
         if (v.WaitingTime < DeadLaneRerouteWaitSeconds && !WrongLaneRerouteAtApproach)
         {
+            MarkStrandReason(3); // waitGate
             return false;
         }
 
@@ -9969,12 +9995,14 @@ public sealed partial class Engine : IEngine
         _deadLaneRerouteCount.TryGetValue(v.EntityIndex, out var already);
         if (already >= MaxDeadLaneReroutes && !WrongLaneRerouteAtApproach)
         {
+            MarkStrandReason(4); // capSpent
             return false;
         }
 
         if (!_network!.ConnectionsByFromEdgeLane.TryGetValue((currentLane.EdgeId, currentLane.Index), out var outs)
             || outs.Count == 0)
         {
+            MarkStrandReason(5); // noOutgoingConn -- true dead end
             return false;   // true dead end: this lane has no outgoing connection at all
         }
 
@@ -10073,6 +10101,7 @@ public sealed partial class Engine : IEngine
 
         if (bestTail is null)
         {
+            MarkStrandReason(6); // noRouteToTarget
             return false;   // no connection this lane has can still reach the destination -> clamp
         }
 
@@ -10108,6 +10137,7 @@ public sealed partial class Engine : IEngine
         }
         catch (InvalidDataException)
         {
+            MarkStrandReason(7); // reResolveThrew (dead-lane reroute path)
             return false;
         }
 
@@ -10132,6 +10162,7 @@ public sealed partial class Engine : IEngine
         v.LaneSeqLen = pool.Length;
         v.LaneSeqIndex = 0;
         v.KeepRightStayCacheLane = -1;
+        MarkStrandReason(1); // rerouteOK -- dead-lane reroute succeeded, NOT stranded
         return true;
     }
 
