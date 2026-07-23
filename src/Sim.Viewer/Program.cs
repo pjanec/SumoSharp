@@ -1186,6 +1186,14 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
 
     using var sim = new LiveCitySim(cfg, recorder);
 
+    // #15 SUMO cross-check: LIVECITY_DUMPROUTES=<path> records every spawn so the exact procedural demand
+    // can be replayed through vanilla SUMO on the same net for an apples-to-apples throughput comparison.
+    var dumpRoutesPath = Environment.GetEnvironmentVariable("LIVECITY_DUMPROUTES");
+    if (!string.IsNullOrEmpty(dumpRoutesPath))
+    {
+        sim.SpawnLog = new List<(double, string, string)>();
+    }
+
     var frameStats = new FrameStats();
     var drClock = new DrClock();
     var recon = new KinematicReconstructor { CoarseFeed = true };
@@ -1287,6 +1295,25 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
     finally
     {
         recorder?.Dispose();
+    }
+
+    // #15 SUMO cross-check: emit the exact procedural demand as a SUMO .rou.xml (trips sorted by depart,
+    // matching depart pos/speed/lane + sigma-0 vType) so vanilla SUMO can be run on the SAME net + demand.
+    if (!string.IsNullOrEmpty(dumpRoutesPath) && sim.SpawnLog is { } spawns)
+    {
+        var sorted = spawns.OrderBy(s => s.Depart).ToList();
+        using var wtr = new StreamWriter(dumpRoutesPath);
+        wtr.WriteLine("<routes>");
+        wtr.WriteLine("  <vType id=\"c\" vClass=\"passenger\" sigma=\"0\"/>");
+        for (var k = 0; k < sorted.Count; k++)
+        {
+            var (dep, from, to) = sorted[k];
+            wtr.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                "  <trip id=\"v{0}\" type=\"c\" depart=\"{1:F2}\" from=\"{2}\" to=\"{3}\" departPos=\"5\" departSpeed=\"0\" departLane=\"best\"/>",
+                k, dep, from, to));
+        }
+        wtr.WriteLine("</routes>");
+        Console.WriteLine($"LIVECITY-SMOKE: dumped {sorted.Count} trips to '{dumpRoutesPath}' (engine arrivals={sim.ArrivedTotal}).");
     }
 
     var reconstructedCars = draws.Count;

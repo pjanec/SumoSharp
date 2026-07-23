@@ -97,6 +97,37 @@ vanilla SUMO, or just a dense signalized grid where 40–70% stopped-at-instant 
   fix is demo-tuning (lower density / signal timing), not an engine bug. This is investigation only —
   the offline `dotnet test` loop never invokes SUMO.
 
+## 2026-07-23 — SUMO 1.20.0 cross-check: real deficit confirmed, moderate
+Exported the EXACT procedural live-city demand (238 trips) via `LIVECITY_DUMPROUTES` (added a
+`LiveCitySim.SpawnLog` + a `.rou.xml` writer in `RunLiveCitySmoke`; host-side, parity untouched), then
+ran **pinned SUMO 1.20.0** (`pip install eclipse-sumo==1.20.0`, matching `SUMO_VERSION` — the apt 1.18
+was discarded per "no unnecessary deviation") on the SAME `net.xml` + demand, matched settings
+(`--step-length 0.5 --time-to-teleport -1 --lanechange.duration 2.0 --default.speeddev 0`, vType
+sigma=0, departPos 5 / departSpeed 0 / departLane best).
+
+| metric | our engine | SUMO 1.20.0 |
+|---|---|---|
+| arrivals @200 s (of 238) | **81** | **110** (+36%) |
+| full drain (end 800) | jam-and-recover | all 238 by ~800 s |
+| mean trip speed @200 s | ~3–7 m/s (oscillates) | 9.03 m/s |
+| mean timeLoss / wait per trip | — | 47.7 s / 30.2 s |
+
+- **Real deficit: ~26 % fewer arrivals than SUMO in the same window** (81 vs 110) → genuine engine
+  under-discharge, not purely normal congestion.
+- **But SUMO also waits a LOT** (30–48 s mean wait/trip) → the scene IS a congested dense grid; much of
+  the "whole city stopped" look is normal, the bug is the *extra* ~26 %.
+- Consistent with the witness localization: the deficit is **junction right-of-way** (minor-green
+  over-yield + the protected-green stalls), NOT lane-change segregation.
+- Caveats (honest): SUMO routes the trips with its own weights (route choice may differ slightly);
+  SUMO run has no peds (but `LIVECITY_YIELD=0` already showed peds are not the driver). The ~26 % gap
+  is well outside those confounds.
+
+**NEXT: drill the junction RoW.** Localize *which* movements/junctions our engine over-yields on vs
+SUMO (per-junction throughput diff, or instrument the yield decision for a `majorGreenSTUCK` /
+`minorGreenYield` car — what foe it thinks is blocking, whether that foe is real/cleared). Then
+design-first a parity-safe fix to the permissive-yield (`blockedByFoe`, `f69a58d`) path. Do NOT touch
+lane-change cooperation.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +
