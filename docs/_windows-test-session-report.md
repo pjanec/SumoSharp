@@ -11,7 +11,7 @@ where a theory was refuted by data, that's called out.
 
 > **UPDATE:** Most of the original findings are now RESOLVED. The dev session's `becc224` implemented
 > #5/#6/#9/#10/#11; this testing session pushed camera/grid/smoothness (#12–#14) + the TL-crop fix
-> (#16). **Open: #7, #8, #15 (DR-core/engine); #17 partially fixed (per-`Step` publish residual).** The detailed sections further down
+> (#16). **#7 now VERIFIED FIXED over DDS. Open: #8 (REGRESSED by `bfbf7c9`), #15 (DR-core/engine); #17 partially fixed (per-`Step` publish residual).** The detailed sections further down
 > are kept as the evidence trail; the table below is the current truth.
 
 ---
@@ -33,8 +33,8 @@ where a theory was refuted by data, that's called out.
 | 14 | High-refresh render judder (60fps cap on 240Hz) | ✅ done `5adf4f9` (this session, uncap) | — |
 | 10 | Ped "dance" at junctions | ✅ done `996805f` — VERIFIED this session (no dance at 10× crowd) | — |
 | 16 | TL poles rendered outside the cropped road net | ✅ done `6edbad8` (this session, crop TL to road box) | — |
-| **7** | **DDS cruise stutter (render-clock HOLD)** | 🔧 **fix pushed** `bfbf7c9` (dev) — tick-forward-every-frame + rate low-pass; **awaiting GPU verify** | dev (DrClock) |
-| **8** | **DDS stopped-car backward creep** | 🔧 **fix pushed** `bfbf7c9` (dev) — accel-aware arc blend replaces chord lerp; **awaiting GPU verify** | dev (DrClock) |
+| **7** | **DDS cruise stutter (render-clock HOLD)** | ✅ **VERIFIED FIXED** `bfbf7c9` (dev) — tick-forward-every-frame + rate low-pass; GPU-confirmed this session (no stutter over DDS) | — |
+| **8** | **DDS stopped-car backward creep** | 🐛 **REGRESSED by `bfbf7c9`** — accel-aware arc blend *introduces* backward creep the old chord lerp didn't have; GPU-confirmed still visible + hard A/B below | **dev (DrClock, revisit)** |
 | **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🐛 **OPEN** — engine RoW/discharge + no teleport | **dev/engine** |
 | 17 | Viewer GC stalls at high ped counts | ⚠️ PARTIAL — `Sample()`-per-frame fixed this session; per-`Step` publish residual | dev (Sim.LiveCity publish) |
 
@@ -82,11 +82,42 @@ playout-delay knob cannot fix this.** Suggested fix: smooth the render-clock rat
 or advance by `frameDt*_simRate` and only gently pull toward `est`) so a per-packet re-fit can't freeze
 a frame. Shared `Sim.Viewer.Motion` (2D + City3D + IG) — care re parity/byte-identity.
 
-### 8. Stopped/crawling cars creep BACKWARD (DR core; also seen locally at red lights)
+> **✅ VERIFIED FIXED `bfbf7c9` (GPU, this session).** The dev's fix low-passes `_simRate`
+> (`SimRateBlend=0.25`) and ticks `_renderSim` forward every frame by the smoothed rate first, then
+> pulls the residual gap in by a bounded fraction (`CatchUpFraction=0.35`) instead of holding. Over DDS
+> `--hz 10` the constant-speed cruise stutter is **gone** (user-confirmed, no stutter). Isolation A/B
+> (below) also confirms the #7 render-clock change is *not* the source of any backward motion.
+
+### 8. Stopped/crawling cars creep BACKWARD — 🐛 REGRESSED by `bfbf7c9` (DR core)
 Back-step trace: all back-steps came from a car at spd ~0.07 m/s drifting back ~0.03–0.07 m/frame,
 **mostly `wireChanged=False`** (no packet) → it's the reconstruction extrapolating a decel-to-stop car
-in reverse (`DrClock.cs:448 ExtrapolateArc` and/or `KinematicReconstructor` damping settle), not a
-correction snap. Check `ExtrapolateArc`'s decel guard clamps arc at the predicted stop point.
+in reverse (`DrClock.cs ExtrapolateArc` and/or `KinematicReconstructor` damping settle), not a
+correction snap.
+
+> **🐛 `bfbf7c9` did NOT fix this — it makes it worse.** GPU-confirmed still visible this session, and
+> a **controlled same-machine A/B** using the dev's own `DiagBug8Probe` (real SUMO `09-traffic-light`,
+> decel-to-stop, delay=1.0) shows the fix *introduces* backward motion that the old code did not have:
+>
+> | Build | arc back-steps | world back-steps |
+> |---|---|---|
+> | **pre-fix** (`bfbf7c9~1`) | **0** (5 runs) | **0** (5 runs) |
+> | **post-fix** (`bfbf7c9`) | **1–2** (~0.31 m one-shot at the stop instant) | **~10** (~0.008 m/frame ≈ 5 cm creep) |
+> | **#7 kept, only #8 hunk reverted** | **0** (4 runs) | **0** (4 runs) |
+>
+> **Note `DiagBug8Probe` is `Assert.True(true)` — a diagnostic, not an assertion; its green in the
+> `bfbf7c9` test list proves nothing.** The numbers above are from `verbosity=detailed` output. The
+> "before" numbers in `bfbf7c9`'s message (0.68 m / 0.03 m/frame / 27 events) came from a *different
+> synthetic* setup; on the committed real-SUMO probe the fix regresses.
+>
+> **Root cause (isolated to the #8 same-lane hunk — reverting just those 3 lines → clean 0/0):** the new
+> branch blends `arcFromB = ExtrapolateArc(b.Pos, b.Speed, b.Accel, dtB<0)`, and `ExtrapolateArc` leaves
+> the **backward-time (`dtB≤0`) case raw/unclamped** on the stated assumption "the parabola is monotonic
+> the correct way." That breaks in exactly the decel-to-stop regime this targeted: with `b.Speed≈0` but
+> `b.Accel≈−3.5`, the raw `0.5·accel·dtB²` term is negative and non-monotonic → the blend slides
+> backward. The old chord lerp never referenced `b`'s stale decel, so it stayed monotonic and never
+> reversed. **Suggested fix for the dev:** clamp the backward-time `ExtrapolateArc` branch the same way
+> as forward (freeze at the stop point when projected speed crosses 0), or gate the arc-blend to the
+> `accel≈0` / above-crawl-speed case and keep the chord lerp for the decel-to-stop regime.
 
 ### 9. DDS peds not interpolated on the remote path (ped session)
 Remote peds step ~2×/s. Local/replay query the ped reconstructor at a **continuous** time
