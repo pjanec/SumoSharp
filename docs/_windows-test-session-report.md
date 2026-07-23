@@ -8,7 +8,7 @@ where a theory was refuted by data, that's called out.
 
 > **UPDATE:** Most of the original findings are now RESOLVED. The dev session's `becc224` implemented
 > #5/#6/#9/#10/#11; this testing session pushed camera/grid/smoothness (#12–#14) + the TL-crop fix
-> (#16). **Open: #7, #8, #15 (DR-core/engine) and #17 (viewer GC).** The detailed sections further down
+> (#16). **Open: #7, #8, #15 (DR-core/engine); #17 partially fixed (per-`Step` publish residual).** The detailed sections further down
 > are kept as the evidence trail; the table below is the current truth.
 
 ---
@@ -33,7 +33,7 @@ where a theory was refuted by data, that's called out.
 | **7** | **DDS cruise stutter (render-clock HOLD)** | 🔧 **fix pushed** `bfbf7c9` (dev) — tick-forward-every-frame + rate low-pass; **awaiting GPU verify** | dev (DrClock) |
 | **8** | **DDS stopped-car backward creep** | 🔧 **fix pushed** `bfbf7c9` (dev) — accel-aware arc blend replaces chord lerp; **awaiting GPU verify** | dev (DrClock) |
 | **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🐛 **OPEN** — engine RoW/discharge + no teleport | **dev/engine** |
-| **17** | **Viewer GC stalls at high ped counts (per-frame per-ped allocation)** | 🐛 **OPEN** — measured (GC, not CPU) | **dev (viewer/recon)** |
+| 17 | Viewer GC stalls at high ped counts | ⚠️ PARTIAL — `Sample()`-per-frame fixed this session; per-`Step` publish residual | dev (Sim.LiveCity publish) |
 
 Details on the open items are in their sections below. The ✅ sections are retained as evidence.
 
@@ -154,20 +154,29 @@ line and re-test the demo; the turn-lane-segregation work is the deeper unfinish
 parity-gated `Sim.Core` changes — engine session's call. (Interim demo mitigation: lower
 `LIVECITY_CARS`, but if it locks at low density that only delays it, not a cure.)
 
-### 17. Viewer GC stalls at high ped counts — per-frame per-ped allocation (viewer/recon)
+### 17. Viewer GC stalls at high ped counts — ⚠️ PARTIALLY FIXED (per-frame ped-list allocation)
 Cranking `LIVECITY_PEDS` to 16000 (100× the tuned 160) makes the viewer hitch **~1 s smooth / ~1 s
-hang, periodically** — the classic GC signature (a CPU-bound O(n) cost would be a *steady* slowdown,
-not periodic freezes). **Measured** (GC counters, viewer-side, ~14k peds): allocation **~20–40 MB per
-30 frames (≈0.7–1.3 GB/s)**, **gen2 collections climbing steadily** (9→14 in ~10 s), and the **worst
-frame per interval 109–148 ms** — the stalls line up with the gen2 bumps. So it's **allocation
-pressure → gen2 GC pauses**, not CPU.
+hang, periodically** — the classic GC signature (a CPU-bound O(n) cost would be a *steady* slowdown).
+Measured (GC counters, ~14k peds): ~20–40 MB per 30 frames, gen2 climbing 9→14 in ~10 s, worst frame
+109–148 ms coinciding with gen2 bumps → allocation pressure, not CPU. The low-power ped SIM path is
+cheap (design targets ~90k); it's the CONSUMER side allocating per frame.
 
-The low-power ped SIM path is cheap (design targets ~90k), but the **viewer's per-frame ped path**
-re-reconstructs and returns a fresh N-element ped list (+ per-ped conversions) **every render frame**,
-so alloc scales with ped count × 60 fps → ~1 MB/frame at 16k → gen2 pressure. Fix: **pool/reuse the
-per-frame ped buffers** (avoid per-frame per-ped allocation in `PedReconstructor.Reconstruct` /
-`UpdatePeds` / the `ToLiveCityPeds`-style conversions). Caps the viewer's usable ped count well below
-the headless sim's target until addressed. (New `LIVECITY_PEDS` knob makes this easy to reproduce.)
+**Localised by bracketed `GetTotalAllocatedBytes`** (sim-tick / car-recon / Sample / ped-recon):
+the per-frame allocation was **100% in `LiveCitySource.Sample()`** (301→631 KB/frame, scaling with
+ped count) — NOT the ped reconstruction (0 KB; `PedReconstructor` reuses a scratch list, `PoseSample`
+is a struct, `UpdatePeds` is grow-only structs). The viewer calls `Sample()` **every frame just for
+the car Handle→Name table (`snap.Cars`)**, but `Sample()` also materialises the entire N-ped list,
+which is thrown away.
+
+**Fix applied here (`SampleCars`):** `LiveCitySim.SampleCars()` returns cars only, into a REUSED
+buffer; `LiveCitySource` passes it through; the viewer's live path uses it instead of `Sample()`.
+Verified: per-frame ped-list allocation gone → total alloc ~halved, gen2 collections ~3× fewer.
+
+**Residual (still OPEN):** worst-frame ~148 ms spikes remain at 16k — a SECOND allocator my per-frame
+bracket under-sampled: the **per-`Step` ped publish** (`LiveCitySim.Step` serialises all N peds to the
+wire every sim tick, ~0.5 s), which allocates in bursts. Deeper (`Sim.LiveCity`/`PedReplicationPublisher`,
+shared with the DDS wire path) and partly inherent to 100×-tuned density. Recommend the dev/engine
+session pool the publish buffers; at moderate `LIVECITY_PEDS` the viewer is now smooth.
 
 ### 16. TL poles rendered outside the cropped road net — ✅ FIXED `6edbad8` (CropTlLaneHandles: same crop rule as roads)
 Roads render **cropped** to the downtown block (`BuildRoadMeshesCropped`, `LiveCityConfig` X0..Y1 =
