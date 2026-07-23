@@ -35,7 +35,7 @@ where a theory was refuted by data, that's called out.
 | 16 | TL poles rendered outside the cropped road net | ✅ done `6edbad8` (this session, crop TL to road box) | — |
 | **7** | **DDS cruise stutter (render-clock HOLD)** | ✅ **VERIFIED FIXED** `bfbf7c9` (dev) — tick-forward-every-frame + rate low-pass; GPU-confirmed this session (no stutter over DDS) | — |
 | **8** | **DDS stopped-car backward creep** | 🐛 **REGRESSED by `bfbf7c9`** — accel-aware arc blend *introduces* backward creep the old chord lerp didn't have; GPU-confirmed still visible + hard A/B below | **dev (DrClock, revisit)** |
-| **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🐛 **OPEN** — engine RoW/discharge + no teleport | **dev/engine** |
+| **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🔧 **IMPROVED, NOT CURED** by merge `184fb31` — terminal-lock → jam-and-recover, arrivals 38→81 (2.1×), parity 657/4 green; **GPU verdict: still NOT acceptable** (near-total stall, cars wait on green, lateral float = turn-lane churn). Repro spec: `docs/LIVE-CITY-15-RESIDUAL-REPRO.md` | **dev/engine (turn-lane segregation)** |
 | 17 | Viewer GC stalls at high ped counts | ⚠️ PARTIAL — `Sample()`-per-frame fixed this session; per-`Step` publish residual | dev (Sim.LiveCity publish) |
 
 Details on the open items are in their sections below. The ✅ sections are retained as evidence.
@@ -139,7 +139,25 @@ output.
 After the demo runs a while, cars pile up at junctions and **stop — including on a GREEN light, with
 no visible reason** — and it does not recover to free flow.
 
-**MEASURED (headless smoke, per-step stopped-fraction = cars moving < 0.1 m/s):** the stall is
+> **🔧 UPDATE — dense-flow engine merge `184fb31` (verified this session): IMPROVED, NOT CURED.**
+> Independent headless A/B (same `LIVECITY-GRIDLOCK` probe, cap 160): the **terminal lock is gone** —
+> `stoppedFrac` now oscillates **0.38–0.73 and recovers** instead of marching to ~0.94, and
+> **arrivals@200s = 81 (was 38, ~2.1×)**. `LIVECITY_YIELD=0` (0.41–0.62, arrivals 80) ≈ yield-on and
+> `LIVECITY_CARS=70` (0.47–0.68) still jam → residual is **engine RoW/lane-selection**, count- and
+> yield-independent. **Parity gate green: 657/4, all prior goldens byte-identical.**
+>
+> **BUT GPU verdict (local in-process live-city viewer): still NOT acceptable — "very unrealistic."**
+> Almost the **whole city stalls, cars waiting on GREEN, only a few running, on every run** (the jam is
+> reliable; exact stuck set may vary). Stuck cars **"float" — slow lateral micro-movements (lane-change churn)** rather than
+> discharging → strongly indicates **turn-lane segregation** (SUMO `getBestLanes`/`stayOnBest`,
+> WIP `9a77d3b`) is incomplete, compounded by **no teleport ported** to break a stubborn jam. Viewer ids
+> seen stuck: 96, 131, 89, 82, 45, 159.
+>
+> **➡️ Handed to a standalone headless session:** self-contained repro + witness method + A/B metric in
+> **`docs/LIVE-CITY-15-RESIDUAL-REPRO.md`**. Prior art on-branch: `GETBESTLANES-RESUME.md`,
+> `DENSE-FLOW-THROUGHPUT-DIAGNOSIS.md`, `ISSUE2-JUNCTION-TELEPORT-DESIGN.md`.
+
+**MEASURED PRE-MERGE (headless smoke, per-step stopped-fraction = cars moving < 0.1 m/s):** the stall is
 **independent of car count** — the tell-tale that it is NOT saturation/spillback:
 
 | t (s) | stoppedFrac @ `LIVECITY_CARS=70` (~64 live) | stoppedFrac @ 160 (~140 live) |
