@@ -862,3 +862,24 @@ cure is one of:
   stopped sort. Also a real feature.
 - **(C) Accept the stopped keep-right as a demo compromise** (flow over realism) until (A)/(B) land.
 Recommendation: (A) or (B); both are multi-step design-first efforts. NOT a one-line guard.
+
+## OWNER DECISION (2026-07-23): the cure is COOPERATIVE LANE CHANGE (LC2013), two regimes
+1. **Normal (fluent, up-front):** as cars APPROACH the junction they cooperatively sort into their
+   turn lane WHILE MOVING -- a car that wants lane L signals; the follower in L eases off to open a gap;
+   the changer slides in as a moving diagonal. No stop, no pure-lateral swap. (SUMO LC2013 strategic +
+   `informFollower`, driven by the long `lcStrategicLookahead` so it starts far ahead of the junction.)
+2. **Extreme (fallback):** a car that could NOT sort in time and reaches the merge point still needing
+   the lane may STOP and wait (briefly BLOCKING its lane) until the parallel lane opens a gap, then merges
+   into that real gap while moving. Temporary blocking is acceptable/realistic; a pure-lateral slide is not.
+This replaces the load-bearing but unrealistic stopped keep-right sort: cars reach the right lane via
+cooperation (mostly up-front while moving), so the box-block that the naive guard exposed never forms.
+
+PRIOR ART in git history (revive, don't rebuild from scratch): a full cooperative-LC effort exists and was
+RETIRED -- `afec614` "Retire the cooperative informFollower (dead weight after the P2-G junction fixes)",
+preceded by `18c998d` (split informFollower behind its own gate; default = dense LC only), `2ba9fe5`
+(gentle one-step helpDecel informFollower; fixed organic over-braking), `16e1c93` (cooperative-LC analysis
++ config-gate plan), `cc9f904` (hand-off package for the dense multi-lane car-overlap fix / cooperative
+LC). Mechanism template: `VehicleRuntime.CoopSpeedAdvice` (+inf default) + `CommandBuffer.SpeedAdvice`
+(commutative-MIN in Flush, consumed one step later in ComputeMoveIntent) -- determinism-safe. Its RETIRED
+failure mode was OPTIONAL overtakes over-braking -> revive SCOPED to STRATEGIC/URGENT (turn-lane) merges
+only. Parity-safe by the same gating (inert on every golden). NEXT: design doc for the scoped revival.
