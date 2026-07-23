@@ -883,3 +883,45 @@ LC). Mechanism template: `VehicleRuntime.CoopSpeedAdvice` (+inf default) + `Comm
 (commutative-MIN in Flush, consumed one step later in ComputeMoveIntent) -- determinism-safe. Its RETIRED
 failure mode was OPTIONAL overtakes over-braking -> revive SCOPED to STRATEGIC/URGENT (turn-lane) merges
 only. Parity-safe by the same gating (inert on every golden). NEXT: design doc for the scoped revival.
+
+## APPROACH & REASONING for the cooperative-LC cure (design: docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md)
+Why THIS approach, and why not the simpler ones (the reasoning chain, so a future session sees the logic):
+
+1. **Why not just suppress the stopped swap (the one-line guard)?** MEASURED: it removes the float but
+   box-blocks (stuckInternal 0->42, arrivals 1025->458). The demo's throughput DEPENDS on cars re-sorting
+   into junction-compatible lanes while queued. So the fix must PROVIDE that sorting realistically, not
+   just forbid the unrealistic version. => a scoped guard alone is impossible; sorting must be replaced,
+   not removed.
+
+2. **Why cooperative lane change specifically?** It is (a) what the owner asked for, (b) exactly how real
+   traffic sorts (the target lane opens a gap; the merger slides in while moving; in the extreme it waits),
+   and (c) SUMO's own model (LC2013 informFollower + strategic lookahead). It converts the sort from an
+   unphysical stopped side-slide into a physical moving diagonal, so it removes the float AND keeps flow.
+
+3. **Why REVIVE git afec614, not build fresh?** The exact mechanism was already built, measured, and
+   RETIRED in this repo (CoopSpeedAdvice channel + informFollower). Reviving is lower-risk than rebuilding:
+   the determinism-safe shape (commutative-MIN advice consumed next step) and the parity-inert gating are
+   already proven. Retrieval: `git show afec614` (reverse-apply the channel verbatim).
+
+4. **Why EXTEND to the strategic path?** The retired informFollower fired ONLY in the speed-gain path. #15
+   is about TURN-LANE (strategic/urgent) merges -- a wrong-lane car cooperatively getting into its turn
+   lane. So the strategic path needs its own informFollower production (new, same helpDecel mechanism).
+
+5. **Why two parts, in this order?** (A) cooperative sort FIRST (cars reach the right lane up-front while
+   moving), THEN (B) remove the stopped keep-right float. (B) alone box-blocks; (B) after (A) is safe
+   because (A) supplies the sorting (A) replaces. Ship (B) only once measurement shows no box-block return.
+
+6. **Why the GENTLE one-step helpDecel (not a hard cap)?** The retired version's crude full-follow-speed
+   cap over-braked followers -> cascaded congestion on organic nets (its documented failure mode). The
+   bounded one-step helpDecel (decel*0.5*dt) opens enough gap on a saturated grid without that cascade.
+
+7. **Why demo-gated (CooperativeInformFollower / CoordinatedLaneChange off on goldens)?** The mechanism is
+   organic-net poison but saturated-grid medicine; the live-city demo IS a saturated grid (the good case),
+   while every parity/bench golden is organic/uncongested -- so gate it to the demo and stay byte-identical
+   (no SpeedAdvice written when off => CoopSpeedAdvice stays +inf => consumption is a data no-op).
+
+Determinism/parity guardrails and the exact success conditions are in the design doc. Implementation next:
+revive the channel (afec614), add the strategic informFollower, wire the demo gate, then re-apply the
+keep-right guard and MEASURE (parity 657/4; bench hash D96213B7BB4021A7; keepRight stop=0 AND arrivals
+>=~900 with small stuckInternal). If box-block returns, cooperation isn't sorting enough up-front -> tune
+the trigger earlier, do NOT ship a flow regression.
