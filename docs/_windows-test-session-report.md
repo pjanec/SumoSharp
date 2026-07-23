@@ -117,10 +117,22 @@ no visible reason** — and it does not recover to free flow.
 
 Both car counts free-flow for ~20 s then collapse to **80–97% stopped by ~80–160 s**, with only
 partial recoveries — the **same curve at 70 as at 160**. So lowering `LIVECITY_CARS` does not help;
-64 cars in an 840 m grid is genuinely low density. This points to a **right-of-way / foe-check /
-deadlock bug** (a car that shouldn't yield does, or a symmetric conflict cycle locks), and with **no
-teleport ported** (`grep teleport` = 0 hits in the C# engine source; phase-1 keeps it off for
-determinism) nothing ever breaks the jam, so it's terminal.
+64 cars in an 840 m grid is genuinely low density.
+
+**Arrival-throughput trace (rules out "cars ran out of destinations / arrived-cars pile up"):** the
+engine DOES remove vehicles on arrival (`CommandBuffer` `Arrived`/Destroy + `SimEventKind.Arrived`),
+and LiveCitySim refills to the cap, so arrived cars can't accumulate. Counting actual arrivals: over
+**200 s with ~64 live cars, total arrivals = 16** (~8% of the hundreds you'd expect), and **~0
+arrivals for the entire first 100 s — even while cars were moving at 11.7 m/s** (t=20 s: 91% moving,
+0 arrivals). So cars **have** destinations but **almost never reach them** — this is **near-zero
+junction throughput**, not an arrival/despawn pile-up. Because trips never complete, cars fill to the
+cap and stall.
+
+This points to a **junction discharge / right-of-way bug** (cars can't get *through* junctions — a
+foe-check that over-yields, a symmetric right-before-left deadlock, or turn-lane mis-segregation),
+visible even during early free-flow. With **no teleport ported** (`grep teleport` = 0 hits in the C#
+engine source; phase-1 keeps it off for determinism) nothing ever breaks the jam, so it's terminal.
+It matches the **`dense-lane-overlap-fix-5tr4ha`** "stem-through under-discharge" theme directly.
 
 Not a viewer bug — it's `Sim.Core` engine behavior. Dedicated fix/diagnosis branches already exist
 (NOT merged into the live-city line); strongest candidates:
