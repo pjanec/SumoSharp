@@ -33,8 +33,8 @@ Re-capture fresh per task (other sessions may edit the engine).
 - [x] **D4** click ray-pick (screen-space `UnprojectPosition` + `VehiclePicker.PickNearestScreen`, 6/6 tests) → emissive ring + id label (live = real SUMO id, replay = handle until Stage E adds name on the wire). Polish: closer camera + cylinder peds for visibility. Opus-verified. ParityTests 654/4 + hash intact.
 
 ## Stage E — City3D remote (combined DDS)
-- [ ] **E1** Z on the replication wire (GeometryCodec + DDS geometry); round-trip on elevated net; hot path untouched
-- [ ] **E2** vehicle name once-per-spawn on the wire; per-frame record unchanged; remote id resolves
+- [x] **E1** Z on the wire — `LaneGeo.Z` additive (`hasZ` flag + appended block, GeometryCodec v1→v2, v1 still parses); `Lane.ShapeZ` threaded; DDS geometry blob carries it; consumers un-flattened. Opus-verified: codec round-trip + real DDS loopback (ramp 0,4,8). **Parity byte-identical (independently re-run: 654/4 + hash `D96213B7BB4021A7`).** (commit c95ecdd)
+- [x] **E2** vehicle name once-per-spawn — `LifecycleRecord.Name` from `VehicleId`; `IReplicationSource.Names` table (all 3 bindings); `DdsVehicleLifecycle` `FixedString64 Name`. Per-frame record UNCHANGED. Opus-verified (DDS loopback name PASS). (commit c95ecdd)
 - [ ] **E3** combined cars+peds DDS producer (`Sim.Host.App --live-city`), one net; inmem self-consume both
 - [ ] **E4** dual subscriber (`--transport=dds --live-city`), two-process round-trip renders cars+peds + Z + ids
 
