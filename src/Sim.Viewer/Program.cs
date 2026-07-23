@@ -1269,7 +1269,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     }
 
                     Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} stuckOnGreenClear={stuckGreenClear,3} " +
-                        $"stuckRed={stuckRed,3} stuckBehindLeader={stuckLeader,3} | examples:");
+                        $"stuckRed={stuckRed,3} stuckBehindLeader={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} | examples:");
                     var shown = 0;
                     foreach (var c in w)
                     {

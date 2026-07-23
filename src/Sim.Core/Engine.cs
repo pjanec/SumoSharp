@@ -1955,6 +1955,17 @@ public sealed partial class Engine : IEngine
     private int[] _tlLaneHandles = Array.Empty<int>();
     private byte[] _tlStates = Array.Empty<byte>();
 
+    // DIAGNOSTIC ONLY (issue #15 residual, docs/LIVE-CITY-15-ATTEMPT-LOG.md): count of vehicles that hit
+    // the wrong-lane dead-end clamp in ExecuteMoveVehicle this step -- a car that reached a lane end on a
+    // lane which is NOT its planned pool exit AND whose actual lane has no connection onward to its next
+    // route edge (TryReResolveFromActualLane already rescues cars whose lane DOES connect), so it is
+    // force-stopped (Pos=laneLength, Speed=0). This is exactly the wrong-lane strand that upstream
+    // lane-change cooperation would PREVENT; measuring it decides whether the URGENT-cooperation port is
+    // the right lever. NEVER read by any sim logic -> incrementing it cannot change a trajectory
+    // (parity-neutral). Interlocked because ExecuteMoves is region-parallel; reset each step.
+    private int _strandedOffRouteThisStep;
+    public int StrandedOffRouteThisStep => _strandedOffRouteThisStep;
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -2743,6 +2754,8 @@ public sealed partial class Engine : IEngine
             // passes as before this rung, now labeled by the `SystemPhase` each belongs to
             // (SystemPhase.cs). CLAUDE.md rule 2 / the D6 briefing: preserve calculation order
             // EXACTLY -- this reorganizes how the loop reads, never what runs or when.
+
+            _strandedOffRouteThisStep = 0; // diagnostic (#15): reset before this step's ExecuteMoves
 
             // X1 (docs/HIGH-DENSITY-X1-DESIGN.md): capture the realism mask ONCE per step from the
             // volatile field the host writes, so every gated phase this step (insertion, teleport,
@@ -9604,6 +9617,10 @@ public sealed partial class Engine : IEngine
                     {
                         continue;
                     }
+
+                    // DIAGNOSTIC (#15): this is the wrong-lane dead-end strand -- count it (parity-neutral,
+                    // never read by sim logic; Interlocked because ExecuteMoves is region-parallel).
+                    System.Threading.Interlocked.Increment(ref _strandedOffRouteThisStep);
 
                     v.Kinematics.Pos = currentLane.Length;
                     v.Kinematics.Speed = 0.0;

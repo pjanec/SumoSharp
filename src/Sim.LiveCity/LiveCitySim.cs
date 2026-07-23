@@ -274,6 +274,12 @@ public sealed class LiveCitySim : IDisposable
     // destinations but never reach them). Host-side read-only metric only -- never feeds the engine.
     public long ArrivedTotal { get; private set; }
 
+    // DIAGNOSTIC (#15 residual): how many vehicles hit the wrong-lane dead-end clamp in the engine's
+    // last step (a turner that could not merge into its turn lane and stranded at the stop line with no
+    // onward connection). This is the strand that upstream lane-change cooperation would PREVENT --
+    // measuring it against the total stuck-on-green count decides whether that fix is the right lever.
+    public int StrandedOffRouteLastStep => _engine.StrandedOffRouteThisStep;
+
     public int OccupiedCrossings => _crossingOccupancy.OccupiedCount;
 
     public int PeakOccupiedCrossings { get; private set; }
