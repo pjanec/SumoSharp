@@ -51,24 +51,29 @@ public sealed class LiveCityConfig
     public double TimeToTeleportSeconds { get; set; } = 0.0;
 
     // docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md: never let a dead-ended car freeze forever --
-    // free-flow-reroute or drive through on any forward connection instead. Prevents the accumulating
-    // strands that seed the terminal gridlock. MEASURED: does NOT cure the terminal gridlock (the strands
-    // are mostly not routing-failures), so OFF by default -- kept as a sound, parity-safe "never freeze"
-    // knob (SUMO ignore-route-errors), not a demo default. off = SUMO-parity clamp.
-    public bool DeadLaneDriveThrough { get; set; } = false;
+    // free-flow-reroute or drive through on any forward connection instead. RE-MEASURED after the
+    // lane-change-straddles-junction CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): with the
+    // desync cascade gone, this + WrongLaneRerouteAtApproach make every wrong-lane car RECOVER (strand
+    // reasons collapse to reResolveOK+rerouteOK only; strandedDeadEnd=0, stuckInternal=0-3, no capSpent
+    // clamp), so a single wrong-lane car can no longer clamp Speed=0 and wall its queue. Default ON for
+    // the demo (owner priority: floaters must not cause blockage). off = SUMO-parity clamp; every
+    // parity/bench scenario leaves the underlying Engine property false (byte-identical).
+    // Overridable via LIVECITY_DRIVETHROUGH (0 = off).
+    public bool DeadLaneDriveThrough { get; set; } = true;
 
     // Issue #15: generalises TryReResolveFromActualLane/TryRerouteFromDeadLane to fire while a
     // wrong-lane car is still APPROACHING the junction (within its own brake distance of the dead
     // lane's end) and to retry every step rather than permanently one-shot-capping after
     // MaxDeadLaneReroutes -- see Engine.WrongLaneRerouteAtApproach's own header comment for the full
-    // mechanism. MEASURED (docs/LIVE-CITY-15-ATTEMPT-LOG.md, "frozen on green" proof): does NOT cure the
-    // terminal gridlock -- it REGRESSES it (arrivals 258->225, and box-blocking `stuckInternal` 0->14-19)
-    // because rerouting the wrong-turn-lane car earlier just drives it INTO the junction where it jams
-    // against a full downstream lane, relocating the block instead of clearing it. The real cure is
-    // upstream (sort the car into a turn-compatible lane before the junction, SUMO best-lanes/strategic
-    // LC), not this reroute. Left as a parity-safe, DEFAULT-OFF experimental knob; the underlying Engine
-    // property is false on every scenario/bench path (byte-identical). Overridable via LIVECITY_WRONGLANE.
-    public bool WrongLaneRerouteAtApproach { get; set; } = false;
+    // mechanism. ORIGINALLY measured as a regression (box-blocking) -- but that was BEFORE the
+    // lane-change-straddles-junction CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md). RE-
+    // MEASURED after the cure: with the desync cascade gone, this + DeadLaneDriveThrough make every
+    // wrong-lane car RECOVER instead of clamping -- strand reasons collapse to reResolveOK+rerouteOK
+    // only (0 capSpent/poolEdgeMismatch), strandedDeadEnd=0, stuckInternal=0-3, stoppedFrac 0.99->~0.2-0.4,
+    // arrivals 258->800+. A single wrong-lane car can no longer clamp Speed=0 and wall its queue (owner
+    // priority: floaters must not cause blockage). Default ON for the demo; every parity/bench scenario
+    // leaves the underlying Engine property false (byte-identical). Overridable via LIVECITY_WRONGLANE.
+    public bool WrongLaneRerouteAtApproach { get; set; } = true;
 
     public int CarSpawnPerStep { get; set; } = 5;
 

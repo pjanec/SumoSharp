@@ -676,3 +676,35 @@ Both inert when `LcTargetHandle < 0` (always, for `LaneChangeDuration == 0`) => 
   (arrivals climbing) -- a peak-load effect, not the desync lock. Track separately if the demo needs it.
 
 `WrongLaneRerouteAtApproach` (task #21) stays default-OFF -- it treated the symptom; THIS is the cause.
+
+## POST-CURE: eliminate the residual queue-blocking "floater" (owner priority: floaters must not block)
+After the lane-change-straddles-junction CURE, the residual stuck cars are no longer desync strands
+(`poolEdgeMismatch` = 0). The autopsy on the fixed build shows the remaining blockers are **`capSpent`**
+strands: genuine wrong-lane cars that could not merge into their turn lane, rerouted twice, hit
+`MaxDeadLaneReroutes=2`, and clamped `Speed=0` FOREVER -- one such car walls its whole approach queue
+even though parallel lanes are free (owner's "single floater blocks the queue" report).
+
+**Primary fix (owner: solve the cause, not just dodge it):** never let a wrong-lane car clamp. Re-enabled
+`WrongLaneRerouteAtApproach` + `DeadLaneDriveThrough` as the live-city DEFAULTS -- previously measured as a
+regression, but that was BEFORE the cure; with the desync cascade gone they now work cleanly:
+| metric (cap 160, teleport off) | baseline | cure only | cure + never-clamp |
+|---|---|---|---|
+| arrivals @ t~1100-1380 | 258 (flat) | ~600 | **860 -> 1025** |
+| stoppedFrac late | 0.99 | ~0.5-0.65 | **0.2-0.5** |
+| strand reasons | poolEdgeMismatch huge | capSpent grows to 7k | **reResolveOK+rerouteOK only (0 strands)** |
+| strandedDeadEnd / stuckInternal | 8-22 / 0 | small / 0 | **0 / 0-3** |
+Every wrong-lane car RECOVERS (reroutes/drives-through) instead of clamping -> no floater ever walls a
+queue. Parity **657/4** byte-identical (Engine props false on every golden). Owner's dodge idea
+(followers route around a blocker; forward+lateral is physical from any speed incl. a full stop, only if
+the target lane is free) is the FALLBACK -- kept as a future realism polish, not needed once the blocker
+itself never forms.
+
+## STILL OPEN (secondary, VISUAL -- needs the 3D viewer, not headlessly verifiable)
+The lateral "float" the owner sees is a DR/render artifact: the ENGINE keeps every car on a lane
+centerline (`LatOffset` is only written by overtaking-evasion, never by the lane-change maneuver, which
+flips `LaneHandle` DISCRETELY at the maneuver midpoint). The renderer interpolates that ~1-lane-width
+discrete jump over the tick => a visible sideways slide. Owner's physical rule (consolidated): lateral
+displacement must always be accompanied by FORWARD displacement (a car can dodge from a full stop by
+turning + creeping forward, but never slides purely sideways), and only if the target lane is free.
+=> Fix is render/maneuver-kinematics (couple the lateral interpolation to forward progress, not wall
+time), verified in the viewer -- tracked separately.
