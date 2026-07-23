@@ -656,3 +656,23 @@ actual #15 cure; the reroute-at-approach knob (task #21) treated the symptom and
 `Engine.DiagSeqDesync` + `CheckSeqDesync` (flip-detected `SEQDESYNC-CREATED@site` with a pool window),
 wired via `LIVECITY_SEQDESYNC=1`. Sweeps after AdvanceLaneChanges/UpdateReroutes/UpdatePeriodicReroutes/
 ExecuteMoves + checks at ExecuteMoveVehicle entry and each boundary cross. All no-ops when the flag is off.
+
+## PRONG 2 COMPLETE — #15 CURED (measured, parity-safe)
+Implemented the fix from `docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md`: a lane-change maneuver
+may not straddle a junction. Two guards + `ClearLaneChangeManeuver(v)` helper (`Engine.cs`):
+1. Boundary cross (ExecuteMoveVehicle): after `LaneSeqIndex++`/`LaneHandle` update, clear any in-progress
+   maneuver (`LcTargetHandle >= 0`) so it can't re-apply onto the departed edge.
+2. AdvanceLaneChanges: before the midpoint flip, if the maneuver target's edge != the vehicle's current
+   edge, abort the (stale) maneuver instead of snapping LaneHandle back.
+Both inert when `LcTargetHandle < 0` (always, for `LaneChangeDuration == 0`) => byte-identical on goldens.
+
+**Measured (all first-hand):**
+- Parity **657/4** byte-identical; bench hash **D96213B7BB4021A7**, parallel==single. Unchanged.
+- `LIVECITY_SEQDESYNC=1 --frames 800`: **0** `SEQDESYNC-CREATED` (was >=25) -- desync eliminated.
+- Gridlock repro `LIVECITY_TELEPORT=0 LIVECITY_CARS=160 --frames 2000/3000`: arrivals **258 -> 553 (t=940)
+  -> 713 (t=1500), still climbing**; `stoppedFrac` 0.99 -> ~0.4-0.65 mid-run (oscillating, never terminal);
+  `meanSpd` holds 3-7 m/s vs baseline 0.01. Traffic sustainably drains -- the terminal lock is GONE.
+- Residual (separate, smaller): high-t (>1300s) `stoppedFrac` creeps to ~0.8-0.94 while still draining
+  (arrivals climbing) -- a peak-load effect, not the desync lock. Track separately if the demo needs it.
+
+`WrongLaneRerouteAtApproach` (task #21) stays default-OFF -- it treated the symptom; THIS is the cause.

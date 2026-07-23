@@ -9737,6 +9737,13 @@ public sealed partial class Engine : IEngine
                 // so this is byte-identical to reading _laneSeqPool. D3: direct pool-slice read.
                 v.LaneHandle = _laneSeqArrival[v.LaneSeqStart + v.LaneSeqIndex];
                 v.LaneId = _network.LanesByHandle[v.LaneHandle].Id;
+                // #15 CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): a lane change is a
+                // lateral move within ONE edge -- the vehicle just crossed a junction onto its exit lane,
+                // so any in-progress continuous maneuver on the edge just left is finalized/moot. Clear it
+                // so AdvanceLaneChanges cannot later snap LaneHandle back onto the departed edge (the
+                // pool/edge desync that clamps the vehicle Speed=0 = the live-city gridlock seed). Inert
+                // when no maneuver is active (always true for LaneChangeDuration == 0) -> byte-identical.
+                if (v.LcTargetHandle >= 0) ClearLaneChangeManeuver(v);
                 CheckSeqDesync(v, "boundaryCross", time); // #15 prong-1: did this cross desync index vs physical edge?
             }
 
@@ -11061,12 +11068,37 @@ public sealed partial class Engine : IEngine
     // halfway through the maneuver (MSVehicle emits the lane whose half its center is in) -- then
     // becomes the target; the maneuver completes after LcStepsTotal steps. No-op (LcTargetHandle < 0)
     // for every vehicle not mid-change, so a duration-0 scenario never enters here.
+    // #15 (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): abort an in-progress continuous
+    // lane-change maneuver, clearing all its bookkeeping. A lateral change is confined to one edge; the
+    // moment the vehicle changes edge (a junction cross) any pending maneuver is finalized/discarded so
+    // AdvanceLaneChanges can never later snap LaneHandle back onto the departed edge. Inert when no
+    // maneuver is active (LcTargetHandle < 0, always true for LaneChangeDuration == 0) -> byte-identical
+    // on every golden.
+    private static void ClearLaneChangeManeuver(VehicleRuntime v)
+    {
+        v.LcTargetHandle = -1;
+        v.LcTargetId = string.Empty;
+        v.LcStepsElapsed = 0;
+        v.LcStepsTotal = 0;
+    }
+
     private void AdvanceLaneChanges()
     {
         foreach (var v in ActiveVehicles())
         {
             if (v.LcTargetHandle < 0)
             {
+                continue;
+            }
+
+            // #15 defense-in-depth: if the maneuver target is on a DIFFERENT edge than the vehicle's
+            // current physical lane, the vehicle has since changed edge (crossed a junction) and this
+            // target is stale -- completing it would snap LaneHandle back onto the departed edge and
+            // desync LaneSeqIndex (the live-city gridlock seed). Abort the stale maneuver instead.
+            // Inert on every golden (duration 0 => never reaches here).
+            if (_network!.LanesByHandle[v.LcTargetHandle].EdgeId != _network.LanesByHandle[v.LaneHandle].EdgeId)
+            {
+                ClearLaneChangeManeuver(v);
                 continue;
             }
 
