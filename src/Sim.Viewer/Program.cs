@@ -1345,7 +1345,22 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                             dumped++;
                         }
                     }
-                    Console.Write($"LIVECITY-STUCKCLEAR: t={sim.Time,4:F0} clearStuck={clearStuck} byBinder:");
+                    // Collision safety check: on each lane, are any two cars overlapping? (pos gap < 4 m,
+                    // cars ~5 m long). A non-zero count means the yield-timeout released a car into a foe --
+                    // the safety proof must stay 0.
+                    var overlaps = 0;
+                    var byLane = new Dictionary<string, List<double>>();
+                    foreach (var c in w)
+                    {
+                        if (!byLane.TryGetValue(c.LaneId, out var ps)) { ps = new List<double>(); byLane[c.LaneId] = ps; }
+                        ps.Add(c.Pos);
+                    }
+                    foreach (var ps in byLane.Values)
+                    {
+                        ps.Sort();
+                        for (var k = 1; k < ps.Count; k++) if (ps[k] - ps[k - 1] < 4.0) overlaps++;
+                    }
+                    Console.Write($"LIVECITY-STUCKCLEAR: t={sim.Time,4:F0} clearStuck={clearStuck} overlaps={overlaps} byBinder:");
                     for (var b = 0; b < 14; b++) if (byBinder[b] > 0) Console.Write($" {binderNames[b]}={byBinder[b]}");
                     Console.WriteLine($" | JYfoe: moving={foeMoving} slow={foeSlow} stopped={foeStopped} none={foeNone}");
                     Console.Write(sb.ToString());

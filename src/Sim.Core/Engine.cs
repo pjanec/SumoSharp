@@ -6956,7 +6956,14 @@ public sealed partial class Engine : IEngine
                     egoImpatience, foeSeenCross, foe.VType.Decel, actionStepLengthSecs);
 
                 thisArm = 6;
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear);
+                // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md (realism knob; 0 = off = byte-identical): a car
+                // that has been waiting >= JunctionYieldTimeoutSeconds forces its gap and no longer yields to
+                // an APPROACHING foe (SUMO impatience taken to 1). Only this approaching arm is suppressed;
+                // the on-junction AdaptToJunctionLeader arm above is untouched, so a car is never released
+                // into a foe physically on the crossing. Pure snapshot read of WaitingTime -> evaluates the
+                // same in the pre-pass and the real pass.
+                var impatientTimeout = JunctionYieldTimeoutSeconds > 0.0 && v.WaitingTime >= JunctionYieldTimeoutSeconds;
+                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -10858,6 +10865,16 @@ public sealed partial class Engine : IEngine
     // (no lateral movement at standstill) without porting the whole sublane model. Set by the live-city
     // demo; every parity scenario leaves it 0.
     public double LaneChangeMinSpeed { get; set; }
+
+    // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
+    // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md: when > 0, a vehicle that has been WAITING at a junction
+    // for at least this many seconds stops taking the APPROACHING-foe crossing yield -- it forces its gap,
+    // exactly as SUMO's impatience does once WaitingTime/timeToImpatience reaches 1 (ours is otherwise the
+    // 300 s default), assuming the approaching foe brakes (self-consistent: once ego is on the junction it
+    // becomes that foe's on-junction leader). The on-junction AdaptToJunctionLeader arm is NEVER
+    // suppressed, so a car is never released into a foe physically on the crossing (collision-safe).
+    // Set by the live-city demo (~5 s); every parity/bench scenario leaves it 0 (inert -> byte-identical).
+    public double JunctionYieldTimeoutSeconds { get; set; }
 
     private void CommitLaneChange(VehicleRuntime v, int targetHandle, string targetId)
     {

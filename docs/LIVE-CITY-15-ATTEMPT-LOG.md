@@ -265,6 +265,25 @@ cross traffic (a collision). The only safe unblock is an **escape valve that fir
 yield. The residual ~26% vs SUMO is saturation standoffs SUMO breaks with teleport (+ its impatient
 gap-forcing) — behaviours we largely have EXCEPT teleport.
 
+## 2026-07-23 — FIX LANDED: SUMO teleport escape valve (short timeout) unblocks the demo
+Owner spec: short timeout (few secs, not 120), unblock if road clear after that, feels like a driver who
+didn't notice the gap and recovers quickly.
+- Built the SAFE version first: `Engine.JunctionYieldTimeoutSeconds` (opt-in) — after N s waiting, force
+  the gap vs an APPROACHING foe (never vs an on-junction foe = collision-safe). Measured **ineffective**
+  (81 → 81 arrivals): the dominant hold is a foe PHYSICALLY crossing (moving 7-14 m/s), which cannot be
+  overridden safely. Kept as a correct/harmless knob.
+- **Discovered SUMO's jam teleport (`CheckJamTeleports`) is ALREADY ported**, gated on `TimeToTeleport>0`,
+  off in live-city. Wired `LiveCityConfig.TimeToTeleportSeconds` (default **5 s**, env `LIVECITY_TELEPORT`)
+  → spliced `<time-to-teleport>` into the live-city engine config. **Measured: arrivals 81 → 188,
+  stoppedFrac 0.39 → 0.10 (free flow), meanSpeed 6.9 → 10.8; clearStuck ~30 → ~12-27; overlaps ~0 (no
+  collisions); car count stable (teleport reinserts, never deletes).**
+- **Parity 657/4 byte-identical, bench hash D96213B7BB4021A7 unchanged** — both knobs default-off in the
+  Engine/scenario/bench path (only the demo enables them), same inert-when-off guarantee as
+  `LaneChangeMinSpeed`.
+- **This is THE #15 residual fix.** It IS the "no teleport ported" gap the whole investigation kept
+  pointing at (report #15). The only tradeoff is teleport's forward *jump* (SUMO's own behaviour) — GPU
+  session to tune 5 vs 10 s for the best look. Design: `docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md`.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

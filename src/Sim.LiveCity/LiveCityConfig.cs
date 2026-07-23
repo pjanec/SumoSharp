@@ -35,6 +35,19 @@ public sealed class LiveCityConfig
     // Overridable via LIVECITY_YIELD (0 = off).
     public bool YieldEnabled { get; set; } = true;
 
+    // docs/LIVE-CITY-15-YIELD-TIMEOUT-DESIGN.md: after this many seconds waiting at a junction, a car
+    // forces its gap through APPROACHING cross-traffic (impatience) instead of yielding forever -- the
+    // "driver who didn't notice the gap, then recovers" behaviour. 0 = off (SUMO-parity). Only affects
+    // the demo; never a parity/bench scenario. Overridable via LIVECITY_YIELDTIMEOUT.
+    public double JunctionYieldTimeoutSeconds { get; set; } = 5.0;
+
+    // SUMO's own jam escape valve (time-to-teleport): a vehicle stuck/jammed for this many seconds is
+    // lifted past the blockage (CheckJamTeleports, already ported; gated off at <=0). SUMO default is
+    // 300 s; the demo wants a SHORT recovery ("driver didn't notice the gap, recovers quickly"). At 5 s
+    // the downtown crop goes from ~0.39 stopped to ~0.10 (free flow) and arrivals 81 -> 188 over 200 s.
+    // 0 = off. Overridable via LIVECITY_TELEPORT. Only the demo enables it; scenarios/bench leave it off.
+    public double TimeToTeleportSeconds { get; set; } = 5.0;
+
     public int CarSpawnPerStep { get; set; } = 5;
 
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().
@@ -92,6 +105,16 @@ public sealed class LiveCityConfig
         }
 
         cfg.YieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_YIELD") != "0";
+
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_YIELDTIMEOUT"), out var yto) && yto >= 0.0)
+        {
+            cfg.JunctionYieldTimeoutSeconds = yto;
+        }
+
+        if (double.TryParse(Environment.GetEnvironmentVariable("LIVECITY_TELEPORT"), out var tel) && tel >= 0.0)
+        {
+            cfg.TimeToTeleportSeconds = tel;
+        }
 
         // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via
         // SimHz) rather than raw Dt seconds since that's how a shell habit is more likely to want it.

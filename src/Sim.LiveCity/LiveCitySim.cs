@@ -204,12 +204,18 @@ public sealed class LiveCitySim : IDisposable
         // '.' as ',' (ToString() under a non-invariant thread culture) would corrupt the XML attribute
         // (e.g. "0,1" splitting into two malformed tokens), never a locale-dependent path.
         var stepLengthText = cfg.Dt.ToString(CultureInfo.InvariantCulture);
+        // SUMO jam escape valve: splice <time-to-teleport> only when the demo enables it (>0); at 0 the
+        // parser stores -1 (off), byte-identical to the pre-knob config.
+        var teleportXml = cfg.TimeToTeleportSeconds > 0.0
+            ? "<time-to-teleport value=\"" + cfg.TimeToTeleportSeconds.ToString(CultureInfo.InvariantCulture) + "\"/>"
+            : string.Empty;
         var engineConfig = ScenarioConfigParser.ParseXml(
             "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\""
             + stepLengthText + "\"/></time>"
-            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/></processing></configuration>");
+            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
+        _engine.JunctionYieldTimeoutSeconds = cfg.JunctionYieldTimeoutSeconds;
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         _engine.CrowdSource = cfg.YieldEnabled
