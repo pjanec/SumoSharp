@@ -40,6 +40,12 @@ public sealed class LiveCitySource : IDisposable
 
     public NetworkModel Network => _sim.Network;
 
+    // High-realism (ORCA-promotion) pocket, for the viewer to render (SUMO world coords + radii).
+    public double HighRealismPocketX => _sim.HighRealismPocketX;
+    public double HighRealismPocketY => _sim.HighRealismPocketY;
+    public double HighRealismPromoteRadius => _sim.HighRealismPromoteRadius;
+    public double HighRealismDemoteRadius => _sim.HighRealismDemoteRadius;
+
     // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": the static world-overlay scene (zones/
     // buildings/pois, all optional) LiveCitySim already loaded once in its own ctor -- exposed here so the
     // Viewer's zone-ground (and later building/POI) layers read it without a second parse.

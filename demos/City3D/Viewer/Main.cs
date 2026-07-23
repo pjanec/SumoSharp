@@ -421,6 +421,11 @@ public partial class Main : Node3D
     // ApplyOrbitCamera so it reads as infinite). Runtime `G` key toggles it; default visible.
     private MeshInstance3D? _gridNode;
 
+    // The high-realism (ORCA-promotion) InterestField pocket, drawn as two ground rings
+    // (promote / demote radius) so the tester can SEE where peds are full-ORCA vs dead-reckoned.
+    // `H` key toggles it; default visible on the local live path.
+    private Node3D? _highRealismNode;
+
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
     // (MultiMesh.InstanceCount) is only ever grown, never shrunk, so a transient dip in vehicle count
@@ -932,6 +937,11 @@ public partial class Main : Node3D
         // building-entrance doors + parking_lot/park areas, built AFTER buildings (same "ground layer,
         // then roads" read order every other live-city overlay follows here).
         BuildLiveCityPois(_liveCitySource.Scene);
+        // Render the ORCA high-realism pocket (promote/demote rings) so the tester can see where peds are
+        // full-ORCA vs low-power dead-reckoned. Local live path only (the pocket isn't on the DDS wire).
+        BuildHighRealismZone(
+            _liveCitySource.HighRealismPocketX, _liveCitySource.HighRealismPocketY,
+            _liveCitySource.HighRealismPromoteRadius, _liveCitySource.HighRealismDemoteRadius);
         _sceneBbox = roadBbox;
 
         // Even cropped to the ~840x840m downtown block, the FULL crop bbox still leaves individual
@@ -2022,6 +2032,17 @@ public partial class Main : Node3D
                 {
                     _buildingsNode.Visible = !_buildingsNode.Visible;
                     GD.Print($"Main: buildings visible={_buildingsNode.Visible} (B toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // High-realism (ORCA) zone toggle.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.H:
+                if (_highRealismNode is not null)
+                {
+                    _highRealismNode.Visible = !_highRealismNode.Visible;
+                    GD.Print($"Main: high-realism zone visible={_highRealismNode.Visible} (H toggle).");
                 }
 
                 GetViewport().SetInputAsHandled();
@@ -3923,6 +3944,51 @@ public partial class Main : Node3D
                 yield return h;
             }
         }
+    }
+
+    // Draws the high-realism (ORCA-promotion) pocket as two ground rings at the pocket centre: the inner
+    // PROMOTE radius (peds inside => full ORCA) and the outer DEMOTE radius (hysteresis; beyond => low-power
+    // dead-reckoning). Centre/radii come from LiveCitySim via LiveCitySource (SUMO world coords).
+    private void BuildHighRealismZone(double sumoX, double sumoY, double promoteRadius, double demoteRadius)
+    {
+        if (_highRealismNode is not null)
+        {
+            return;
+        }
+
+        var (gx, _, gz) = CityLib.CoordinateTransform.SumoToGodot(sumoX, sumoY, 0.0);
+        var root = new Node3D { Name = "HighRealismZone" };
+        root.AddChild(MakeGroundRing(gx, gz, (float)promoteRadius, new Color(1f, 0.55f, 0.1f, 0.95f))); // promote (orange)
+        root.AddChild(MakeGroundRing(gx, gz, (float)demoteRadius, new Color(1f, 0.55f, 0.1f, 0.4f)));   // demote (faint)
+        AddChild(root);
+        _highRealismNode = root;
+        GD.Print($"Main: high-realism (ORCA) zone at Godot({gx:F0},{gz:F0}) promote={promoteRadius:F0}m demote={demoteRadius:F0}m (H toggles).");
+    }
+
+    private static MeshInstance3D MakeGroundRing(float cx, float cz, float radius, Color color)
+    {
+        const int seg = 96;
+        var verts = new List<Vector3>(seg * 2);
+        for (var i = 0; i < seg; i++)
+        {
+            var a0 = (float)(2.0 * Math.PI * i / seg);
+            var a1 = (float)(2.0 * Math.PI * (i + 1) / seg);
+            verts.Add(new Vector3(cx + (radius * MathF.Cos(a0)), 0f, cz + (radius * MathF.Sin(a0))));
+            verts.Add(new Vector3(cx + (radius * MathF.Cos(a1)), 0f, cz + (radius * MathF.Sin(a1))));
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = color,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+        };
+        return new MeshInstance3D { Mesh = mesh, MaterialOverride = material, Position = new Vector3(0f, 0.2f, 0f) };
     }
 
     // Infinite ground-grid reference: a flat XZ line grid at GridGroundY, built ONCE (5 km span, 25 m lines)

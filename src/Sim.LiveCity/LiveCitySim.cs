@@ -180,8 +180,17 @@ public sealed class LiveCitySim : IDisposable
             if (d2 < bestD2) { bestD2 = d2; pocketCentre = poly.Centroid; }
         }
 
+        const double promoteRadius = 70.0, demoteRadius = 100.0;
         _field = new InterestField();
-        _field.Register(new InterestSource(pocketCentre, promoteRadius: 70.0, demoteRadius: 100.0));
+        _field.Register(new InterestSource(pocketCentre, promoteRadius, demoteRadius));
+
+        // Expose the high-realism (ORCA-promotion) pocket so a viewer can render it: peds within
+        // PromoteRadius of this centre are promoted to full ORCA; beyond DemoteRadius they fall back to
+        // low-power dead-reckoning (hysteresis band in between). Centre is in SUMO x/y (world) coords.
+        HighRealismPocketX = pocketCentre.X;
+        HighRealismPocketY = pocketCentre.Y;
+        HighRealismPromoteRadius = promoteRadius;
+        HighRealismDemoteRadius = demoteRadius;
 
         _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
 
@@ -264,6 +273,12 @@ public sealed class LiveCitySim : IDisposable
     public int PeakOccupiedCrossings { get; private set; }
 
     public int CarYieldObservations { get; private set; }
+
+    // The high-realism (ORCA-promotion) InterestField pocket, for viewers to render (SUMO world coords).
+    public double HighRealismPocketX { get; private set; }
+    public double HighRealismPocketY { get; private set; }
+    public double HighRealismPromoteRadius { get; private set; }
+    public double HighRealismDemoteRadius { get; private set; }
 
     // Deterministic SplitMix64, seeded from LiveCityConfig.CarRngSeed -- identical constants/order to
     // SceneGen.BuildLiveCity's `NextRng`, so two LiveCitySim instances with the same seed spawn the same
