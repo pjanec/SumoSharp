@@ -30,8 +30,8 @@ where a theory was refuted by data, that's called out.
 | 14 | High-refresh render judder (60fps cap on 240Hz) | ✅ done `5adf4f9` (this session, uncap) | — |
 | 10 | Ped "dance" at junctions | ✅ done `996805f` — VERIFIED this session (no dance at 10× crowd) | — |
 | 16 | TL poles rendered outside the cropped road net | ✅ done `6edbad8` (this session, crop TL to road box) | — |
-| **7** | **DDS cruise stutter (render-clock HOLD)** | 🐛 **OPEN** — confirmed, DR-core | **dev (DrClock)** |
-| **8** | **DDS stopped-car backward creep** | 🐛 **OPEN** — confirmed, DR-core | **dev (DrClock)** |
+| **7** | **DDS cruise stutter (render-clock HOLD)** | 🔧 **fix pushed** `bfbf7c9` (dev) — tick-forward-every-frame + rate low-pass; **awaiting GPU verify** | dev (DrClock) |
+| **8** | **DDS stopped-car backward creep** | 🔧 **fix pushed** `bfbf7c9` (dev) — accel-aware arc blend replaces chord lerp; **awaiting GPU verify** | dev (DrClock) |
 | **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🐛 **OPEN** — engine RoW/discharge + no teleport | **dev/engine** |
 | **17** | **Viewer GC stalls at high ped counts (per-frame per-ped allocation)** | 🐛 **OPEN** — measured (GC, not CPU) | **dev (viewer/recon)** |
 
