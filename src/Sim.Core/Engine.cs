@@ -185,6 +185,41 @@ public sealed partial class Engine : IEngine
     // (Count==0) every stop-consuming call site already handles.
     private readonly Dictionary<int, Queue<StopRuntime>> _stopsByEntity = new();
 
+    // GAP-2 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §3): the parkingArea registry (by id) and the
+    // per-area roadside-lot occupancy table -- the runtime analog of MSParkingArea's occupied-space
+    // bookkeeping. `_parkingLotOccupied[areaId][i]` is true while lot i is claimed by a parked
+    // vehicle. Lots are claimed (lowest free) when a vehicle actually parks and freed when it pulls
+    // out (Execute phase, deterministic order), so an area's lots turn over across the run and a
+    // capacity-N area serves any number of vehicles as long as <= N are parked at once
+    // (MSParkingArea::computeLastFreePos). Empty for every scenario with no parkingArea.
+    private readonly Dictionary<string, ParkingArea> _parkingAreasById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool[]> _parkingLotOccupied = new(StringComparer.Ordinal);
+
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2): per-vehicle count of dead-lane reroutes, a
+    // hard bound so a vehicle whose every route to its destination loops back through the lane it is
+    // stuck on cannot reroute forever (measured: veh 58 looped 300+ times). After the cap it clamps
+    // once (same as pre-GAP-1) rather than spinning. Keyed by EntityIndex; only ever written in the
+    // Execute phase (single writer per vehicle), read under the same pool lock as the reroute splice.
+    private readonly Dictionary<int, int> _deadLaneRerouteCount = new();
+    private const int MaxDeadLaneReroutes = 2;
+
+    // GAP-1: the dead-lane reroute is a LAST RESORT, not a first response. A car only reroutes off a
+    // dead lane after it has actually been stuck (clamped, blocking) for this long -- like vanilla's
+    // periodic (30 s) device.rerouting cadence, not instantly at the first touch of the lane end.
+    // This keeps the reroute from perturbing the low-density case (where the ~8 genuinely stranded
+    // cars are few and momentary wrong-lane arrivals resolve on their own) and the cascade that an
+    // eager reroute triggers, while still rescuing a persistently-gridlocked car well before it would
+    // reach time-to-teleport (120 s). Below the threshold the car clamps and accumulates WaitingTime;
+    // once over it, it reroutes.
+    private const double DeadLaneRerouteWaitSeconds = 5.0;
+
+    // GAP-1: the LONGER last-resort gate for a dead-lane car held short of the lane end by a junction
+    // yield / red light (TryRerouteStuckDeadLane). It never reaches the boundary, so the 5 s gate
+    // above does not apply to it; instead it is rerouted only when it nears time-to-teleport (120 s),
+    // so only the cars that would otherwise jam-teleport are diverted -- an eager stuck-reroute churns
+    // the dense case. Swept: see docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.5.
+    private const double StuckDeadLaneRerouteWaitSeconds = 90.0;
+
     // P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1C, §2, §5): the persistent teleport transfer queue --
     // the MSVehicleTransfer::myVehicles analog. A vehicle picked for a jam-teleport is lifted off
     // its lane (InTransfer=true) and appended here with the route-edge index of the edge it has
@@ -434,6 +469,19 @@ public sealed partial class Engine : IEngine
     private bool[] _isInternalLane = Array.Empty<bool>();
     private VehicleRuntime?[] _foeApproachFirst = Array.Empty<VehicleRuntime?>();
     private VehicleRuntime?[] _foeApproachSecond = Array.Empty<VehicleRuntime?>();
+
+    // Yield-parity (crossing arm only): a SECOND foe index that, unlike _foeApproachFirst/Second,
+    // registers a vehicle for an internal lane ONLY while that lane is still at or ahead of the
+    // vehicle's own current position (i >= LaneSeqIndex) -- i.e. it excludes foes that have ALREADY
+    // crossed the lane and are now downstream on an exit lane. FindFoeVehicle (the shared index above)
+    // deliberately keeps its full-route behaviour so the sameTarget-MERGE arm stays byte-identical;
+    // only the crossing-foe arm of JunctionYieldConstraint reads this cleared-excluding index, via
+    // FindCrossFoeVehicle. In a FIFO approach the oldest still-approaching vehicle is the nearest to
+    // the junction, so the first-two-by-iteration order resolves to the nearest/second-nearest LIVE
+    // foe -- the fix for a saturated permissive crossing whose real approaching stream was masked by a
+    // long-departed vehicle that still listed the lane in its (already-traversed) route.
+    private VehicleRuntime?[] _foeCrossFirst = Array.Empty<VehicleRuntime?>();
+    private VehicleRuntime?[] _foeCrossSecond = Array.Empty<VehicleRuntime?>();
 
     // Perf (Export-phase parallelism): a reusable, index-keyed buffer for the parallel EmitTrajectory
     // branch. Emit's per-vehicle cost is the LaneGeometry.PositionAtOffset trig, which reads only
@@ -1194,9 +1242,23 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        // P0-C2: resolve every `<stop parkingArea="X"/>` to a concrete lane stop now that both the
-        // demand (route-files) and the parkingArea registry (additional-files) are known. No-op --
-        // returns the demand unchanged, byte-identical -- when nothing references a parkingArea.
+        // GAP-2: keep the parkingArea registry + an empty per-area occupancy table for the runtime
+        // lowest-free-lot manager (claim on park / free on pull-out). Cleared first so a re-load of
+        // the same Engine instance starts fresh.
+        _parkingAreasById.Clear();
+        _parkingLotOccupied.Clear();
+        _deadLaneRerouteCount.Clear();   // GAP-1: fresh dead-lane reroute budget per load
+        foreach (var (id, pa) in parkingAreas)
+        {
+            _parkingAreasById[id] = pa;
+            _parkingLotOccupied[id] = new bool[Math.Max(0, pa.RoadsideCapacity)];
+        }
+
+        // P0-C2/GAP-2: resolve every `<stop parkingArea="X"/>` to a concrete lane stop now that both
+        // the demand (route-files) and the parkingArea registry (additional-files) are known. No-op --
+        // returns the demand unchanged, byte-identical -- when nothing references a parkingArea. The
+        // lot INDEX (and thus EndPos) is NOT chosen here anymore; it is claimed at runtime when the
+        // vehicle parks (see the lot-claim in ExecuteMoves).
         _demand = ResolveParkingAreaStops(_demand, parkingAreas);
 
         InitializeLoaded();
@@ -1210,32 +1272,23 @@ public sealed partial class Engine : IEngine
             ? lane.Length
             : throw new InvalidDataException($"<parkingArea> references unknown lane '{laneId}'.");
 
-    // P0-C2/GAP-3 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §3): rewrite every `<stop parkingArea="X"/>`
-    // (carrying only a ParkingAreaId placeholder from DemandParser) into a concrete lane stop --
-    // LaneId=pa.lane, StartPos=pa.startPos, EndPos=this occupant's OWN distinct lot position (see
-    // ParkingArea.LotPosition). After this, departPos="stop" (Engine.cs's TryInsertOnLane) and
-    // ProcessNextStop consume the stop exactly like a plain lane <stop>, unchanged -- StopDef.
-    // ParkingAreaId itself is left untouched by the `with` below (never null'd out), so
-    // StopRuntime.IsParking (set from it in BuildRuntime) still knows this is a parking stop after
-    // resolution. Fast path: if no vehicle references a parkingArea, the demand is returned
-    // untouched (byte-identical), so any scenario without parkingArea stops is unaffected.
-    //
-    // GAP-3 occupant assignment (static, load-time -- NO parkingAreaReroute/finite-dwell turnover,
-    // per the owner's steer, docs/SERVE-PATH-PLAN.md §3a): every occupant of a given parkingArea
-    // gets a DISTINCT lot index, assigned in two passes so the order matches the timeline real SUMO
-    // would observe for the served-scenario shapes this engine supports (park-and-stay sinks +
-    // departPos="stop" pull-out origins ONLY):
-    //   (1) departPos="stop" origins are already parked at t=0 (MSLane::insertVehicle's STOP case)
-    //       -- strictly before any moving vehicle can possibly have driven in and reached its own
-    //       stop (that takes >= 1 simulated step) -- so they claim the lowest lot indices first, in
-    //       vehicle-list (document) order.
-    //   (2) every remaining `<stop parkingArea>` on a normally-inserted (moving) vehicle claims the
-    //       NEXT lot indices, in vehicle-list order.
-    // This is a faithful reproduction of MSParkingArea::computeLastFreePos's "lowest-index free lot"
-    // rule for scenarios where no occupant vacates before a later occupant of the SAME area arrives
-    // (the only shape the served scenarios exercise -- see scenario 67's own design note for how its
-    // timing keeps this unambiguous). A scenario that raced these would need SUMO's full dynamic
-    // reservation system, out of GAP-3's scope.
+    // P0-C2/GAP-2 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §3): rewrite every `<stop
+    // parkingArea="X"/>` (carrying only a ParkingAreaId placeholder from DemandParser) into a
+    // concrete lane stop -- LaneId=pa.lane, StartPos=pa.startPos. The lot INDEX (and thus the
+    // EndPos/parked position) is NO LONGER chosen here: which lot a vehicle gets depends on which
+    // lots are free WHEN IT ACTUALLY PARKS, and for an area whose occupants turn over across the run
+    // (a capacity-1 lot reused by several time-separated vehicles) that is not knowable at load.
+    // Lot assignment is therefore deferred to runtime (MSParkingArea::computeLastFreePos: claim the
+    // lowest free lot on park, free it on pull-out -- see the lot-claim/-free in ExecuteMoves and the
+    // provisional brake target in StopLineConstraint). EndPos is left at 0 here as a placeholder.
+    // StopDef.ParkingAreaId is left untouched by the `with` below (never null'd out), so
+    // StopRuntime.IsParking/ParkingAreaId (set from it in BuildRuntime) still identify the stop.
+    // Fast path: if no vehicle references a parkingArea, the demand is returned untouched
+    // (byte-identical), so any scenario without parkingArea stops is unaffected. This replaces the
+    // pre-GAP-2 static two-pass lot assignment (which gave every occupant of the run a DISTINCT lot
+    // index and threw "lot index out of range" on an oversubscribed area); with runtime turnover the
+    // committed single-occupant goldens (48/66-72) still see the lowest-free lot == the old static
+    // index at every step (they never reuse), so they stay byte-identical.
     private static DemandModel ResolveParkingAreaStops(
         DemandModel demand,
         IReadOnlyDictionary<string, ParkingArea> parkingAreas)
@@ -1263,44 +1316,6 @@ public sealed partial class Engine : IEngine
             return demand;
         }
 
-        // Pass 1: assign a distinct lot index to every (vehicleIndex, stopIndex) occupant of each
-        // referenced parkingArea. Keyed by a value-tuple, not the StopDef itself (records don't have
-        // reference identity, and two stops CAN be structurally equal before resolution).
-        var nextLotIndexByPa = new Dictionary<string, int>(StringComparer.Ordinal);
-        var lotIndexByOccupant = new Dictionary<(int VehicleIndex, int StopIndex), int>();
-
-        // Pass 1a: departPos="stop" origins (Def.Stops[0] is always the one TryInsertOnLane reads
-        // for a Stop-kind depart position -- see that method's own DepartPosSpec.Stop arm).
-        for (var vi = 0; vi < demand.Vehicles.Count; vi++)
-        {
-            var v = demand.Vehicles[vi];
-            if (v.DepartPos.Kind == DepartPosSpec.Stop && v.Stops.Count > 0 && v.Stops[0].ParkingAreaId is { } originPaId)
-            {
-                var lotIndex = nextLotIndexByPa.TryGetValue(originPaId, out var n) ? n : 0;
-                lotIndexByOccupant[(vi, 0)] = lotIndex;
-                nextLotIndexByPa[originPaId] = lotIndex + 1;
-            }
-        }
-
-        // Pass 1b: every remaining parkingArea stop (moving vehicles that drive in and park).
-        for (var vi = 0; vi < demand.Vehicles.Count; vi++)
-        {
-            var v = demand.Vehicles[vi];
-            for (var si = 0; si < v.Stops.Count; si++)
-            {
-                var s = v.Stops[si];
-                if (s.ParkingAreaId is not { } paId || lotIndexByOccupant.ContainsKey((vi, si)))
-                {
-                    continue;
-                }
-
-                var lotIndex = nextLotIndexByPa.TryGetValue(paId, out var n) ? n : 0;
-                lotIndexByOccupant[(vi, si)] = lotIndex;
-                nextLotIndexByPa[paId] = lotIndex + 1;
-            }
-        }
-
-        // Pass 2: rewrite each vehicle's stops using its assigned lot index.
         var newVehicles = new List<VehicleDef>(demand.Vehicles.Count);
         for (var vi = 0; vi < demand.Vehicles.Count; vi++)
         {
@@ -1322,16 +1337,9 @@ public sealed partial class Engine : IEngine
             }
 
             var resolvedStops = new List<StopDef>(v.Stops.Count);
-            for (var si = 0; si < v.Stops.Count; si++)
+            foreach (var s in v.Stops)
             {
-                var s = v.Stops[si];
-                if (s.ParkingAreaId is null)
-                {
-                    resolvedStops.Add(s);
-                    continue;
-                }
-
-                resolvedStops.Add(ResolveParkingAreaStop(s, parkingAreas, lotIndexByOccupant[(vi, si)]));
+                resolvedStops.Add(ResolveParkingAreaStop(s, parkingAreas));
             }
 
             newVehicles.Add(v with { Stops = resolvedStops });
@@ -1340,7 +1348,10 @@ public sealed partial class Engine : IEngine
         return demand with { Vehicles = newVehicles };
     }
 
-    private static StopDef ResolveParkingAreaStop(StopDef stop, IReadOnlyDictionary<string, ParkingArea> parkingAreas, int lotIndex)
+    // Resolve a single `<stop parkingArea>` to its lane + startPos, validating the area exists and
+    // its capacity is usable. EndPos is deferred to runtime (lot claimed on park), so it is left 0
+    // here. A plain lane stop passes through untouched.
+    private static StopDef ResolveParkingAreaStop(StopDef stop, IReadOnlyDictionary<string, ParkingArea> parkingAreas)
     {
         if (stop.ParkingAreaId is null)
         {
@@ -1354,14 +1365,96 @@ public sealed partial class Engine : IEngine
                 "declared in any additional-file.");
         }
 
-        // LotPosition throws a clear error if pa.RoadsideCapacity < 1 or lotIndex is out of range
-        // (out-of-scope SUMO branches -- see its own header comment).
+        // Capacity must be >= 1 for the roadside-lot placement to be in scope (a capacity-0 area hits
+        // a different SUMO branch). Surfaced here at load rather than deferred to the first runtime
+        // claim, so an unusable area is rejected loudly and early -- LotPosition(0) does exactly this
+        // capacity check.
+        _ = pa.LotPosition(0);
+
         return stop with
         {
             LaneId = pa.LaneId,
             StartPos = pa.StartPos,
-            EndPos = pa.LotPosition(lotIndex),
+            EndPos = 0.0,
         };
+    }
+
+    // GAP-2: the lowest-index currently-free lot of `areaId`, or -1 if the area is full
+    // (MSParkingArea::computeLastFreePos's "lowest free" pick). Reads the occupancy table only; the
+    // Plan phase treats it as a frozen start-of-step snapshot and Execute mutates it in the engine's
+    // deterministic per-step order, so the pick is order-independent and determinism is preserved.
+    private int LowestFreeParkingLot(string areaId)
+    {
+        if (!_parkingLotOccupied.TryGetValue(areaId, out var occupied))
+        {
+            return -1;
+        }
+
+        for (var i = 0; i < occupied.Length; i++)
+        {
+            if (!occupied[i])
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    // GAP-2: the runtime brake target / parked position of a parkingArea stop. If it has already
+    // claimed a lot, that lot's LotPosition (fixed for the rest of the stop); otherwise the lowest
+    // currently-free lot's LotPosition -- the provisional target a still-approaching vehicle brakes
+    // toward. Returns null iff the area is full and this stop has not yet claimed a lot, in which
+    // case the caller makes the vehicle wait short of the area (SUMO's "no free position" path).
+    private double? ParkingStopEndPos(StopRuntime stop)
+    {
+        if (stop.ParkingAreaId is not { } areaId || !_parkingAreasById.TryGetValue(areaId, out var pa))
+        {
+            return stop.EndPos;
+        }
+
+        var lot = stop.AssignedLot >= 0 ? stop.AssignedLot : LowestFreeParkingLot(areaId);
+        return lot >= 0 ? pa.LotPosition(lot) : null;
+    }
+
+    // GAP-2: claim the lowest free lot of this parking stop's area for the vehicle that just parked,
+    // recording the lot on the stop (so it can be freed exactly on pull-out) and pinning EndPos to
+    // that lot's position. Runs only in Execute, in the engine's deterministic per-step order.
+    private void ClaimParkingLot(StopRuntime stop)
+    {
+        if (stop.ParkingAreaId is not { } areaId
+            || !_parkingAreasById.TryGetValue(areaId, out var pa)
+            || !_parkingLotOccupied.TryGetValue(areaId, out var occupied))
+        {
+            return;
+        }
+
+        var lot = LowestFreeParkingLot(areaId);
+        if (lot < 0)
+        {
+            // The reached-gate (ProcessNextStop) only lets a stop latch Reached when a lot is free,
+            // so this is unreachable in practice; guarded defensively rather than corrupting state.
+            return;
+        }
+
+        occupied[lot] = true;
+        stop.AssignedLot = lot;
+        stop.EndPos = pa.LotPosition(lot);
+    }
+
+    // GAP-2: return this stop's claimed lot to its area's free-set (MSParkingArea::leaveFrom) when the
+    // vehicle pulls out. Idempotent and safe for an unclaimed stop.
+    private void FreeParkingLot(StopRuntime stop)
+    {
+        if (stop.AssignedLot >= 0
+            && stop.ParkingAreaId is { } areaId
+            && _parkingLotOccupied.TryGetValue(areaId, out var occupied)
+            && stop.AssignedLot < occupied.Length)
+        {
+            occupied[stop.AssignedLot] = false;
+        }
+
+        stop.AssignedLot = -1;
     }
 
     // SUMOSHARP-API.md §9: load a network WITHOUT any demand -- the "start empty and spawn everything at
@@ -1467,6 +1560,8 @@ public sealed partial class Engine : IEngine
         _isInternalLane = new bool[laneCount];
         _foeApproachFirst = new VehicleRuntime?[laneCount];
         _foeApproachSecond = new VehicleRuntime?[laneCount];
+        _foeCrossFirst = new VehicleRuntime?[laneCount];
+        _foeCrossSecond = new VehicleRuntime?[laneCount];
         for (var h = 0; h < laneCount; h++)
         {
             _isInternalLane[h] = _network.LanesByHandle[h].Id.StartsWith(':');
@@ -1762,12 +1857,17 @@ public sealed partial class Engine : IEngine
                 {
                     LaneId = stopDef.LaneId,
                     StartPos = stopDef.StartPos,
+                    // GAP-2: for a parkingArea stop EndPos is resolved at runtime (LotPosition of the
+                    // lot claimed when the vehicle parks), so stopDef.EndPos is a load-time placeholder
+                    // (0) here -- StopLineConstraint/Execute overwrite it. Plain lane stops keep the
+                    // load-resolved endPos exactly.
                     EndPos = stopDef.EndPos,
                     Duration = stopDef.Duration,
                     // GAP-3: StopDef.ParkingAreaId survives ResolveParkingAreaStop's `with` rewrite
                     // (only LaneId/StartPos/EndPos are overridden there), so this is non-null iff the
                     // ORIGINAL XML was `<stop parkingArea=...>` -- never true for a plain lane stop.
                     IsParking = stopDef.ParkingAreaId is not null,
+                    ParkingAreaId = stopDef.ParkingAreaId,
                 });
             }
 
@@ -2976,6 +3076,47 @@ public sealed partial class Engine : IEngine
         return null;
     }
 
+    // GAP-4 (rerouting-with-stops): true iff `stops` contains a parkingArea stop whose lane's edge is
+    // on `routeEdges` but is NOT the final route edge -- i.e. a MID-ROUTE parking detour that a
+    // shortest-path reroute (route[0] -> route[^1]) would collapse. Used to hold such a vehicle on its
+    // original stop-visiting route across the pre-insertion / periodic reroute passes (SUMO reroutes
+    // between stops; this preserves them). Returns false for a stop on the final edge (handled by
+    // ParkStopFinalEdgeOverride) or a stop edge not on the route -- so byte-identical wherever no such
+    // mid-route parking stop exists (every committed golden with device.rerouting).
+    private bool HasUnreachedMidRouteParkingStop(IReadOnlyList<StopDef> stops, IReadOnlyList<string> routeEdges)
+    {
+        if (stops.Count == 0 || routeEdges.Count == 0)
+        {
+            return false;
+        }
+
+        var lastEdgeId = routeEdges[routeEdges.Count - 1];
+        foreach (var s in stops)
+        {
+            if (s.ParkingAreaId is null
+                || !_network!.LanesById.TryGetValue(s.LaneId, out var lane)
+                || lane.EdgeId == lastEdgeId)
+            {
+                continue;
+            }
+
+            // Start at i=1: a parking stop on the DEPARTURE edge (route[0], departPos="stop") is not a
+            // mid-route detour -- the vehicle starts parked there, the reroute never collapses it, and
+            // treating it as mid-route wrongly holds the vehicle off the pre-insertion reroute (measured:
+            // the synthetic witness's 10 departPos="stop" cars regress Gap-1 when swept in). Only a stop
+            // STRICTLY between the first and last route edge (0 < pos < last) is a genuine detour.
+            for (var i = 1; i < routeEdges.Count - 1; i++)
+            {
+                if (routeEdges[i] == lane.EdgeId)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     // Perf (insert): resolve every distinct (route, departLane) insertion lane-sequence up front, in
     // parallel, into _insertRouteSeqCache. Pure function of the immutable network, so byte-identical to
     // lazy resolution -- see the cache field's header and the LoadScenario call site.
@@ -3241,6 +3382,54 @@ public sealed partial class Engine : IEngine
         _discardedDepartures++;
     }
 
+    // MSBaseVehicle::basePos(edge) (MSBaseVehicle.cpp:1117): the resolved insertion position for
+    // departPos="base" (and SUMO's DEFAULT). The vehicle's front bumper is placed at
+    // MIN(vType.Length + POSITION_EPS, lane.Length); if the vehicle's FIRST scheduled stop is a
+    // lane <stop> on the depart edge (this insertion lane's edge), the position is further clamped
+    // to MAX(0, stop.endPos) so the vehicle is not inserted past its own stop. Edge-level stop
+    // match mirrors SUMO's `myStops.front().edge == myRoute->begin() && stop.lane->edge ==
+    // route.begin()`. POSITION_EPS == PositionEps (0.1).
+    private double BasePos(VehicleRuntime v, Lane lane)
+    {
+        double result = Math.Min(v.VType.Length + PositionEps, lane.Length);
+        // Cap to the first scheduled stop's endPos only for a PLAIN lane stop on the depart edge --
+        // a parkingArea stop's endPos is resolved at runtime (GAP-2, deferred to 0 at load), so it
+        // cannot cap here; SUMO's basePos cap for a parking first-stop on the depart edge is an
+        // unsupported edge case (no committed scenario nor the box exercises it -- the box's base
+        // vehicles reach their parkingArea on a LATER edge).
+        if (v.Def.Stops.Count > 0
+            && v.Def.Stops[0].ParkingAreaId is null
+            && _network!.LanesById.TryGetValue(v.Def.Stops[0].LaneId, out var stopLane)
+            && stopLane.EdgeId == lane.EdgeId)
+        {
+            result = Math.Min(result, Math.Max(0.0, v.Def.Stops[0].EndPos));
+        }
+        return result;
+    }
+
+    // GAP-2: the insertion position for a departPos="stop" vehicle. If the first stop is a plain
+    // lane <stop> on the insertion lane, MSLane::insertVehicle places the vehicle at MAX(0, endPos).
+    // If it is a parkingArea stop (an origin that is born already parked), the vehicle is placed at
+    // its LOT position -- the lowest currently-free lot (claimed for real once insertion succeeds,
+    // in TryInsertOnLane); an already-full area falls back to the area StartPos. Any other case
+    // (no first stop on this lane) falls back to BASE (0), exactly as before.
+    private double StopDepartInsertPos(VehicleRuntime v, Lane lane)
+    {
+        if (v.Def.Stops.Count == 0 || v.Def.Stops[0].LaneId != lane.Id)
+        {
+            return 0.0;
+        }
+
+        var s0 = v.Def.Stops[0];
+        if (s0.ParkingAreaId is { } areaId && _parkingAreasById.TryGetValue(areaId, out var pa))
+        {
+            var lot = LowestFreeParkingLot(areaId);
+            return lot >= 0 ? pa.LotPosition(lot) : Math.Max(0.0, pa.StartPos);
+        }
+
+        return Math.Max(0.0, s0.EndPos);
+    }
+
     // MSLane::isInsertionSuccess's leader-gap check only (see InsertDepartingVehicles' header
     // comment for the full derivation/scope). Returns true and performs the insertion iff
     // there is no leader on the lane or gap >= 0; otherwise leaves `v` untouched and returns
@@ -3278,9 +3467,14 @@ public sealed partial class Engine : IEngine
         double insertPos = v.Def.DepartPos.Kind switch
         {
             DepartPosSpec.Given => v.Def.DepartPos.Literal,
-            DepartPosSpec.Stop => v.Def.Stops.Count > 0 && v.Def.Stops[0].LaneId == lane.Id
-                ? Math.Max(0.0, v.Def.Stops[0].EndPos)
-                : 0.0,
+            DepartPosSpec.Stop => StopDepartInsertPos(v, lane),
+            // DepartPosDefinition::BASE -> MSBaseVehicle::basePos (MSBaseVehicle.cpp:1117): front
+            // bumper at MIN(vType.Length + POSITION_EPS, lane.Length), capped to MAX(0, endPos) of
+            // the first scheduled stop WHEN that stop is on the depart edge (myStops.front().edge ==
+            // route.begin() && stop.lane->edge == route.begin()). The edge-level check mirrors SUMO:
+            // any lane <stop> on this insertion lane's edge caps the position, not only a stop on the
+            // exact insertion lane. POSITION_EPS == PositionEps == 0.1.
+            DepartPosSpec.Base => BasePos(v, lane),
             _ => throw new InvalidDataException($"unsupported DepartPosSpec '{v.Def.DepartPos.Kind}'."),
         };
 
@@ -3379,6 +3573,19 @@ public sealed partial class Engine : IEngine
         // GAP-2: remember the resolved depart position for the WHOLE trip (Kinematics.Pos itself
         // advances/wraps as the vehicle moves) -- see VehicleRuntime.DepartPosResolved's own comment.
         v.DepartPosResolved = insertPos;
+
+        // GAP-2: a departPos="stop" origin whose first stop is a parkingArea is born already parked
+        // at its lot -- claim the lot NOW (insertion is a structural/Execute-phase mutation, so this
+        // is safe) so that (a) a second same-step origin sees it taken and lands on the next lot, and
+        // (b) the step-1 Reached transition finds AssignedLot already set and does not re-claim. The
+        // insertPos above was resolved from the SAME lowest-free lot, so position and claim agree.
+        if (isStopDepart
+            && v.Def.Stops[0].ParkingAreaId is not null
+            && GetStops(v) is { Count: > 0 } insStops
+            && insStops.Peek() is { IsParking: true, AssignedLot: < 0 } originStop)
+        {
+            ClaimParkingLot(originStop);
+        }
         // GAP-2 follow-up: seed the running routeLength accumulator at -departPos (SUMO's
         // MSDevice_Tripinfo myRouteLength at NOTIFICATION_DEPARTED) -- see RouteDistanceTraveled.
         v.RouteDistanceTraveled = -insertPos;
@@ -4229,6 +4436,28 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            // GAP-4 (rerouting-with-stops, docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.7): do NOT
+            // periodically reroute a vehicle whose next unreached stop is a MID-ROUTE parkingArea. The
+            // periodic router shortest-paths current->destEdge (the pool's LAST edge) and would collapse
+            // the parking detour (e.g. the box's mall loop ra_ne_r2 -> m_lot -> ra_ne_r2), so the
+            // vehicle drives AROUND its own parkingArea, never parks, and stays on the carriageway to
+            // its exit -- which under SUSTAINED insertion at the calibrated density inflates the running
+            // count vs vanilla and overshoots the knee (SumoData NEED). SUMO reroutes BETWEEN stops
+            // (preserving them); leaving the vehicle on its original route until it has parked is the
+            // faithful-enough approximation (a mid-route dead lane is still handled -- and now
+            // stop-preservingly rerouted -- by TryRerouteFromDeadLane). GATED on the stop being on an
+            // EARLIER edge than the route's final edge, so a FINAL-edge parking stop (the synthetic
+            // scenario's pa_-503; the committed parking goldens) is NOT skipped -- device.rerouting
+            // parity there is unchanged (and every committed golden that has a mid-route parking stop
+            // has device.rerouting OFF, so this loop never runs for it): byte-identical.
+            var frontQ = GetStops(v) is { Count: > 0 } fq ? fq.Peek() : null;
+            if (frontQ is { Reached: false, IsParking: true, ParkingAreaId: not null }
+                && _network!.LanesById.TryGetValue(frontQ.LaneId, out var frontStopLane)
+                && frontStopLane.EdgeId != _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + v.LaneSeqLen - 1]].EdgeId)
+            {
+                continue;
+            }
+
             batch.Add(v);
         }
 
@@ -4355,6 +4584,23 @@ public sealed partial class Engine : IEngine
         {
             if (!v.RerouteEquipped || v.PreInsertionRerouteDone)
             {
+                continue;
+            }
+
+            // GAP-4 (rerouting-with-stops, docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.7): do NOT
+            // pre-insertion-reroute a vehicle with a MID-ROUTE parkingArea stop. The router shortest-
+            // paths route[0] -> route[^1] and would collapse the parking detour (e.g. the box's mall
+            // loop), so the vehicle would depart on a route that never visits its own parkingArea,
+            // never park, and stay on the carriageway to its exit -- inflating the running vehicle
+            // count under sustained insertion vs vanilla (SumoData NEED). SUMO's pre-insertion reroute
+            // preserves stops; leaving the vehicle on its original (stop-visiting) route is the
+            // faithful-enough approximation. Mark it done so it is not re-evaluated. GATED on the stop
+            // being on an EARLIER edge than the route's final edge, so a FINAL-edge parking stop is
+            // unaffected -- and every committed golden with device.rerouting has no mid-route parking
+            // stop, so this is byte-identical.
+            if (HasUnreachedMidRouteParkingStop(v.Def.Stops, _routesById[v.Def.RouteId].Edges))
+            {
+                v.PreInsertionRerouteDone = true;
                 continue;
             }
 
@@ -4699,6 +4945,12 @@ public sealed partial class Engine : IEngine
         // within braking distance ahead -- the first scenario to exercise it on-path is the
         // roundabout (32), whose curved internal ring lanes drop the speed limit.
         vPos = Math.Min(vPos, SuccessiveLaneSpeedConstraint(v, lane, dt));
+
+        // GAP-1 (dead-lane merge brake): decelerate smoothly toward the forced-merge point when
+        // stuck on a lane that cannot reach the next route edge, so the vehicle falls back to
+        // re-try its strategic merge instead of slamming into the lane end and deadlocking.
+        // +infinity (inert) for every vehicle on an on-route lane -- see the method's own header.
+        vPos = Math.Min(vPos, DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed));
 
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
@@ -5867,6 +6119,87 @@ public sealed partial class Engine : IEngine
         return result;
     }
 
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.5): a vehicle stuck on a lane whose
+    // connections do NOT include its next ROUTE edge -- a "dead lane" for its route (e.g. veh 295
+    // forced onto 30_1 while its route needs 30->124, which leaves only from 30_0) -- must
+    // decelerate SMOOTHLY toward the forced-merge point (the end of its usable on-route distance)
+    // instead of barreling to the lane end at full speed and slamming to a clamp. Ported from
+    // MSLCM_LC2013::informLeader (MSLCM_LC2013.cpp:471-472): an URGENT strategic changer that is
+    // blocked brakes via `stopSpeed(myLeftSpace)` (myLeftSpace = currentDist - posOnLane, the
+    // remaining on-route distance on the current lane; myLeadingBlockerLength == 0 here, no
+    // counter-lane-change reservation modeled) so it falls back and re-tries the merge into its
+    // target lane every step rather than overshooting. Without this the dense-flow synthetic
+    // HARD-DEADLOCKS: cars slam into dead-lane ends at speed, clamp to 0, and gridlock.
+    //
+    // PROVABLY INERT for every committed golden: returns +infinity unless the vehicle's CURRENT
+    // lane has NO connection to its next ROUTE edge (a genuine dead lane). Every committed golden's
+    // vehicle is always on a lane that continues its route (they converge onto their pool lane and
+    // never strand), so this branch is never entered and vPos is unchanged -- verified by the full
+    // suite staying byte-identical.
+    private double DeadLaneMergeBrakeConstraint(VehicleRuntime v, Lane lane, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Already on the route pool's target lane for this edge -- converged (every golden
+        // vehicle at every junction). Cheapest common-case exit.
+        if (_laneSeqPool[v.LaneSeqStart + v.LaneSeqIndex] == v.LaneHandle)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // No strategic merge inside a junction interior (mirrors the DecideSpeedGainChanges
+        // internal-lane guard); its edge is never on the route anyway.
+        if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+        {
+            return double.PositiveInfinity;
+        }
+
+        // The next NORMAL route edge after the current one.
+        string? nextRouteEdge = null;
+        for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
+        {
+            var seqLane = _network!.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            if (seqLane.EdgeId.Length > 0 && seqLane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (seqLane.EdgeId != lane.EdgeId)
+            {
+                nextRouteEdge = seqLane.EdgeId;
+                break;
+            }
+        }
+
+        if (nextRouteEdge is null)
+        {
+            return double.PositiveInfinity;   // current edge is the last route edge -- no forced merge
+        }
+
+        // Dead lane iff the current lane has NO connection to the next route edge. If it DOES
+        // connect (an on-route but non-ideal lane), the vehicle crosses via its own connection and
+        // never gridlocks (TryReResolveFromActualLane handles it at the boundary) -- no brake.
+        if (_network!.ConnectionsByFromLaneTo.ContainsKey((lane.EdgeId, lane.Index, nextRouteEdge)))
+        {
+            return double.PositiveInfinity;
+        }
+
+        var usableDist = lane.Length - v.Kinematics.Pos;
+        if (usableDist <= 0.0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var stopSpeed = StopSpeedFor(v.VType, v.Kinematics.Speed, usableDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+        var vMinComfortable = v.VType.CarFollowModel is "IDM" or "IDMM"
+            ? IdmModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt)
+            : KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        return Math.Max(stopSpeed, vMinComfortable);
+    }
+
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
     // (stop.getSpeed()==0) arm only: newStopDist = seen + endPos - lane->getLength(), which on a
     // single lane (seen = laneLength - pos) collapses to `endPos + NUMERICAL_EPS - pos`;
@@ -5900,9 +6233,22 @@ public sealed partial class Engine : IEngine
         // pos=205 settles at 204.999, not 205.000 -- reproduced ONLY once this eps term is dropped
         // for IsParking stops). Gated on stop.IsParking (false for every plain lane stop), so
         // byte-identical for every pre-GAP-3 scenario.
-        var newStopDist = stop.IsParking
-            ? stop.EndPos - v.Kinematics.Pos
-            : stop.EndPos + KraussModel.NumericalEps - v.Kinematics.Pos;
+        // GAP-2: a parkingArea stop's brake target is resolved at runtime -- ParkingStopEndPos gives
+        // the claimed lot's position, or (while still approaching) the lowest currently-free lot's
+        // position. If the area is FULL and no lot is claimed yet it returns null: the vehicle brakes
+        // to the area's StartPos and waits there (SUMO's "no free position" path) until a lot frees.
+        // For the committed single-occupant goldens the lowest-free lot at every approach step equals
+        // the old static index, so this is byte-identical.
+        double newStopDist;
+        if (stop.IsParking)
+        {
+            var parkTarget = ParkingStopEndPos(stop);
+            newStopDist = (parkTarget ?? stop.StartPos) - v.Kinematics.Pos;
+        }
+        else
+        {
+            newStopDist = stop.EndPos + KraussModel.NumericalEps - v.Kinematics.Pos;
+        }
         // MSVehicle.cpp:2191 `vMinComfortable = cfModel.minNextSpeed(getSpeed())` -- virtual;
         // IDM overrides minNextSpeed (see IdmModel.MinNextSpeed's own header comment), so this
         // dispatches too, not just the stopSpeed call below. C11-iv: IDMM shares MSCFModel_IDM's
@@ -5939,6 +6285,26 @@ public sealed partial class Engine : IEngine
     // that produced it).
     private double RedLightConstraint(VehicleRuntime v, Lane lane, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
+        // SUMO MSVehicle::planMoveInternal (MSVehicle.cpp:2587-2601): a vehicle on its FINAL route edge
+        // (`myCurrEdge + view + 1 == myRoute->end()`) approaches its arrivalPos at arrivalSpeed and
+        // BREAKS out of the link walk BEFORE the downstream red/yellow brake is ever added -- an
+        // arriving vehicle exits at the end of its arrival edge and NEVER crosses that edge's exit TL,
+        // so the red/yellow signal there does not gate it (arrivalSpeed defaults to laneMaxV, i.e. it
+        // flows to the boundary at full speed and is removed). RedLightConstraint keys off the CURRENT
+        // lane's exit connection, so without this guard an arriving vehicle is braked at a red border
+        // TL -- adding tens of seconds to its trip and backing up the approach. That is the dominant
+        // driver of the signalized-discharge redistribution SumoData localized (SumoSharp piles 8-10x
+        // on the 3-way T-light approaches, which in a bounded/served demand are exactly the arrival
+        // edges, while the 4-way through-approaches stay at parity). The same `LaneSeqIndex + 1 >=
+        // LaneSeqLen` "no upcoming lane" test SuccessiveLaneSpeedConstraint already uses: true exactly
+        // when ego is on the last lane of its route (the arrival edge), so every through vehicle
+        // (which still has an internal lane + next edge ahead) is unaffected -- byte-identical for the
+        // committed goldens, whose vehicles never arrive at a red-held TL edge.
+        if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
         if (!_network!.TryGetTlControlledConnection(lane.EdgeId, lane.Index, out var connection))
         {
             return double.PositiveInfinity;
@@ -6403,7 +6769,7 @@ public sealed partial class Engine : IEngine
                 constraint = Math.Min(constraint, extConstraint);
             }
 
-            var foe = FindFoeVehicle(v, foeInternalLaneHandle);
+            var foe = FindCrossFoeVehicle(v, foeInternalLaneHandle);
             if (foe is null)
             {
                 continue;
@@ -6492,7 +6858,58 @@ public sealed partial class Engine : IEngine
                 // NOT stop-line-yield to an approaching foe (the signal already resolved the conflict --
                 // the foe on the conflicting movement is red). Only the APPROACHING stop-line yield is
                 // gated; the on-junction AdaptToJunctionLeader branch above is car-following, untouched.
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority);
+                // Arrival-time gap acceptance (MSLink::blockedByFoe crossing arm, sameTargetLane=false):
+                // even when a foe is approaching within reservation range and will pass, ego may cross
+                // if the foe's arrival window does not overlap ego's junction-occupancy window -- the
+                // SAME window the sameTarget-merge PHASE-0 arm above applies, for a crossing (no
+                // merge-speed checks). Without it the crossing arm blanket-yields to every approaching
+                // foe, so a permissive left never finds a gap in dense oncoming (the `lt` saturation
+                // benchmark: 1 left-turn vs vanilla's 7) and a saturated grid mutually over-yields into
+                // gridlock. Snapshot-only (positions/speeds, never a foe's WillPass), so it evaluates
+                // identically in the pre-pass and the real pass and introduces no new circularity.
+                // Arrival/leave estimated at constant current speed, matching the verified merge arm.
+                var egoInternalLaneCross = _network.LanesById[egoInternalLaneId];
+                var foeInternalLaneCross = _network.LanesByHandle[foeInternalLaneHandle];
+                // vLinkPass (MSVehicle::planMoveInternal): each vehicle's arrival/leave time is computed
+                // from the speed it PLANS to pass the link at (capped by the internal lane's speed
+                // limit and its own maxSpeed), NOT its current speed. This is load-bearing: a vehicle
+                // STOPPED at a minor-link stop line has current speed ~0, so dividing the traversal
+                // distance by the current speed would make its leave time ~infinite -> its occupancy
+                // window would never clear -> it could never restart across ANY gap (the dense
+                // synthetic's 11 yield-teleports: cars that correctly stopped at a minor link then
+                // waited forever). SUMO's getLeaveTime divides by 0.5*(arrivalSpeed+leaveSpeed) with
+                // those being vLinkPass, giving a finite crossing time. MinimalArrivalTime already
+                // accounts for accelerating from the current speed up to the pass speed over `seen`.
+                var egoPassSpeed = Math.Min(v.VType.MaxSpeed, egoInternalLaneCross.Speed);
+                var foePassSpeed = Math.Min(foe.VType.MaxSpeed, foeInternalLaneCross.Speed);
+                var egoSpeedCross = v.Kinematics.Speed;
+                var foeSpeedCross = foe.Kinematics.Speed;
+                var foeSeenCross = SeenToInternalLaneEntry(foe, foeInternalLaneHandle);
+                var egoArrivalCross = KraussModel.MinimalArrivalTime(egoDistToEntry, egoSpeedCross, egoPassSpeed, v.VType);
+                var foeArrivalCross = KraussModel.MinimalArrivalTime(foeSeenCross, foeSpeedCross, foePassSpeed, foe.VType);
+                var egoLeaveCross = egoArrivalCross + (egoInternalLaneCross.Length + v.VType.Length)
+                    / Math.Max(egoPassSpeed, KraussModel.NumericalEps);
+                var foeLeaveCross = foeArrivalCross + (foeInternalLaneCross.Length + foe.VType.Length)
+                    / Math.Max(foePassSpeed, KraussModel.NumericalEps);
+                // Impatience (MSBaseVehicle::getImpatience): a vehicle held at a minor/permissive
+                // crossing grows impatient with continuous WaitingTime and eventually forces its gap by
+                // assuming the foe brakes for it -- SUMO's --time-to-impatience (default 300 s). Without
+                // it, a saturated permissive crossing yields FOREVER (the dense synthetic: a queued
+                // left-turner waits past time-to-teleport=120 s and teleports, while vanilla's impatient
+                // front car crosses by ~73 s and drains the queue). Base vType impatience defaults to 0
+                // (not parsed), so impatience == WaitingTime/300 clamped to [0,1] -- exactly 0 for any
+                // vehicle that has not been continuously waiting, keeping every low-density golden inert.
+                var egoImpatience = Math.Max(0.0, Math.Min(1.0, v.WaitingTime / 300.0));
+                // Relax only in the real pass, exactly like foeYieldsThisStep: the pre-pass keeps the
+                // blanket yield so it computes each vNext (hence WillPass) without this refinement --
+                // the same circularity-breaking approximation C4-viii relies on. A pre-pass crossing
+                // yield sets CrossingYieldTaken below, which forces the real pass to recompute this
+                // vehicle and apply the window there.
+                var crossingWindowClear = !prePass && !BlockedByCrossingFoe(
+                    egoArrivalCross, egoLeaveCross, foeArrivalCross, foeLeaveCross,
+                    egoImpatience, foeSeenCross, foe.VType.Decel, actionStepLengthSecs);
+
+                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -7150,6 +7567,94 @@ public sealed partial class Engine : IEngine
         return true;
     }
 
+    // Arrival-time RoW for a CROSSING conflict (MSLink::blockedByFoe, MSLink.cpp:978-1010, the
+    // sameTargetLane==false path). Identical window logic to BlockedByMergeFoe but WITHOUT the
+    // merge-speed `unsafeMergeSpeeds` checks -- those are guarded by `if (sameTargetLane && ...)` in
+    // the source and so never fire for a pure crossing (the two vehicles occupy the junction interior
+    // at different points, they do not merge into one lane). ego occupies its internal lane during
+    // [egoArrival, egoLeave]; the foe during [foeArrival, foeLeave]; lookAhead == jmTimegapMinor,
+    // default MSLink::myLookaheadTime = TIME2STEPS(1) = 1.0 s. Blocked iff the windows overlap:
+    //   - foe leaves before ego arrives  -> ego is pure follower, foe already cleared -> NOT blocked.
+    //   - foe arrives > lookAhead after ego leaves -> ego is pure leader, clears in time -> NOT blocked.
+    //   - otherwise the occupancy windows overlap -> hard conflict -> blocked.
+    // This is the piece the crossing-foe arm of JunctionYieldConstraint was missing: SUMO's permissive
+    // left / minor crossing does NOT stop-line-yield to every approaching foe within reservation range
+    // -- it yields only when the foe's arrival window actually conflicts, letting a vehicle cross an
+    // adequate gap (the saturation-flow `lt` benchmark: vanilla 7 left-turns, not the 112 a blanket
+    // reservation yield produced).
+    private static bool BlockedByCrossingFoe(
+        double egoArrival, double egoLeave, double foeArrival, double foeLeave,
+        double impatience, double foeDist, double foeMaxDecel, double stepLen)
+    {
+        const double lookAhead = 1.0;
+
+        // Impatience blend (MSLink::blockedByFoe, MSLink.cpp:952-957): when ego arrives BEFORE the foe,
+        // an impatient ego assumes the foe brakes for it, so the foe's EFFECTIVE arrival is pushed
+        // later (a linear blend toward the braking arrival time by `impatience`). Inert when
+        // impatience == 0 (the default for any non-waiting vehicle) -> byte-identical to the pure
+        // window for every low-density golden.
+        var effFoeArrival = foeArrival;
+        if (impatience > 0.0 && egoArrival < foeArrival)
+        {
+            var fatb = ComputeFoeArrivalTimeBraking(egoArrival, foeArrival, impatience, foeDist, foeMaxDecel, stepLen);
+            effFoeArrival = ((1.0 - impatience) * foeArrival) + (impatience * fatb);
+        }
+
+        if (foeLeave < egoArrival)
+        {
+            return false;
+        }
+
+        if (effFoeArrival > egoLeave + lookAhead)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    // MSLink::computeFoeArrivalTimeBraking (MSLink.cpp:1017-1055) in relative seconds. The time the
+    // foe would arrive at the conflict if it braked at `foeMaxDecel * impatience` from ego's arrival
+    // onward. Used only by the impatience blend above (impatience > 0, egoArrival < foeArrival), so
+    // inert for every scenario in which no crossing vehicle has been waiting. `fasb`
+    // (foeArrivalSpeedBraking) in the source feeds only the sameTargetLane merge-speed check, which a
+    // crossing (sameTargetLane == false) never runs, so it is dropped here.
+    private static double ComputeFoeArrivalTimeBraking(
+        double egoArrival, double foeArrival, double impatience, double dist, double foeMaxDecel, double stepLen)
+    {
+        // foe enters the junction in the same step as ego -> no braking benefit.
+        if (Math.Floor(egoArrival / stepLen) == Math.Floor(foeArrival / stepLen))
+        {
+            return foeArrival;
+        }
+
+        var m = foeMaxDecel * impatience;
+        if (m <= 0.0)
+        {
+            return foeArrival;
+        }
+
+        var dt = foeArrival - egoArrival;
+        var d = dt * m;
+        var a = dt * d / 2.0;
+        var v = dist / Math.Max(foeArrival, KraussModel.NumericalEps);
+        var dist2 = dist - (v * Math.Max(0.0, egoArrival - stepLen));
+        if (0.5 * v * v / m <= dist2)
+        {
+            // foe can brake to a stop before reaching the conflict -> effectively won't arrive soon.
+            return foeArrival + 30.0;
+        }
+
+        var disc = (4.0 * (v - d) * (v - d)) - (8.0 * m * a);
+        if (disc < 0.0)
+        {
+            return foeArrival;
+        }
+
+        var x = ((Math.Sqrt(disc) * -0.5) - d + v) / m;
+        return foeArrival + x;
+    }
+
     // C4-v: the static (egoLbc, foeLbc) lengthBehindCrossing for a sameTarget merge pair
     // (computed once at ingest -- MergeConflict). (0, 0) when no MergeConflict is recorded for this
     // pair (a dummy merge, or geometry that produced none), matching the pre-C4-v approximation.
@@ -7314,6 +7819,22 @@ public sealed partial class Engine : IEngine
         return ReferenceEquals(first, ego) ? _foeApproachSecond[foeInternalLaneHandle] : first;
     }
 
+    // Yield-parity crossing-arm foe lookup: same "first distinct non-ego vehicle" contract as
+    // FindFoeVehicle, but over the cleared-excluding _foeCrossFirst/Second index -- so a foe that has
+    // already crossed this internal lane (now downstream) is not returned, and the crossing arm sees
+    // the real approaching stream instead. Used ONLY by JunctionYieldConstraint's crossing-foe arm;
+    // the sameTarget-MERGE arm keeps FindFoeVehicle (full route) for byte-identical parity.
+    private VehicleRuntime? FindCrossFoeVehicle(VehicleRuntime ego, int foeInternalLaneHandle)
+    {
+        var first = _foeCrossFirst[foeInternalLaneHandle];
+        if (first is null)
+        {
+            return null;
+        }
+
+        return ReferenceEquals(first, ego) ? _foeCrossSecond[foeInternalLaneHandle] : first;
+    }
+
     // Perf (super-linear fix): fill _foeApproachFirst/Second for this step -- for every internal lane
     // handle, the FIRST TWO distinct active vehicles (in _vehicles iteration order) whose remaining
     // lane sequence contains it. Reproduces FindFoeVehicle's former per-call scan order exactly, but
@@ -7323,6 +7844,8 @@ public sealed partial class Engine : IEngine
     {
         Array.Clear(_foeApproachFirst, 0, _foeApproachFirst.Length);
         Array.Clear(_foeApproachSecond, 0, _foeApproachSecond.Length);
+        Array.Clear(_foeCrossFirst, 0, _foeCrossFirst.Length);
+        Array.Clear(_foeCrossSecond, 0, _foeCrossSecond.Length);
         foreach (var v in ActiveVehicles())
         {
             // GAP-3 follow-up (ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md): a parked (park-and-stay) vehicle
@@ -7345,6 +7868,8 @@ public sealed partial class Engine : IEngine
                     continue;
                 }
 
+                // Shared index (FindFoeVehicle): full route, unchanged -- keeps the sameTarget-MERGE
+                // arm and every committed golden byte-identical.
                 if (_foeApproachFirst[h] is null)
                 {
                     _foeApproachFirst[h] = v;
@@ -7352,6 +7877,25 @@ public sealed partial class Engine : IEngine
                 else if (_foeApproachSecond[h] is null && !ReferenceEquals(_foeApproachFirst[h], v))
                 {
                     _foeApproachSecond[h] = v;
+                }
+
+                // Crossing-only index (FindCrossFoeVehicle): register only while this internal lane is
+                // still AT OR AHEAD of the vehicle's own position (i >= LaneSeqIndex) -- a vehicle that
+                // has already crossed it (now downstream on an exit lane) is no longer an approaching
+                // foe (SUMO's removeApproaching), so it must not mask the real stream behind it. This
+                // is what a permissive/minor crossing yields against; in a FIFO approach the oldest
+                // still-approaching vehicle is the nearest to the junction, so first-two order gives
+                // the nearest/second-nearest live foe. See the _foeCrossFirst/Second field comment.
+                if (i >= v.LaneSeqIndex)
+                {
+                    if (_foeCrossFirst[h] is null)
+                    {
+                        _foeCrossFirst[h] = v;
+                    }
+                    else if (_foeCrossSecond[h] is null && !ReferenceEquals(_foeCrossFirst[h], v))
+                    {
+                        _foeCrossSecond[h] = v;
+                    }
                 }
             }
         }
@@ -7429,7 +7973,13 @@ public sealed partial class Engine : IEngine
         var reachedThreshold = stop.StartPos - KraussModel.NumericalEps;
         if (v.Kinematics.Pos >= reachedThreshold
             && currentVelocity <= 0.0 + KraussModel.HaltingSpeed
-            && v.LaneId == stop.LaneId)
+            && v.LaneId == stop.LaneId
+            // GAP-2: a parkingArea stop can only be "reached" (parked) if a lot is actually free (or
+            // already claimed). If the area is full the vehicle has braked to StartPos and simply
+            // waits here -- it must NOT latch Reached, else it would "park on air" and hold a lot it
+            // never got. ParkingStopEndPos returns non-null iff a lot is available. Non-parking stops
+            // and available-lot parking stops keep the exact pre-GAP-2 behavior (byte-identical).
+            && (!stop.IsParking || ParkingStopEndPos(stop) is not null))
         {
             // MSVehicle.cpp:1808/1824: stop.reached = true; stop.duration = getMinDuration(time)
             // -- no until/ended modeled, so getMinDuration is just the configured duration
@@ -8858,11 +9408,24 @@ public sealed partial class Engine : IEngine
                     if (resumedStop.IsParking)
                     {
                         v.IsParked = false;
+                        // GAP-2: the lot is now free for the next arrival (MSParkingArea::leaveFrom).
+                        FreeParkingLot(resumedStop);
                     }
                 }
                 else
                 {
                     var stop = stops.Peek();
+                    // GAP-2: claim the lot the FIRST step this parking stop latches Reached (the
+                    // vehicle has actually parked). LowestFreeParkingLot picks the lowest free lot at
+                    // this instant (MSParkingArea::computeLastFreePos); the reached-gate in
+                    // ProcessNextStop guarantees a lot is free here. Guarded on AssignedLot < 0 so the
+                    // subsequent "still holding" steps (which also carry Reached=true) don't re-claim,
+                    // and so a departPos="stop" origin that already claimed at insertion is untouched.
+                    if (stop.IsParking && stop.AssignedLot < 0 && !stop.Reached)
+                    {
+                        ClaimParkingLot(stop);
+                    }
+
                     stop.Reached = stopUpdate.Reached;
                     stop.RemainingDuration = stopUpdate.RemainingDuration;
                     // GAP-3: this arm only ever sets Reached=true (see StopTransition's two
@@ -8907,7 +9470,30 @@ public sealed partial class Engine : IEngine
                 // where the successive-lane cap sets speed = remaining distance to the lane end).
                 if (v.Kinematics.Pos <= currentLane.Length)
                 {
-                    break;
+                    // GAP-4 (box ring-fringe exit deadlock): on the FINAL route edge, arrival is
+                    // position-based -- SUMO removes the vehicle when `pos >= arrivalPos`
+                    // (MSVehicle::hasArrived, lane-AGNOSTIC), which for the default arrivalPos ==
+                    // laneLength means a vehicle HALTED EXACTLY at the lane end (pos == length) has
+                    // arrived. It must NOT be gated behind the strict lane-CROSSING boundary (pos >
+                    // length) that governs advancing to a NEXT lane: a vehicle that brakes to a stop
+                    // exactly at its last edge's end (e.g. the box's e_ring_N/W/E_fringe dead-end
+                    // exits, whose outer lanes have no onward connection) never satisfies the strict
+                    // `>` and freezes there forever, backing up the whole exit queue and starving the
+                    // sink (measured: ring-fringe arrivals 4/4/2 vs vanilla 24/18/14). So let a
+                    // final-edge vehicle sitting AT the lane end fall through to the arrival branch
+                    // below; every other case still breaks (a non-final edge crosses next step; a
+                    // final-edge vehicle still short of the end keeps approaching). Measure-zero in
+                    // free flow -- vehicles overshoot (pos > length) and arrive via the normal path --
+                    // so byte-identical for every committed golden (verified by the full suite).
+                    var atFinalEdgeEnd = v.LaneSeqIndex + 1 >= v.LaneSeqLen
+                        && v.Kinematics.Pos >= currentLane.Length;
+                    if (!atFinalEdgeEnd)
+                    {
+                        break;
+                    }
+
+                    // else: fall through to the last-edge arrival branch below (which still applies
+                    // the park-and-stay residency guard before DestroyWithArrival).
                 }
 
                 if (v.LaneSeqIndex + 1 >= v.LaneSeqLen)
@@ -8960,8 +9546,21 @@ public sealed partial class Engine : IEngine
                     // being BOTH unreached AND IsParking -- every existing scenario either has no
                     // stop on its final edge, or already has it Reached/non-parking by the time
                     // arrival is checked, so this is byte-identical elsewhere.
+                    // GAP-4 NARROWING: the residency guard must only hold a vehicle whose unreached
+                    // parking stop is on THIS (the final/arrival) edge -- i.e. it is genuinely trying
+                    // to park HERE and must not be vanished mid-park. A vehicle whose unreached parking
+                    // stop is on an EARLIER route edge (it drove past a full mid-route lot without
+                    // parking, e.g. the box's mall/garage cars whose pa_v2_mall_lot it could not claim)
+                    // has already passed its parking opportunity; clamping it here traps it forever at
+                    // its destination's lane end (never arriving, backing up the whole exit queue --
+                    // the dominant box throughput loss). SUMO arrives such a vehicle at its route end.
+                    // So only clamp when the stop is on the current edge; otherwise fall through to
+                    // arrival. Byte-identical for every committed golden (none reaches its final edge
+                    // with an unreached parking stop sitting on an earlier edge).
                     var frontStopAtArrival = GetStops(v) is { Count: > 0 } arrivalStops ? arrivalStops.Peek() : null;
-                    if (frontStopAtArrival is { Reached: false, IsParking: true })
+                    if (frontStopAtArrival is { Reached: false, IsParking: true }
+                        && _network.LanesById.TryGetValue(frontStopAtArrival.LaneId, out var arrivalStopLane)
+                        && arrivalStopLane.EdgeId == currentLane.EdgeId)
                     {
                         v.Kinematics.Pos = currentLane.Length;
                         v.Kinematics.Speed = 0.0;
@@ -9033,6 +9632,85 @@ public sealed partial class Engine : IEngine
             // Rung 8b/A2: keep-right and speed-gain lane changes are no longer decided here --
             // both now run in the post-move DecideSpeedGainChanges phase (see Run()'s comment and
             // that method's header comment for why keep-right moved out of Plan/MoveIntent).
+
+            // GAP-1: a vehicle stuck on a DEAD LANE that never reaches the lane end (held short by a
+            // junction yield / red light -- e.g. veh 95 on -2437_1 wanting -2337, which leaves only
+            // from -2437_0, held at the tl=2336 junction) would otherwise wait out time-to-teleport
+            // and jam-teleport. The boundary reroute above only fires once the vehicle crosses pos >=
+            // laneLength, which such a vehicle never does. So ALSO offer the dead-lane reroute here,
+            // when the vehicle has genuinely stalled (WaitingTime >= DeadLaneRerouteWaitSeconds, the
+            // same last-resort gate the boundary path uses): commit it to a connection its ACTUAL
+            // lane HAS (getBestLanesContinuation semantics), so next step it plans a valid junction
+            // link and crosses instead of teleporting. INERT for every committed golden: gated on the
+            // current lane having no connection to the next route edge (a dead lane), which no golden
+            // vehicle is ever on. See TryRerouteStuckDeadLane.
+            TryRerouteStuckDeadLane(v);
+    }
+
+    // GAP-1: reroute a vehicle that is STALLED on a dead lane (its current lane cannot reach its next
+    // route edge) short of the lane end -- held by a junction yield or red light so the boundary
+    // reroute never fires. Mirrors TryReResolveFromActualLane's drop-lane detection, then defers to
+    // TryRerouteFromDeadLane (which enforces the WaitingTime >= DeadLaneRerouteWaitSeconds last-resort
+    // gate, the per-vehicle reroute cap, the U-turn skip and the live-weight cost routing). No-op
+    // unless the vehicle is on a genuine dead lane AND has stalled -- so byte-identical for every
+    // committed golden (none strands on a dead lane). Execute phase, mutates only this vehicle's own
+    // LaneSeq* (same discipline as TryReResolveFromActualLane).
+    private void TryRerouteStuckDeadLane(VehicleRuntime v)
+    {
+        if (v.Arrived || v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return;
+        }
+
+        var currentLane = _network!.LanesByHandle[v.LaneHandle];
+        if (currentLane.EdgeId.Length > 0 && currentLane.EdgeId[0] == ':')
+        {
+            return;   // inside a junction interior -- no reroute
+        }
+
+        // The remaining NORMAL route edges from the current slot onward (skip internal ':'-lanes).
+        var remaining = new List<string>();
+        string? lastEdge = null;
+        for (var k = v.LaneSeqIndex; k < v.LaneSeqLen; k++)
+        {
+            var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]];
+            if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (lane.EdgeId != lastEdge)
+            {
+                remaining.Add(lane.EdgeId);
+                lastEdge = lane.EdgeId;
+            }
+        }
+
+        if (remaining.Count < 2 || remaining[0] != currentLane.EdgeId)
+        {
+            return;   // on the last route edge (no forced merge) or malformed -- nothing to do
+        }
+
+        // Only a genuine dead lane (current lane has NO connection to the next route edge) reroutes.
+        // A lane that DOES connect will cross via its own connection at the boundary -- leave it.
+        if (_network.ConnectionsByFromLaneTo.ContainsKey((currentLane.EdgeId, currentLane.Index, remaining[1])))
+        {
+            return;
+        }
+
+        // Last-resort gate: a stalled dead-lane car held at a yield/red is rerouted only when it is
+        // close to teleporting (StuckDeadLaneRerouteWaitSeconds), NOT at the boundary path's 5 s. An
+        // eager stuck-reroute churns the dense case (it pipes stalled cars onto alternate corridors
+        // that then jam -- measured 2x teleports 3->6). Deferring to just before time-to-teleport
+        // reroutes only the cars that would otherwise teleport, leaving the rest to drain normally.
+        if (v.WaitingTime < StuckDeadLaneRerouteWaitSeconds)
+        {
+            return;
+        }
+
+        // Defer to the boundary reroute's own logic (cap + U-turn skip + cost routing); its internal
+        // 5 s gate is already satisfied here.
+        TryRerouteFromDeadLane(v, currentLane, remaining);
     }
 
     // C4-vii-c: re-resolve a vehicle's remaining route starting from the lane it is ACTUALLY on when
@@ -9076,10 +9754,18 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
-        // Genuine drop lane: the actual lane has no connection to the next route edge -> clamp.
+        // GAP-1: the actual lane has no connection to the NEXT ROUTE edge (a drop lane FOR THIS
+        // ROUTE). Pre-GAP-1 this clamped the vehicle dead at the lane end forever -- the dense-flow
+        // gridlock driver (a car that could not complete its strategic change into the one exit lane
+        // its route needs strands the whole approach queue; measured: veh 295 stuck on 30_1 needing
+        // 30->124, which leaves only from 30_0, sits at speed 0 from t=428..699). Vanilla does NOT
+        // clamp it: with device.rerouting on it takes the connection its actual lane HAS and reroutes
+        // to the destination (vanilla's veh 295 leaves 30_1 via 30_1's own connection and arrives at
+        // t=412). Mirror that -- reroute via a connection this lane has. Only clamp when even that
+        // fails (a true dead end / the reroute cap is spent).
         if (!_network!.ConnectionsByFromLaneTo.ContainsKey((currentLane.EdgeId, currentLane.Index, remaining[1])))
         {
-            return false;
+            return TryRerouteFromDeadLane(v, currentLane, remaining);
         }
 
         // Re-resolve from the actual lane (pinning this edge's exit to it) and splice a fresh slice
@@ -9120,6 +9806,226 @@ public sealed partial class Engine : IEngine
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
         return true;
+    }
+
+    // GAP-1 (docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2): the vehicle reached this lane end on a lane
+    // whose connections do NOT include the next ROUTE edge (TryReResolveFromActualLane established the
+    // drop-lane case). Reroute to the destination via a connection this lane DOES have -- what vanilla
+    // does with device.rerouting + ignore-route-errors. `remaining` is the current remaining route
+    // (remaining[0] == currentLane's edge, remaining[^1] == destination). Returns true and splices a
+    // fresh pool (so the caller crosses the junction this step); returns false (caller clamps) for a
+    // true dead end, when no candidate reaches the destination, or when this vehicle has already spent
+    // its reroute cap (anti-loop). INERT for every committed golden: they never strand, so this is
+    // never reached (verified by the full suite staying byte-identical).
+    private bool TryRerouteFromDeadLane(VehicleRuntime v, Lane currentLane, IReadOnlyList<string> remaining)
+    {
+        // GAP-4 (rerouting-with-stops, docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.7): SUMO reroutes a
+        // vehicle BETWEEN its remaining stops -- it never shortest-paths straight to the final
+        // destination and skips an intermediate stop. So the dead-lane reroute must aim at the NEXT
+        // UNREACHED parkingArea stop that lies ahead on the route (if any), NOT the final edge; the
+        // original route AFTER that stop is preserved verbatim. Without this a vehicle that hits a dead
+        // lane before a mid-route parkingArea is rerouted AROUND it, never parks, and stays on the
+        // carriageway to its exit -- which, under SUSTAINED insertion at the calibrated density,
+        // inflates the running vehicle count vs vanilla and overshoots the density knee (SumoData
+        // NEED: sustained-insertion 540% vs vanilla 100%). Determined per-vehicle from its own stop
+        // queue; a stop on the FINAL edge (nextStopEdge == destEdge, e.g. the synthetic
+        // scenario's pa_-503) leaves the target at destEdge, so Gap-1 parity is unchanged.
+        var destEdge = remaining[remaining.Count - 1];
+        if (destEdge == currentLane.EdgeId)
+        {
+            return false;   // already on the destination edge -- nothing to reroute toward
+        }
+
+        // The next unreached parkingArea stop's edge, if it lies strictly ahead on `remaining`.
+        var routeTarget = destEdge;
+        var stopIdxInRemaining = -1;
+        var stopsQ = GetStops(v);
+        if (stopsQ is { Count: > 0 })
+        {
+            var frontStop = stopsQ.Peek();
+            if (!frontStop.Reached && frontStop.IsParking && frontStop.ParkingAreaId is not null
+                && _network!.LanesById.TryGetValue(frontStop.LaneId, out var stopLane)
+                && stopLane.EdgeId != currentLane.EdgeId)
+            {
+                for (var i = 1; i < remaining.Count; i++)
+                {
+                    if (remaining[i] == stopLane.EdgeId)
+                    {
+                        stopIdxInRemaining = i;
+                        routeTarget = stopLane.EdgeId;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // LAST-RESORT gate: only reroute a car that has genuinely been stuck (blocking) for a while,
+        // not on the first touch of the lane end -- see DeadLaneRerouteWaitSeconds. Below the
+        // threshold, clamp this step and retry next step (WaitingTime keeps accumulating while
+        // clamped).
+        if (v.WaitingTime < DeadLaneRerouteWaitSeconds)
+        {
+            return false;
+        }
+
+        // Anti-loop hard bound: a vehicle whose every route to the destination loops back through the
+        // lane it is stuck on would otherwise reroute forever (veh 58 looped 300+ times). After the
+        // cap it clamps once, exactly like pre-GAP-1.
+        _deadLaneRerouteCount.TryGetValue(v.EntityIndex, out var already);
+        if (already >= MaxDeadLaneReroutes)
+        {
+            return false;
+        }
+
+        if (!_network!.ConnectionsByFromEdgeLane.TryGetValue((currentLane.EdgeId, currentLane.Index), out var outs)
+            || outs.Count == 0)
+        {
+            return false;   // true dead end: this lane has no outgoing connection at all
+        }
+
+        // Cost each candidate by the SAME live/smoothed edge-effort the periodic device.rerouting uses
+        // (RerouteEdgeWeights.Effort, settled by the previous step -- read-only and stable during this
+        // region-parallel execute), NOT static free-flow: vanilla's rerouter is congestion-aware, and
+        // a free-flow reroute sends the stalled car straight back into the jam it is leaving, wedging
+        // it at a downstream minor link (measured: free-flow inflated teleports 5->16). Falls back to
+        // free-flow only when rerouting/weights are off. All reads are of immutable/settled state, so
+        // this is safe outside the mutation lock below.
+        var vehicleMaxSpeed = v.VType.MaxSpeed * v.SpeedFactor;
+        var edgeWeights = _edgeWeights;
+        Func<string, double> effort = edgeWeights is not null
+            ? edgeId => edgeWeights.Effort(edgeId, vehicleMaxSpeed)
+            : EdgeFreeFlowCost;
+
+        var currentEdgeModel = _network.EdgesById.TryGetValue(currentLane.EdgeId, out var ce) ? ce : null;
+
+        IReadOnlyList<string>? bestTail = null;
+        var bestCost = double.PositiveInfinity;
+        var considered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var conn in outs)
+        {
+            var nextEdge = conn.To;
+            if (nextEdge.Length > 0 && nextEdge[0] == ':')
+            {
+                continue;   // internal/junction edge -- not a routable normal edge
+            }
+
+            if (!considered.Add(nextEdge))
+            {
+                continue;   // a lane can carry several connections to the same edge
+            }
+
+            // Skip a U-turn (the reverse edge: this edge's endpoints swapped). SUMO's router disallows
+            // turnarounds by default, and taking one here loops straight back to this lane.
+            if (currentEdgeModel is not null
+                && _network.EdgesById.TryGetValue(nextEdge, out var nextModel)
+                && nextModel.From == currentEdgeModel.To && nextModel.To == currentEdgeModel.From)
+            {
+                continue;
+            }
+
+            var tail = Router().Route(nextEdge, routeTarget, effort);
+            if (tail is null || tail.Count == 0)
+            {
+                continue;   // this connection cannot reach the (stop or final) target
+            }
+
+            var cost = 0.0;
+            foreach (var e in tail)
+            {
+                cost += effort(e);
+            }
+
+            if (cost < bestCost)
+            {
+                bestCost = cost;
+                bestTail = tail;
+            }
+        }
+
+        if (bestTail is null)
+        {
+            return false;   // no connection this lane has can still reach the destination -> clamp
+        }
+
+        // Full rerouted edge list: currentEdge + the routed tail (which begins at the chosen successor
+        // edge, reachable from currentLane by construction).
+        var fullEdges = new List<string>(bestTail.Count + 1) { currentLane.EdgeId };
+        fullEdges.AddRange(bestTail);
+
+        // GAP-4 (rerouting-with-stops): when the reroute aimed at a MID-route parkingArea stop
+        // (routeTarget != destEdge), bestTail ends AT that stop edge -- append the ORIGINAL route
+        // after the stop (remaining[stopIdx+1 ..]) so the parking detour is preserved and the vehicle
+        // still reaches its real destination + any later stops. Those edges were consecutive route
+        // edges by construction, so their connections exist; the stop-lane steering onto the parking
+        // lane is handled where it always is (TryStrategicLaneChange's same-edge stopLaneOverride) once
+        // the vehicle reaches the stop edge. No-op when routeTarget == destEdge (stopIdx == -1).
+        if (stopIdxInRemaining >= 0)
+        {
+            for (var i = stopIdxInRemaining + 1; i < remaining.Count; i++)
+            {
+                fullEdges.Add(remaining[i]);
+            }
+        }
+
+        // Resolve the new lane sequence pinned to leave THIS edge via the current lane
+        // (forceFirstExitToArrival). Pure (reads only the immutable net), so done outside the lock.
+        int[] pool;
+        int[] arrival;
+        try
+        {
+            var stopOverride = ParkStopFinalEdgeOverride(v.Def.Stops, fullEdges);
+            (pool, arrival) = _network.ResolveLaneSequenceHandlesWithArrival(
+                fullEdges, currentLane.Index, forceFirstExitToArrival: true, stopOverride: stopOverride);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+
+        // Register the new route + splice the pool + bump the reroute count under the pool lock:
+        // ExecuteMoves is region-parallel, so two vehicles can reach this reroute concurrently. The
+        // route dictionaries + _deadLaneRerouteCount are never READ during ExecuteMoves (every
+        // EffectiveRouteId/best-lanes read is in the Plan phase, which already ran this step), so
+        // serialising the WRITES here is sufficient; the pool append is the same discipline
+        // TryReResolveFromActualLane uses. Slice content is the vehicle's own, so serial ==
+        // region-parallel stays byte-identical.
+        int start;
+        lock (_laneSeqPoolLock)
+        {
+            RegisterRerouted(v, fullEdges);   // keep _routesById/EffectiveRouteId consistent with the new pool
+            _deadLaneRerouteCount[v.EntityIndex] = already + 1;
+            start = _laneSeqPool.Count;
+            _laneSeqPool.AddRange(pool);
+            _laneSeqArrival.AddRange(arrival);
+        }
+
+        v.LaneSeqStart = start;
+        v.LaneSeqLen = pool.Length;
+        v.LaneSeqIndex = 0;
+        v.KeepRightStayCacheLane = -1;
+        return true;
+    }
+
+    // GAP-1: free-flow travel time of ONE edge -- SUMO's DijkstraRouter effort (length /
+    // max-lane-speed). The dead-lane reroute's cost fallback when no live edge-weight snapshot exists
+    // (rerouting off); returns +inf for an unknown/zero-speed edge so it is never chosen.
+    private double EdgeFreeFlowCost(string edgeId)
+    {
+        if (!_network!.EdgesById.TryGetValue(edgeId, out var edge) || edge.Lanes.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var maxSpeed = 0.0;
+        foreach (var l in edge.Lanes)
+        {
+            if (l.Speed > maxSpeed)
+            {
+                maxSpeed = l.Speed;
+            }
+        }
+
+        return maxSpeed > 0.0 ? edge.Lanes[0].Length / maxSpeed : double.PositiveInfinity;
     }
 
     // Rung A2 (+ rung 8b, moved here -- see the CORRECTED-ORDERING note below): the two LC2013
@@ -9546,18 +10452,65 @@ public sealed partial class Engine : IEngine
         if (v.KeepRightStayCacheLane != v.LaneHandle)
         {
             v.KeepRightStayCacheLane = v.LaneHandle;
-            v.KeepRightStaySuppress = KeepRightStrategicStay(v, lane, rightLane.Index);
+            v.KeepRightStaySuppress = KeepRightStrategicStay(
+                v, lane, rightLane.Index, out var rule2Eligible, out var rightContLength);
+            v.KeepRightStayRule2Eligible = rule2Eligible;
+            v.KeepRightStayRightContLength = rightContLength;
         }
         if (v.KeepRightStaySuppress)
         {
             return;
         }
 
-        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder).
+        // actionStepLength=1 in this scenario's config (phase-1 determinism ladder). Declared here
+        // (moved up from the keep-right accumulator below) so the rule-2 look-ahead-speed decay can
+        // read it.
+        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
+
+        // Turn-lane segregation fix: SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418) --
+        // `bestLaneOffset == 0 && (neighLeftPlace * 2. < laDist)`. Unlike VARIANT_21 (rule 3, the
+        // static `neighDist < TURN_LANE_DIST` above), this is POSITION-relative: it keeps ego on its
+        // best (route-continuing) lane once it is close enough to that lane's end that leaving it for
+        // the route-LEAVING right neighbour would risk not getting back in time. On a >200 m approach
+        // (rule 3 can't fire) this is the rule that stops a turner from keep-righting off its turn lane
+        // as it nears the junction; without it a left-turner on its dedicated lane oscillates back onto
+        // a through lane and serial-blocks it -- the arterial calibration-knee deficit. `neighLeftPlace
+        // = MAX2(0, neighDist - posOnLane - maxJam)` with maxJam = 0 (empty-road occupation scope, as
+        // every other keep-right term here). laDist is the RIGHT-direction look-ahead distance
+        // (MSLCM_LC2013.cpp:1238-1239): myLookAheadSpeed * LOOK_FORWARD * myStrategicParam * 1 +
+        // 2*lengthWithGap. myLookAheadSpeed is maintained here exactly as SUMO does at the top of every
+        // _wantsChange (grows instantly toward a higher speed, decays slowly otherwise); for an
+        // already-converged turner TryStrategicLaneChange returns before touching it, so this is that
+        // vehicle's sole update and no double-decay occurs. Inert for every vehicle not on a best lane
+        // with a route-leaving right neighbour (Eligible=false) -- byte-identical there.
+        if (v.KeepRightStayRule2Eligible)
+        {
+            if (v.Kinematics.Speed > v.LookAheadSpeed)
+            {
+                v.LookAheadSpeed = v.Kinematics.Speed;
+            }
+            else
+            {
+                const double lookAheadSpeedMemory = 0.9; // LOOK_AHEAD_SPEED_MEMORY
+                var memoryFactor = 1.0 - (1.0 - lookAheadSpeedMemory) * actionStepLengthSecs;
+                v.LookAheadSpeed = Math.Max(0.0, (memoryFactor * v.LookAheadSpeed) + ((1.0 - memoryFactor) * v.Kinematics.Speed));
+            }
+
+            const double lookForward = 10.0;    // LOOK_FORWARD
+            const double strategicParam = 1.0;  // myStrategicParam ctor default
+            var lengthWithGap = v.VType.Length + v.VType.MinGap;
+            // Right direction: the (right ? 1 : myLookaheadLeft) factor is 1.
+            var laDistRight = (v.LookAheadSpeed * lookForward * strategicParam) + (2.0 * lengthWithGap);
+            var neighLeftPlace = Math.Max(0.0, v.KeepRightStayRightContLength - v.Kinematics.Pos);
+            if (neighLeftPlace * 2.0 < laDistRight)
+            {
+                return;
+            }
+        }
+
         const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
         const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
         const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
-        var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
         var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
         var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
@@ -9751,8 +10704,16 @@ public sealed partial class Engine : IEngine
             downstream, new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
     }
 
-    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex)
+    // Turn-lane segregation fix: `rule2Eligible` (currContinues && rightLeavesRoute) and
+    // `rightContLength` (the right lane's best-lanes continuation length) are the position-INDEPENDENT
+    // inputs ApplyKeepRightDecision needs to also evaluate SUMO's stayOnBest rule 2 -- computed here in
+    // the SAME allocating pass so the memo covers both rules. Return value = VARIANT_21 (rule 3),
+    // unchanged.
+    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool rule2Eligible, out double rightContLength)
     {
+        rule2Eligible = false;
+        rightContLength = 0.0;
+
         var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
         var route = _routesById[routeId];
         if (route.Edges.Count <= 1)
@@ -9775,9 +10736,11 @@ public sealed partial class Engine : IEngine
             {
                 rightLeavesRoute = !continuation.AllowsContinuation;
                 rightSoon = continuation.Length < KeepRightTurnLaneDist;
+                rightContLength = continuation.Length;
             }
         }
 
+        rule2Eligible = currContinues && rightLeavesRoute;
         return currContinues && rightLeavesRoute && rightSoon;
     }
 
@@ -9951,8 +10914,17 @@ public sealed partial class Engine : IEngine
             {
                 stopLaneOverride = stopLane.Index;
                 // MSLCM_LC2013.cpp:1167 driveToNextStop = myVehicle.nextStopDist() -- the
-                // remaining lane-relative distance to the stop's braking position.
-                stopDistOverride = frontStop.EndPos - v.Kinematics.Pos;
+                // remaining lane-relative distance to the stop's braking position. GAP-2: a
+                // parkingArea stop's braking position is resolved at runtime (ParkingStopEndPos =
+                // the claimed-or-lowest-free lot's position); frontStop.EndPos is a load-time
+                // placeholder (0) for it and must NOT be read directly here, else the distance goes
+                // negative and the lane-change-toward-stop fires one step early (scenario 69). For
+                // the committed single-occupant goldens the lowest-free lot == the old static index,
+                // so this is byte-identical.
+                var stopTarget = frontStop.IsParking
+                    ? ParkingStopEndPos(frontStop) ?? frontStop.StartPos
+                    : frontStop.EndPos;
+                stopDistOverride = stopTarget - v.Kinematics.Pos;
             }
         }
 

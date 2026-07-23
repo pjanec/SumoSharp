@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  C1 witness demand: gap-starvation of a permissive LEFT turn at junction d_4_1.
+
+  Movements (see net.xml / README.md for the junction record; linkIndex/foes read
+  directly off the <request> foes bitmask for junction d_4_1 in the original net.xml):
+    - opposing (foe) through:  e_d_5_1_d_4_1 -> e_d_4_1_d_3_1 -> e_d_3_1_d_2_1
+      (this is the priority through stream that the permissive left must yield to;
+       linkIndex 1 at d_4_1 is a foe of linkIndex 6 - the East approach's through movement)
+    - permissive LEFT:         e_d_4_0_d_4_1 -> e_d_4_1_d_3_1 -> e_d_3_1_d_2_1
+      (lane2 of e_d_4_0_d_4_1, linkIndex 6, dir="l", state='g' in the tlLogic - permissive/yield)
+      THIS is the measured movement.
+    - through-behind:          e_d_4_0_d_4_1 -> e_d_4_1_d_4_2 -> e_d_4_2_d_4_3
+      (also placed on the shared lane2 so it queues directly behind a stalled
+       left-turner - the shared-lane blocking half of the C1 mechanism)
+
+  d_4_1 is one T-junction of a north-south arterial of THREE consecutive, structurally
+  identical, phase-synchronised static-TL T-junctions in this box net: d_4_0 - d_4_1 -
+  d_4_2 (same tlLogic program verbatim, offset=0). A second permissive-left/opposing-
+  through conflict is deliberately staged one hop downstream at d_4_2 (mirror of d_4_1):
+    - opposing2 (foe) through:  e_d_5_2_d_4_2 -> e_d_4_2_d_3_2 -> e_d_3_2_d_2_2
+    - permissive LEFT2:         e_d_4_1_d_4_2 -> e_d_4_2_d_3_2 -> e_d_3_2_d_2_2
+      (shares lane2 of e_d_4_1_d_4_2 with route_through above)
+  A single isolated T-junction did not reproduce the divergence (see README "Tuning
+  history"): the through-behind flow's own lane-choice relieves pressure once it clears
+  d_4_1, so the queue on e_d_4_0_d_4_1 lane2 never sustains. Staging the SAME conflict
+  one hop downstream lets a stall at d_4_2 propagate queue backpressure onto
+  e_d_4_1_d_4_2, which is what finally compounds into a sustained deficit at d_4_1.
+
+  Flows depart directly on the approach edges (e_d_5_1_d_4_1, e_d_4_0_d_4_1,
+  e_d_5_2_d_4_2) rather than routing through further upstream junctions - this avoids
+  upstream signal timing becoming a THIRD, uncontrolled bottleneck. The upstream edges/
+  junctions are kept in the net crop for topological realism only.
+
+  All flows use static routes (route edges="..."), no device.rerouting anywhere in this
+  scenario, so any stall is a genuine gap-acceptance / signal-response effect, not a
+  rerouting artifact.
+-->
+<routes>
+    <vType id="car" vClass="passenger" length="5" width="1.8" maxSpeed="13.89" carFollowModel="Krauss"
+           accel="2.6" decel="4.5" emergencyDecel="9" sigma="0.5" minGap="2.5" tau="1.0"/>
+
+    <route id="route_opposing"  edges="e_d_5_1_d_4_1 e_d_4_1_d_3_1 e_d_3_1_d_2_1"/>
+    <route id="route_left"      edges="e_d_4_0_d_4_1 e_d_4_1_d_3_1 e_d_3_1_d_2_1"/>
+    <route id="route_through"   edges="e_d_4_0_d_4_1 e_d_4_1_d_4_2 e_d_4_2_d_4_3"/>
+    <route id="route_opposing2" edges="e_d_5_2_d_4_2 e_d_4_2_d_3_2 e_d_3_2_d_2_2"/>
+    <route id="route_left2"     edges="e_d_4_1_d_4_2 e_d_4_2_d_3_2 e_d_3_2_d_2_2"/>
+
+    <!-- (A) saturating opposing/foe through flow at d_4_1: dense enough that gaps are
+         rare. Forced onto lane1 of e_d_5_1_d_4_1 (linkIndex1), which is the connection
+         actually flagged as a foe of the permissive left (linkIndex6) in d_4_1's
+         <request> foes bitmask - lane2's through (linkIndex2) is NOT a foe. -->
+    <flow id="flow_opposing" type="car" route="route_opposing" begin="0" end="1200"
+          vehsPerHour="2200" departLane="1" departSpeed="max"/>
+
+    <!-- (B) permissive LEFT-turners off e_d_4_0_d_4_1 lane2 at d_4_1 - THE measured movement -->
+    <flow id="flow_left" type="car" route="route_left" begin="0" end="1200"
+          vehsPerHour="500" departLane="best" departSpeed="max"/>
+
+    <!-- (C) through vehicles on e_d_4_0_d_4_1 - lane choice left to the engine's own
+         strategic lane-changing model (not forced). -->
+    <flow id="flow_through" type="car" route="route_through" begin="0" end="1200"
+          vehsPerHour="1600" departLane="best" departSpeed="max"/>
+
+    <!-- (D) saturating opposing/foe through flow at d_4_2 (mirror of A, one hop downstream) -->
+    <flow id="flow_opposing2" type="car" route="route_opposing2" begin="0" end="1200"
+          vehsPerHour="2200" departLane="1" departSpeed="max"/>
+
+    <!-- (E) permissive LEFT-turners off e_d_4_1_d_4_2 lane2 at d_4_2 (mirror of B) -->
+    <flow id="flow_left2" type="car" route="route_left2" begin="0" end="1200"
+          vehsPerHour="500" departLane="best" departSpeed="max"/>
+</routes>

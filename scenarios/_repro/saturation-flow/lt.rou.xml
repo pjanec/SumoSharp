@@ -1,0 +1,7 @@
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5" minGap="2.5" maxSpeed="13.89" tau="1.0"/>
+  <route id="ebleft" edges="left1A1 A1B1 B1B2 B2top1"/>
+  <route id="wbthru" edges="right1C1 C1B1 B1A1 A1left1"/>
+  <flow id="lt" type="car" route="ebleft" begin="0" end="600" vehsPerHour="1200" departLane="best" departSpeed="max"/>
+  <flow id="onc" type="car" route="wbthru" begin="0" end="600" vehsPerHour="1200" departLane="best" departSpeed="max"/>
+</routes>

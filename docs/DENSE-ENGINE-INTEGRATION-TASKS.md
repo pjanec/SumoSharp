@@ -1,5 +1,11 @@
 # Dense-flow engine integration — TASKS
 
+> **Superseded by a full branch merge (owner decision).** T1 (file-overlay) + T2 (manual test flip)
+> below were the curated-subset plan; the actual integration is a conflict-free `git merge` of
+> `claude/dense-lane-overlap-fix-5tr4ha`, which subsumes T1+T2+T7. The success conditions in T3
+> (determinism), T4 (#15 gridlock A/B), and T5 (full sweep) still apply verbatim and were all met —
+> see `docs/DENSE-ENGINE-INTEGRATION-TRACKER.md` for verified results.
+
 Work breakdown for `docs/DENSE-ENGINE-INTEGRATION-DESIGN.md`. Each task names its design reference,
 the files it touches, its dependencies, and **success conditions** the implementor must satisfy
 first-hand (not by trusting a report). Design §N references point at that doc.

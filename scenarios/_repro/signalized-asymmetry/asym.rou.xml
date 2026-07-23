@@ -1,0 +1,27 @@
+<routes>
+  <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5" minGap="2.5" maxSpeed="13.89" tau="1.0"/>
+  <route id="we1" edges="A1B1 B1C1 C1D1 D1E1"/>
+  <route id="we2" edges="A2B2 B2C2 C2D2 D2E2"/>
+  <route id="we3" edges="A3B3 B3C3 C3D3 D3E3"/>
+  <route id="ew1" edges="E1D1 D1C1 C1B1 B1A1"/>
+  <route id="ew2" edges="E2D2 D2C2 C2B2 B2A2"/>
+  <route id="ew3" edges="E3D3 D3C3 C3B3 B3A3"/>
+  <route id="snB" edges="B0B1 B1B2 B2B3 B3B4"/>
+  <route id="snC" edges="C0C1 C1C2 C2C3 C3C4"/>
+  <route id="snD" edges="D0D1 D1D2 D2D3 D3D4"/>
+  <route id="nsB" edges="B4B3 B3B2 B2B1 B1B0"/>
+  <route id="nsC" edges="C4C3 C3C2 C2C1 C1C0"/>
+  <route id="nsD" edges="D4D3 D3D2 D2D1 D1D0"/>
+  <flow id="f_we1" type="car" route="we1" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_we2" type="car" route="we2" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_we3" type="car" route="we3" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_ew1" type="car" route="ew1" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_ew2" type="car" route="ew2" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_ew3" type="car" route="ew3" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_snB" type="car" route="snB" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_snC" type="car" route="snC" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_snD" type="car" route="snD" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_nsB" type="car" route="nsB" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_nsC" type="car" route="nsC" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+  <flow id="f_nsD" type="car" route="nsD" begin="0" end="1200" vehsPerHour="900" departLane="best" departSpeed="max"/>
+</routes>

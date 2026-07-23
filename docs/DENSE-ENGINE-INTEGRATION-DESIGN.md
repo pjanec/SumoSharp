@@ -1,6 +1,26 @@
 # Dense-flow engine integration — DESIGN (HOW)
 
-**Status: DESIGN / for agreement — not yet implemented.**
+**Status: IMPLEMENTED via full branch merge — verified green.**
+**Decision (owner):** do a **full `git merge` of `claude/dense-lane-overlap-fix-5tr4ha`**, not a
+curated file-overlay. Rationale: the merge is **conflict-free** (the two branches touched disjoint
+files — ours: viewer/live-city/render; theirs: `Sim.Core`/`Sim.Ingest`/tests/`_repro` scenarios/docs),
+it carries the branch's own parity-tested **test updates automatically** (no manual expectation flip),
+and it brings the branch's **dedicated parity tests + repro scenarios** for free, with proper history/
+provenance. The earlier "file-overlay" plan below (§3–§4) is kept as the fallback rationale; the
+**Verified results** block just below records what was actually done and measured.
+
+**Verified results (merged tree):**
+- Build: whole solution clean.
+- **Parity: `Sim.ParityTests` = 657 passed / 4 skipped** (was 654/4 — the merge adds 3 dense-flow
+  parity tests; every pre-existing golden stays byte-identical).
+- **#15 gridlock A/B** (`--mode live-city --smoke --frames 400`): @160 cars total arrivals **81**
+  (baseline 38), end stoppedFrac **0.38** (baseline 0.75), **jam-and-recover**; @70 cars arrivals
+  **36** (baseline 16), end stoppedFrac **0.50**. Meets every success condition in §6.
+- **Determinism/bench:** `deterministic=True`, `parallel==single=True`, hash **D96213B7BB4021A7
+  UNCHANGED** (the engine changes don't perturb `highway-dense` at all). No `System.Random` introduced.
+
+---
+
 **Goal:** fix issue #15 (live-city junction gridlock — cars sit at junctions on green and never clear)
 by integrating, *wholesale*, the validated engine work from branch
 `claude/dense-lane-overlap-fix-5tr4ha` into the live-city line

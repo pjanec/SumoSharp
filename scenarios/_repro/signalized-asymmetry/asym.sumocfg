@@ -1,0 +1,5 @@
+<configuration>
+  <input><net-file value="grid5.net.xml"/><route-files value="asym.rou.xml"/></input>
+  <time><begin value="0"/><end value="1200"/><step-length value="1.0"/></time>
+  <processing><time-to-teleport value="-1"/></processing>
+</configuration>

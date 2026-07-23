@@ -1,0 +1,5 @@
+<configuration>
+  <input><net-file value="net.net.xml"/><route-files value="sink.rou.xml"/><additional-files value="extra.add.xml"/></input>
+  <time><begin value="0"/><end value="1000"/><step-length value="1.0"/></time>
+  <processing><time-to-teleport value="-1"/></processing>
+</configuration>

@@ -49,14 +49,17 @@ public class LowDensityTeleportTests
 
             var stats = StatisticOutputParser.Parse(statistic);
 
-            // The havePriority fix drops this scenario from 10 -> 5. Guard the TLS half: any regression
-            // in the signal-priority gate re-inflates the count toward 10, so cap it at the post-fix
-            // level. (Vanilla SUMO fires 0 here; the residual 5 is mechanism B / task T3.)
+            // History: the havePriority fix dropped this from 10 -> 5; the GAP-1 dead-lane fix
+            // (merge brake + stuck-reroute, docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.5) then dropped
+            // it further to 1 -- the residual mechanism-B wedge cars now reroute off their dead lane
+            // instead of teleporting. Guard at <= 2 (current is 1, tiny margin): any regression in
+            // either the signal-priority gate or the dead-lane fix re-inflates the count. (Vanilla SUMO
+            // fires 0 here.)
             Assert.True(
-                stats.TeleportsTotal <= 5,
+                stats.TeleportsTotal <= 2,
                 $"synthetic-junction2 fired {stats.TeleportsTotal} teleports (jam={stats.TeleportsJam}, " +
-                $"yield={stats.TeleportsYield}); the havePriority junction-yield fix should hold it at <= 5 " +
-                "(pre-fix was 10; vanilla SUMO is 0).");
+                $"yield={stats.TeleportsYield}); the havePriority + dead-lane fixes should hold it at <= 2 " +
+                "(pre-fix was 10, then 5; vanilla SUMO is 0).");
         }
         finally
         {
