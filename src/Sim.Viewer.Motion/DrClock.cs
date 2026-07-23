@@ -28,6 +28,20 @@ public sealed class DrClock
     // by construction — 1.0 is the correct placeholder for that axis and avoids an initial-guess
     // overshoot (see Pump's pre-baseline guard below) that would otherwise register spurious back-steps.
     private double _simRate = 1.0;
+    private bool _hasRateFit;
+
+    // Blend factor for the per-packet rate re-fit (Bug 7 fix, see Pump): how much of a new long-baseline fit
+    // to accept per packet. Low enough that a single packet's wall<->sim jitter cannot swing `_simRate` (and
+    // hence the projected `clockNow`) far in one step, high enough that a genuine rate change (producer
+    // actually sped up/slowed down) is still tracked within a handful of packets.
+    private const double SimRateBlend = 0.25;
+
+    // Per-frame fraction of any remaining `est - _renderSim` gap pulled in on top of the base per-frame
+    // tick (Bug 7 fix, see Pump). Bounded well under 1 so a burst of drift (e.g. the render clock returning
+    // from a long stall) reconciles over several frames rather than one large jump; high enough that a
+    // genuine multi-second gap (e.g. after `Reset`) still closes quickly since it compounds every frame.
+    private const double CatchUpFraction = 0.35;
+
     private double _renderSim;
     private double _lastPumpWallSec = -1.0;
     private int _backSteps;
@@ -54,6 +68,7 @@ public sealed class DrClock
         _latestSim = 0.0;
         _renderSim = 0.0;
         _simRate = 1.0;
+        _hasRateFit = false;
         AvgSampleInterval = 0.0;
     }
 
@@ -156,6 +171,7 @@ public sealed class DrClock
                 _firstWallSec = null;
                 _renderSim = 0.0;
                 _simRate = 1.0;
+                _hasRateFit = false;
             }
 
             _lastIngestedSim = sim;
@@ -176,7 +192,20 @@ public sealed class DrClock
                     var r = (sim - _firstSim) / baseSec;
                     if (r > 0.2 && r < 20.0)
                     {
-                        _simRate = r;
+                        // Bug 7 (measured, docs/_windows-test-session-report.md #7): on a stepped aggregate
+                        // feed (e.g. ~10 Hz DDS), real wall<->sim jitter (network/scheduling) means EVERY
+                        // packet nudges this "total average" fit by a little -- and because `clockNow` below
+                        // multiplies `_simRate` by the (growing) elapsed wall time, even a tiny per-packet
+                        // nudge can swing the PROJECTED clockNow by a visible amount, transiently dipping
+                        // `est` below the already-advanced `_renderSim` -> a one-frame HOLD (the stutter).
+                        // Low-pass the rate itself so a single packet's re-fit can't move it far in one step
+                        // (the long-baseline average is already the *target*; this just damps how fast we
+                        // slew onto a new target, same fix shape HtmlPage.cs doesn't need because its "sim"
+                        // axis is a clean step count, not a wall-clock-ish timestamp with transport jitter).
+                        // First real fit (leaving the bootstrap placeholder) snaps directly -- no slow
+                        // ramp-in artifact -- every fit after that blends.
+                        _simRate = _hasRateFit ? _simRate + (r - _simRate) * SimRateBlend : r;
+                        _hasRateFit = true;
                     }
                 }
             }
@@ -193,9 +222,7 @@ public sealed class DrClock
         }
 
         // Render clock: advance MONOTONICALLY toward the smooth wall->sim estimate (floored at the newest
-        // sample so delay=0 stays pure extrapolation). Forward-only: if the estimate dips (jitter) we HOLD
-        // rather than step back (HtmlPage.cs draw()'s clock comment) — a momentary hold is invisible, a
-        // backward step is a visible back-jump. Each held regression is counted as a back-step "attempt".
+        // sample so delay=0 stays pure extrapolation).
         //
         // Pre-baseline guard (not in HtmlPage.cs, needed here): before the long-baseline fit has its first
         // second of data, `_simRate` is only a placeholder guess. Projecting `_firstSim + guess*elapsed`
@@ -217,13 +244,45 @@ public sealed class DrClock
         {
             _renderSim = est; // init / restart -> jump forward
         }
-        else if (est > _renderSim)
+        else if (!haveStableFit)
         {
-            _renderSim += Math.Min(est - _renderSim, frameDt * _simRate * 3.0); // capped catch-up
+            // Pre-baseline: `est` is a flat step (`_latestSim`, unchanged between packet arrivals -- see
+            // above), not a continuously-growing projection, so there is nothing to "tick forward" against
+            // yet. Keep the original pure-chase behaviour (capped catch-up, hold on a dip) for this short
+            // bootstrap window only; the Bug 7 fix below takes over once the fit is live.
+            if (est > _renderSim)
+            {
+                _renderSim += Math.Min(est - _renderSim, frameDt * _simRate * 3.0);
+            }
+            else if (est < _renderSim - 1e-9)
+            {
+                _backSteps++;
+            }
         }
-        else if (est < _renderSim - 1e-9)
+        else
         {
-            _backSteps++; // would-be backward step -- held instead; _renderSim itself never decreases
+            // Bug 7 (measured, docs/_windows-test-session-report.md #7): the OLD design advanced `_renderSim`
+            // ONLY by chasing `est` (capped catch-up when ahead, a full FREEZE -- do nothing at all -- when
+            // `est` dipped below it). On a stepped aggregate feed, real wall<->sim jitter means a per-packet
+            // rate re-fit routinely nudges `est` down by a hair relative to the already-advanced
+            // `_renderSim` for exactly one frame -> that frame did nothing -> a visible one-frame stutter
+            // (constant-speed cruise progress ~0.28 -> ~0.18 m, confirmed packet-correlated by a frame
+            // trace). Per the report's suggested shape: tick `_renderSim` forward EVERY frame by the base
+            // (smoothed) real-time rate FIRST, unconditionally -- so a frame can never do nothing -- then
+            // gently pull the remainder of any gap to `est` by a bounded FRACTION (not the old hard capped
+            // jump) so drift reconciles smoothly over a few frames. When `est` dips (jitter), there is
+            // simply no gap to pull -- the frame already ticked forward above, so nothing else happens: no
+            // hold, and (since both terms are always >= 0) still no backward step.
+            _renderSim += frameDt * _simRate;
+
+            if (est > _renderSim)
+            {
+                _renderSim += (est - _renderSim) * CatchUpFraction;
+            }
+            else if (est < _renderSim - 1e-9)
+            {
+                _backSteps++; // health metric only -- this frame already ticked forward above
+            }
         }
     }
 
@@ -307,12 +366,36 @@ public sealed class DrClock
 
             if (a.Record.LaneHandle == b.Record.LaneHandle)
             {
-                // Same lane in both packets -> a straight arc-length lerp is exact (no lane-window walk
-                // needed, unlike HtmlPage.cs's arcInWindow, because PoseResolver's own forward walk handles
-                // crossing into the next lane from a single arc-length value).
+                // Same lane in both packets. Bug 8 (measured, docs/_windows-test-session-report.md #8): a
+                // NAIVE position lerp (`a.Pos + (b.Pos-a.Pos)*f`) ignores each packet's own accel, so on a
+                // decelerating (concave-in-time) run it cuts the CHORD between the two samples -- which sits
+                // BELOW the true accel-aware curve. The instant `sampleT` crosses from the "extrapolate
+                // forward from `a`" branch (which correctly follows that concave curve via
+                // DrExtrapolation.Arc) into this interpolate branch (a NEW packet `b` just arrived and became
+                // reachable), the estimate SNAPS DOWN to the chord -- a visible one-shot backward jump at the
+                // packet boundary that KinematicHeading's front-position low-pass then eases out over the
+                // following (no-new-packet) frames as a gradual BACKWARD CREEP. Confirmed by a synthetic
+                // decel-to-stop probe: sparse (~2.4s) packets during braking produced a 0.68 m raw arc
+                // back-snap -> ~0.03 m/frame center creep over ~20 frames, 27/29 of them with no new packet
+                // that frame -- matching the report's numbers almost exactly.
+                //
+                // Fix: blend the SAME two physically-consistent projections the boundary branches already
+                // use -- DrExtrapolation.Arc forward from `a` (dtA >= 0, decel-clamped) and backward from `b`
+                // (dtB <= 0) -- by the same fraction `f`, instead of a bare position lerp. At f=0 this is
+                // exactly `a.Pos` (arcFromA's dt=0 case); at f=1 exactly `b.Pos` (arcFromB's dt=0 case) -- so
+                // the two packets' own recorded positions are still hit exactly, and the result is now
+                // CONTINUOUS with both the extrapolate-forward-from-`a` branch (as sampleT approaches
+                // `a` from below f=... this branch's boundary) and extrapolate-backward-from-`b`. For
+                // constant-velocity (accel=0) packets this is algebraically identical to the old lerp (both
+                // projections coincide with the straight chord), so the existing zero-accel exact-lerp pins
+                // (DrClockResolveTests) are unaffected byte-for-byte.
                 pk = b.Record;
                 posLat = a.Record.PosLat + (b.Record.PosLat - a.Record.PosLat) * f;
-                arc = a.Record.Pos + (b.Record.Pos - a.Record.Pos) * f;
+                var dtA = sampleT - a.TimestampSeconds; // >= 0
+                var dtB = sampleT - b.TimestampSeconds; // <= 0
+                var arcFromA = ExtrapolateArc(a.Record.Pos, a.Record.Speed, a.Record.Accel, dtA);
+                var arcFromB = ExtrapolateArc(b.Record.Pos, b.Record.Speed, b.Record.Accel, dtB);
+                arc = arcFromA + (arcFromB - arcFromA) * f;
                 extrapolated = false;
             }
             else
