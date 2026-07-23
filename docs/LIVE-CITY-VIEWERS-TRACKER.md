@@ -13,9 +13,9 @@ ParityTests 654/4, Pedestrians 227, IgBridge 11, DotRecast 2, Host 1; determinis
 **`D96213B7BB4021A7`** (single == parallel). This is the standing bar for every `src/`-touching tick.
 Re-capture fresh per task (other sessions may edit the engine).
 
-## Stage A — SumoSharp.LiveCity shared host
-- [ ] **A1** project scaffold (`src/Sim.LiveCity`, packs `SumoSharp.LiveCity.0.1.0`)
-- [ ] **A2** `LiveCitySim`/`LiveCityConfig`/`LiveCitySnapshot` — coupled recipe, per-tick order, read-back; test asserts cars>0/peds>0/CarYieldObservations>0 + deterministic double-run + YIELD A/B
+## Stage A — SumoSharp.LiveCity shared host  ✅ (commit a8c7fae)
+- [x] **A1** project scaffold (`src/Sim.LiveCity`, packs `SumoSharp.LiveCity.0.1.0`, net8.0;netstandard2.1)
+- [x] **A2** `LiveCitySim`/`LiveCityConfig`/`LiveCitySnapshot` — coupled recipe, exact per-tick order, publishes cars+peds on the in-mem wire + direct `Sample()` read-back. Opus-verified first-hand: 3/3 tests green (PeakCars=163/PeakPeds=160/PeakOccupiedCrossings + CarYieldObservations ON=763 vs OFF=220; float-exact determinism; YIELD A/B), wire non-vacuous (History>0, crowd frame>0). **Zero existing files touched → parity gate unaffected by construction** (ParityTests 654/4 + hash `D96213B7BB4021A7` intact).
 
 ## Stage B — Raylib 2D live-city (real-time)
 - [ ] **B1** `DemoKind.LiveCity` + `LiveCityOverlay` — cars + peds drawn in one frame; smoke cars>0 && peds>0
