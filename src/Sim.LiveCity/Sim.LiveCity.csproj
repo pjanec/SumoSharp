@@ -30,8 +30,12 @@
     <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
   </ItemGroup>
 
+  <!-- netstandard2.1 lacks in-box System.Text.Json (LiveCityScene.Load uses JsonDocument to parse the
+       zones/buildings/pois.json companion files); net8.0 has it in the BCL already. Same pinned 8.0.x
+       line Sim.Pedestrians/Sim.Pedestrians.csproj uses for the identical reason. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
     <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
 </Project>

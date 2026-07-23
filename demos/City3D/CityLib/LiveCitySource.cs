@@ -40,6 +40,11 @@ public sealed class LiveCitySource : IDisposable
 
     public NetworkModel Network => _sim.Network;
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": the static world-overlay scene (zones/
+    // buildings/pois, all optional) LiveCitySim already loaded once in its own ctor -- exposed here so the
+    // Viewer's zone-ground (and later building/POI) layers read it without a second parse.
+    public LiveCityScene Scene => _sim.Scene;
+
     // The LOCAL, Z-aware lane source (Lane.ShapeZ-carrying) -- same type SimSource.LocalLanes exposes, so
     // RoadMeshBuilder/Reconstructor honor the net's elevation on the live-city path exactly as they do on
     // the --scenario path (docs/LIVE-CITY-VIEWERS-TASKS.md D2).

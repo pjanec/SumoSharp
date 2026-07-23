@@ -89,6 +89,11 @@ public sealed class LiveCitySim : IDisposable
         _recordPedSink = recordPedSink;
         _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
 
+        // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": load the static world-overlay scene
+        // (zones/buildings/pois, all optional) once here so both viewers get it for free off `Scene`
+        // instead of each re-parsing the dataset dir's JSON companions themselves.
+        Scene = LiveCityScene.Load(cfg.DatasetDir);
+
         var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
 
         // net parsed twice (once for the vehicle-side NetworkModel, once for the ped-side PedNetwork) --
@@ -238,6 +243,9 @@ public sealed class LiveCitySim : IDisposable
     }
 
     public NetworkModel Network { get; }
+
+    // The static world-overlay scene (zones/buildings/pois) loaded once from cfg.DatasetDir in the ctor.
+    public LiveCityScene Scene { get; }
 
     public NetworkLaneSource LocalLanes { get; }
 

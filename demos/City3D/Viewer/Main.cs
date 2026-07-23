@@ -56,6 +56,26 @@ public partial class Main : Node3D
         new(0.58f, 0.56f, 0.51f),
     };
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2 -- district ground-tint palette, matching the reference
+    // renderer's ZONE_FILL table (docs/reference/live-city-viz/renderer/templates/template.js:93-105) by
+    // hue: downtown neutral grey, retail amber, dining pink, residential blue, park green, arterial faint
+    // grey. Alpha is bumped from the reference's raw canvas-overlay values (0.05-0.14) into the ~0.18-0.25
+    // band the task calls for -- a flat unlit 3D ground plane at overview-camera range reads much fainter
+    // than the same alpha painted directly onto a 2D canvas, so a straight channel copy would be nearly
+    // invisible here. Arterial is kept the faintest of the six (matches the reference's own relative
+    // ordering: it is described as "faint grey" there too), unknown zone types fall back to ZoneFillDefault.
+    private static readonly Dictionary<string, Color> ZoneFillPalette = new(StringComparer.Ordinal)
+    {
+        ["downtown"] = new Color(148f / 255f, 163f / 255f, 184f / 255f, 0.20f),
+        ["retail"] = new Color(245f / 255f, 158f / 255f, 11f / 255f, 0.22f),
+        ["dining"] = new Color(244f / 255f, 114f / 255f, 182f / 255f, 0.22f),
+        ["residential"] = new Color(96f / 255f, 165f / 255f, 250f / 255f, 0.20f),
+        ["park"] = new Color(34f / 255f, 197f / 255f, 94f / 255f, 0.22f),
+        ["arterial"] = new Color(148f / 255f, 163f / 255f, 184f / 255f, 0.10f),
+    };
+
+    private static readonly Color ZoneFillDefault = new(156f / 255f, 163f / 255f, 175f / 255f, 0.15f);
+
     // Small seeded car-body palette (design "Cars" / task T1.5, mirrors BuildingPalette's "variety without
     // assets" pattern) -- picked deterministically by VehicleHandle.Index (stable across frames for a given
     // vehicle, no hidden RNG), not by draw order.
@@ -273,6 +293,13 @@ public partial class Main : Node3D
     // BuildBuildings/BuildRemoteScene's own remarks) -- `_buildingsNode` stays null in every other mode, so
     // the toggle is a harmless no-op there.
     private MultiMeshInstance3D? _buildingsNode;
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone-tint visibility toggle (`--hide-zones` startup
+    // flag + runtime `Z` key), same shape as `_buildingsNode`/`B` above. Built by BuildZoneGround, wired
+    // into ReadyLiveCityLive/ReadyLiveCityReplay/BuildRemoteLiveCityScene -- every `--live-city` entry
+    // point, since the zone tint is a live-city-only overlay (no `--scenario`/`--peds` dataset carries a
+    // zones.json today). Null (harmless no-op toggle) wherever it wasn't built.
+    private Node3D? _zonesNode;
 
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
@@ -725,6 +752,15 @@ public partial class Main : Node3D
         // live-city path builds/frames ONLY the crop's lanes, unlike the vehicle --scenario path (whose
         // nets ARE the whole playable area already).
         var (x0, y0, x1, y1) = _liveCitySource.Crop;
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zone ground tint, built BEFORE the road meshes so
+        // it lands earlier in the scene tree -- Godot's default opaque/blended draw order for coplanar-ish
+        // transparent geometry follows a mix of tree order and distance-from-camera sort, but since the
+        // roads sit strictly ABOVE the zone tint (BuildRoadMeshesCropped at z=0 vs. ZoneGroundBuilder's
+        // z=-0.05 default) the depth test alone is what keeps roads visually on top; building zones first
+        // simply keeps this method's own read order matching "ground layer, then roads" (docs/LIVE-CITY-
+        // VISUALS-NOTES.md's stated per-layer sequencing).
+        BuildZoneGround(_liveCitySource.Scene);
         var roadBbox = BuildRoadMeshesCropped(_liveCitySource.Network, x0, y0, x1, y1);
         _sceneBbox = roadBbox;
 
@@ -757,6 +793,12 @@ public partial class Main : Node3D
         // that same network, cropping doesn't change lane numbering.
         var liveCitySource = _liveCitySource;
         _placeSignalHeads = keys => TrafficLightPlacer.Place(liveCitySource!.Network, keys);
+
+        if (ParseHideZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = false;
+            GD.Print("Main: --hide-zones active (zone tint starts hidden; press Z to toggle).");
+        }
 
         if (_cameraMode == "close")
         {
@@ -849,6 +891,12 @@ public partial class Main : Node3D
             return;
         }
 
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: replay has no live LiveCitySource to read `.Scene`
+        // off (there is no LiveCitySim in this path at all -- see the class remark above); the zone tint is
+        // purely STATIC world data, unrelated to the recorded car/ped frames, so it is loaded directly off
+        // the SAME dataset dir `cfg`/`netPath` above already resolved. Mirrors ReadyLiveCityLive's own
+        // "zones before roads" build order.
+        BuildZoneGround(LiveCityScene.Load(cfg.DatasetDir));
         var roadBbox = BuildRoadMeshesCropped(network, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1);
         _sceneBbox = roadBbox;
 
@@ -874,6 +922,12 @@ public partial class Main : Node3D
         // the wire-geometry overload here even though this IS a replay path, since the road geometry was
         // never actually replicated (it's read locally, same as the live path).
         _placeSignalHeads = keys => TrafficLightPlacer.Place(network, keys);
+
+        if (ParseHideZonesArg() && _zonesNode is not null)
+        {
+            _zonesNode.Visible = false;
+            GD.Print("Main: --hide-zones active (zone tint starts hidden; press Z to toggle).");
+        }
 
         if (_cameraMode == "close")
         {
@@ -1025,6 +1079,22 @@ public partial class Main : Node3D
     {
         var geometry = _ddsSource!.Geometry;
         _lanes = new ReplicationLaneShapeSource(geometry);
+
+        // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: the zone tint is static world data, not carried
+        // over the DDS wire at all (unlike lane geometry) -- this method's own remark above notes the
+        // subscriber is designed to need "no repo/dataset access of its own" for the crop rect, so this
+        // load is a BEST-EFFORT local read (the same dataset dir a same-machine/checkout producer publishes
+        // from), wrapped so a genuinely remote subscriber with no local scenarios/ tree just skips the
+        // layer rather than failing the whole DDS scene build.
+        try
+        {
+            var zoneCfg = LiveCityConfig.ForRepoRoot(FindRepoRoot());
+            BuildZoneGround(LiveCityScene.Load(zoneCfg.DatasetDir));
+        }
+        catch (Exception ex)
+        {
+            GD.Print($"Main: zone-tint layer skipped (no local dataset access for remote subscriber): {ex.Message}");
+        }
 
         var crop = new LiveCityConfig(); // pinned defaults only -- no dataset dir needed just for X0..Y1.
         var roadBbox = BuildRoadMeshesFromGeometryCropped(geometry, crop.X0, crop.Y0, crop.X1, crop.Y1);
@@ -1625,6 +1695,18 @@ public partial class Main : Node3D
                 {
                     _buildingsNode.Visible = !_buildingsNode.Visible;
                     GD.Print($"Main: buildings visible={_buildingsNode.Visible} (B toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: runtime zone-tint toggle, mirrors the B/
+            // buildings toggle immediately above.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.Z:
+                if (_zonesNode is not null)
+                {
+                    _zonesNode.Visible = !_zonesNode.Visible;
+                    GD.Print($"Main: zones visible={_zonesNode.Visible} (Z toggle).");
                 }
 
                 GetViewport().SetInputAsHandled();
@@ -2304,6 +2386,95 @@ public partial class Main : Node3D
         return (min, max);
     }
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2 ("Zones layer"). Static geometry, built ONCE at load,
+    // same "build once, no per-frame cost" split as BuildRoadMeshes/BuildBuildings -- a district tint never
+    // animates. CityLib.ZoneGroundBuilder does the polygon -> flat-mesh math (fan triangulation + the SUMO
+    // -> Godot elevation offset that keeps the tint just below the road ribbons); this method only turns
+    // each FlatGroundMesh into a MeshInstance3D, coloured by `ZoneFillPalette[zone.Type]`.
+    //
+    // Draw order: zones are added LARGEST-AREA-FIRST (sorted by FlatGroundMesh.Area descending) so a big
+    // district's tint node -- and therefore its render -- lands before a smaller nested/adjacent zone's,
+    // per the task's explicit "so a big zone doesn't cover a small one" requirement. All zone meshes sit at
+    // the SAME ground offset (ZoneGroundBuilder's default -0.05m, just under the road surface at 0m) with
+    // an unshaded, alpha-blended, double-sided (CullMode.Disabled -- a flat ground wash has no meaningful
+    // back face, and the fan triangulation deliberately does not normalize winding, see
+    // ZoneGroundBuilder.Build's own remark) material, so overlapping tints blend by DRAW ORDER, not a depth
+    // fight.
+    //
+    // Every zone lands under ONE parent Node3D (`_zonesNode`) so `--hide-zones` / the runtime `Z` key
+    // toggles the whole layer with a single Visible flip, mirroring `_buildingsNode`/`B`. A scene with no
+    // zones (a dataset that ships no zones.json) leaves `_zonesNode` null -- a harmless no-op toggle,
+    // exactly like `_buildingsNode` in every mode that never builds buildings.
+    private void BuildZoneGround(LiveCityScene scene)
+    {
+        if (scene.Zones.Count == 0)
+        {
+            GD.Print("Main: 0 zone(s) in scene -- zone-tint layer skipped.");
+            return;
+        }
+
+        var built = new List<(SceneZone Zone, FlatGroundMesh Mesh)>(scene.Zones.Count);
+        foreach (var zone in scene.Zones)
+        {
+            built.Add((zone, ZoneGroundBuilder.Build(zone.Polygon)));
+        }
+
+        // Largest planar area first (descending) -- a plain insertion sort is fine at n=6 (one dataset's
+        // worth of districts); no need to pull in System.Linq for this file's first sort.
+        built.Sort((a, b) => b.Mesh.Area.CompareTo(a.Mesh.Area));
+
+        var root = new Node3D { Name = "Zones" };
+        AddChild(root);
+        _zonesNode = root;
+
+        var built3D = 0;
+        foreach (var (zone, flat) in built)
+        {
+            if (flat.Vertices.Length == 0)
+            {
+                continue; // degenerate (<3-point) polygon -- nothing to draw.
+            }
+
+            var vertexCount = flat.Vertices.Length / 3;
+            var vertices = new Vector3[vertexCount];
+            var normals = new Vector3[vertexCount];
+            for (var i = 0; i < vertexCount; i++)
+            {
+                vertices[i] = new Vector3(flat.Vertices[i * 3 + 0], flat.Vertices[i * 3 + 1], flat.Vertices[i * 3 + 2]);
+                normals[i] = new Vector3(flat.Normals[i * 3 + 0], flat.Normals[i * 3 + 1], flat.Normals[i * 3 + 2]);
+            }
+
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+            arrays[(int)Mesh.ArrayType.Normal] = normals;
+            arrays[(int)Mesh.ArrayType.Index] = flat.Indices;
+
+            var arrayMesh = new ArrayMesh();
+            arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+
+            var color = ZoneFillPalette.TryGetValue(zone.Type, out var c) ? c : ZoneFillDefault;
+            var material = new StandardMaterial3D
+            {
+                AlbedoColor = color,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+            };
+
+            var instance = new MeshInstance3D
+            {
+                Mesh = arrayMesh,
+                Name = $"Zone_{zone.Id}",
+            };
+            instance.SetSurfaceOverrideMaterial(0, material);
+            root.AddChild(instance);
+            built3D++;
+        }
+
+        GD.Print($"Main: built {built3D} zone ground tile(s) from {scene.Zones.Count} zone(s).");
+    }
+
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Cars" / task T1.5. The ONLY per-frame
     // geometry (design: "The only per-frame geometry"). Built once here as an EMPTY MultiMesh (no vehicles
     // exist yet at load); UpdateCars (below, called from _Process every frame) writes the live transforms.
@@ -2921,6 +3092,22 @@ public partial class Main : Node3D
         foreach (var arg in OS.GetCmdlineUserArgs())
         {
             if (arg == "--hide-buildings")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: `--hide-zones` USER cmdline flag, same shape/mechanism
+    // as `--hide-buildings` above. Starts the zone-tint layer (`_zonesNode`, when built at all) hidden; the
+    // runtime `Z` key (_UnhandledInput) toggles it from there.
+    private static bool ParseHideZonesArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--hide-zones")
             {
                 return true;
             }

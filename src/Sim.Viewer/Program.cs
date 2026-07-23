@@ -934,6 +934,9 @@ static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, d
 
         DrawWorld = (camera, draws) =>
         {
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: zones drawn BEFORE the road/vehicle pass so
+            // the district tint sits under the streets, never over them.
+            LiveCityZonesLayer.Draw(camera, sim.Scene.Zones);
             Renderer.DrawWorldDds(camera, sim.VehicleSource.Geometry, sim.VehicleSource.TlStateByLane, draws);
             overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
         },
@@ -1098,6 +1101,21 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
 
     var pedTrack = new PedFrameTrack(replayPath);
 
+    // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: replay has no LiveCitySim (no `.Scene` to read off) --
+    // the zone tint is purely static world data, unrelated to the recorded car/ped frames, so it is loaded
+    // directly off the SAME pinned demo_city/box dataset dir every live-city path uses. Best-effort: a
+    // `.simrec` played back without the dataset checked out (or the box companion files absent) just
+    // renders with an empty zones list rather than failing the whole replay.
+    var replayScene = LiveCityScene.Empty;
+    try
+    {
+        replayScene = LiveCityScene.Load(LiveCityConfig.ForRepoRoot(DemoCatalog.RepoRoot()).DatasetDir);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"RunLiveCityReplay: zone-tint layer skipped ({ex.Message}).");
+    }
+
     var overlay = new LiveCityOverlay();
     var frameStats = new FrameStats();
     var drClock = new DrClock();
@@ -1161,6 +1179,9 @@ static int RunLiveCityReplay(string replayPath, string? screenshotPath, int fram
 
         DrawWorld = (camera, draws) =>
         {
+            // docs/LIVE-CITY-VISUALS-NOTES.md deliverable 2: same "zones under roads" draw order as the
+            // live path (RunLiveCity).
+            LiveCityZonesLayer.Draw(camera, replayScene.Zones);
             Renderer.DrawWorldDds(camera, fileSource.Geometry, fileSource.TlStateByLane, draws);
             overlay.DrawWorldOver(camera, SimulationSnapshot.Empty, draws);
 
