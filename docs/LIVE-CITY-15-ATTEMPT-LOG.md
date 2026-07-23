@@ -748,3 +748,41 @@ safe gap, AND its lateral displacement is always accompanied by forward displace
   the live-city smoke ~1000 s and asserts `arrivals >= threshold` and late `stoppedFrac <= threshold` —
   the guard the parity gate structurally cannot provide (the #15 bug was inert on every golden). Separate
   from the parity gate; thresholds set from the post-cure baseline.
+
+## OWNER REQUIREMENT (2026-07-23, binding) — NO unrealistic lateral lane swaps
+The lateral "float" must be fixed at the CAUSE, not masked. Rules, in priority order:
+1. **Do NOT smooth/mask an engine-made lateral lane swap.** A car teleporting/sliding sideways between
+   lanes is unrealistic no matter how the renderer blends it. Render smoothing of a bad swap is NOT an
+   acceptable fix.
+2. **Never swap into an occupied target lane.** If the parallel (target) lane is already occupied at the
+   swap point, the maneuver is physically impossible and must be forbidden outright.
+3. **If a swap is required but the gap is occupied, it must be COOPERATIVE** — the target-lane FOLLOWER
+   slows down to open a gap, then the changer merges (SUMO LC2013 `informFollower` / LCA_URGENT
+   blocker-cooperation, `/sumo/.../MSLCM_LC2013.cpp:1467-1517`; the repo's RETIRED
+   `VehicleRuntime.CoopSpeedAdvice` + `CommandBuffer.SpeedAdvice`, git `afec614`, is the determinism-safe
+   template to revive).
+4. **Lateral motion is always accompanied by forward motion** (a car may start a change from a full stop
+   by turning + creeping forward, but never moves purely sideways). Consequence: a legitimate change into
+   a free gap while moving renders as a physical DIAGONAL, which is fine and is NOT a "float".
+
+## CURRENT-STATE FINDING (verified in code) — the engine already forbids unsafe swaps; cooperation is the gap
+All FOUR lane-change commit paths in `Engine.cs` already enforce full safety before committing:
+`IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(...)` at the overtake (5587),
+speed-gain-left (10548/10573), strategic/urgent (11314/11319), and keep-right (10782) sites. So the
+engine does **NOT** commit a lane change into an occupied lane -> rule #2 is already satisfied; there is no
+unsafe-swap code path to remove. What is MISSING is rule #3: `TryStrategicLaneChange`'s own header
+(`Engine.cs:11307-11311`) states "a scenario WITH target-lane traffic during a strategic change is future
+work (LCA_URGENT's real blocker-cooperation machinery ... is NOT ported)" -- so a wrong-lane car whose
+turn-lane gap is occupied simply `return false`s (never merges), then strands/reroutes (my never-clamp
+fix sends it another way). That fail-to-merge, plus the DR straddle rendering a SAFE discrete lane flip as
+a ~0.5 s lateral slide, is what reads as the "float"/"pushing into an occupied lane" -- NOT an actual
+engine overlap (overlaps stay ~0-2, pre-existing probe noise on curved lanes).
+
+## THEREFORE the float/swap cure is a real feature (design-first, next): COOPERATIVE strategic lane change
+Port LCA_URGENT blocker-cooperation: when `TryStrategicLaneChange` is blocked ONLY by a target-lane
+FOLLOWER (gap otherwise fine), instead of bailing, have that follower brake to open a secure gap (revive
+`CoopSpeedAdvice`: a commutative-MIN speed advice written this step, consumed by the follower's
+`ComputeMoveIntent` next step -- determinism-safe, parity-inert since no golden exercises it). Then the
+changer merges into a genuinely free gap while moving => a physical diagonal, no float, and fewer wrong-
+lane cars needing the never-clamp reroute. Parity-safe (inert on every golden; gated by the same
+demo-only path). This supersedes any render-smoothing approach per rule #1.
