@@ -271,6 +271,11 @@ public partial class Main : Node3D
     private const float FlyDistanceFractionPerSecond = 1.0f; // WASD/QE fly speed = 100% of distance per second
     private const float FlyShiftMultiplier = 4f;             // Shift = 4× faster fly (Unity's "sprint")
 
+    // Infinite ground-grid reference (a Unity-editor-like floor grid, so empty ground reads as a plane).
+    private const float GridSpacingMeters = 25f;    // line every 25 m
+    private const float GridHalfExtentMeters = 2500f; // 5 km grid, recentered under the camera each frame => "infinite"
+    private const float GridGroundY = -0.1f;        // just below zone tint (-0.05) and roads (0) so both draw on top
+
     // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
     // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
     // aspect from the geometry itself; offset+fov mode uses WallDefaultAspect below), never distorted/
@@ -411,6 +416,10 @@ public partial class Main : Node3D
     // -- `--hide-pois` starts it hidden; the runtime `P` key (_UnhandledInput) toggles it from there. Null
     // (harmless no-op toggle) wherever it wasn't built (e.g. `--peds`, `--scenario`).
     private Node3D? _poisNode;
+
+    // Infinite ground grid (built once in SetupOrbitCamera, recentered on the camera each frame in
+    // ApplyOrbitCamera so it reads as infinite). Runtime `G` key toggles it; default visible.
+    private MeshInstance3D? _gridNode;
 
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
@@ -2003,6 +2012,17 @@ public partial class Main : Node3D
                 {
                     _buildingsNode.Visible = !_buildingsNode.Visible;
                     GD.Print($"Main: buildings visible={_buildingsNode.Visible} (B toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // Infinite ground-grid toggle (mirrors the B/buildings toggle).
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.G:
+                if (_gridNode is not null)
+                {
+                    _gridNode.Visible = !_gridNode.Visible;
+                    GD.Print($"Main: ground grid visible={_gridNode.Visible} (G toggle).");
                 }
 
                 GetViewport().SetInputAsHandled();
@@ -3796,12 +3816,14 @@ public partial class Main : Node3D
         var (bboxMin, bboxMax) = frameBbox;
         _orbitSceneExtent = Mathf.Max(Mathf.Max(bboxMax.X - bboxMin.X, bboxMax.Z - bboxMin.Z), 10f);
 
+        BuildGroundGrid();  // build the infinite floor grid before the first apply so recenter has a node
+
         ApplyOrbitCamera(); // push the (possibly CLI-overridden) initial pose to the node right away
         GD.Print(
             $"Main: orbit camera ready on '{activeCamera.Name}' -- yaw={_orbitController.YawRad * 180f / Mathf.Pi:F1}deg " +
             $"pitch={_orbitController.PitchRad * 180f / Mathf.Pi:F1}deg dist={_orbitController.Distance:F1}m " +
-            $"focus={_orbitController.Focus}. Controls: left-drag orbit, middle-drag/shift+left-drag pan, " +
-            "wheel zoom, R/Home reset.");
+            $"focus={_orbitController.Focus}. Controls (Unity-style): RMB look + WASD/QE fly (Shift=sprint), " +
+            "MMB pan, Alt+LMB orbit, wheel dolly, F/Home frame, G grid.");
     }
 
     // Seeds an OrbitCameraController from the given (cameraPos, focus) -- normally exactly the pose
@@ -3847,6 +3869,59 @@ public partial class Main : Node3D
         // Bug fix: track the far plane to the live orbit distance so dollying out never clips the scene
         // (see the `_orbitBaseFar`/`_orbitSceneExtent` fields' doc comment for the formula's reasoning).
         _orbitCamera.Far = Mathf.Max(_orbitBaseFar, (_orbitController.Distance * 2.5f) + _orbitSceneExtent);
+
+        // Recenter the ground grid under the camera, SNAPPED to the grid spacing so the lines never appear to
+        // slide -- makes the finite mesh read as an infinite floor as you fly around.
+        if (_gridNode is not null)
+        {
+            var gx = Mathf.Round(pos.X / GridSpacingMeters) * GridSpacingMeters;
+            var gz = Mathf.Round(pos.Z / GridSpacingMeters) * GridSpacingMeters;
+            _gridNode.Position = new Vector3(gx, GridGroundY, gz);
+        }
+    }
+
+    // Infinite ground-grid reference: a flat XZ line grid at GridGroundY, built ONCE (5 km span, 25 m lines)
+    // and recentered on the camera's XZ (snapped to the spacing) every frame in ApplyOrbitCamera, so it reads
+    // as an endless floor without ever rebuilding the mesh. Unlit grey lines; sits just under the roads/zones
+    // so both draw on top. Toggle with `G`.
+    private void BuildGroundGrid()
+    {
+        if (_gridNode is not null)
+        {
+            return;
+        }
+
+        var n = (int)(GridHalfExtentMeters / GridSpacingMeters);
+        var ext = n * GridSpacingMeters;
+        var verts = new List<Vector3>((n * 2 + 1) * 4);
+        for (var i = -n; i <= n; i++)
+        {
+            var p = i * GridSpacingMeters;
+            verts.Add(new Vector3(p, 0f, -ext)); // line parallel to Z
+            verts.Add(new Vector3(p, 0f, ext));
+            verts.Add(new Vector3(-ext, 0f, p)); // line parallel to X
+            verts.Add(new Vector3(ext, 0f, p));
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(0.5f, 0.53f, 0.58f, 0.55f),
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            VertexColorUseAsAlbedo = false,
+        };
+
+        _gridNode = new MeshInstance3D { Name = "GroundGrid", Mesh = mesh, Position = new Vector3(0f, GridGroundY, 0f) };
+        _gridNode.MaterialOverride = material;
+        AddChild(_gridNode);
+        GD.Print($"Main: ground grid built ({GridSpacingMeters:F0}m spacing, ±{GridHalfExtentMeters:F0}m, recentered on camera).");
     }
 
     // Unity RMB flythrough: while RMB is held, WASD flies in the camera's right/forward plane and Q/E move
