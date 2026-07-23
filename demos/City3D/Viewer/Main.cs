@@ -166,6 +166,16 @@ public partial class Main : Node3D
     // look-through-the-building-wall problem a full 90deg offset has.
     private const float CloseCameraLateralMeters = 12f;
 
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable) --
+    // input sensitivities + the click-vs-drag disambiguation threshold. Orbit/pan are proportional to
+    // pixel motion (Godot InputEventMouseMotion.Relative); pan is additionally scaled by the controller's
+    // CURRENT Distance (below) so the pan speed feels consistent whether zoomed in close or far out.
+    private const float OrbitYawRadPerPixel = 0.006f;
+    private const float OrbitPitchRadPerPixel = 0.006f;
+    private const float PanMetersPerPixelPerDistance = 0.0016f;
+    private const float ZoomStepFactor = 0.9f; // one wheel notch: *0.9 to zoom in, /0.9 to zoom out
+    private const float ClickDragThresholdPixels = 5f;
+
     // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
     // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
     // aspect from the geometry itself; offset+fov mode uses WallDefaultAspect below), never distorted/
@@ -190,6 +200,25 @@ public partial class Main : Node3D
     private string _cameraMode = "overview";
     private (Vector3 Min, Vector3 Max) _sceneBbox;
     private Camera3D? _closeCamera;
+
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable):
+    // `--camera=overview|close` (above) picks the INITIAL framing, exactly as before; `_orbitController`
+    // (CityLib, Godot-free pure math) then owns the camera's pose every frame from there on, and
+    // `_orbitCamera` is whichever Camera3D node it drives -- the overview `FramingCamera` normally, or
+    // `_closeCamera` when `--camera=close` was requested. Left null in video-wall mode (N simultaneous
+    // Current cameras -- an orbit model over "the" camera doesn't apply there, out of scope for this
+    // deliverable) and stays inert with no input wired up in headless `--shot` runs (no InputEvent ever
+    // fires under Xvfb without a real user), so `--shot` renders the untouched initial framing either way.
+    private OrbitCameraController? _orbitController;
+    private Camera3D? _orbitCamera;
+
+    // Left-button-down/up drag-vs-click disambiguation (task requirement: "left-click *without drag* must
+    // still pick a vehicle... < 5px -> click -> pick, else it was an orbit drag -- consume it, no pick").
+    // `_leftButtonDown` doubles as "is the mouse currently orbiting" for InputEventMouseMotion; Shift+left
+    // or a middle-button drag pans instead (`_middleButtonDown`).
+    private Vector2? _leftButtonDownPos;
+    private bool _leftButtonDown;
+    private bool _middleButtonDown;
 
     // docs/DEMO-CITY3D-DESIGN.md "Data path -> Remote mode" / task T2.2b -- `--transport=local|dds`.
     // "local" (default) preserves today's behavior byte-for-byte. "dds" only works in a build compiled
@@ -237,6 +266,13 @@ public partial class Main : Node3D
     // split RoadMeshBuilder (static) / BuildCarMultiMesh+UpdateCars (per frame) already establish.
     private readonly List<(int LaneHandle, MeshInstance3D HeadInstance, StandardMaterial3D HeadMaterial)> _signalHeads = new();
     private bool _signalHeadsBuilt;
+
+    // Buildings visibility toggle (`--hide-buildings` startup flag + runtime `B` key). Only `ReadyLocal`'s
+    // `--scenario` path actually calls BuildBuildings (procedural BuildingPlacer needs a NetworkModel's
+    // edge/lane grouping; `--live-city`/`--peds`/remote don't build any buildings node at all today -- see
+    // BuildBuildings/BuildRemoteScene's own remarks) -- `_buildingsNode` stays null in every other mode, so
+    // the toggle is a harmless no-op there.
+    private MultiMeshInstance3D? _buildingsNode;
 
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
@@ -472,7 +508,7 @@ public partial class Main : Node3D
         // run-smoke.sh relies on) -- `--camera=close`/wall mode just leave it non-Current in favour of the
         // close camera / video-wall channel cameras built below, rather than forking the
         // environment/light setup.
-        BuildCameraAndLight(bbox, makeCurrent: !wallMode && _cameraMode != "close");
+        var overviewCamera = BuildCameraAndLight(bbox, makeCurrent: !wallMode && _cameraMode != "close");
         _carMultiMesh = BuildCarMultiMesh();
 
         if (wallMode)
@@ -480,12 +516,23 @@ public partial class Main : Node3D
             BuildVideoWallChannels(channels);
             GD.Print($"Main: video wall — {channels.Count} channel(s).");
         }
-        else if (_cameraMode == "close")
+        else
         {
-            _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
-            AddChild(_closeCamera);
-            UpdateCloseCameraFraming(_closeCamera, null);
-            GD.Print("Main: --camera=close active (low angled close-up framing).");
+            if (_cameraMode == "close")
+            {
+                _closeCamera = new Camera3D { Name = "CloseCamera", Current = true, Far = 2000f };
+                AddChild(_closeCamera);
+                UpdateCloseCameraFraming(_closeCamera, null);
+                GD.Print("Main: --camera=close active (low angled close-up framing).");
+            }
+
+            SetupOrbitCamera(overviewCamera, bbox);
+        }
+
+        if (ParseHideBuildingsArg() && _buildingsNode is not null)
+        {
+            _buildingsNode.Visible = false;
+            GD.Print("Main: --hide-buildings active (buildings start hidden; press B to toggle).");
         }
 
         _shotPath = ParseShotArg();
@@ -557,7 +604,7 @@ public partial class Main : Node3D
         var pedBbox = (
             Min: roadCenter - new Vector3(h, 0f, h),
             Max: roadCenter + new Vector3(h, 8f, h));
-        BuildCameraAndLight(pedBbox, makeCurrent: _cameraMode != "close");
+        var pedOverviewCamera = BuildCameraAndLight(pedBbox, makeCurrent: _cameraMode != "close");
 
         if (_cameraMode == "close")
         {
@@ -565,6 +612,8 @@ public partial class Main : Node3D
             AddChild(_closeCamera);
             UpdateCloseCameraFraming(_closeCamera, null);
         }
+
+        SetupOrbitCamera(pedOverviewCamera, pedBbox);
 
         _pedMultiMesh = BuildPedMultiMesh();
         var pedTransportDesc = "transport=local, byte loopback";
@@ -655,12 +704,21 @@ public partial class Main : Node3D
             Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
             Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
 
-        BuildCameraAndLight(
+        var liveOverviewCamera = BuildCameraAndLight(
             frameBbox, makeCurrent: _cameraMode != "close",
             heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
+
+        // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- ReadyLocal/ReadyRemote already wire
+        // this; `--live-city` (local live) never did, so TrafficLightPlacer/BuildTrafficLights/
+        // UpdateTrafficLights were correct but unreachable and no signal head ever appeared. Same closure
+        // shape ReadyLocal uses, over LiveCitySource's own (full, uncropped) NetworkModel -- the
+        // TL-controlled lane handles ProcessLiveCity's TlStateByLane lookup passes in are dense handles into
+        // that same network, cropping doesn't change lane numbering.
+        var liveCitySource = _liveCitySource;
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(liveCitySource!.Network, keys);
 
         if (_cameraMode == "close")
         {
@@ -669,6 +727,8 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, null);
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
+
+        SetupOrbitCamera(liveOverviewCamera, frameBbox);
 
         GD.Print("Main: --live-city active (coupled cars+peds+crossing-yield, transport=local).");
 
@@ -752,13 +812,20 @@ public partial class Main : Node3D
             Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
             Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
 
-        BuildCameraAndLight(
+        var replayOverviewCamera = BuildCameraAndLight(
             frameBbox, makeCurrent: _cameraMode != "close",
             heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
         BuildPlaybackUi();
+
+        // Deliverable 2 -- same TL wiring gap as ReadyLiveCityLive, replay flavor. `network` above is
+        // parsed straight from the SAME net.xml the live path uses (this method's own "still parse the
+        // same net for roads" design note), so the NetworkModel overload applies unchanged -- no need for
+        // the wire-geometry overload here even though this IS a replay path, since the road geometry was
+        // never actually replicated (it's read locally, same as the live path).
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(network, keys);
 
         if (_cameraMode == "close")
         {
@@ -767,6 +834,8 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, null);
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
+
+        SetupOrbitCamera(replayOverviewCamera, frameBbox);
 
         GD.Print(
             $"Main: --live-city --replay '{replayPath}' active (duration={_clock.Duration:F1}s, " +
@@ -835,7 +904,7 @@ public partial class Main : Node3D
             "roads/cars/traffic-lights still render).");
 
         _sceneBbox = roadBbox;
-        BuildCameraAndLight(roadBbox, makeCurrent: _cameraMode != "close");
+        var remoteOverviewCamera = BuildCameraAndLight(roadBbox, makeCurrent: _cameraMode != "close");
 
         if (_cameraMode == "close")
         {
@@ -844,6 +913,8 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, null);
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
+
+        SetupOrbitCamera(remoteOverviewCamera, roadBbox);
     }
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- the combined `--live-city
@@ -918,7 +989,7 @@ public partial class Main : Node3D
             Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
             Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
 
-        BuildCameraAndLight(
+        var remoteLiveOverviewCamera = BuildCameraAndLight(
             frameBbox, makeCurrent: _cameraMode != "close",
             heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
 
@@ -929,6 +1000,8 @@ public partial class Main : Node3D
             UpdateCloseCameraFraming(_closeCamera, null);
             GD.Print("Main: --camera=close active (low angled close-up framing).");
         }
+
+        SetupOrbitCamera(remoteLiveOverviewCamera, frameBbox);
 
         GD.Print(
             $"Main: --live-city --transport=dds received geometry ({geometry.Count} lane(s) total on the " +
@@ -1058,10 +1131,13 @@ public partial class Main : Node3D
         var peds = _pedReconstructor.Reconstruct(pedSource, serverTime);
         UpdatePeds(peds);
 
-        if (_closeCamera is not null)
-        {
-            UpdateCloseCameraFraming(_closeCamera, null);
-        }
+        // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable):
+        // `--camera=close`'s continuous auto-tracking (UpdateCloseCameraFraming, called per-frame with live
+        // `vehicles`) is superseded by the free orbit controller once one exists -- SetupOrbitCamera already
+        // seeded it from that SAME close-up pose at setup time, and _UnhandledInput's drag/wheel/reset
+        // handlers are what move it from there. ApplyOrbitCamera is a no-op (video-wall mode) when no orbit
+        // camera was built.
+        ApplyOrbitCamera();
 
         var highPower = 0;
         foreach (var p in peds)
@@ -1136,10 +1212,21 @@ public partial class Main : Node3D
         UpdateLivePeds(snap.Peds);
         UpdateSelectionHighlight();
 
-        if (_closeCamera is not null)
+        // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- mirrors RenderFrame's own
+        // build-once/update-every-frame TL block; `_placeSignalHeads` is now set by ReadyLiveCityLive above.
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
         {
-            UpdateCloseCameraFraming(_closeCamera, vehicles);
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
         }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
 
         GD.Print(
             $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
@@ -1205,10 +1292,21 @@ public partial class Main : Node3D
 
         UpdateSelectionHighlight();
 
-        if (_closeCamera is not null)
+        // Deliverable 2 -- same TL wiring as ProcessLiveCity; `_placeSignalHeads` is already set by
+        // ReadyLiveCityRemote (it just was never actually CALLED per-frame before this).
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
         {
-            UpdateCloseCameraFraming(_closeCamera, vehicles);
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
         }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
 
         var highPowerPeds = 0;
         foreach (var p in peds)
@@ -1260,10 +1358,21 @@ public partial class Main : Node3D
         UpdateSelectionHighlight();
         UpdatePlaybackUi();
 
-        if (_closeCamera is not null)
+        // Deliverable 2 -- same TL wiring as ProcessLiveCity/ProcessLiveCityRemote; `_placeSignalHeads` is
+        // set by ReadyLiveCityReplay above.
+        var tlStateByLane = _source!.TlStateByLane;
+        if (!_signalHeadsBuilt && tlStateByLane.Count > 0 && _placeSignalHeads is not null)
         {
-            UpdateCloseCameraFraming(_closeCamera, vehicles);
+            BuildTrafficLights(_placeSignalHeads(tlStateByLane.Keys));
+            _signalHeadsBuilt = true;
         }
+
+        if (_signalHeadsBuilt)
+        {
+            UpdateTrafficLights(tlStateByLane);
+        }
+
+        ApplyOrbitCamera();
 
         GD.Print(
             $"Main: replay frame={_liveCityFrame} t={_clock.Now:F2}/{_clock.Duration:F2} " +
@@ -1318,10 +1427,7 @@ public partial class Main : Node3D
             UpdateTrafficLights(tlStateByLane);
         }
 
-        if (_closeCamera is not null)
-        {
-            UpdateCloseCameraFraming(_closeCamera, vehicles);
-        }
+        ApplyOrbitCamera();
 
         var simTimeLabel = SimTimeLabel();
         if (vehicles.Count > 0)
@@ -1371,27 +1477,106 @@ public partial class Main : Node3D
 #endif
     }
 
-    // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- left-click picks the nearest car (screen-space,
-    // see CityLib.VehiclePicker's own remark on why there's no physics collider to ray-pick against); in
-    // replay mode (D3) Space/Left/Right additionally drive the playback clock, mirroring the on-screen
-    // buttons for a keyboard-only interaction. `_UnhandledInput` (not `_Input`) so a click that lands on a
-    // playback-UI Control (a Button/HSlider) is consumed by that Control first and never double-fires a
-    // vehicle pick underneath it.
+    // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable) --
+    // works in EVERY mode (--scenario, --peds, --live-city local/replay/remote), unlike vehicle pick and
+    // the replay transport keys below, which stay live-city-only (their pre-existing scope, unchanged).
+    // Left-drag orbits, middle-drag (or shift+left-drag) pans, the wheel zooms, R/Home resets to the
+    // initial `--camera=overview|close` framing. Click-vs-drag is disambiguated on left-button RELEASE
+    // (task requirement): press just records where the button went down; release compares that to the
+    // current position and only fires TryPickVehicleAt when the cursor moved less than
+    // ClickDragThresholdPixels -- a real drag is fully consumed by the orbit and never falls through to a
+    // pick underneath it. `_UnhandledInput` (not `_Input`) so a click/drag that starts on a playback-UI
+    // Control (a Button/HSlider) is consumed by that Control first, same as before.
+    //
+    // Headless-safe (task requirement): `--shot` runs under Xvfb with no real user, so no InputEvent of any
+    // kind is ever delivered here -- `_orbitController` only ever moves from its `SetupOrbitCamera`-seeded
+    // (optionally `--cam-yaw`/`--cam-pitch`/`--cam-dist`/`--cam-focus`-overridden) initial state, and the
+    // screenshot captures exactly that framing.
     public override void _UnhandledInput(InputEvent @event)
     {
-        if (!_liveCity)
-        {
-            return;
-        }
-
         switch (@event)
         {
-            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mouseButton:
-                TryPickVehicleAt(mouseButton.Position);
+            case InputEventMouseButton { ButtonIndex: MouseButton.Left } mouseButton:
+                if (mouseButton.Pressed)
+                {
+                    _leftButtonDownPos = mouseButton.Position;
+                    _leftButtonDown = true;
+                }
+                else
+                {
+                    var downPos = _leftButtonDownPos;
+                    _leftButtonDown = false;
+                    _leftButtonDownPos = null;
+                    if (_liveCity && downPos is { } start && start.DistanceTo(mouseButton.Position) < ClickDragThresholdPixels)
+                    {
+                        TryPickVehicleAt(mouseButton.Position);
+                    }
+                }
+
                 GetViewport().SetInputAsHandled();
                 break;
 
-            case InputEventKey { Pressed: true } key when _replay && _clock is not null:
+            case InputEventMouseButton { ButtonIndex: MouseButton.Middle } middleButton:
+                _middleButtonDown = middleButton.Pressed;
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelUp }:
+                _orbitController?.Zoom(ZoomStepFactor);
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelDown }:
+                _orbitController?.Zoom(1f / ZoomStepFactor);
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventMouseMotion motion:
+                if (_orbitController is not null)
+                {
+                    if (_middleButtonDown || (_leftButtonDown && motion.ShiftPressed))
+                    {
+                        // Pan: world-space delta scaled by the CURRENT distance so the pan speed feels
+                        // consistent whether zoomed in close or far out (a fixed pixel->metre scale would
+                        // crawl when zoomed out and overshoot wildly when zoomed in).
+                        var scale = PanMetersPerPixelPerDistance * _orbitController.Distance;
+                        _orbitController.Pan(-motion.Relative.X * scale, motion.Relative.Y * scale);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                    else if (_leftButtonDown)
+                    {
+                        _orbitController.Orbit(-motion.Relative.X * OrbitYawRadPerPixel, motion.Relative.Y * OrbitPitchRadPerPixel);
+                        ApplyOrbitCamera();
+                        GetViewport().SetInputAsHandled();
+                    }
+                }
+
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.Home:
+                _orbitController?.Reset();
+                ApplyOrbitCamera();
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.R && !_replay:
+                _orbitController?.Reset();
+                ApplyOrbitCamera();
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.B:
+                if (_buildingsNode is not null)
+                {
+                    _buildingsNode.Visible = !_buildingsNode.Visible;
+                    GD.Print($"Main: buildings visible={_buildingsNode.Visible} (B toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            case InputEventKey { Pressed: true } key when _liveCity && _replay && _clock is not null:
                 if (key.Keycode == Key.Space)
                 {
                     TogglePlayPause();
@@ -2003,6 +2188,7 @@ public partial class Main : Node3D
             MaterialOverride = material,
         };
         AddChild(instance);
+        _buildingsNode = instance;
 
         GD.Print($"Main: built {boxes.Count} building(s).");
         return (min, max);
@@ -2270,7 +2456,11 @@ public partial class Main : Node3D
     // reads true-scale cars/peds as a scatter of a few pixels each regardless of how tight the frame box is
     // (a top-down view of a person is a dot no matter the zoom); a lower angle shows their actual silhouette
     // height instead.
-    private void BuildCameraAndLight(
+    // Returns the built Camera3D (task requirement: callers seed the interactive orbit controller from
+    // whichever camera/pose this method just computed) -- every pre-existing call site either ignores the
+    // return value or captures it into a local only used for the new SetupOrbitCamera call, so the method's
+    // own behavior is otherwise unchanged.
+    private Camera3D BuildCameraAndLight(
         (Vector3 Min, Vector3 Max) bbox, bool makeCurrent,
         float heightFactor = CameraHeightFactor, float backFactor = CameraBackFactor)
     {
@@ -2312,6 +2502,7 @@ public partial class Main : Node3D
         AddChild(light);
 
         GD.Print($"Main: camera framing bbox min={min} max={max}, positioned at {camPos} looking at {center}.");
+        return camera;
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "Procedural scene generation -> Traffic lights" / task T1.6 Part B (and
@@ -2401,27 +2592,7 @@ public partial class Main : Node3D
     // the vehicle/network-center branches.
     private void UpdateCloseCameraFraming(Camera3D camera, IReadOnlyList<CityLib.ReconstructedVehicle>? vehicles)
     {
-        Vector3 focus;
-        if (_signalHeads.Count > 0)
-        {
-            var sum = Vector3.Zero;
-            foreach (var head in _signalHeads)
-            {
-                sum += head.HeadInstance.Position;
-            }
-
-            focus = sum / _signalHeads.Count;
-        }
-        else if (vehicles is { Count: > 0 })
-        {
-            var v = vehicles[0];
-            focus = new Vector3(v.X, v.Y, v.Z);
-        }
-        else
-        {
-            var (min, max) = _sceneBbox;
-            focus = new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
-        }
+        var focus = ComputeCloseCameraFocus(vehicles);
 
         // Fixed (not extent-scaled) low-angled offset -- design Part C: "~40-80m back and ~15-25m up,
         // tilted down". Offset ALONG the approach's own back-of-travel direction (not a fixed world axis):
@@ -2436,6 +2607,33 @@ public partial class Main : Node3D
             + lateralDir * CloseCameraLateralMeters
             + new Vector3(0f, CloseCameraUpMeters, 0f);
         camera.LookAt(focus, Vector3.Up);
+    }
+
+    // Extracted from UpdateCloseCameraFraming (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller
+    // deliverable) so SetupOrbitCamera can compute the SAME "what is the close camera looking at" point
+    // once, at setup time, to seed the interactive orbit controller's initial focus -- task T1.6 Part C's
+    // original priority order (signal-head centroid, else first vehicle, else network center) is unchanged.
+    private Vector3 ComputeCloseCameraFocus(IReadOnlyList<CityLib.ReconstructedVehicle>? vehicles)
+    {
+        if (_signalHeads.Count > 0)
+        {
+            var sum = Vector3.Zero;
+            foreach (var head in _signalHeads)
+            {
+                sum += head.HeadInstance.Position;
+            }
+
+            return sum / _signalHeads.Count;
+        }
+
+        if (vehicles is { Count: > 0 })
+        {
+            var v = vehicles[0];
+            return new Vector3(v.X, v.Y, v.Z);
+        }
+
+        var (min, max) = _sceneBbox;
+        return new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
     }
 
     // The horizontal unit direction the close camera sits back along, i.e. opposite the approach's own
@@ -2479,6 +2677,146 @@ public partial class Main : Node3D
         }
 
         return new Vector3(0f, 0f, 1f);
+    }
+
+    // docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable -- seeds `_orbitController`/
+    // `_orbitCamera` from whichever camera is this scene's "current" one at setup time: `_closeCamera` if
+    // `--camera=close` built one (call this AFTER that block so `_closeCamera` is already non-null), else
+    // the overview `Camera3D` `BuildCameraAndLight` just returned. `frameBbox` is the SAME box the caller
+    // already framed the overview camera against (so the fallback "network center" focus, when no signal
+    // heads/vehicles exist yet, matches what the eye already sees). `--cam-yaw`/`--cam-pitch`/`--cam-dist`/
+    // `--cam-focus` debug overrides (below) replace the computed initial state 1:1 so a headless screenshot
+    // from a rotated angle exercises the EXACT SAME transform the interactive controller uses every frame.
+    private void SetupOrbitCamera(Camera3D overviewCamera, (Vector3 Min, Vector3 Max) frameBbox)
+    {
+        Camera3D activeCamera;
+        Vector3 focus;
+
+        if (_closeCamera is not null)
+        {
+            activeCamera = _closeCamera;
+            focus = ComputeCloseCameraFocus(null);
+        }
+        else
+        {
+            activeCamera = overviewCamera;
+            var (min, max) = frameBbox;
+            focus = new Vector3((min.X + max.X) / 2f, (min.Y + max.Y) / 2f, (min.Z + max.Z) / 2f);
+        }
+
+        _orbitCamera = activeCamera;
+        var pos = activeCamera.Position;
+        _orbitController = BuildOrbitController((pos.X, pos.Y, pos.Z), (focus.X, focus.Y, focus.Z));
+        ApplyOrbitCamera(); // push the (possibly CLI-overridden) initial pose to the node right away
+        GD.Print(
+            $"Main: orbit camera ready on '{activeCamera.Name}' -- yaw={_orbitController.YawRad * 180f / Mathf.Pi:F1}deg " +
+            $"pitch={_orbitController.PitchRad * 180f / Mathf.Pi:F1}deg dist={_orbitController.Distance:F1}m " +
+            $"focus={_orbitController.Focus}. Controls: left-drag orbit, middle-drag/shift+left-drag pan, " +
+            "wheel zoom, R/Home reset.");
+    }
+
+    // Seeds an OrbitCameraController from the given (cameraPos, focus) -- normally exactly the pose
+    // BuildCameraAndLight/UpdateCloseCameraFraming already computed -- then lets any `--cam-yaw=<deg>`/
+    // `--cam-pitch=<deg>`/`--cam-dist=<m>`/`--cam-focus=x,z` debug flag REPLACE the corresponding component
+    // of that initial state (never additive) before the controller is actually constructed, so an override
+    // becomes part of Reset()'s target too, not a one-off nudge that a later `R` press would undo.
+    private static OrbitCameraController BuildOrbitController(
+        (float X, float Y, float Z) cameraPos, (float X, float Y, float Z) focus)
+    {
+        var seeded = OrbitCameraController.FromLookAt(cameraPos, focus);
+
+        var yaw = ParseCamYawArg() is { } yawDeg ? yawDeg * Mathf.Pi / 180f : seeded.YawRad;
+        var pitch = ParseCamPitchArg() is { } pitchDeg ? pitchDeg * Mathf.Pi / 180f : seeded.PitchRad;
+        var distance = ParseCamDistArg() ?? seeded.Distance;
+        var focusOverride = ParseCamFocusArg();
+        var focusX = focusOverride?.X ?? seeded.Focus.X;
+        var focusZ = focusOverride?.Z ?? seeded.Focus.Z;
+
+        return new OrbitCameraController(focusX, seeded.Focus.Y, focusZ, yaw, pitch, distance);
+    }
+
+    // Pushes `_orbitController`'s current (focus, yaw, pitch, distance) to `_orbitCamera`'s actual Godot
+    // transform -- called once at setup (via SetupOrbitCamera) and then every render frame from each
+    // Process*/RenderFrame body, so it picks up whatever the input handlers below just mutated. A no-op
+    // when no orbit camera exists (video-wall mode, or before setup finishes) -- safe to call unconditionally.
+    private void ApplyOrbitCamera()
+    {
+        if (_orbitCamera is null || _orbitController is null)
+        {
+            return;
+        }
+
+        var pos = _orbitController.CameraPosition();
+        _orbitCamera.Position = new Vector3(pos.X, pos.Y, pos.Z);
+        var focus = _orbitController.Focus;
+        _orbitCamera.LookAt(new Vector3(focus.X, focus.Y, focus.Z), Vector3.Up);
+    }
+
+    // `--cam-yaw=<deg>`/`--cam-pitch=<deg>`/`--cam-dist=<m>` -- headless verification hooks (task
+    // requirement): set the orbit controller's INITIAL yaw/pitch/distance so a screenshot from a rotated
+    // angle proves the orbit transform actually renders, without needing a real mouse. Same
+    // OS.GetCmdlineUserArgs() mechanism as every other `--foo=` arg in this file.
+    private static float? ParseCamYawArg() => ParseFloatArg("--cam-yaw=");
+    private static float? ParseCamPitchArg() => ParseFloatArg("--cam-pitch=");
+    private static float? ParseCamDistArg() => ParseFloatArg("--cam-dist=");
+
+    private static float? ParseFloatArg(string prefix)
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal)
+                && float.TryParse(
+                    arg[prefix.Length..], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    // `--cam-focus=x,z` -- the ground-plane (X, Z) coordinate pair the orbit controller's focus starts at
+    // (Y is left at whatever the computed default focus' height was); same `--cam-yaw`-style headless
+    // verification hook, for re-centering the initial view rather than only rotating around the default
+    // focus point.
+    private static (float X, float Z)? ParseCamFocusArg()
+    {
+        const string prefix = "--cam-focus=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (!arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var parts = arg[prefix.Length..].Split(',');
+            if (parts.Length == 2
+                && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x)
+                && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+            {
+                return (x, z);
+            }
+        }
+
+        return null;
+    }
+
+    // `--hide-buildings` USER cmdline flag (buildings-visibility deliverable): a bare flag, same
+    // OS.GetCmdlineUserArgs() mechanism as `--peds`/`--live-city`. Starts the buildings MultiMeshInstance3D
+    // (when this mode builds one at all -- see `_buildingsNode`'s own remark) hidden; the runtime `B` key
+    // (_UnhandledInput) toggles it from there regardless of how it started.
+    private static bool ParseHideBuildingsArg()
+    {
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg == "--hide-buildings")
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // `--camera=<mode>` USER cmdline arg (task T1.6 Part C): "overview" (default, the whole-network
