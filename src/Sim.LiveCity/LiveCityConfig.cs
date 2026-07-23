@@ -50,6 +50,13 @@ public sealed class LiveCityConfig
     // Overridable via LIVECITY_TELEPORT. Only the demo could enable it; scenarios/bench always leave it off.
     public double TimeToTeleportSeconds { get; set; } = 0.0;
 
+    // docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md: never let a dead-ended car freeze forever --
+    // free-flow-reroute or drive through on any forward connection instead. Prevents the accumulating
+    // strands that seed the terminal gridlock. MEASURED: does NOT cure the terminal gridlock (the strands
+    // are mostly not routing-failures), so OFF by default -- kept as a sound, parity-safe "never freeze"
+    // knob (SUMO ignore-route-errors), not a demo default. off = SUMO-parity clamp.
+    public bool DeadLaneDriveThrough { get; set; } = false;
+
     public int CarSpawnPerStep { get; set; } = 5;
 
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().

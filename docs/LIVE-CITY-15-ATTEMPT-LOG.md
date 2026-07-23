@@ -316,6 +316,35 @@ of the permanent Speed=0 clamp. = the DENSE-FLOW-THROUGHPUT-DIAGNOSIS "candidate
 `TryReResolveFromActualLane` to fire at the stop-line approach). Design-first, parity-gated.
 Teleport default set back to 0 (owner rejected it as unrealistic).
 
+## 2026-07-23 — HONEST BOTTOM LINE: the terminal gridlock resists every "keep-cars-flowing" fix
+Implemented the approved dead-end DRIVE-THROUGH fix (`Engine.DeadLaneDriveThrough`: when a dead-ended
+car's congestion-weighted reroute finds no path, retry FREE-FLOW, then drive onto ANY forward
+connection = SUMO ignore-route-errors). Parity-safe (657/4; gated, inert on goldens).
+**MEASURED: it does NOT cure the terminal gridlock** — arrivals 257 at t=940, byte-for-byte the same
+as baseline; the fallback barely fires, so the strands are NOT routing-failures.
+
+Fixes TRIED against the ~1000 s terminal gridlock, all at cap 160, teleport off:
+| fix | arrivals@940s | stoppedFrac | verdict |
+|---|---|---|---|
+| baseline | 257 | 0.99 | terminal |
+| `MaxDeadLaneReroutes` 2→50 | 265 | 0.95 | ~no change |
+| dead-lane drive-through | 257 | 0.99 | **no change** |
+| junction-yield timeout | 257 | 0.99 | no change |
+| **SUMO teleport (5 s)** | **~free flow** | **~0.10** | **CURES it — but relocates the car (owner rejected)** |
+
+Also: the lock is **density-INDEPENDENT** (cap 80 and 120 both go terminal by 1000 s) and **junctions
+stay EMPTY** (`stuckInternal=0`) — so it is neither pure saturation nor box-block. The stuck mass is
+red (legit) + behindLeader (queues) that never clear; the dead-lane strands are a minority and mostly
+temporary (clamp-and-retry), NOT the permanent seed I hypothesised.
+
+**Conclusion (honest):** the live-city terminal gridlock is a DEEP junction-discharge deficit — the
+dense-flow branch's own core UNSOLVED problem ("improved, not cured"). Every realistic "keep the cars,
+make them flow" lever I tried fails; only teleport (SUMO's own escape valve, which relocates a car)
+cures it. A genuine cure is a major engine-research effort on junction discharge, not a scoped knob.
+The gated knobs (`DeadLaneDriveThrough`, `JunctionYieldTimeoutSeconds`, `TimeToTeleportSeconds`) are all
+kept, default-off, parity-safe, available for experimentation. Design (kept for the record):
+`docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md`.
+
 ## Retired-machinery note (shelved, for the record — NOT to build now)
 Mechanism-gathering found the follower-cooperation channel was already built and RETIRED in `afec614`
 ("Retire the cooperative informFollower"): `VehicleRuntime.CoopSpeedAdvice` (+∞ default) +

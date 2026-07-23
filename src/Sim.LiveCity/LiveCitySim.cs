@@ -216,6 +216,7 @@ public sealed class LiveCitySim : IDisposable
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
         _engine.JunctionYieldTimeoutSeconds = cfg.JunctionYieldTimeoutSeconds;
+        _engine.DeadLaneDriveThrough = cfg.DeadLaneDriveThrough;
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
         _engine.CrowdSource = cfg.YieldEnabled

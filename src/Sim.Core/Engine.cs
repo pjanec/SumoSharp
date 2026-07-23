@@ -9965,6 +9965,7 @@ public sealed partial class Engine : IEngine
         IReadOnlyList<string>? bestTail = null;
         var bestCost = double.PositiveInfinity;
         var considered = new HashSet<string>(StringComparer.Ordinal);
+        string? firstForward = null; // #15 drive-through: first valid forward edge, for the last-resort fallback
         foreach (var conn in outs)
         {
             var nextEdge = conn.To;
@@ -9987,6 +9988,8 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            firstForward ??= nextEdge; // a real forward edge exists from this lane
+
             var tail = Router().Route(nextEdge, routeTarget, effort);
             if (tail is null || tail.Count == 0)
             {
@@ -10003,6 +10006,37 @@ public sealed partial class Engine : IEngine
             {
                 bestCost = cost;
                 bestTail = tail;
+            }
+        }
+
+        if (bestTail is null && DeadLaneDriveThrough)
+        {
+            // #15 drive-through fallback (docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md): the
+            // congestion-weighted reroute found no path (every candidate's effort-routed tail was null,
+            // e.g. the whole reachable subnet is jam-weighted). (a) retry with FREE-FLOW weights -- a
+            // topological path almost always exists; congestion just priced it out. (b) if even that
+            // fails, drive onto ANY forward connection (firstForward) as a 1-hop and re-resolve toward
+            // the destination from there next step -- SUMO's ignore-route-errors. Either way the car
+            // MOVES and never permanently walls its lane, so the accumulating strands cannot seed the
+            // terminal gridlock. Inert unless the demo enables the knob; the golden path never gets here.
+            foreach (var conn in outs)
+            {
+                var nextEdge = conn.To;
+                if (nextEdge.Length > 0 && nextEdge[0] == ':') continue;
+                if (currentEdgeModel is not null
+                    && _network.EdgesById.TryGetValue(nextEdge, out var nm)
+                    && nm.From == currentEdgeModel.To && nm.To == currentEdgeModel.From) continue;
+                var ffTail = Router().Route(nextEdge, routeTarget, EdgeFreeFlowCost);
+                if (ffTail is { Count: > 0 })
+                {
+                    bestTail = ffTail;
+                    break;
+                }
+            }
+
+            if (bestTail is null && firstForward is not null)
+            {
+                bestTail = new[] { firstForward }; // 1-hop drive-through; re-resolve toward dest next step
             }
         }
 
@@ -10875,6 +10909,15 @@ public sealed partial class Engine : IEngine
     // suppressed, so a car is never released into a foe physically on the crossing (collision-safe).
     // Set by the live-city demo (~5 s); every parity/bench scenario leaves it 0 (inert -> byte-identical).
     public double JunctionYieldTimeoutSeconds { get; set; }
+
+    // Realism knob (NOT a SUMO default; false = off = byte-identical, the dead-lane path is already inert
+    // on every golden). docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md: when true, a car that would
+    // otherwise strand at a dead-end lane (its lane has no connection reaching its destination under the
+    // congestion-weighted reroute) instead (a) retries the reroute with FREE-FLOW weights, and (b) as an
+    // absolute last resort drives onto ANY forward connection its lane has and re-resolves next step --
+    // SUMO's ignore-route-errors behaviour. Guarantees a car NEVER freezes forever, so the accumulating
+    // dead-lane strands that seed the live-city terminal gridlock cannot form. Set by the live-city demo.
+    public bool DeadLaneDriveThrough { get; set; }
 
     private void CommitLaneChange(VehicleRuntime v, int targetHandle, string targetId)
     {
