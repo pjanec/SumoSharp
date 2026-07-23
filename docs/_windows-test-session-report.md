@@ -7,9 +7,9 @@ right/wrong. This is the handoff. All root causes below are **measured** (frame 
 where a theory was refuted by data, that's called out.
 
 > **UPDATE:** Most of the original findings are now RESOLVED. The dev session's `becc224` implemented
-> #5/#6/#9/#11; this testing session pushed the camera/grid/smoothness items (#12–#14). **Only #7, #8,
-> #10 remain open — all DR-core / ped-session.** The detailed sections further down are kept as the
-> evidence trail; the table below is the current truth.
+> #5/#6/#9/#10/#11; this testing session pushed camera/grid/smoothness (#12–#14) + the TL-crop fix
+> (#16). **Only #7, #8, #15 remain open — all DR-core / engine.** The detailed sections further down
+> are kept as the evidence trail; the table below is the current truth.
 
 ---
 
@@ -28,11 +28,11 @@ where a theory was refuted by data, that's called out.
 | 12 | Unity-editor camera controls + top-down degeneracy | ✅ done `5514599` (this session) | — |
 | 13 | Infinite ground grid | ✅ done `7a9a7d9` (this session) | — |
 | 14 | High-refresh render judder (60fps cap on 240Hz) | ✅ done `5adf4f9` (this session, uncap) | — |
+| 10 | Ped "dance" at junctions | ✅ done `996805f` — VERIFIED this session (no dance at 10× crowd) | — |
+| 16 | TL poles rendered outside the cropped road net | ✅ done `6edbad8` (this session, crop TL to road box) | — |
 | **7** | **DDS cruise stutter (render-clock HOLD)** | 🐛 **OPEN** — confirmed, DR-core | **dev (DrClock)** |
 | **8** | **DDS stopped-car backward creep** | 🐛 **OPEN** — confirmed, DR-core | **dev (DrClock)** |
-| **10** | **Ped "dance" at junctions** | 🐛 **OPEN** — arrived with `cfd10bf` | **ped session** |
 | **15** | **Live-city junction GRIDLOCK (cars wait on green, never clear)** | 🐛 **OPEN** — engine RoW/discharge + no teleport | **dev/engine** |
-| 16 | TL poles rendered outside the cropped road net | 🐛 open — demo-side viewer crop mismatch | can fix here |
 
 Details on the open items are in their sections below. The ✅ sections are retained as evidence.
 
@@ -90,7 +90,7 @@ Remote peds step ~2×/s. Local/replay query the ped reconstructor at a **continu
 queries the **discrete** wire `LatestCrowdTime` → stepwise, exactly what `cfd10bf`'s own note warns
 about. The remote path needs the same continuous-time query.
 
-### 10. Ped "dance" at junctions (ped session; arrived with `cfd10bf`)
+### 10. Ped "dance" at junctions — ✅ FIXED `996805f` (corner-blend the lateral weave axis; verified no dance at 10× crowd)
 Approaching a turn waypoint a ped pauses + moves backward a little, then commits to the new direction
 and is smooth after. Suspected: predictive-DR extrapolates past the waypoint assuming continued
 straight motion, then corrects when heading flips. Not yet traced.
@@ -153,7 +153,7 @@ line and re-test the demo; the turn-lane-segregation work is the deeper unfinish
 parity-gated `Sim.Core` changes — engine session's call. (Interim demo mitigation: lower
 `LIVECITY_CARS`, but if it locks at low density that only delays it, not a cure.)
 
-### 16. TL poles rendered outside the cropped road net (viewer, fixable here)
+### 16. TL poles rendered outside the cropped road net — ✅ FIXED `6edbad8` (CropTlLaneHandles: same crop rule as roads)
 Roads render **cropped** to the downtown block (`BuildRoadMeshesCropped`, `LiveCityConfig` X0..Y1 =
 2055..2895, +60 m margin) for legibility/build-cost. But signal heads are placed for **all**
 TL-controlled lanes uncropped (`TrafficLightPlacer.Place(network, tlStateByLane.Keys)`), so TL poles
