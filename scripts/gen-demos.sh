@@ -177,11 +177,15 @@ demo_ped() {
 }
 
 # demo_livecity <slug>
-# The combined live-city demo (--live-city): dense cars + a weaving crowd on the demo-city downtown hero
-# block, with cars yielding to pedestrians promoted onto crossings. Self-contained; no scenario-dir round-trip.
+# The combined live-city demo, now via --live-city-demo (VIZ-UNIFICATION T2/T5): the REAL LiveCitySim +
+# LiveCityConfig driven through the ONE shared VizReplayBuilder -- cars DR-reconstructed (DrClock +
+# KinematicReconstructor: continuous junction arcs) AND peds reconstructed off the ped wire
+# (PedRemoteReconstructor: analytic, no caterpillar), both first-class. Routes the flagship car+ped
+# coupling scene through the same builder every other demo now uses, so DR improvements reach it too.
+# (Was --live-city, a lighter hand-rolled scene with raw-ish motion.) Self-contained; no round-trip.
 demo_livecity() {
   local slug="$1"
-  run src/Sim.Viz --live-city "$SITE/$slug.html"
+  run src/Sim.Viz --live-city-demo "$SITE/$slug.html"
 }
 
 # demo_static <srcHtml> <slug>
