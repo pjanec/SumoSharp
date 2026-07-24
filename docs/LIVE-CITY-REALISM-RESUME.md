@@ -8,7 +8,7 @@ REPRODUCE" + the newest PROGRESS LOG entries).
 ---
 
 ## 1. THE TASK — 5 owner-observed realism violations (from `docs/TASKS.md`)
-1. **Cars drive THROUGH peds on crosswalks** (high-realism zone) — no yield/dodge. ← **IN PROGRESS (analysis done, reframed)**
+1. **Cars drive THROUGH peds on crosswalks** (high-realism zone) — no yield/dodge. ← **FIXED (shipped; awaiting owner replay confirm)** — see `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`
 2. **Low-realism crossings not marked 'occupied'** when low-power peds cross — cars don't stop.
 3. **Low-power peds DISAPPEAR on promotion** into the high-realism zone.
 4. **ORCA peds leaving the zone STAY ORCA and wander** (off-sidewalk, no route, never demote).
@@ -54,7 +54,19 @@ Build once: `dotnet build src/Sim.Viz -c Release`. Then (`--no-build`):
 
 ---
 
-## 4. DEFECT #1 — analysis so far (this is where we stopped)
+## 4. DEFECT #1 — DONE (fixed + shipped). Full write-up: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`
+**Outcome:** root cause is FEED-side, not the engine. Cars were shown a crossing ped only as a 0.3 m point
+disc, which the engine's ~1.2 m wheel-path corridor gate sees too late (nose-in). Fix = two demo-gated
+`LiveCityConfig` knobs (`CrossingGateRadius=1.5` lane-local disc; `GatePausedPedsOnCrossing=true` = defect #2).
+Sweep: nose-in 10→1 (residual 1 = ORCA promotion-timing → #3/#4), throughput flat. Parity `657/4`, bench
+`D96213B7BB4021A7`, LiveCity tests 24/24 (new `CrossingYield_FixedGate_...` guard). Diagnostic:
+`--live-city-yieldtrace`. The late-trigger/release-lunge hypotheses (below) were REFUTED by the trace; kept
+for the record.
+
+**NEXT:** owner confirms the HTML replay, then start defect #3/#4 (ped LOD promote/demote, task #25) — the
+residual ORCA nose-in lives there too.
+
+## 4b. DEFECT #1 — original analysis trail (superseded by §4; kept for context)
 **Faithful `--live-city-yielddump 200` (100 s):** 152 raw "car within 2.5 m of a crossing-ped" →
 - **56 stoppedYield** (car <0.5 m/s next to ped) = cars that DID yield ✓
 - **70 moving BESIDE/behind** the ped (passing someone crossing the other way) = benign

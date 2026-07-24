@@ -2426,9 +2426,10 @@ cosmetic (`pois*`,`buildings`,`zones`) files rather than copy the whole dataset.
 
 ---
 
-## Realism violations in high-realism zones (live-city demo) — observed, NOT yet reproduced/fixed
+## Realism violations in high-realism zones (live-city demo) — #1/#2 FIXED; #3/#4/#5 pending
 
-**Status: RECORDED (owner observations in the 3D viewer), 2026-07-24. Not yet reproduced headlessly.**
+**Status: #1+#2 FIXED & shipped (`docs/LIVE-CITY-REALISM-1-2-DESIGN.md`, branch `claude/livecity-realism-fixes`);
+#3/#4/#5 still RECORDED (owner observations in the 3D viewer), 2026-07-24, not yet reproduced headlessly.**
 These are car↔ped coupling + LOD-transition defects seen in the City3D live-city demo. None has a headless
 repro yet — per the project discipline, each needs a **solid deterministic repro first** (most are
 observable without the GUI via the DR/footprint math the viewer uses), THEN analysis, THEN fix. Likely-area
@@ -2441,19 +2442,23 @@ Relevant wiring (for whoever picks these up):
   `ModelOf(id) != FreeKinematic && AnimTag == WalkAnimTag`, fed via `_crossingOccupancy.Update(...)`).
 - Ped LOD promotion/demotion: `PedLodManager` + the `InterestField` pocket (promote 70 m / demote 100 m).
 
-1. **Cars in the HIGH-realism zone drive THROUGH peds on crosswalks (no dodge/stop).** Observed: a car
-   crosses a zebra occupied by peds without yielding or steering around, driving "over" them. Expected: in
-   the high-realism zone cars must yield to / avoid peds on the crossing. Likely area: the car-yield gate vs
-   `HighPowerFootprints` — the peds are promoted (ORCA) in-zone so their footprints SHOULD be in
-   `CrowdSource`; check whether the footprint is actually fed/seen at the car's approach, and whether the
-   yield decision consults it for crossing peds (vs only signalized-crossing logic).
+1. **[FIXED — `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`] Cars in the HIGH-realism zone drive THROUGH peds on
+   crosswalks (no dodge/stop).** Root cause (proven from entity-state dumps via `--live-city-yieldtrace`) was
+   FEED-side, not the engine: a crossing ped was fed to `Engine.CrowdSource` only as a **0.3 m point disc**,
+   which the engine's ~1.2 m wheel-path corridor gate (`CrowdLongitudinalConstraint`) sees too late for a 5 m
+   body to stop → the car noses over. (The late-trigger/tunnelling hypotheses were REFUTED by the trace.) Fix:
+   `LiveCityConfig.CrossingGateRadius=1.5` — enlarge the gate disc, lane-LOCAL (corridor half 0.9+1.5=2.4 m <
+   4 m lane spacing, no adjacent-lane brake). Sweep: crossing nose-in 10→1, throughput flat. Residual 1 =
+   ORCA promotion-timing → folded into #3/#4 below. Parity `657/4`, bench `D96213B7BB4021A7`, LiveCity 24/24
+   (new `CrossingYield_FixedGate_...` guard).
 
-2. **LOW-realism crossings not marked 'occupied' when low-power peds cross (cars don't stop before).**
-   Observed: a low-power ped crossing a zebra in a low-res zone often fails to make cars stop short.
-   Expected: a crossing with a crossing low-power ped is marked occupied so approaching cars halt before it.
-   Likely area: `CrossingOccupancySource.Update(_movingLowPowerPositions)` — the disc geometry / pedRadius
-   (0.3), or the `_movingLowPowerPositions` filter (only WALKING, non-FreeKinematic peds counted — a ped in
-   another anim/model state while on the zebra would be missed), or the disc not covering the actual zebra.
+2. **[FIXED (defensive) — same design doc] LOW crossings not marked 'occupied' when low-power peds cross.**
+   Confirmed mechanism: `_movingLowPowerPositions` was gathered with `AnimTag == WalkAnimTag`, so a low-power
+   ped PAUSED on a zebra (`PauseProbability=0.15`, `"idle"`) was dropped from `CrossingOccupancySource` →
+   invisible to cars. Fix: `LiveCityConfig.GatePausedPedsOnCrossing=true` feeds all on-crossing low-power peds
+   (the source's point-in-polygon test still restricts discs to peds actually on a crossing). In the measured
+   run 0 peds paused ON a real crossing (the earlier "9 paused" were a loose-circle artifact — sidewalk peds),
+   so this fixed 0 live cases but closes the real gap. Env `LIVECITY_GATE_PAUSED`.
 
 3. **Low-power peds DISAPPEAR from the 3D view when entering the high-realism zone.** Observed: a low-power
    ped crossing into the pocket vanishes — either permanently, or it re-appears as an ORCA ped a few seconds

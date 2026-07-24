@@ -382,4 +382,103 @@ public class LiveCitySimTests
             trajectoryDiffers || simOn.CarYieldObservations != simOff.CarYieldObservations,
             $"expected yield ON/OFF to differ: onObs={simOn.CarYieldObservations} offObs={simOff.CarYieldObservations} trajectoryDiffers={trajectoryDiffers}");
     }
+
+    // Count "crossing nose-in" ticks over a fixed headless run: a MOVING car whose front bumper is on/over a
+    // pedestrian who is inside a real crossing polygon (the visible "car drives over a ped on the zebra"
+    // event, defect #1). Motion direction + speed are finite-differenced from Sample() poses (no engine
+    // internals), and "on a crossing" is the true point-in-polygon test (LiveCitySim.IsOnCrossingPolygon),
+    // NOT a loose centroid circle -- the same metric the --live-city-yieldtrace diagnostic reports.
+    private static int CountCrossingNoseIns(LiveCityConfig cfg, int steps)
+    {
+        const double pedR = 0.3;
+        using var sim = new LiveCitySim(cfg);
+        var prev = new System.Collections.Generic.Dictionary<Sim.Core.VehicleHandle, (double X, double Y)>();
+        var noseIn = 0;
+
+        for (var s = 0; s < steps; s++)
+        {
+            sim.Step();
+            var snap = sim.Sample();
+
+            var onCross = new System.Collections.Generic.List<(double X, double Y)>();
+            foreach (var p in snap.Peds)
+            {
+                if (sim.IsOnCrossingPolygon(p.X, p.Y)) onCross.Add((p.X, p.Y));
+            }
+
+            if (onCross.Count > 0)
+            {
+                foreach (var c in snap.Cars)
+                {
+                    if (!prev.TryGetValue(c.Handle, out var pp)) continue;
+                    var fx = c.X - pp.X; var fy = c.Y - pp.Y;
+                    var fn = Math.Sqrt((fx * fx) + (fy * fy));
+                    var spd = fn / cfg.Dt;
+                    if (spd <= 0.5 || fn < 1e-3) continue;         // stopped/yielded cars are fine
+                    var ux = fx / fn; var uy = fy / fn;
+                    var halfW = c.Width * 0.5; var halfLen = c.Length * 0.5;
+                    foreach (var (px, py) in onCross)
+                    {
+                        var vx = px - c.X; var vy = py - c.Y;
+                        var along = (vx * ux) + (vy * uy);
+                        var lat = Math.Abs((vx * (-uy)) + (vy * ux));
+                        if (along > 0 && along < halfLen + pedR && lat < halfW + pedR) { noseIn++; break; }
+                    }
+                }
+            }
+
+            prev.Clear();
+            foreach (var c in snap.Cars) prev[c.Handle] = (c.X, c.Y);
+        }
+
+        return noseIn;
+    }
+
+    // Realism #1/#2 (docs/LIVE-CITY-REALISM-1-2-DESIGN.md) regression guard -- and, like the dense-flow test
+    // above, a guard the PARITY gate structurally cannot provide: the crossing-yield fix is demo-gated
+    // (Engine.CrowdSource is null on every golden), so a regression that reverts cars to driving over
+    // crossing pedestrians passes parity byte-for-byte. This test pins the fix: with the shipped defaults
+    // (CrossingGateRadius=1.5, GatePausedPedsOnCrossing=true) a moving car noses over a ped on a crossing
+    // FAR less often than with the stock 0.3 m point disc. Deterministic (same seed+config => identical run),
+    // so the thresholds are stable, not statistical.
+    //
+    // Measured (this branch, 400 steps = 200 s): STOCK nose-in=10, FIXED nose-in=1 (residual is an ORCA
+    // promotion-timing edge, defect #3/#4). The thresholds below sit with wide margin on both sides.
+    [Fact]
+    public void CrossingYield_FixedGate_NosesOverFarFewerCrossingPeds_ThanStockPointDisc()
+    {
+        const int steps = 400;
+
+        LiveCityConfig Base()
+        {
+            var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+            // Pin the scenario so the assertion is about the GATE, not config/env drift.
+            cfg.CarTargetConcurrent = 160;
+            cfg.TimeToTeleportSeconds = 0.0;
+            cfg.Dt = 0.5;
+            cfg.YieldEnabled = true;
+            return cfg;
+        }
+
+        var stockCfg = Base();
+        stockCfg.CrossingGateRadius = 0.3;              // stock point disc
+        stockCfg.GatePausedPedsOnCrossing = false;      // stock walking-only feed
+
+        var fixedCfg = Base();                          // shipped defaults: r=1.5, paused feed on
+        Assert.Equal(1.5, fixedCfg.CrossingGateRadius);
+        Assert.True(fixedCfg.GatePausedPedsOnCrossing);
+
+        var stockNose = CountCrossingNoseIns(stockCfg, steps);
+        var fixedNose = CountCrossingNoseIns(fixedCfg, steps);
+
+        // (1) The stock behaviour genuinely exhibits the defect (else the test proves nothing).
+        Assert.True(stockNose >= 5,
+            $"expected the STOCK point-disc to nose over crossing peds (>=5), got {stockNose} -- defect not reproduced");
+        // (2) The fix drives it near zero.
+        Assert.True(fixedNose <= 3,
+            $"crossing-yield REGRESSION: fixed-gate nose-ins {fixedNose} (expected <=3; stock was {stockNose})");
+        // (3) A clear, non-marginal improvement (guards against both drifting toward stock).
+        Assert.True(fixedNose * 2 < stockNose,
+            $"crossing-yield fix lost its margin: fixed={fixedNose} stock={stockNose} (want fixed*2 < stock)");
+    }
 }

@@ -218,3 +218,35 @@ non-walking low-power peds; B: gate the crossing span, demo-gated), get owner ag
 verify by re-running `--live-city-yieldtrace` (nose-in → ~0) and an HTML replay.
 
 Diagnostic tooling committed (parity-inert): `Sim.Viz --live-city-yieldtrace`, `LiveCitySim.IsOccupancyMarkedAt`.
+
+### DEFECT #1 — CORRECTION + FIX (design: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`)
+**Correction to the "9 paused" headline above:** the trace's on-crossing test was a loose ~9 m centroid
+circle (the crossing polys are junction-sized, half-extent median 8.65 m), so it counted peds standing on the
+SIDEWALK near junctions. Tightened it to a real point-in-polygon (`CrossingOccupancySource.IsInsideAnyCrossing`
+→ `LiveCitySim.IsOnCrossingPolygon`). With the true test, the nosed-over peds are **8 walking + 2 ORCA, 0
+paused** — the "9 paused" were an artifact. So the *live* defect is entirely cause **(B)** (the 0.3 m point
+disc), not the feed gap. Cause **(A)** (paused-ped feed gap = defect #2) is a REAL mechanism but had 0
+on-crossing cases in this run; fixed defensively anyway.
+
+**A/B sweep (400 steps, true polygon test, engine-authoritative binder/speed; nose-in = moving car's bumper
+over a ped on a real crossing; arrived = car trips completed):**
+
+| config | nose-in | breakdown | arrived |
+|---|---|---|---|
+| STOCK r=0.3, no A | 10 | walking 8, ORCA 2 | 95 |
+| r=1.5, no A | 2 | walking 1, ORCA 1 | 94 |
+| **A + r=1.5 (SHIPPED)** | **1** | ORCA 1 | 94 |
+| A + r=2.5 | 1 | ORCA 1 | 91 ← flow starts to cost |
+
+**Fix (feed-side, parity-inert — engine untouched):** two `LiveCityConfig` knobs —
+`CrossingGateRadius=1.5` (env `LIVECITY_GATE_RADIUS`): the occupancy gate disc, enlarged from 0.3 m so a car
+brakes for a ped on the crossing ahead in time, yet lane-LOCAL (corridor half 0.9+1.5=2.4 m < 4 m lane
+spacing → no adjacent-lane brake); and `GatePausedPedsOnCrossing=true` (env `LIVECITY_GATE_PAUSED`): also feed
+low-power peds paused on a crossing (defect #2). Owner picked r=1.5 (minimal lane-local value; r≥2.5 costs
+flow). **Literal polygon-gating was rejected** — the junction-sized polys would over-brake and regress #15.
+
+**Gates (all green):** parity `657/4` byte-identical; bench `D96213B7BB4021A7`, par==single;
+`Sim.LiveCity.Tests` **24/24** incl. new `CrossingYield_FixedGate_NosesOverFarFewerCrossingPeds_ThanStockPointDisc`
+(stock nose-in ≥5, fixed ≤3, fixed*2<stock — a guard the parity gate structurally cannot provide).
+**Residual = 1 ORCA nose-in** (promotion/footprint-timing) → folded into defects #3/#4. NEXT (owner): confirm
+the HTML replay (cars stop at occupied crossings), then move to #3/#4.
