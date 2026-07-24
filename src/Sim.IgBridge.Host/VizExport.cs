@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Sim.Core;
 using Sim.Ingest;
 using Sim.IgBridge;
@@ -69,16 +68,15 @@ internal static class VizExport
             BuildScene(sceneB.Name, sceneB.Desc, sceneB.Ig, slot, vehIdsBySlot, vehDims, view, net, dt, startT, endT, fps),
         };
 
-        var json = JsonSerializer.Serialize(new { scenes },
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-
-        var tdir = Path.Combine(repoRoot, "src", "Sim.Viz");
-        var html = File.ReadAllText(Path.Combine(tdir, "template.html"))
-            .Replace("__SCENARIO_NAME__", "IgBridge: raw engine vs IgBridge-smoothed (IG-displayed)")
-            .Replace("/*REPLAY_DATA*/", json)
-            .Replace("/*TEMPLATE_JS*/", File.ReadAllText(Path.Combine(tdir, "template.js")));
-
-        File.WriteAllText(outPath, html);
+        // Route through the ONE shared inject glue (Sim.Viz.VizHtml.Write). The scene graph here carries
+        // `vehIds` (click-to-identify) which the gallery's ScenePayload record lacks, so we pass the
+        // anonymous `{ scenes }` object; VizHtml serializes it with the identical CamelCase options the
+        // gallery uses. Templates are read from the repo tree (this exe does not sit beside them).
+        Sim.Viz.VizHtml.Write(
+            new { scenes },
+            "IgBridge: raw engine vs IgBridge-smoothed (IG-displayed)",
+            outPath,
+            Path.Combine(repoRoot, "src", "Sim.Viz"));
     }
 
     private static object BuildScene(

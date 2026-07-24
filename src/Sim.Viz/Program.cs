@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
@@ -2210,36 +2208,10 @@ internal static class Program
     // ---------------------------------------------------------------------------------------
     // Shared HTML writer: serialize the payload and inject it + the template JS into template.html.
     // ---------------------------------------------------------------------------------------
+    // Thin wrapper over the shared VizHtml.Write (the single inject glue). Templates sit next to the
+    // built exe (Sim.Viz.csproj copies them), which is VizHtml's default dir -- so behavior is unchanged.
     private static bool WriteHtml(ReplayData payload, string title, string outPath)
-    {
-        var jsonOptions = new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-            WriteIndented = false,
-        };
-        var json = JsonSerializer.Serialize(payload, jsonOptions);
-
-        var templateDir = AppContext.BaseDirectory;
-        var templateHtmlPath = Path.Combine(templateDir, "template.html");
-        var templateJsPath = Path.Combine(templateDir, "template.js");
-        if (!File.Exists(templateHtmlPath) || !File.Exists(templateJsPath))
-        {
-            Console.Error.WriteLine(
-                $"error: template files not found next to the built exe ({templateHtmlPath}, {templateJsPath})");
-            return false;
-        }
-
-        var html = File.ReadAllText(templateHtmlPath);
-        var js = File.ReadAllText(templateJsPath);
-
-        html = html.Replace("__SCENARIO_NAME__", title);
-        html = html.Replace("/*REPLAY_DATA*/", json);
-        html = html.Replace("/*TEMPLATE_JS*/", js);
-
-        File.WriteAllText(outPath, html);
-        return true;
-    }
+        => VizHtml.Write(payload, title, outPath);
 
     private static string? SingleFile(string dir, string pattern)
     {
