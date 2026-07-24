@@ -195,13 +195,16 @@ that adds the field + `BuildLiveCityDemo`.)
 ---
 
 ## 6. Tracker
-- [ ] T1 shared HTML writer (dedupe `WriteHtml` / `VizExport`)
-- [ ] T2 `VizReplayBuilder` + `IVizReplaySource` + `LiveCitySource` (fold `BuildLiveCityDemo`)
-- [ ] T3 `EngineScenarioSource` + `--engine-replay` (real engine output, deterministic)
-- [ ] T4 gallery (`gen-demos.sh`) → `--engine-replay`; retire raw `--fcd` render; Pages green
-- [ ] T5 ped/evac scenes → the builder
-- [ ] T6 fold IgBridge `VizExport` smooth side onto the builder
-- [ ] T7 prove "DR-improvement projects to all demos" + docs
+> Executed — see `docs/VIZ-UNIFICATION-STATUS.md` for verification and the three documented deviations.
+- [x] T1 shared HTML writer (dedupe `WriteHtml` / `VizExport`)
+- [x] T2 `VizReplayBuilder` + `IVizReplaySource` + `LiveCitySource` (fold `BuildLiveCityDemo`)
+- [x] T3 `EngineScenarioSource` + `--engine-replay` (real engine output, deterministic)
+- [x] T4 gallery (`gen-demos.sh`) → `--engine-replay`; retire raw `--fcd` render; Pages green
+      (3 large city-scale demos kept on FCD — size; documented in STATUS)
+- [◑] T5 ped/evac scenes → the builder (flagship `live-city` routed; pure-ped demos documented exception)
+- [⨂] T6 fold IgBridge `VizExport` smooth side onto the builder (writer unified in T1; scene deliberately
+      NOT folded — it would break the v5/v6 diagnostic; see STATUS §T6)
+- [x] T7 prove "DR-improvement projects to all demos" + docs
 
 ---
 

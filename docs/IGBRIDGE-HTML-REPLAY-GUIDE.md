@@ -180,8 +180,26 @@ scene (`useDataHeading` for the 5-tuple cars; 4-tuple discs for peds).
 ---
 
 ## 6. Files + entry points (the map to copy from)
-- **Producer/host:** `src/Sim.IgBridge.Host/Program.cs` (drives it), `src/Sim.IgBridge.Host/VizExport.cs`
-  (`WriteSideBySide` / `BuildScene` — the scene payload + the `useDataHeading`/`vehIds`/5-tuple emit).
+
+> **Update (viz-unification, `docs/VIZ-UNIFICATION-DESIGN.md`):** the smoothed replays are no longer produced
+> by several bespoke loops. There is now **one builder** — **`src/Sim.Viz/VizReplayBuilder.cs`** — that runs
+> the loop this guide describes (cars via `DrClock.ResolveAt` + `KinematicReconstructor`, peds via
+> `PedRemoteReconstructor` off the wire) behind the **`IVizReplaySource`** abstraction. Adapters:
+> **`LiveCitySource`** (the real `LiveCitySim`, cars+peds — `--live-city-demo`, and the gallery `live-city`
+> page) and **`EngineScenarioSource`** (a plain deterministic `Engine` on any scenario dir — `--engine-replay
+> <dir> <out>`, which every gallery vehicle demo now uses). Improve `KinematicReconstructor` once and every
+> DR-smoothed gallery page improves for free (see `docs/VIZ-UNIFICATION-STATUS.md` for the proof). The HTML
+> inject glue is likewise unified in **`src/Sim.Viz/VizHtml.cs`** (`VizHtml.Write`), which every producer —
+> the gallery and the IgBridge side-by-side — routes through. The IgBridge side-by-side below keeps its own
+> `IgBridgeSession`→`FakeIg` scene because it exists to A/B two IgBridge emit-pipeline *variants*, which is a
+> different thing than the builder's single reconstruction (see STATUS §T6).
+
+- **The one builder (viz-unification):** `src/Sim.Viz/VizReplayBuilder.cs` (`Build(source, opts)`),
+  `src/Sim.Viz/IVizReplaySource.cs`, `src/Sim.Viz/{LiveCitySource,EngineScenarioSource}.cs`,
+  `src/Sim.Viz/VizHtml.cs` (the shared writer).
+- **Producer/host (IgBridge side-by-side):** `src/Sim.IgBridge.Host/Program.cs` (drives it),
+  `src/Sim.IgBridge.Host/VizExport.cs` (`WriteSideBySide` / `BuildScene` — the scene payload +
+  the `useDataHeading`/`vehIds`/5-tuple emit; now writes via the shared `VizHtml.Write`).
 - **Reconstruction (the smoothing):** `src/Sim.Viewer.Motion/KinematicReconstructor.cs` (+ `KinematicHeading.cs`),
   `src/Sim.Viewer.Motion/DrClock.cs` (`ResolveAt`), `src/Sim.Core/PoseResolver.cs`.
 - **Emit + IG:** `src/Sim.IgBridge/IgBridgeSession.cs` (`EmitVehicles`/`EmitPeds`), `src/Sim.IgBridge/IgSample.cs`,
