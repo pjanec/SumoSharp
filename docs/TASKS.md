@@ -2442,6 +2442,15 @@ Relevant wiring (for whoever picks these up):
   `ModelOf(id) != FreeKinematic && AnimTag == WalkAnimTag`, fed via `_crossingOccupancy.Update(...)`).
 - Ped LOD promotion/demotion: `PedLodManager` + the `InterestField` pocket (promote 70 m / demote 100 m).
 
+0. **[HANDED OFF to a separate session — `docs/LIVE-CITY-REALISM-AB-DESIGN.md`] Two engine-core realism #1
+   residuals (parity-sensitive, split off):** (A) a car stopped/held by a crossing ped wiggles sideways
+   (pure sublane `PosLat` drift at zero forward speed → demo-gated freeze-lateral-when-stopped clamp); (B)
+   cars still close-fast-pass ORCA peds on internal junction lanes (lane-projection unreliable → a
+   high-realism-zone world-space hard ped-safety guard, unifying with the engine's external-agent
+   dodge/stop mechanism whose string-name API wants a redesign to the world-disc seam). Owner approved both;
+   both need `Sim.Core` edits kept inert on goldens (verify 657/4 + bench `D96213B7BB4021A7`). Repro tools:
+   `--live-city-cartrace` (A), `--live-city-orcatrace` (B).
+
 1. **[FIXED — `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`] Cars in the HIGH-realism zone drive THROUGH peds on
    crosswalks (no dodge/stop).** Root cause (proven from entity-state dumps via `--live-city-yieldtrace`) was
    FEED-side, not the engine: a crossing ped was fed to `Engine.CrowdSource` only as a **0.3 m point disc**,
