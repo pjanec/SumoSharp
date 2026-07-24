@@ -69,7 +69,13 @@ doesn't have. Highlights below; precise scope after that.
   [`docs/VIEWER-KINEMATIC-SMOOTHING-DESIGN.md`](docs/VIEWER-KINEMATIC-SMOOTHING-DESIGN.md) (the **kinematic
   vehicle-motion reconstruction** both viewers now smooth with).
 - **🏙️ [`demos/City3D`](demos/City3D)** — a Godot 4 (.NET) 3D city viewer consuming the SumoSharp
-  packages from a local feed.
+  packages from a local feed. Its **live-city** mode runs the coupled cars + pedestrians demo in-process
+  with a **camera-driven high-realism zone**: the area the camera looks at promotes pedestrians to full
+  ORCA and cars to cooperative lane-changing (no unrealistic lateral "float"), while distant traffic keeps
+  the cheap LOD for performance — press **H** to cycle Central / Follow-camera / Locked. The dense
+  downtown flow it drives is the same one the **live-city junction-gridlock** fixes (cooperative lane
+  change, wrong-lane reroute, into-occupied cut-in reduction) were built and regression-tested against —
+  all demo-gated and byte-identical on every parity golden.
 - **🛰️ IgBridge** ([`docs/IGBRIDGE-DESIGN.md`](docs/IGBRIDGE-DESIGN.md)) — a producer-side feed for an
   **external 3D image generator** that has **no protocol for sophisticated predictive dead-reckoning** and
   consumes only plain `position / orientation / timestamp` samples (interpolating between its two most recent).

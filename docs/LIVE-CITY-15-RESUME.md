@@ -7,7 +7,7 @@ Design docs: `LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md`, `LIVE-CITY-15-COO
 
 ---
 
-## 1. STATUS — what is DONE (all committed + pushed; latest tip `1f2e654`)
+## 1. STATUS — what is DONE (all committed + pushed; latest tip `9ba587a`, incl. the Windows camera-zone commit)
 Four distinct problems found and fixed, in order, each verified first-hand (the 4th, into-occupied cut-ins,
 is summarized in §2 item 1 — gridlock/blockage/float are the first three below). ALL §2 follow-ups that can
 be verified HEADLESSLY are now DONE (into-occupied, liveness test, per-area LOD gate); only the 3D visual
@@ -72,8 +72,14 @@ In priority order:
    the Engine directly (never `LiveCitySim`), so parity **657/4** byte-identical + hash `D96213B7BB4021A7`.
    Verified: flow healthy (arrivals 1022, no gridlock), `keepRight stop 0→571` (floats outside pocket),
    `coopAdvice > 0` (cooperation inside pocket); `Sim.LiveCity.Tests` 22 passed (2 new). Design:
-   `LIVE-CITY-15-PER-AREA-LOD-DESIGN.md`. FOLLOW-UP: tie the interest source to a moving camera/avatar
-   (currently a static crop-centre pocket) so the high-realism zone tracks where the viewer is looking.
+   `LIVE-CITY-15-PER-AREA-LOD-DESIGN.md`.
+   **FOLLOW-UP DONE (Windows session, commit `9ba587a`):** the high-realism zone is now a settable,
+   **camera-driven** zone — `LiveCitySim.SetLcRealismZone` / `LcZone{X,Y,Radius}` re-centres AND re-sizes
+   BOTH the car-LC classification and the ped-ORCA `InterestSource` on the same (camera) circle; the City3D
+   viewer cycles Central / Follow (camera→ground raycast, radius = slant·tan(FOV/2)) / Locked via **H**.
+   Defaults to the static pocket (goldens never call it → parity 657/4 byte-identical). Test
+   `LcRealismZone_DefaultsToPocket_AndIsSettable` (`Sim.LiveCity.Tests` now 23). Design:
+   `LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md`.
 3. **DONE — Liveness/throughput regression TEST.** `tests/Sim.LiveCity.Tests/LiveCitySimTests.cs`
    → `DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock`. Headless, no-SUMO, deterministic: runs
    the coupled sim 2000 steps (1000 s) with the shipped dense-flow config PINNED (immune to `LIVECITY_*`
