@@ -2368,7 +2368,7 @@ internal static class SceneGen
     // Restrict a full-network payload to a crop rectangle: keep only lanes / junctions / crossings /
     // signals with any vertex inside it, so the drawn network (and the payload) is the framed block, not
     // the whole 5 km map. TL logics are kept whole (tiny); their signal heads are position-filtered.
-    private static NetworkPayload CropNetwork(
+    internal static NetworkPayload CropNetwork(
         NetworkPayload net, PedNetwork pedNetwork, string netPath, double x0, double y0, double x1, double y1)
     {
         bool In(double x, double y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
@@ -4035,7 +4035,7 @@ internal static class SceneGen
 
     // Pad every frame's vehicle array up to `slotCount` with null (absent) slots, so all frames
     // share the same fixed-slot vehicle indexing the front end relies on.
-    private static void NormalizeVehicleSlots(List<FramePayload> frames, int slotCount)
+    internal static void NormalizeVehicleSlots(List<FramePayload> frames, int slotCount)
     {
         for (var f = 0; f < frames.Count; f++)
         {
@@ -4058,7 +4058,7 @@ internal static class SceneGen
     // pedestrian into an abandoned car as per-frame counts grow. Slots are assigned in first-seen order
     // (frames in time order, discs in the builder's stable within-frame order), so the mapping is
     // deterministic. Null slots are held/dropped by interpolatedDiscs (mirrors the vehicle path).
-    private static void AssignStableDiscSlots(
+    internal static void AssignStableDiscSlots(
         List<FramePayload> frames, List<List<(string Key, double[] Disc)>> discsKeyedPerFrame)
     {
         var slotByKey = new Dictionary<string, int>();

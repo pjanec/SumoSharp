@@ -79,8 +79,12 @@ internal sealed record ScenePayload(
                              // vehicle class rather than stream/pedestrian)
     double[]? Incident = null,  // panic-evac overlay: [x, y, radius, startTime, safeRadius] -- null
                                  // for scenes with no incident
-    double[]? Boundary = null); // panic-evac overlay: flat closed loop [x0,y0,x1,y1,...] -- the
+    double[]? Boundary = null, // panic-evac overlay: flat closed loop [x0,y0,x1,y1,...] -- the
                                  // known-world hard edge; null for scenes with no boundary
+    bool UseDataHeading = false); // when true, the player orients each vehicle box from the EMITTED
+                                 // heading (5-tuple [x,y,headingDeg,len,wid]) instead of the path tangent --
+                                 // required for KinematicReconstructor output (see IGBRIDGE-HTML-REPLAY-GUIDE.md
+                                 // §5.1). Serialized camelCase -> template.js `scene.useDataHeading`.
 
 internal sealed record ReplayData(ScenePayload[] Scenes);
 
