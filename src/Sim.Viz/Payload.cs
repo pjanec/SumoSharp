@@ -81,10 +81,13 @@ internal sealed record ScenePayload(
                                  // for scenes with no incident
     double[]? Boundary = null, // panic-evac overlay: flat closed loop [x0,y0,x1,y1,...] -- the
                                  // known-world hard edge; null for scenes with no boundary
-    bool UseDataHeading = false); // when true, the player orients each vehicle box from the EMITTED
+    bool UseDataHeading = false, // when true, the player orients each vehicle box from the EMITTED
                                  // heading (5-tuple [x,y,headingDeg,len,wid]) instead of the path tangent --
                                  // required for KinematicReconstructor output (see IGBRIDGE-HTML-REPLAY-GUIDE.md
                                  // §5.1). Serialized camelCase -> template.js `scene.useDataHeading`.
+    string[]? VehIds = null);    // optional per-vehicle-SLOT stable id (the real SUMO vehicle name), aligned
+                                 // with the V-array slots. When present, template.js enables click-to-identify:
+                                 // click a car -> an amber ring + this id track it. null => feature inert.
 
 internal sealed record ReplayData(ScenePayload[] Scenes);
 
