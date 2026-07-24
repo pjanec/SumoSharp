@@ -136,6 +136,49 @@ Almost every "it doesn't look as smooth as yours" comes from one of these (each 
 
 ---
 
+## 5b. Pedestrians (the other half of the scene — same principle, a different reconstructor)
+
+Peds get the SAME "all smoothing baked into the reconstruction, only dumb interpolation in the player"
+treatment as vehicles — but through a **different reconstruction path**, because ped motion is *analytic*
+(a walked path / activity timeline), not lane-arc dead-reckoning. Get this wrong and peds move like a
+**"caterpillar"**: a fast lurch once per sim tick, then slow — the ped analogue of the vehicle facet-snap.
+
+- **Source:** the ped replication WIRE — `LiveCitySim.PedSource` (an `IPedReplicationSource`), the same
+  in-memory wire the remote/DDS ped path consumes. (Peds do NOT ride the vehicle `VehicleSource`.)
+- **Reconstructor:** `Sim.Pedestrians.Lod.PedRemoteReconstructor` (wraps a `HeadlessIg`). Per id,
+  `HeadlessIg.ReconstructSample(id, renderTime)` evaluates the ped's **PathArc / ActivityTimeline leg as an
+  analytic function of time** — sampleable at ANY instant, no snapshot brackets, no tick-boundary kink. This
+  is what makes peds continuous between the (2 Hz) sim ticks.
+- **Playout clock:** the reconstructor keeps its own: `RenderTime = latestServerTime − PlayoutDelay`
+  (`DefaultPlayoutDelaySeconds` = 0.15 s), advanced by `Pump(latestServerTime)`. To render peds AT instant
+  `tau`, call `Pump(tau + PlayoutDelay)` so `RenderTime == tau`.
+- **Read poses:** `foreach (id in recon.KnownIds) if (recon.TryGetRenderPose(id, out pos, out visible, out
+  animTag) && visible) …`. LOD colour = `recon.Ig.ModelOf(id) == FreeKinematic` (promoted ORCA) else the
+  `animTag` (walk vs paused).
+- **Disc payload row:** `[x, y, radius, kind]` (a 4-tuple; `kind` = the LOD colour index). The player's
+  `interpolatedDiscs` linearly interpolates disc positions between frames (and holds an absent slot), so —
+  exactly like vehicles — the emitted points must already lie on the smooth curve.
+
+### The ped gotchas
+1. **Reconstruct off the wire; do NOT call the LOD manager's `PositionOf(id, t)` directly at a lagged/arbitrary
+   time.** `PositionOf` reads the ped's CURRENT arc, only valid around the latest tick; at a lagged `tau`
+   (e.g. behind by the vehicle playout delay) it evaluates before the arc's start → clamp-then-jump = the
+   caterpillar. And for **promoted (FreeKinematic/ORCA) peds `PositionOf` ignores `t` entirely** (returns the
+   live ORCA position) → held-then-jump. `ReconstructSample(id, RenderTime)` is time-correct for every regime.
+2. **One coherent `tau` per frame.** Pump the ped reconstructor to the SAME render instant the vehicles
+   resolve against — cars: `DrClock.ResolveAt(history, tau, lanes)`; peds: `pedRecon.Pump(tau + pedDelay)` so
+   its `RenderTime == tau`. Otherwise cars and peds drift out of lockstep on turns/crossings.
+3. **Colour by the emitted LOD regime, not a guess.** grey = low-power walk, orange = promoted full-ORCA,
+   yellow = paused — read it from `Ig.ModelOf`/`animTag`, so a promotion/demotion is visible as a colour flip.
+
+### Worked example (the faithful live-city replay)
+`src/Sim.Viz/SceneGen.cs → BuildLiveCityDemo`: one loop, one `tau` per emitted frame, cars via
+`DrClock.ResolveAt` + `KinematicReconstructor` (center + emitted heading, §2/§5), peds via
+`PedRemoteReconstructor.Pump(tau + pedDelay)` + `TryGetRenderPose`. Both write into the same `template.js`
+scene (`useDataHeading` for the 5-tuple cars; 4-tuple discs for peds).
+
+---
+
 ## 6. Files + entry points (the map to copy from)
 - **Producer/host:** `src/Sim.IgBridge.Host/Program.cs` (drives it), `src/Sim.IgBridge.Host/VizExport.cs`
   (`WriteSideBySide` / `BuildScene` — the scene payload + the `useDataHeading`/`vehIds`/5-tuple emit).
@@ -158,3 +201,7 @@ samples; play them back with a small **interpolation delay** (never extrapolate 
 **draw the emitted heading, not the path tangent** (`useDataHeading`) and Catmull-Rom the positions. The
 smoothing is in the reconstruction, not the player — the player only interpolates points already on a smooth,
 prediction-anticipated curve.
+
+**Peds:** same principle, different reconstructor (§5b). Reconstruct off the ped WIRE with
+`PedRemoteReconstructor` (`Pump(tau + pedDelay)` → `TryGetRenderPose`), NOT the LOD manager's `PositionOf`
+at a lagged time (that's the "caterpillar"). One coherent `tau` per frame for cars and peds together.
