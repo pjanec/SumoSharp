@@ -46,6 +46,16 @@ public sealed class LiveCitySource : IDisposable
     public double HighRealismPromoteRadius => _sim.HighRealismPromoteRadius;
     public double HighRealismDemoteRadius => _sim.HighRealismDemoteRadius;
 
+    // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md): the live zone the
+    // per-area lane-change realism gate tests against. The Viewer pushes SetLcRealismZone once per frame
+    // (Follow/Locked modes) and renders the highlight ring at LcZone{X,Y,Radius}. Central mode leaves it
+    // on the static pocket (== prior behaviour). SUMO world coords.
+    public double LcZoneX => _sim.LcZoneX;
+    public double LcZoneY => _sim.LcZoneY;
+    public double LcZoneRadius => _sim.LcZoneRadius;
+    public void SetLcRealismZone(double centreX, double centreY, double radius)
+        => _sim.SetLcRealismZone(centreX, centreY, radius);
+
     // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": the static world-overlay scene (zones/
     // buildings/pois, all optional) LiveCitySim already loaded once in its own ctor -- exposed here so the
     // Viewer's zone-ground (and later building/POI) layers read it without a second parse.

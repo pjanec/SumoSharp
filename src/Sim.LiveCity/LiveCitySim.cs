@@ -38,6 +38,14 @@ public sealed class LiveCitySim : IDisposable
     private readonly PedLodManager _manager;
     private readonly PedDemand _demand;
     private readonly InterestField _field;
+    // The single ped-ORCA promotion source, re-centred AND re-sized on the live high-realism zone by
+    // SetLcRealismZone so peds promote to full ORCA across the WHOLE highlighted zone wherever the viewer
+    // looks (Follow/Locked), not only at the static crop-centre crossing. Position is mutated in place
+    // (InterestSource doc: "an IG camera frustum carries its bubble with it"); radius is readonly on
+    // InterestSource, so a radius change rebuilds the source (Remove + Register) -- the promoted-ped count
+    // therefore scales with the zone radius by design (owner: "honor the zone radius, no matter perf").
+    private InterestSource _orcaSource;
+    private InterestSourceId _orcaSourceId;
     private readonly Sim.Pedestrians.Crossing.CrossingOccupancySource _crossingOccupancy;
     private readonly List<Vec2> _movingLowPowerPositions = new();
     private static readonly WorldDisc[] NoEntities = Array.Empty<WorldDisc>();
@@ -182,7 +190,8 @@ public sealed class LiveCitySim : IDisposable
 
         const double promoteRadius = 70.0, demoteRadius = 100.0;
         _field = new InterestField();
-        _field.Register(new InterestSource(pocketCentre, promoteRadius, demoteRadius));
+        _orcaSource = new InterestSource(pocketCentre, promoteRadius, demoteRadius);
+        _orcaSourceId = _field.Register(_orcaSource);
 
         // Expose the high-realism (ORCA-promotion) pocket so a viewer can render it: peds within
         // PromoteRadius of this centre are promoted to full ORCA; beyond DemoteRadius they fall back to
@@ -191,6 +200,13 @@ public sealed class LiveCitySim : IDisposable
         HighRealismPocketY = pocketCentre.Y;
         HighRealismPromoteRadius = promoteRadius;
         HighRealismDemoteRadius = demoteRadius;
+
+        // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md): the per-area
+        // lane-change realism gate starts ON the static pocket, so Central mode == the prior behaviour;
+        // a viewer can later move/lock it to the camera via SetLcRealismZone.
+        _lcZoneX = pocketCentre.X;
+        _lcZoneY = pocketCentre.Y;
+        _lcZoneR = promoteRadius;
 
         _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
 
@@ -334,6 +350,43 @@ public sealed class LiveCitySim : IDisposable
     public double HighRealismPromoteRadius { get; private set; }
     public double HighRealismDemoteRadius { get; private set; }
 
+    // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md). The per-area
+    // lane-change realism gate in Step() tests against THIS zone (not the static ped-ORCA pocket above),
+    // so the viewer can move it to the camera look-at (Follow) or freeze it (Locked). SUMO world coords;
+    // radius <= 0 disables the gate (all cars high realism). Initialised to the static pocket (Central).
+    private double _lcZoneX;
+    private double _lcZoneY;
+    private double _lcZoneR;
+    public double LcZoneX => _lcZoneX;
+    public double LcZoneY => _lcZoneY;
+    public double LcZoneRadius => _lcZoneR;
+
+    // Set the LC-realism zone (the viewer pushes this once per step BEFORE Step(), for Follow/Locked
+    // modes). Demo-only: parity/bench drive Engine directly, never LiveCitySim, so goldens never call this
+    // and the classification stays byte-identical (Central mode leaves the zone on the static pocket).
+    public void SetLcRealismZone(double centreX, double centreY, double radius)
+    {
+        _lcZoneX = centreX;
+        _lcZoneY = centreY;
+        _lcZoneR = radius;
+
+        // Unify ped ORCA with the high-realism zone: peds within the zone promote to full ORCA (turn
+        // high-power) wherever the viewer looks. The promote radius follows the zone radius (owner
+        // requirement: honor the zone radius regardless of perf), with a proportional demote-radius
+        // hysteresis band. Position mutates in place; a radius change rebuilds the (readonly-radius) source.
+        var centre = new Vec2(centreX, centreY);
+        if (radius > 0.0 && Math.Abs(radius - _orcaSource.PromoteRadius) > 0.5)
+        {
+            _field.Remove(_orcaSourceId);
+            _orcaSource = new InterestSource(centre, radius, radius * 1.3);
+            _orcaSourceId = _field.Register(_orcaSource);
+        }
+        else
+        {
+            _orcaSource.Position = centre;
+        }
+    }
+
     // Deterministic SplitMix64, seeded from LiveCityConfig.CarRngSeed -- identical constants/order to
     // SceneGen.BuildLiveCity's `NextRng`, so two LiveCitySim instances with the same seed spawn the same
     // sequence of cars.
@@ -421,13 +474,13 @@ public sealed class LiveCitySim : IDisposable
         // in the previous snapshot (spawned this step) stay high-realism (cooperative) by default. Pure
         // function of the frozen previous snapshot + the static pocket => deterministic, order-independent.
         // Never runs on a golden (parity/bench drive Engine directly, not LiveCitySim) => flag stays false.
-        if (_cfg.CooperativeLaneChange && HighRealismPromoteRadius > 0.0)
+        if (_cfg.CooperativeLaneChange && _lcZoneR > 0.0)
         {
             for (var i = 0; i < _lastSnapshot.Count; i++)
             {
                 var low = IsLowRealismLaneChangePos(
                     _lastSnapshot.PosX[i], _lastSnapshot.PosY[i],
-                    HighRealismPocketX, HighRealismPocketY, HighRealismPromoteRadius);
+                    _lcZoneX, _lcZoneY, _lcZoneR);
                 _engine.SetLowRealismLaneChange(_lastSnapshot.Handles[i], low);
             }
         }

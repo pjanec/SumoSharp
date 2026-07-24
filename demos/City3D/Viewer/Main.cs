@@ -180,6 +180,11 @@ public partial class Main : Node3D
     private static readonly Color LiveCityPedHighPowerColor = new(0.92f, 0.55f, 0.12f); // orange
     private static readonly Color LiveCityPedPausedColor = new(0.92f, 0.85f, 0.20f);    // yellow
 
+    // When true (set in the live-city ready paths), UpdatePeds uses the live-city palette (grey low-power /
+    // orange high-power ORCA) instead of the plaza slate/cyan -- orange pops far more clearly so the tester
+    // can SEE which peds are promoted to full ORCA. The plaza `--peds` path leaves this false.
+    private bool _liveCityPedPalette;
+
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §5, -TASKS.md D4 -- the click-to-identify highlight ring/label
     // colour (a distinct cyan, unused by any car/ped/TL palette above so a selected vehicle never blends
     // into its own body colour) and the pick radius in SCREEN pixels (mirrors LiveCityOverlay's world-space
@@ -213,6 +218,14 @@ public partial class Main : Node3D
     // tracks a single vehicle/signal up close, not the crowd as a whole).
     private const float LiveCityCameraHeightFactor = 0.55f;
     private const float LiveCityCameraBackFactor = 1.15f;
+
+    // Local live-city INTERACTIVE initial framing: unlike the tight/shallow screenshot overview above, this
+    // frames the WHOLE cropped road net from an elevated ~55deg-tilted bird's-eye (atan(0.95/0.65)), so the
+    // opening view shows the entire central area at once -- no flying up/turning down before you can see the
+    // city. The orbit camera can zoom/tilt freely afterwards. Padding gives the road net a small margin.
+    private const float LiveCityOverviewHeightFactor = 0.95f;
+    private const float LiveCityOverviewBackFactor = 0.65f;
+    private const float LiveCityOverviewPadMeters = 40f;
 
     // Viewer-only LEGIBILITY render scale for the ped avatars (docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians
     // (P7-3)"): the tested CityLib.PedTransform keeps the true ~0.5x1.8 m avatar, but at plaza camera range a
@@ -267,9 +280,16 @@ public partial class Main : Node3D
     private const float ZoomStepFactor = 0.9f; // one wheel notch: *0.9 to zoom in, /0.9 to zoom out
     private const float ClickDragThresholdPixels = 5f;
     // Unity-Scene-view camera scheme (RMB look+WASD/QE fly, MMB pan, Alt+LMB orbit, scroll dolly, F frame).
-    private const float DollyStepFraction = 0.12f;          // scroll notch = ±12% of current distance, flown forward
-    private const float FlyDistanceFractionPerSecond = 1.0f; // WASD/QE fly speed = 100% of distance per second
+    private const float FlyMetersPerSecond = 45f;            // WASD/QE fly speed -- FIXED m/s (NOT distance-scaled)
     private const float FlyShiftMultiplier = 4f;             // Shift = 4× faster fly (Unity's "sprint")
+
+    // Wheel zoom: each notch multiplies a TARGET distance by ZoomStepFactor (so the step is proportional to
+    // distance -- big far out, gentle near the ground -- and asymptotes at the focus instead of a constant
+    // fly-through step), and the actual distance eases toward that target each frame (frame-rate-independent
+    // exponential smoothing at ZoomSmoothRate) so the zoom glides instead of jumping.
+    private const float ZoomSmoothRate = 12f;
+    private float _zoomTargetDistance;
+    private bool _zoomInit;
 
     // Infinite ground-grid reference (a Unity-editor-like floor grid, so empty ground reads as a plane).
     private const float GridSpacingMeters = 25f;    // line every 25 m
@@ -421,10 +441,30 @@ public partial class Main : Node3D
     // ApplyOrbitCamera so it reads as infinite). Runtime `G` key toggles it; default visible.
     private MeshInstance3D? _gridNode;
 
-    // The high-realism (ORCA-promotion) InterestField pocket, drawn as two ground rings
-    // (promote / demote radius) so the tester can SEE where peds are full-ORCA vs dead-reckoned.
-    // `H` key toggles it; default visible on the local live path.
+    // The high-realism LC-realism zone highlight, drawn as ONE ground ring (docs/LIVE-CITY-CAMERA-
+    // REALISM-ZONE-DESIGN.md). `_highRealismNode` is the transform-driven parent (repositioned + XZ-scaled
+    // each frame to the live zone so Follow moves without rebuilding the mesh); `_lcZoneRing` is the unit-
+    // radius ring child. `H` cycles the mode; the ring tint reflects it.
     private Node3D? _highRealismNode;
+    private MeshInstance3D? _lcZoneRing;
+
+    // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md). Central = the
+    // static crop-centre pocket (default; == prior behaviour); Follow = zone tracks the camera look-at;
+    // Locked = frozen at the camera zone captured when Locked was entered. `H` cycles; the OptionButton in
+    // the rate panel mirrors it. LOCAL live path only (remote runs LiveCitySim in the producer).
+    private enum LcZoneMode { Central, Follow, Locked }
+    private LcZoneMode _lcZoneMode = LcZoneMode.Central;
+    private double _lcZoneLockedX, _lcZoneLockedY, _lcZoneLockedR; // captured on entering Locked
+    private OptionButton? _lcZoneModeDropdown;
+    private Label? _lcZoneModeLabel;
+
+    // Follow/Locked zone geometry: centre = camera->ground raycast (respects orientation); radius =
+    // slant-distance * tan(halfFov) * fill, so a WIDER FOV (or nearer look-point) gives a LARGER zone that
+    // fits inside the ground frustum trapezoid. LcZoneDistanceFactor is the horizon fallback only.
+    private const double LcZoneFovFillFactor = 1.0;
+    private const double LcZoneDistanceFactor = 0.55;
+    private const double LcZoneMinRadius = 30.0;
+    private const double LcZoneMaxRadius = 600.0;
 
     // Task T1.5 -- ONE MultiMeshInstance3D for every car, built once in _Ready and reused every frame:
     // only the per-instance transforms/colors are rewritten each _Process; the underlying buffer
@@ -939,9 +979,7 @@ public partial class Main : Node3D
         BuildLiveCityPois(_liveCitySource.Scene);
         // Render the ORCA high-realism pocket (promote/demote rings) so the tester can see where peds are
         // full-ORCA vs low-power dead-reckoned. Local live path only (the pocket isn't on the DDS wire).
-        BuildHighRealismZone(
-            _liveCitySource.HighRealismPocketX, _liveCitySource.HighRealismPocketY,
-            _liveCitySource.HighRealismPromoteRadius, _liveCitySource.HighRealismDemoteRadius);
+        BuildHighRealismZone();
         _sceneBbox = roadBbox;
 
         // Even cropped to the ~840x840m downtown block, the FULL crop bbox still leaves individual
@@ -950,16 +988,16 @@ public partial class Main : Node3D
         // distinct from `_sceneBbox`, which stays the real road bbox for the close-camera fallback):
         // frame the overview camera on a smaller box centred on the crop, wide enough to show several
         // intersections' worth of traffic+crowd while keeping entities legible.
-        var cropCenter = new Vector3(
-            (roadBbox.Min.X + roadBbox.Max.X) / 2f, 0f, (roadBbox.Min.Z + roadBbox.Max.Z) / 2f);
-        var frameHalf = LiveCityFrameHalfExtentMeters;
+        // Interactive initial framing: the WHOLE cropped road net (roadBbox + small pad) from an elevated
+        // ~55deg bird's-eye, so the opening view shows the entire central area at once (no flying up first).
         var frameBbox = (
-            Min: cropCenter - new Vector3(frameHalf, 0f, frameHalf),
-            Max: cropCenter + new Vector3(frameHalf, 8f, frameHalf));
+            Min: new Vector3(roadBbox.Min.X - LiveCityOverviewPadMeters, 0f, roadBbox.Min.Z - LiveCityOverviewPadMeters),
+            Max: new Vector3(roadBbox.Max.X + LiveCityOverviewPadMeters, 8f, roadBbox.Max.Z + LiveCityOverviewPadMeters));
 
         var liveOverviewCamera = BuildCameraAndLight(
             frameBbox, makeCurrent: _cameraMode != "close",
-            heightFactor: LiveCityCameraHeightFactor, backFactor: LiveCityCameraBackFactor);
+            heightFactor: LiveCityOverviewHeightFactor, backFactor: LiveCityOverviewBackFactor);
+        _liveCityPedPalette = true; // grey = low-power, orange = high-power ORCA (clearer than plaza slate/cyan)
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
@@ -1398,6 +1436,7 @@ public partial class Main : Node3D
     public override void _Process(double delta)
     {
         PollCameraFlyKeys(delta); // Unity RMB+WASD/QE flythrough (mutates the orbit rig; applied this frame below)
+        UpdateZoomSmoothing(delta); // ease wheel zoom toward its target (smooth, distance-proportional)
 
         if (_liveCity)
         {
@@ -1601,6 +1640,12 @@ public partial class Main : Node3D
         // always 0.5s. Peds no longer need a per-tick push here -- LiveCitySim.Step() (inside Tick()) already
         // publishes onto LiveCitySource.PedSource every tick; the reconstructor below pulls from that wire
         // continuously, not from this loop.
+        // #15 camera-driven LC-realism zone: push the current-mode zone (Central/Follow/Locked) BEFORE the
+        // sim steps, so this frame's per-area lane-change classification uses it; then move/recolour the
+        // highlight ring to match. Camera pose is stable within a frame, so one push covers all sub-steps.
+        PushLcZone();
+        UpdateLcZoneVisual();
+
         _liveCityAccumulator += delta;
         while (_liveCityAccumulator >= _liveCityDt)
         {
@@ -1974,14 +2019,12 @@ public partial class Main : Node3D
                 break;
 
             case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelUp }:
-                _orbitController?.DollyForward(_orbitController.Distance * DollyStepFraction); // fly IN
-                ApplyOrbitCamera();
+                NudgeZoomTarget(ZoomStepFactor);        // zoom IN: shrink target distance
                 GetViewport().SetInputAsHandled();
                 break;
 
             case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelDown }:
-                _orbitController?.DollyForward(-_orbitController.Distance * DollyStepFraction); // fly OUT
-                ApplyOrbitCamera();
+                NudgeZoomTarget(1f / ZoomStepFactor);    // zoom OUT: grow target distance
                 GetViewport().SetInputAsHandled();
                 break;
 
@@ -2019,12 +2062,14 @@ public partial class Main : Node3D
                 // Unity F = frame/recenter (here: back to the initial framed pose).
                 _orbitController?.Reset();
                 ApplyOrbitCamera();
+                SyncZoomTargetToCurrent(); // Reset changed the distance -> don't let easing pull it back
                 GetViewport().SetInputAsHandled();
                 break;
 
             case InputEventKey { Pressed: true } key when key.Keycode == Key.R && !_replay:
                 _orbitController?.Reset();
                 ApplyOrbitCamera();
+                SyncZoomTargetToCurrent(); // Reset changed the distance -> don't let easing pull it back
                 GetViewport().SetInputAsHandled();
                 break;
 
@@ -2038,12 +2083,11 @@ public partial class Main : Node3D
                 GetViewport().SetInputAsHandled();
                 break;
 
-            // High-realism (ORCA) zone toggle.
+            // LC-realism zone mode cycle (Central -> Follow -> Locked). Local live path only.
             case InputEventKey { Pressed: true } key when key.Keycode == Key.H:
-                if (_highRealismNode is not null)
+                if (_liveCitySource is not null)
                 {
-                    _highRealismNode.Visible = !_highRealismNode.Visible;
-                    GD.Print($"Main: high-realism zone visible={_highRealismNode.Visible} (H toggle).");
+                    CycleLcZoneMode();
                 }
 
                 GetViewport().SetInputAsHandled();
@@ -2219,7 +2263,7 @@ public partial class Main : Node3D
         panel.OffsetLeft = 16f;
         panel.OffsetTop = 16f;
         panel.OffsetRight = 316f;
-        panel.OffsetBottom = 136f;
+        panel.OffsetBottom = 176f;
         _rateUi.AddChild(panel);
 
         var vbox = new VBoxContainer();
@@ -2264,10 +2308,33 @@ public partial class Main : Node3D
         _playoutDelaySlider.ValueChanged += OnPlayoutDelaySliderChanged;
         delayRow.AddChild(_playoutDelaySlider);
 
+        // #15 LC-realism zone mode selector -- local live-city path only (remote runs LiveCitySim in the
+        // producer, so the viewer can't drive the zone there; replay has no live sim). Mirrors the `H` key.
+        if (_liveCitySource is not null)
+        {
+            var zoneRow = new HBoxContainer();
+            vbox.AddChild(zoneRow);
+
+            _lcZoneModeLabel = new Label { Text = $"LC zone [H]: {_lcZoneMode}" };
+            zoneRow.AddChild(_lcZoneModeLabel);
+
+            _lcZoneModeDropdown = new OptionButton();
+            _lcZoneModeDropdown.AddItem("Central", (int)LcZoneMode.Central);
+            _lcZoneModeDropdown.AddItem("Follow", (int)LcZoneMode.Follow);
+            _lcZoneModeDropdown.AddItem("Locked", (int)LcZoneMode.Locked);
+            _lcZoneModeDropdown.Selected = (int)_lcZoneMode;
+            _lcZoneModeDropdown.ItemSelected += OnLcZoneModeSelected;
+            zoneRow.AddChild(_lcZoneModeDropdown);
+        }
+
         GD.Print(
             "Main: rate control UI built (sim-hz display + render-hz slider + playout-delay slider, " +
             $"default={_playoutDelaySeconds:F2}s).");
     }
+
+    // Menu path for the LC-realism zone mode (mirrors the `H` key). Selecting "Locked" freezes the current
+    // camera zone via SetLcZoneMode.
+    private void OnLcZoneModeSelected(long index) => SetLcZoneMode((LcZoneMode)(int)index);
 
     // Runtime render-hz change (task deliverable: "render-hz adjustable at runtime (instant)") -- pushes
     // straight to Godot.Engine.MaxFps, exactly like the Raylib viewer's DrawLiveCityRatePanel slider pushes
@@ -3517,7 +3584,9 @@ public partial class Main : Node3D
             var basis = Basis.Identity.Scaled(new Vector3(inst.ScaleX, inst.ScaleY, inst.ScaleZ));
             var origin = new Vector3(inst.PosX, inst.PosY, inst.PosZ);
             _pedMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
-            _pedMultiMesh.SetInstanceColor(i, inst.IsHighPower ? PedHighPowerColor : PedLowPowerColor);
+            _pedMultiMesh.SetInstanceColor(i, inst.IsHighPower
+                ? (_liveCityPedPalette ? LiveCityPedHighPowerColor : PedHighPowerColor)   // orange (ORCA) vs cyan
+                : (_liveCityPedPalette ? LiveCityPedLowPowerColor : PedLowPowerColor));   // grey vs slate
         }
     }
 
@@ -3950,20 +4019,167 @@ public partial class Main : Node3D
     // Draws the high-realism (ORCA-promotion) pocket as two ground rings at the pocket centre: the inner
     // PROMOTE radius (peds inside => full ORCA) and the outer DEMOTE radius (hysteresis; beyond => low-power
     // dead-reckoning). Centre/radii come from LiveCitySim via LiveCitySource (SUMO world coords).
-    private void BuildHighRealismZone(double sumoX, double sumoY, double promoteRadius, double demoteRadius)
+    // Build the LC-realism zone highlight ONCE as a unit-radius ring under a transform-driven parent, then
+    // let UpdateLcZoneVisual() reposition + XZ-scale it to the live zone each frame (Follow moves it without
+    // rebuilding the mesh -> no per-frame GC). Central mode leaves the zone on the static pocket, so at
+    // launch the ring sits exactly where the ORCA pocket ring used to.
+    private void BuildHighRealismZone()
     {
         if (_highRealismNode is not null)
         {
             return;
         }
 
-        var (gx, _, gz) = CityLib.CoordinateTransform.SumoToGodot(sumoX, sumoY, 0.0);
         var root = new Node3D { Name = "HighRealismZone" };
-        root.AddChild(MakeGroundRing(gx, gz, (float)promoteRadius, new Color(1f, 0.55f, 0.1f, 0.95f))); // promote (orange)
-        root.AddChild(MakeGroundRing(gx, gz, (float)demoteRadius, new Color(1f, 0.55f, 0.1f, 0.4f)));   // demote (faint)
+        _lcZoneRing = MakeGroundRing(0f, 0f, 1f, LcZoneColor(_lcZoneMode)); // unit ring, centred at origin
+        _lcZoneRing.Position = Vector3.Zero; // lift is applied on the parent transform instead
+        root.AddChild(_lcZoneRing);
         AddChild(root);
         _highRealismNode = root;
-        GD.Print($"Main: high-realism (ORCA) zone at Godot({gx:F0},{gz:F0}) promote={promoteRadius:F0}m demote={demoteRadius:F0}m (H toggles).");
+        UpdateLcZoneVisual();
+        GD.Print("Main: LC-realism zone ring built (H cycles Central/Follow/Locked; menu mirrors it).");
+    }
+
+    private static Color LcZoneColor(LcZoneMode mode) => mode switch
+    {
+        LcZoneMode.Follow => new Color(0.2f, 0.9f, 0.35f, 0.95f), // green = live, tracks camera
+        LcZoneMode.Locked => new Color(1f, 0.85f, 0.1f, 0.95f),   // amber = frozen
+        _ => new Color(1f, 0.55f, 0.1f, 0.95f),                    // orange = central (as before)
+    };
+
+    // Reposition + XZ-scale the ring to the live LC-realism zone (LiveCitySource.LcZone{X,Y,Radius}) and
+    // recolour by mode. The ring geometry is a unit circle in the XZ plane (y=0), so scaling Y is a no-op
+    // and the 0.2 m lift stays constant via the translation.
+    private void UpdateLcZoneVisual()
+    {
+        if (_highRealismNode is null || _liveCitySource is null)
+        {
+            return;
+        }
+
+        var (gx, _, gz) = CityLib.CoordinateTransform.SumoToGodot(_liveCitySource.LcZoneX, _liveCitySource.LcZoneY, 0.0);
+        var r = Mathf.Max(0.001f, (float)_liveCitySource.LcZoneRadius);
+        _highRealismNode.Transform = new Transform3D(
+            Basis.Identity.Scaled(new Vector3(r, 1f, r)), new Vector3(gx, 0.2f, gz));
+        if (_lcZoneRing?.MaterialOverride is StandardMaterial3D m)
+        {
+            m.AlbedoColor = LcZoneColor(_lcZoneMode);
+        }
+    }
+
+    // The camera-derived LC-realism zone (Follow/Locked). Centre = where the camera is actually looking on
+    // the ground: a raycast from the camera through the SCREEN CENTRE to the y=0 plane (so it tracks pitch
+    // AND yaw, not just the orbit pivot). Radius respects the FOV: half the vertical view extent at the
+    // look-point's depth (slant * tan(halfFov)), so a wider FOV / nearer look-point => a larger circle that
+    // fits within the ground frustum trapezoid. Godot ground point -> SUMO is the inverse of
+    // CoordinateTransform.SumoToGodot's (x, z, -y): SumoX = GodotX, SumoY = -GodotZ. If the camera looks at
+    // or above the horizon (no ground hit), fall back to the orbit focus + a distance-based radius.
+    private (double sumoX, double sumoY, double radius) CameraLcZone()
+    {
+        if (_orbitCamera is not null
+            && RaycastScreenToGround(GetViewport().GetVisibleRect().Size * 0.5f, out var centre))
+        {
+            var slant = _orbitCamera.GlobalPosition.DistanceTo(centre);
+            var halfFov = Mathf.DegToRad(_orbitCamera.Fov * 0.5f);
+            var radius = Math.Clamp(slant * Math.Tan(halfFov) * LcZoneFovFillFactor, LcZoneMinRadius, LcZoneMaxRadius);
+            return (centre.X, -centre.Z, radius);
+        }
+
+        var focus = _orbitController?.Focus ?? (0f, 0f, 0f);
+        var dist = _orbitController?.Distance ?? 100f;
+        return (focus.X, -focus.Z, Math.Clamp(dist * LcZoneDistanceFactor, LcZoneMinRadius, LcZoneMaxRadius));
+    }
+
+    // Raycast a viewport point through the camera to the ground plane (y = 0). Returns false if the ray is
+    // parallel to the ground or points away from it (camera looking at/above the horizon).
+    private bool RaycastScreenToGround(Vector2 screenPoint, out Vector3 hit)
+    {
+        hit = Vector3.Zero;
+        if (_orbitCamera is null)
+        {
+            return false;
+        }
+
+        var origin = _orbitCamera.ProjectRayOrigin(screenPoint);
+        var dir = _orbitCamera.ProjectRayNormal(screenPoint);
+        if (Mathf.Abs(dir.Y) < 1e-5f)
+        {
+            return false; // ray parallel to the ground
+        }
+
+        var t = -origin.Y / dir.Y;
+        if (t <= 0f)
+        {
+            return false; // ground is behind / above the camera
+        }
+
+        hit = origin + (t * dir);
+        return true;
+    }
+
+    // Push the current-mode zone onto the sim BEFORE Step() (called once per ProcessLiveCity frame). Central
+    // restores the static pocket; Follow tracks the camera; Locked replays the frozen capture.
+    private void PushLcZone()
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        switch (_lcZoneMode)
+        {
+            case LcZoneMode.Follow:
+            {
+                var (sx, sy, r) = CameraLcZone();
+                _liveCitySource.SetLcRealismZone(sx, sy, r);
+                break;
+            }
+
+            case LcZoneMode.Locked:
+                _liveCitySource.SetLcRealismZone(_lcZoneLockedX, _lcZoneLockedY, _lcZoneLockedR);
+                break;
+
+            default: // Central -- the static crop-centre pocket (== prior behaviour)
+                _liveCitySource.SetLcRealismZone(
+                    _liveCitySource.HighRealismPocketX, _liveCitySource.HighRealismPocketY,
+                    _liveCitySource.HighRealismPromoteRadius);
+                break;
+        }
+    }
+
+    // Cycle Central -> Follow -> Locked (H key / menu). Entering Locked freezes the CURRENT camera zone.
+    private void SetLcZoneMode(LcZoneMode mode)
+    {
+        if (mode == LcZoneMode.Locked)
+        {
+            var (sx, sy, r) = CameraLcZone();
+            _lcZoneLockedX = sx; _lcZoneLockedY = sy; _lcZoneLockedR = r;
+        }
+
+        _lcZoneMode = mode;
+        SyncLcZoneUi();
+        GD.Print($"Main: LC-realism zone mode = {_lcZoneMode}.");
+    }
+
+    private void CycleLcZoneMode() => SetLcZoneMode(_lcZoneMode switch
+    {
+        LcZoneMode.Central => LcZoneMode.Follow,
+        LcZoneMode.Follow => LcZoneMode.Locked,
+        _ => LcZoneMode.Central,
+    });
+
+    // Keep the menu dropdown + HUD label in step with `_lcZoneMode` (either input path can change it).
+    private void SyncLcZoneUi()
+    {
+        if (_lcZoneModeDropdown is not null && _lcZoneModeDropdown.Selected != (int)_lcZoneMode)
+        {
+            _lcZoneModeDropdown.Selected = (int)_lcZoneMode;
+        }
+
+        if (_lcZoneModeLabel is not null)
+        {
+            _lcZoneModeLabel.Text = $"LC zone [H]: {_lcZoneMode}";
+        }
     }
 
     private static MeshInstance3D MakeGroundRing(float cx, float cz, float radius, Color color)
@@ -4037,7 +4253,7 @@ public partial class Main : Node3D
     }
 
     // Unity RMB flythrough: while RMB is held, WASD flies in the camera's right/forward plane and Q/E move
-    // world down/up, Shift sprints. Speed ∝ current orbit distance so it feels consistent at any zoom.
+    // world down/up, Shift sprints. Speed is a FIXED m/s (FlyMetersPerSecond) -- distance-independent.
     // Polled per-frame (keys are HELD, not one-shot events); mutates the orbit rig, applied via
     // ApplyOrbitCamera this frame (both here and by the per-frame body's own tail call).
     private void PollCameraFlyKeys(double delta)
@@ -4059,13 +4275,73 @@ public partial class Main : Node3D
             return;
         }
 
-        var speed = _orbitController.Distance * FlyDistanceFractionPerSecond * (float)delta;
+        var speed = FlyMetersPerSecond * (float)delta;
         if (Input.IsKeyPressed(Key.Shift))
         {
             speed *= FlyShiftMultiplier;
         }
 
         _orbitController.FlyLocal(right * speed, forward * speed, up * speed);
+        ApplyOrbitCamera();
+    }
+
+    // Wheel zoom target: multiply the target distance by `factor` (clamped to the controller's zoom range).
+    // The per-frame UpdateZoomSmoothing eases the ACTUAL distance toward it. Distance-multiplicative, so the
+    // step is proportional to distance (gentle near the ground, fast far out) and asymptotes at the focus.
+    // Snap the zoom target to the controller's current distance (after Reset/frame/setup changed it), so the
+    // per-frame easing treats "here" as settled instead of gliding back to a stale target.
+    private void SyncZoomTargetToCurrent()
+    {
+        if (_orbitController is not null)
+        {
+            _zoomTargetDistance = _orbitController.Distance;
+            _zoomInit = true;
+        }
+    }
+
+    private void NudgeZoomTarget(float factor)
+    {
+        if (_orbitController is null)
+        {
+            return;
+        }
+
+        if (!_zoomInit)
+        {
+            _zoomTargetDistance = _orbitController.Distance;
+            _zoomInit = true;
+        }
+
+        _zoomTargetDistance = Math.Clamp(
+            _zoomTargetDistance * factor, _orbitController.MinDistance, _orbitController.MaxDistance);
+    }
+
+    // Ease the orbit distance toward the wheel-set target each frame (frame-rate-independent exponential
+    // smoothing) via the controller's multiplicative Zoom. Called every frame from _Process.
+    private void UpdateZoomSmoothing(double delta)
+    {
+        if (_orbitController is null)
+        {
+            return;
+        }
+
+        var cur = _orbitController.Distance;
+        if (!_zoomInit)
+        {
+            _zoomTargetDistance = cur;
+            _zoomInit = true;
+            return;
+        }
+
+        var diff = _zoomTargetDistance - cur;
+        if (cur <= 0f || MathF.Abs(diff) < 0.01f)
+        {
+            return; // settled
+        }
+
+        var t = 1f - MathF.Exp(-ZoomSmoothRate * (float)delta);
+        var newDist = cur + (diff * t);
+        _orbitController.Zoom(newDist / cur); // multiplicative -> Distance := newDist (clamped)
         ApplyOrbitCamera();
     }
 

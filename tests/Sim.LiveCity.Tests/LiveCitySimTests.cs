@@ -317,6 +317,33 @@ public class LiveCitySimTests
         Assert.True(inside > 0, $"expected some HIGH-realism (inside-pocket) cars, got {inside} of {snap.Cars.Count}");
     }
 
+    // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md): the settable zone
+    // defaults to the static pocket (so Central mode == prior behaviour) and, once moved, is what the
+    // per-area classification keys on -- a position at the moved centre is HIGH realism and one back at the
+    // old pocket is LOW.
+    [Fact]
+    public void LcRealismZone_DefaultsToPocket_AndIsSettable()
+    {
+        using var sim = new LiveCitySim(MakeConfig(yield: true));
+
+        Assert.Equal(sim.HighRealismPocketX, sim.LcZoneX, 6);
+        Assert.Equal(sim.HighRealismPocketY, sim.LcZoneY, 6);
+        Assert.Equal(sim.HighRealismPromoteRadius, sim.LcZoneRadius, 6);
+
+        var newX = sim.HighRealismPocketX + 500.0;
+        var newY = sim.HighRealismPocketY + 500.0;
+        const double newR = 80.0;
+        sim.SetLcRealismZone(newX, newY, newR);
+        Assert.Equal(newX, sim.LcZoneX, 6);
+        Assert.Equal(newY, sim.LcZoneY, 6);
+        Assert.Equal(newR, sim.LcZoneRadius, 6);
+
+        // Classification now keys on the MOVED zone: new centre is inside (high), old pocket is outside (low).
+        Assert.False(LiveCitySim.IsLowRealismLaneChangePos(newX, newY, sim.LcZoneX, sim.LcZoneY, sim.LcZoneRadius));
+        Assert.True(LiveCitySim.IsLowRealismLaneChangePos(
+            sim.HighRealismPocketX, sim.HighRealismPocketY, sim.LcZoneX, sim.LcZoneY, sim.LcZoneRadius));
+    }
+
     [Fact]
     public void YieldOnVsOff_ProduceDifferentCoupling_AndYieldOnIsPositive()
     {
