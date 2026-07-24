@@ -89,3 +89,25 @@ Focused testbeds generated (frames): crossing-gate 170 (1 car, 11 peds) · lod-p
 (near-collision=80) and has a clean focused testbed. Build the per-entity dump (car speed + yield-binding
 vs each occupied crossing + the peds on it), localize WHY the ~78 green-ped near-collisions happen (is the
 crossing disc fed? is the car's yield gate consulting it? is it a timing/lookahead gap?), THEN design.
+
+### Toolchain CORRECTED — faithful `--live-city-demo` (owner: "same as demo, no cheating")
+The batch `Sim.Viz --live-city` (`SceneGen.BuildLiveCity`) was found to have DIVERGED from the shipped demo:
+it hand-rolls its own Engine + PedLodManager + InterestField (no `LiveCityConfig`, no `LaneChangeMinSpeed`,
+no cooperative LC, no per-area LOD gate; e.g. its own `CarTargetConcurrent`). A fix verified there would NOT
+be guaranteed to transfer to the demo. **Rejected for the realism work.**
+
+Built a FAITHFUL exporter: **`Sim.Viz --live-city-demo <out>`** → `SceneGen.BuildLiveCityDemo(repoRoot)`
+drives the REAL `LiveCitySim` with `LiveCityConfig.ForRepoRoot` (the EXACT demo net + demand + params:
+cooperative LC, per-area realism LOD gate, `LaneChangeMinSpeed`, crossing-occupancy yield) and captures
+`LiveCitySim.Sample()` each step (cars→boxes, peds coloured by the demo's own LOD regime: grey low / orange
+ORCA / yellow paused). The headless run uses the static crop-centre zone (no camera) = the demo's
+non-interactive baseline. **A fix verified in this replay transfers directly to the City3D/raylib demo.**
+(Sim.Viz now references Sim.LiveCity; parity/engine untouched — Sim.Viz is not on the golden path.)
+
+**FAITHFUL baseline (real LiveCitySim, 240 steps = 120 s):** maxCars=158 (real 160-target config), maxPeds=160,
+maxHighPower(ORCA)=13. **near-collision (car within 2.5 m of a ped ON a crossing) = 43** over
+pedOnCrossingSamples=1197; minCarSpeedNearOccupiedCrossing=0.00 m/s. This 43 is the **defect-#1 repro number
+on the demo-faithful sim** — the target to drive toward 0 (or explained) by the fix.
+
+Henceforth ALL realism repro + fix-verification uses `--live-city-demo` (and, for isolation, the focused
+`--ped-*` scenes cross-checked against it). The batch `--live-city` stays only as the public-gallery demo.

@@ -8,6 +8,7 @@ using Sim.Pedestrians.Crossing;
 using Sim.Pedestrians.Lod;
 using Sim.Pedestrians.Navigation;
 using Sim.Pedestrians.Navigation.Bake;
+using Sim.LiveCity;
 using Sim.Pedestrians.Obstacles;
 using Sim.Pedestrians.Parking;
 using Sim.Replication;
@@ -2363,6 +2364,88 @@ internal static class SceneGen
         }
 
         return edges;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // FAITHFUL live-city replay -- drives the REAL demo host (LiveCitySim + LiveCityConfig), NOT the
+    // hand-rolled BuildLiveCity above. BuildLiveCity constructs its own Engine/PedLodManager/InterestField
+    // with its own params (no LaneChangeMinSpeed, no cooperative LC, no per-area LOD gate), so it has
+    // DIVERGED from the shipped demo. This builder uses `LiveCityConfig.ForRepoRoot` -- the exact same net,
+    // demand, and params the City3D/raylib demo runs -- and captures `LiveCitySim.Sample()` each step. A
+    // realism fix verified in THIS replay therefore transfers directly to the demo (owner requirement:
+    // "same settings/data/params, no cheating"). Ped colour = the demo's own LOD regime (grey low-power /
+    // orange promoted-ORCA / yellow paused). The camera-driven zone defaults to the static crop-centre
+    // pocket here (no camera in a headless run) -- the demo's non-interactive baseline.
+    internal static ScenePayload BuildLiveCityDemo(string repoRoot, int steps = 240)
+    {
+        var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+        var model = NetworkParser.Parse(netPath);
+        var fullNet = BuildNetwork(model);
+        var pedNetwork = PedNetworkParser.Load(netPath);
+
+        double x0 = cfg.X0, y0 = cfg.Y0, x1 = cfg.X1, y1 = cfg.Y1;
+        bool In(double x, double y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+
+        using var sim = new LiveCitySim(cfg);
+
+        var slotByHandle = new Dictionary<uint, int>();
+        var frames = new List<FramePayload>();
+        var discsKeyedPerFrame = new List<List<(string Key, double[] Disc)>>();
+
+        for (var step = 0; step < steps; step++)
+        {
+            sim.Step();
+            var snap = sim.Sample();
+
+            // cars in crop -> fixed slot per stable handle (so slot j is the same vehicle across frames).
+            foreach (var c in snap.Cars)
+            {
+                if (!In(c.X, c.Y)) continue;
+                if (!slotByHandle.ContainsKey(c.Handle.Index)) slotByHandle[c.Handle.Index] = slotByHandle.Count;
+            }
+
+            var v = new double[slotByHandle.Count][];
+            foreach (var c in snap.Cars)
+            {
+                if (!In(c.X, c.Y)) continue;
+                v[slotByHandle[c.Handle.Index]] = new[] { R(c.X), R(c.Y), R(c.AngleDeg) };
+            }
+
+            // peds -> [x, y, radius, kind], kind = the demo's LOD regime (Sample() already resolves it).
+            var discs = new List<(string, double[])>(snap.Peds.Count);
+            foreach (var p in snap.Peds)
+            {
+                if (!In(p.X, p.Y)) continue;
+                var kind = p.Regime switch
+                {
+                    PedRegime.HighPower => KindPedHighPower,
+                    PedRegime.LowPowerWalking => KindPedLowPower,
+                    _ => KindPedPaused,
+                };
+                discs.Add(($"ped{p.Id}", new[] { R(p.X), R(p.Y), 0.3, (double)kind }));
+            }
+
+            frames.Add(new FramePayload(v, Array.Empty<double[]?>()));
+            discsKeyedPerFrame.Add(discs);
+        }
+
+        NormalizeVehicleSlots(frames, slotByHandle.Count);
+        AssignStableDiscSlots(frames, discsKeyedPerFrame);
+
+        var cropNet = CropNetwork(fullNet, pedNetwork, netPath, x0, y0, x1, y1);
+
+        return new ScenePayload(
+            "Live-city DEMO (faithful): cars + peds, real LiveCityConfig",
+            "The ACTUAL live-city demo sim (LiveCitySim + LiveCityConfig -- same net, demand and params as "
+            + "the City3D/raylib demo: cooperative lane change, per-area realism LOD gate, crossing-occupancy "
+            + "yield). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = cars. A fix "
+            + "verified in this replay transfers directly to the demo.",
+            new double[] { R(x0), R(y0), R(x1), R(y1) },
+            cropNet,
+            new double[] { 5.0, 1.8 },
+            cfg.Dt,
+            frames.ToArray());
     }
 
     // Restrict a full-network payload to a crop rectangle: keep only lanes / junctions / crossings /
