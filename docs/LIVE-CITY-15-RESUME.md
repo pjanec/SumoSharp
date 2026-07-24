@@ -7,9 +7,12 @@ Design docs: `LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md`, `LIVE-CITY-15-COO
 
 ---
 
-## 1. STATUS — what is DONE (all committed + pushed; latest tip `89743b8`)
+## 1. STATUS — what is DONE (all committed + pushed; latest tip `1f2e654`)
 Four distinct problems found and fixed, in order, each verified first-hand (the 4th, into-occupied cut-ins,
-is summarized in §2 item 1 — gridlock/blockage/float are the first three below):
+is summarized in §2 item 1 — gridlock/blockage/float are the first three below). ALL §2 follow-ups that can
+be verified HEADLESSLY are now DONE (into-occupied, liveness test, per-area LOD gate); only the 3D visual
+confirm (§2 item 4) and the moving-camera LOD source remain, both needing the GUI / owner input. Full
+solution `dotnet test` green (657 parity + 22 live-city + 11 viewer + 19 motion + 259 ped + 11 ig + 6 host).
 
 1. **The terminal gridlock (#15 core) — CURED.** Root cause (per-car verified): a continuous
    lane-change maneuver (`lanechange.duration=2.0`) that crossed a junction boundary left a stale
