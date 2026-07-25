@@ -15,31 +15,33 @@ Detail: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md` (shipped #1/#2), `docs/LIVE-CITY-
 high-realism zones".
 
 **Session ownership (coordinated 2026-07):** this branch (`claude/livecity-realism-fixes-vr4k4b`) owns
-**A only**. **B + C5 (#5) + the wandering-ORCA residual (#4) are ONE car↔ped coupling workstream** → a
-dedicated "coupling" session (to be started), NOT this one — one owner for one mechanism. The arbitrary-net
-session (`claude/discussion-eqp53m`) owns net import + `SumoRouteGraphNav`/`IPedNavigation` + the single
-realism zone + `RegionPlan`, delivers the seams, and has marked its C5 enablement **BLOCKED** pending the
-coupling session (it will later only road-net-enable + zone-bound the fed disc set). Multi-camera zones (W4)
-also handed off. Refs: `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`,
-`LIVE-CITY-ARBITRARY-NET-DESIGN.md` §5.8/§12.
+**A only**. **B + C5 (#5) + the wandering-ORCA residual (#4) are ONE car↔ped coupling workstream** → the
+**ped–vehicle avoidance** session (`claude/livecity-ped-vehicle-avoidance`, to be started), NOT this one —
+one owner for one mechanism. The arbitrary-net session (`claude/discussion-eqp53m`) owns net import +
+`SumoRouteGraphNav`/`IPedNavigation` + the single realism zone + `RegionPlan`, delivers the seams, and has
+marked its C5 enablement **BLOCKED** pending the ped–vehicle session (it will later only road-net-enable +
+zone-bound the fed disc set). Multi-camera zones (W4) also handed off. Full boundary + no-touch lists:
+`docs/COORDINATION-livecity-realism-sessions.md`. Briefs: `docs/LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`,
+`docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
 - [ ] **A — stopped car wiggles sideways at a crosswalk** *(THIS session, in progress)*. Sublane `PosLat`
   drift while forward speed ≈ 0 → demo-gated `FreezeLateralWhenStopped` clamp at the lateral commit choke
   (`Engine.cs` ~9587), parity-inert (flag default false). Repro: a dedicated tiny net (ped crosses, car
   arrives a beat later) asserting the held car's world X/Y are frozen while `authSpd≈0`. Brief: AB-DESIGN §Task A.
-- [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(coupling session — unallocated)*.
+- [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
-  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Brief: AB-DESIGN §Task B.
+  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,
+  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`.
 - [ ] **Realism #3 — low-power peds DISAPPEAR on promotion** into the pocket (re-appear as ORCA later);
   one-sided `PedLodManager` promote handoff. (task #25)
 - [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /
-  doesn't restore the sidewalk route. *(coupling bucket; overlaps B's "wandering ORCA" residual)* (task #25)
+  doesn't restore the sidewalk route. *(ped–vehicle avoidance bucket; overlaps B's "wandering ORCA" residual)* (task #25)
 - [ ] **Realism #5 (= "C5") — ORCA peds don't dodge a car standing on the crosswalk**; needs a car→ped
-  obstacle feed (mirror of the ped→car `CrowdSource`). *(coupling session)* (task #26)
+  obstacle feed (mirror of the ped→car `CrowdSource`). *(ped–vehicle avoidance session)* (task #26)
 - [ ] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle there
   (occasionally recolour ORCA); randomize ped destinations / idle spots.
-- [ ] **W4 — multiple / large / overlapping camera realism zones** *(handed off; unallocated — coupling or a
-  later dedicated session)*. N ped `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones` API, re-point
+- [ ] **W4 — multiple / large / overlapping camera realism zones** *(handed off; unallocated — ped–vehicle
+  avoidance or a later dedicated session)*. N ped `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones` API, re-point
   the C5 disc-feed bound at the zone union, optional bit-identical `OrcaCrowd` disc index (the one `Sim.Core`
   touch, must stay parity-inert). Handoff: `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
