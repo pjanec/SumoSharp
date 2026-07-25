@@ -68,6 +68,28 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   the C5 disc-feed bound at the zone union, optional bit-identical `OrcaCrowd` disc index (the one `Sim.Core`
   touch, must stay parity-inert). Handoff: `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
+## Demo integrity (from the 2026-07 replay review — realism-A/B session)
+Full evidence + root causes: **`docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`** (F1–F4). Diagnostics:
+`--live-city-cartrace` (authoritative per-car) and `--live-city-drcheck` (DR-render + authoritative overlap
+check). Fixing order picked: F4 → F1 → F3 → Task A redo.
+
+- [ ] **F4 — no car–car-overlap invariant (mandatory guard, DO FIRST).** Demo test over N steps at density:
+  no two vehicle footprints overlap beyond a threshold, on BOTH authoritative engine positions AND the
+  DR-reconstructed frames (owner requirement — DR-caused overlaps count); ideally also red-respected +
+  minGap. Build **fail-first** (fails on F3 today). Reuse `--live-city-drcheck`. Note: DR check needs
+  `Sim.Viz` (no `Sim.Viz` test project in the sln yet). Findings §F4.
+- [ ] **F1 — DR reconstruction renders a braking car through a red/junction** (render-only; engine respects
+  the light). Clamp the reconstructed arc so a decelerating car can't render past its stop position + damp
+  the look-ahead for near-stopped cars + verify `accel` is published. Files: `DrClock.cs`,
+  `DrExtrapolation.Arc`, `KinematicReconstructor.cs`, `VizReplayBuilder.cs`. Findings §F1.
+- [ ] **F3 — pre-existing junction-overlap engine bug** (REAL, authoritative, NOT Task A): cars on crossing
+  internal junction lanes overlap (~3 m; veh58 through stopped veh159), present at default density.
+  Conflict-point / into-occupied family (`LANE-CHANGE-OVERLAP-*`, `ISSUE2-JUNCTION-*`,
+  `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`). **Localize vs `main` first** (regression or long-standing?) →
+  decide owner (core junction work vs this session). Findings §F3.
+- [ ] **F2 — Task A redo** (fix reverted): targeted crowd-swerve suppression (not a blanket lateral freeze),
+  guarded by F4. See the reopened **A** item above + `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. Findings §F2.
+
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)
 
