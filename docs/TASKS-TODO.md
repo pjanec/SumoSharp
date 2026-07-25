@@ -71,24 +71,27 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
 ## Demo integrity (from the 2026-07 replay review — realism-A/B session)
 Full evidence + root causes: **`docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`** (F1–F4). Diagnostics:
 `--live-city-cartrace` (authoritative per-car) and `--live-city-drcheck` (DR-render + authoritative overlap
-check). Fixing order picked: F4 → F1 → F3 → Task A redo.
+check). **Order finalized after two analyses — F3 is pre-existing CORE (localized vs `main`), and F3 masks
+F2 in aggregate → the F2 guard must be targeted:** F4a → F1 → Task A redo (this session); **F3 routed to
+core junction work**; F4b deferred until F3 fixed.
 
-- [ ] **F4 — no car–car-overlap invariant (mandatory guard, DO FIRST).** Demo test over N steps at density:
-  no two vehicle footprints overlap beyond a threshold, on BOTH authoritative engine positions AND the
-  DR-reconstructed frames (owner requirement — DR-caused overlaps count); ideally also red-respected +
-  minGap. Build **fail-first** (fails on F3 today). Reuse `--live-city-drcheck`. Note: DR check needs
-  `Sim.Viz` (no `Sim.Viz` test project in the sln yet). Findings §F4.
+- [ ] **F4a — targeted F2 straddle guard (DO FIRST, this session).** Assert no stopped/slow car has
+  `|PosLat|` past its lane edge (F2's exact mechanism: a frozen mid-lane-change car straddling). Clean of
+  F3, green now, actually trips on the freeze regression — the guard that protects the Task A redo. §F4.
 - [ ] **F1 — DR reconstruction renders a braking car through a red/junction** (render-only; engine respects
   the light). Clamp the reconstructed arc so a decelerating car can't render past its stop position + damp
   the look-ahead for near-stopped cars + verify `accel` is published. Files: `DrClock.cs`,
-  `DrExtrapolation.Arc`, `KinematicReconstructor.cs`, `VizReplayBuilder.cs`. Findings §F1.
-- [ ] **F3 — pre-existing junction-overlap engine bug** (REAL, authoritative, NOT Task A): cars on crossing
-  internal junction lanes overlap (~3 m; veh58 through stopped veh159), present at default density.
-  Conflict-point / into-occupied family (`LANE-CHANGE-OVERLAP-*`, `ISSUE2-JUNCTION-*`,
-  `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`). **Localize vs `main` first** (regression or long-standing?) →
-  decide owner (core junction work vs this session). Findings §F3.
-- [ ] **F2 — Task A redo** (fix reverted): targeted crowd-swerve suppression (not a blanket lateral freeze),
-  guarded by F4. See the reopened **A** item above + `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. Findings §F2.
+  `DrExtrapolation.Arc`, `KinematicReconstructor.cs`, `VizReplayBuilder.cs`. §F1.
+- [ ] **F2 — Task A redo** (fix reverted): targeted crowd-swerve suppression (NOT a blanket lateral freeze),
+  guarded by F4a. See the reopened **A** item above + `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. §F2.
+- [ ] **F3 — pre-existing junction-overlap engine bug — ROUTE TO CORE JUNCTION WORK (not this session).**
+  LOCALIZED: present on `main` too (identical worst pair `veh134/veh38`, 3.035 m) — long-standing, not a
+  realism regression. Cars on crossing internal junction lanes overlap ~3 m. Into-occupied / conflict-point
+  family (`LANE-CHANGE-OVERLAP-*`, `ISSUE2-JUNCTION-*`, `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`). Blocks the
+  clean zero-overlap invariant (F4b). §F3.
+- [ ] **F4b — general zero-overlap invariant (DEFERRED until F3 fixed).** Tighten the committed authoritative
+  test + add a DR-render overlap check, asserting ZERO once F3 is resolved. The current
+  `DemoCarOverlapInvariantTests` stays as an F3 characterization + gross-regression tripwire meanwhile. §F4.
 
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)

@@ -61,8 +61,16 @@ crossing internal junction lanes occupy the same space.
 **Assessment:** a junction conflict-point / into-occupied admission bug — the same family as
 `docs/LANE-CHANGE-OVERLAP-*`, `docs/ISSUE2-JUNCTION-*`, `docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`. Present
 on this branch at default density; **not caused by Task A or the density chosen for the replay.**
-**Open:** is it a regression vs `main` or long-standing? Localize by running `--live-city-drcheck` against
-`main` before deciding ownership (core junction work vs this session).
+**LOCALIZED (resolved):** F3 is **pre-existing on `main`** — running the authoritative overlap check against
+`main`'s engine yields the **identical worst overlap** (`3.035 m`, pair `veh134/veh38`, step 197) as this
+branch. It is a **long-standing core junction bug, NOT introduced by this session.** The realism-fixes
+branch roughly **doubled the count** (main 61 events / 3 pairs-per-frame → this branch 116 / 4) but did not
+create the bug or deepen the worst case. **Decision: route F3 to core junction work** (into-occupied /
+conflict-point family) — it is out of scope for the realism-A/B session, likely a large engine dig, and
+blocks a clean zero-overlap invariant. Repro for whoever takes it: default-density demo, `veh134/veh38`
+(default) or `veh58`-through-`veh159` (density 800), cars on crossing internal junction lanes overlapping
+~3 m. The realism-branch count amplification is a secondary note (same worst pair → more instances, not
+deeper), likely tied to the density/LOD changes; revisit only if it persists after the core fix.
 
 ## F4 — No car–car-overlap invariant exists (TEST-COVERAGE GAP)
 
@@ -79,9 +87,20 @@ authoritative check can live in `tests/Sim.LiveCity.Tests` (references `Sim.Live
 check needs `Sim.Viz` (`VizReplayBuilder`) — no `Sim.Viz` test project exists in `Traffic.sln` today, so
 either add one or expose the reconstruction to a project that is in the solution.
 
-## Fixing order (picked)
+## Fixing order (finalized after the F3 localization + F4-masking analysis)
 
-1. **F4 — no-overlap invariant** (foundation + mandatory; fail-first quantifies F3 and prevents another F2).
-2. **F1 — DR overshoot fix** (owner-prioritized; render integrity).
-3. **F3 — junction overlaps**: localize vs `main`, then fix or route to core junction work.
-4. **Task A redo** (F2): targeted crowd-swerve suppression, guarded by F4.
+Two analyses reshaped the naive order: (i) F3 is **pre-existing core** (localized above) → route it, don't
+block on it; (ii) with F3 present, an aggregate no-overlap invariant **cannot cleanly catch F2** (F3
+dominates: freeze-on adds only 467→544 events at density 800, worst penetration F3-pinned at 3.03m) → the
+F2 guard must be **targeted** (a straddle detector), not aggregate.
+
+1. **F4a — targeted F2 straddle guard** *(this session)*. Assert no stopped/slow car has `|PosLat|` past its
+   lane edge (F2's exact mechanism: a frozen mid-lane-change car straddling). F3-independent, green now,
+   actually trips on the freeze regression. This is the guard that protects the Task A redo.
+2. **F1 — DR overshoot fix** *(this session)*. Render integrity; owner-prioritized; tractable viz/DR work.
+3. **Task A redo (F2)** *(this session)*. Targeted crowd-swerve suppression (not a blanket lateral freeze),
+   protected by F4a.
+4. **F3 — route to core junction work** *(NOT this session)*. Pre-existing core bug; documented above.
+5. **F4b — tighten the general no-overlap invariant to ZERO** — deferred until F3 is fixed (only then is
+   overlap-free the true baseline). The committed authoritative test stays as an F3 characterization +
+   gross-regression tripwire until then.
