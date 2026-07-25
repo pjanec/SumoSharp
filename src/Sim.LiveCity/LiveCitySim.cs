@@ -248,6 +248,11 @@ public sealed class LiveCitySim : IDisposable
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
+        // Task A (docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A): a car held at a crosswalk by a
+        // pedestrian must sit still, not drift sideways. Freeze the lateral driver below
+        // LaneChangeMinSpeed (the lateral mirror of that same standstill gate). Engine-default false,
+        // so parity/bench stay byte-identical; the demo opts in here.
+        _engine.FreezeLateralWhenStopped = true;
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).

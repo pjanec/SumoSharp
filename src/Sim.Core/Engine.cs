@@ -9584,8 +9584,23 @@ public sealed partial class Engine : IEngine
             // Phase 2 (P2.1/P2.3): lateral velocity = this step's lateral displacement / dt (computed
             // from the OLD offset before it is overwritten). 0 for every lane-centred vehicle (Intent
             // .LatOffset == current == 0), so inert for phase-1; not hashed/compared, so byte-identical.
-            v.Kinematics.LatSpeed = (v.Intent.LatOffset - v.Kinematics.LatOffset) / dt;
-            v.Kinematics.LatOffset = v.Intent.LatOffset;
+            //
+            // Task A (docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A): a car held (nearly) stopped -- e.g.
+            // by a pedestrian at a crosswalk (binder 13, CrowdLongitudinalConstraint) -- must not keep
+            // drifting sideways. The active lateral driver here is ComputeLateralEvasion's crowd-swerve
+            // (the demo has no lateral-resolution, so _sublane is false and the SL2015 driver is not the
+            // path); it otherwise oscillates posLat by a full lane width while forward speed is ~0, which
+            // the DR replay renders as "floating". Owner rule: "lateral motion must always be accompanied
+            // by forward motion". Freeze the per-step lateral commit to the CURRENT offset whenever the
+            // vehicle's new speed is below LaneChangeMinSpeed. Demo-gated: FreezeLateralWhenStopped
+            // defaults false and no golden/bench sets it, so this branch is unreachable on every parity
+            // path -> byte-identical. Path-agnostic: clamps whatever produced Intent.LatOffset
+            // (ComputeLateralEvasion, ComputeSublaneLateral, or ComputeRvoLateral).
+            var committedLat = FreezeLateralWhenStopped && v.Intent.NewSpeed < LaneChangeMinSpeed
+                ? v.Kinematics.LatOffset
+                : v.Intent.LatOffset;
+            v.Kinematics.LatSpeed = (committedLat - v.Kinematics.LatOffset) / dt;
+            v.Kinematics.LatOffset = committedLat;
 
             // C6-ii: feed the actuated-TLS induction loops this vehicle's within-step motion along
             // its START-of-step lane, using the RAW advanced position (before the lane-boundary wrap
@@ -11165,6 +11180,16 @@ public sealed partial class Engine : IEngine
     // (no lateral movement at standstill) without porting the whole sublane model. Set by the live-city
     // demo; every parity scenario leaves it 0.
     public double LaneChangeMinSpeed { get; set; }
+
+    // Realism knob (live-city demo; docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A). Default false =
+    // byte-identical to every golden and the bench (nothing on a parity path sets it, so the freeze
+    // branch in ExecuteMoves is unreachable there). When true, a vehicle whose new speed is below
+    // LaneChangeMinSpeed has its per-step lateral-offset commit frozen to its current value -- it
+    // cannot drift/wobble sideways while (nearly) stopped (e.g. a car held at a crosswalk by a
+    // pedestrian, whose ComputeLateralEvasion crowd-swerve would otherwise oscillate posLat a full
+    // lane width). The lateral mirror of LaneChangeMinSpeed's gate on discrete lane changes:
+    // "lateral motion only with forward motion". Set by LiveCitySim.
+    public bool FreezeLateralWhenStopped { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a
