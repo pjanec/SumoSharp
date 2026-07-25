@@ -180,4 +180,123 @@ public class DemoCarOverlapInvariantTests
     // Measured §F3 baseline (4 pairs in the worst frame) + 3 margin. Encodes the known §F3 overlap band;
     // a Task-A-style lateral-freeze regression would blow well past this. See comment on assertion (B).
     private const int MAX_OVERLAPPING_PAIRS_CEILING = 7;
+
+    // ---------------------------------------------------------------------------------------------------
+    // §F4a -- TARGETED regression guard for the reverted Task-A §F2 bug.
+    // docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2/§F4a.
+    //
+    // §F2 mechanism: with Engine.FreezeLateralWhenStopped ON, a car that dropped below LaneChangeMinSpeed
+    // (1.5 m/s) *mid-lane-change* had its lateral offset (PosLat) FROZEN at whatever large value it held --
+    // leaving it pinned straddling two lanes / jutting past its lane edge. A stopped straddler reports
+    // gap=Infinity to followers (laterally invisible to car-following), so followers creep into it -> the
+    // §F2 overlaps. The invariant we want: NO stopped/slow car may sit straddling past its lane edge.
+    //
+    // Why a raw peak-|PosLat| guard does NOT work here (measured, 200 steps, this demo):
+    //   The demo's crowd-swerve (Engine.ComputeLateralEvasion) legitimately pushes a slow car far
+    //   sideways to dodge a pedestrian disc, so the peak stopped |PosLat| is ~5.1 m with the freeze OFF
+    //   (transient swerve) AND ~5.2 m with it ON -- the peaks OVERLAP and cannot separate the bug. (This
+    //   demo is denser/wider-laned than the 1.45-1.88 m straddle originally logged for §F2.)
+    //
+    // What DOES separate them is the §F2 fingerprint: the straddle is FROZEN -- PosLat pinned at a value
+    // far past the lane edge and held *unchanged* across many consecutive stopped ticks. A legitimate
+    // crowd-swerve (freeze OFF) evolves/oscillates every tick and resolves; only the freeze SUSTAINS a
+    // deep offset. So the guard counts, per car, the longest run of consecutive stopped ticks (speed <
+    // 1.5) in which |PosLat| stays past STRADDLE_EDGE AND does not move (frozen, |ΔPosLat| <= 1e-6).
+    //
+    // Empirical calibration (200 steps; ran with/without LIVECITY_FREEZELAT and LIVECITY_PEDS):
+    //   STRADDLE_EDGE = 1.2 m -- past the ~0.7 m legal within-lane offset and above the ~0.92 m a car
+    //     legitimately parks at against a lane edge; inside the §F2 straddle band.
+    //   max frozen-straddle run (consecutive frozen ticks with |PosLat| > 1.2 m):
+    //       freeze OFF, default density : 0 ticks   (guard PASSES)
+    //       freeze OFF, LIVECITY_PEDS=800: 1 tick    (a single transient swerve tick; never sustains)
+    //       freeze ON,  default density : 58 ticks  (guard FAILS -- Vehicle#19.1 pinned at 3.178 m)
+    //       freeze ON,  LIVECITY_PEDS=800: 74 ticks  (guard FAILS -- pinned at 1.274 m)
+    //   OFF never exceeds 1; ON is always >= 58. MAX_FROZEN_STRADDLE_TICKS = 10 sits cleanly between
+    //   (10x the OFF transient-noise ceiling, < 1/5 of the smallest ON run) -- PASSES freeze-off, FAILS
+    //   freeze-on, on both densities.
+    private const double STRADDLE_EDGE = 1.2;             // m past lane centre; between legal (~0.92) and §F2 band
+    private const int MAX_FROZEN_STRADDLE_TICKS = 10;     // OFF max observed = 1; ON min observed = 58
+
+    [Fact]
+    public void DemoAuthoritative_NoStoppedCarStraddlesPastItsLane()
+    {
+        const int steps = 200;
+        const double stoppedSpeed = 1.5; // == LaneChangeMinSpeed floor; §F2 froze PosLat below this.
+
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new LiveCitySim(cfg);
+
+        // Per car: the previous step it was seen on and its PosLat then, plus the current frozen-straddle
+        // run length. A run advances only when the car is (a) stopped, (b) past the straddle edge, and
+        // (c) at the SAME PosLat as the immediately-preceding tick (the §F2 freeze).
+        var prevStep = new Dictionary<string, int>();
+        var prevLat = new Dictionary<string, double>();
+        var run = new Dictionary<string, int>();
+
+        int maxFrozenRun = 0;
+        double maxRunLat = 0.0;
+        string worstHandle = "(none)";
+        string worstLane = "(none)";
+        int worstStep = -1;
+
+        // Also report the raw peak stopped |PosLat| for context (this is what a naive guard would use --
+        // it does NOT separate the bug here; see the calibration comment above).
+        double maxStoppedAbsPosLat = 0.0;
+
+        for (var st = 0; st < steps; st++)
+        {
+            sim.Step();
+            foreach (var w in sim.WitnessAuthoritative())
+            {
+                if (w.Speed >= stoppedSpeed) continue;
+
+                var h = w.Handle.ToString();
+                var absLat = Math.Abs(w.PosLat);
+                if (absLat > maxStoppedAbsPosLat) maxStoppedAbsPosLat = absLat;
+
+                bool frozenFromPrev =
+                    prevStep.TryGetValue(h, out var ps) && ps == st - 1 &&
+                    prevLat.TryGetValue(h, out var pl) && Math.Abs(w.PosLat - pl) <= 1e-6;
+                bool pastEdge = absLat > STRADDLE_EDGE;
+
+                if (pastEdge && frozenFromPrev)
+                {
+                    var r = run.TryGetValue(h, out var rv) ? rv + 1 : 2; // this tick + the frozen predecessor
+                    run[h] = r;
+                    if (r > maxFrozenRun)
+                    {
+                        maxFrozenRun = r;
+                        maxRunLat = absLat;
+                        worstHandle = h;
+                        worstLane = w.LaneId;
+                        worstStep = st;
+                    }
+                }
+                else
+                {
+                    run[h] = pastEdge ? 1 : 0;
+                }
+
+                prevStep[h] = st;
+                prevLat[h] = w.PosLat;
+            }
+        }
+
+        _out.WriteLine(
+            $"§F4a stopped-car straddle guard ({steps} steps, freeze="
+            + $"{(Environment.GetEnvironmentVariable("LIVECITY_FREEZELAT") == "1" ? "ON" : "off")}, peds="
+            + $"{Environment.GetEnvironmentVariable("LIVECITY_PEDS") ?? "default"}): "
+            + $"longest frozen straddle (|PosLat| > {STRADDLE_EDGE:F1} m, stopped, unchanged) = {maxFrozenRun} ticks "
+            + $"(handle {worstHandle} on lane [{worstLane}] at |PosLat| {maxRunLat:F3} m, step {worstStep}); "
+            + $"ceiling {MAX_FROZEN_STRADDLE_TICKS} ticks. Raw peak stopped |PosLat| = {maxStoppedAbsPosLat:F3} m "
+            + "(reported for context; does NOT separate the bug -- crowd-swerve reaches the same peak both ways).");
+
+        Assert.True(maxFrozenRun < MAX_FROZEN_STRADDLE_TICKS,
+            $"§F2 STRADDLE REGRESSION: a stopped/slow car (speed < {stoppedSpeed} m/s) stayed FROZEN with "
+            + $"|PosLat| > {STRADDLE_EDGE:F1} m for {maxFrozenRun} consecutive ticks (>= ceiling "
+            + $"{MAX_FROZEN_STRADDLE_TICKS}) -- pinned straddling past its lane edge (handle {worstHandle}, "
+            + $"lane [{worstLane}], |PosLat| {maxRunLat:F3} m, ending step {worstStep}). This is the reverted "
+            + "Task-A Engine.FreezeLateralWhenStopped bug: a car frozen mid-lane-change straddling two lanes. "
+            + "A legitimate crowd-swerve resolves within a tick or two and never sustains a deep frozen offset.");
+    }
 }

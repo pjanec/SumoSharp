@@ -75,9 +75,10 @@ check). **Order finalized after two analyses — F3 is pre-existing CORE (locali
 F2 in aggregate → the F2 guard must be targeted:** F4a → F1 → Task A redo (this session); **F3 routed to
 core junction work**; F4b deferred until F3 fixed.
 
-- [ ] **F4a — targeted F2 straddle guard (DO FIRST, this session).** Assert no stopped/slow car has
-  `|PosLat|` past its lane edge (F2's exact mechanism: a frozen mid-lane-change car straddling). Clean of
-  F3, green now, actually trips on the freeze regression — the guard that protects the Task A redo. §F4.
+- [x] **F4a — targeted F2 straddle guard — DONE** (`DemoAuthoritative_NoStoppedCarStraddlesPastItsLane`).
+  Detects F2 by its true signature: `PosLat` frozen unchanged past the lane edge (>1.2 m) for ≥10
+  consecutive stopped ticks (raw peak `|PosLat|` can't separate — the crowd-swerve reaches ~5 m both ways).
+  Verified: green freeze-off (0 ticks); FAILS freeze-on (58 ticks, Vehicle#19.1 @3.18 m); LiveCity 27/27.
 - [ ] **F1 — DR reconstruction renders a braking car through a red/junction** (render-only; engine respects
   the light). Clamp the reconstructed arc so a decelerating car can't render past its stop position + damp
   the look-ahead for near-stopped cars + verify `accel` is published. Files: `DrClock.cs`,
