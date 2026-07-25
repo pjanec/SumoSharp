@@ -512,6 +512,17 @@ public sealed class PedLodManager
         }
 
         var newNow = now + dt;
+
+        // Emit this step's FreeKinematic samples as one CONTIGUOUS run (all before any heartbeat), then the
+        // low-power heartbeats. PedReplicationPublisher batches CONSECUTIVE same-time FreeKinematicSamples
+        // into one crowd frame; a non-sample event (a heartbeat) interleaved among the samples forces a
+        // premature FlushCrowdFrame, fragmenting one step's crowd into several frames -- and the receiver
+        // only applies the LATEST crowd frame, so every high-power ped except those in the final fragment
+        // is never updated on the wire and renders frozen (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §2,
+        // the #3 producer half). Splitting the single interleaved loop into two ordered passes restores the
+        // publisher's documented "samples are consecutive => one crowd frame per step" contract. Both passes
+        // keep ascending-id order, so the wire event sequence stays fully deterministic; heartbeats carry no
+        // pose, so their relative position does not affect any reconstruction.
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -519,7 +530,12 @@ public sealed class PedLodManager
             {
                 _publisher.PublishSample(id, newNow, _highCrowd.Position(e.HighIndex), _highCrowd.Velocity(e.HighIndex));
             }
-            else
+        }
+
+        foreach (var id in ids)
+        {
+            var e = _peds[id];
+            if (e.Model != PedDrModel.FreeKinematic)
             {
                 _publisher.MaybePublishHeartbeat(id, newNow);
             }

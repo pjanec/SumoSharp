@@ -585,6 +585,62 @@ public class PedLodManagerTests
             $"a delivered FreeKinematicSample must override the seed, got {afterSample}");
     }
 
+    // ---- #3 promote flicker: crowd-frame de-fragmentation (docs/...LIFECYCLE-DESIGN.md §2) --------
+    // A step with a MIX of high-power and low-power peds at interleaved ids must emit its
+    // FreeKinematicSamples as one CONTIGUOUS run (all before any heartbeat of the same time), so
+    // PedReplicationPublisher batches them into a single crowd frame. If a heartbeat interleaves between
+    // two same-time samples it forces a premature FlushCrowdFrame, fragmenting one step's crowd into
+    // several frames -- and the receiver only applies the LATEST frame, freezing every high-power ped
+    // except those in the final fragment. This asserts the ordering contract the reconstruction relies on.
+    [Fact]
+    public void Step_EmitsFreeKinematicSamplesContiguously_NotFragmentedByInterleavedHeartbeats()
+    {
+        var nav = BuildNav();
+        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        Assert.NotNull(path);
+
+        var publisher = new PedPublisher(heartbeatInterval: 0.05); // tiny -> heartbeats due every step
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        for (var id = 1; id <= 4; id++) manager.AddPed(id, path!, MaxSpeed, Radius, now: 0.0);
+
+        // Pin ids 1 and 3 high-power -- interleaved with low-power 2 and 4 (heartbeat emitters).
+        manager.SetForcedHighPower(1, true);
+        manager.SetForcedHighPower(3, true);
+
+        var field = new InterestField();
+        field.Register(new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0));
+        var noEntities = Array.Empty<WorldDisc>();
+
+        var now = 0.0;
+        for (var i = 0; i < 5; i++) { manager.Step(now, Dt, field, noEntities); now += Dt; }
+
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(3));
+        Assert.Equal(PedDrModel.PathArc, manager.ModelOf(2));
+
+        // Within each publish time, the first heartbeat (if any) must come AFTER the last sample (if any).
+        var anySamples = false;
+        foreach (var g in publisher.Events.GroupBy(e => Math.Round(e.Time, 9)))
+        {
+            var seq = g.ToList();
+            var lastSampleIdx = -1;
+            var firstHeartbeatIdx = int.MaxValue;
+            for (var k = 0; k < seq.Count; k++)
+            {
+                if (seq[k] is FreeKinematicSample) { lastSampleIdx = k; anySamples = true; }
+                if (seq[k] is HeartbeatEvent && k < firstHeartbeatIdx) firstHeartbeatIdx = k;
+            }
+
+            if (lastSampleIdx >= 0 && firstHeartbeatIdx != int.MaxValue)
+            {
+                Assert.True(firstHeartbeatIdx > lastSampleIdx,
+                    $"at t={g.Key} a heartbeat (idx {firstHeartbeatIdx}) preceded a same-time sample (idx {lastSampleIdx}) -- fragments the crowd frame");
+            }
+        }
+
+        Assert.True(anySamples, "expected FreeKinematic samples in the stream (the two pinned peds)");
+    }
+
     // ---- P1-2: forced high-power (evac panic pin) -----------------------------------------------
 
     [Fact]

@@ -14,9 +14,9 @@ first-hand (re-run the gate / read the trace), never on a report.
 - [ ] Owner reviews T0.4 findings; fix variant selected for #3 / #4b / #6 before Stage 2 begins
 
 ## Stage 2 — #3 promote flicker
-- [x] T2.1 — seed-on-switch in `HeadlessIg` — **origin-snap eliminated** (near-origin far-snaps 2326 → 0; Pedestrians 273/273 with new test). But it revealed the ped now *freezes* at its promote spot (far-snap >10m still 3218) because the producer under-publishes a promoted ped's samples → T2.2 is now REQUIRED, not optional.
-- [ ] T2.2 — **producer first-sample / re-baseline on promote** (`PedReplicationPublisher`/`PedPublishScheduler`, both in-surface) — required: without it a promoted ped is frozen ~82 steps on the wire.
-- [ ] T2.3 — whole-run trace invariant: zero origin/frozen frames (wireSrvDist small) across any transition
+- [x] T2.1 — seed-on-switch in `HeadlessIg` — origin-snap eliminated (near-origin 2326 → 0).
+- [x] T2.2 — **producer crowd-frame de-fragmentation** (`PedLodManager.Step`): the real root was NOT the bandwidth governor (it never truncates — verified `governed=False`/`deferred=0`) nor a stale (0,0) baseline. It was that the final publish loop **interleaved** FreeKinematicSamples with low-power Heartbeats, so `PedReplicationPublisher` fragmented one step's crowd into several frames and the receiver (latest-frame-only) froze every ped but the last fragment. Fix: emit all samples contiguously, then all heartbeats — restores the publisher's documented "consecutive samples ⇒ one crowd frame/step" contract. New test `Step_EmitsFreeKinematicSamplesContiguously_...`.
+- [x] T2.3 — whole-run trace invariant met: **freeKinematicWireMismatches 3627 → 0**; every FreeKinematic row tracks within **max 0.28 m** (p50/p90 = 0.20 m, just the 0.15 s playout lag). Pedestrians 274/274, LiveCity 43/43.
 
 ## Stage 3 — #4 stuck-ORCA / wander
 - [ ] T3.1 — #4b off-graph route recovery (multi-segment on-graph, no straight-line fallback)
