@@ -311,14 +311,14 @@
   // drag hit-tests the nearest vehicle at the current time and latches its id (kept across scene toggles
   // so the SAME car can be compared raw vs smoothed). Click empty space to clear.
   var pickedId = null, downX = 0, downY = 0;
-  canvas.addEventListener("mousedown", function (ev) {
-    if (ev.button === 0) { downX = ev.clientX; downY = ev.clientY; }
-  });
-  canvas.addEventListener("click", function (ev) {
-    if (ev.button !== 0 || !scene || !scene.vehIds) return;
-    if (Math.abs(ev.clientX - downX) > 4 || Math.abs(ev.clientY - downY) > 4) return; // was a drag, not a click
+  // Pick the nearest vehicle to a screen point and latch it (yellow ring + id label). Shared by the
+  // desktop mouse click AND the mobile touch-tap wired into the touch handlers below: on Android the pan
+  // touch handlers call preventDefault(), which suppresses the synthesized mouse `click`, so tap-to-
+  // identify has to be dispatched explicitly from touchend (it otherwise never fired on touch devices).
+  function pickVehAt(clientX, clientY) {
+    if (!scene || !scene.vehIds) return;
     var rect = canvas.getBoundingClientRect();
-    var w = screenToWorld(ev.clientX - rect.left, ev.clientY - rect.top);
+    var w = screenToWorld(clientX - rect.left, clientY - rect.top);
     var vehs = interpolatedVehicles(simTime);
     var best = -1, bestD = Infinity;
     for (var i = 0; i < vehs.length; i++) {
@@ -329,7 +329,15 @@
     }
     var reach = Math.max((vdim[0] || 5) * 1.2, 8); // metres: forgiving pick radius
     pickedId = (best >= 0 && bestD <= reach * reach) ? (scene.vehIds[best] || null) : null;
-    followId = null; // a manual click releases any typed-in follow
+    followId = null; // a manual pick releases any typed-in follow
+  }
+  canvas.addEventListener("mousedown", function (ev) {
+    if (ev.button === 0) { downX = ev.clientX; downY = ev.clientY; }
+  });
+  canvas.addEventListener("click", function (ev) {
+    if (ev.button !== 0) return;
+    if (Math.abs(ev.clientX - downX) > 4 || Math.abs(ev.clientY - downY) > 4) return; // was a drag, not a click
+    pickVehAt(ev.clientX, ev.clientY);
   });
 
   // Find/follow by id: type a vehicle id into the HUD box to latch AND follow it -- the camera re-centers
@@ -350,7 +358,10 @@
     ev.preventDefault();
     var rect = canvas.getBoundingClientRect();
     if (ev.touches.length === 1) {
-      touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      // sx/sy + tap: remember the touch-down point so touchend can tell a TAP (identify a car) from a
+      // PAN (drag the view). tap stays true until the finger moves past the slop threshold in touchmove.
+      touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY,
+                     sx: ev.touches[0].clientX, sy: ev.touches[0].clientY, tap: true };
     } else if (ev.touches.length >= 2) {
       var t0 = ev.touches[0], t1 = ev.touches[1];
       var dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
@@ -369,6 +380,10 @@
     if (touchState.mode === "pan" && ev.touches.length === 1) {
       panBy(ev.touches[0].clientX - touchState.x, ev.touches[0].clientY - touchState.y);
       touchState.x = ev.touches[0].clientX; touchState.y = ev.touches[0].clientY;
+      // Past ~10px of travel from the touch-down point this is a pan, not a tap -- disqualify the tap.
+      if (Math.abs(ev.touches[0].clientX - touchState.sx) > 10 || Math.abs(ev.touches[0].clientY - touchState.sy) > 10) {
+        touchState.tap = false;
+      }
     } else if (touchState.mode === "pinch" && ev.touches.length >= 2) {
       var t0 = ev.touches[0], t1 = ev.touches[1];
       var ddx = t1.clientX - t0.clientX, ddy = t1.clientY - t0.clientY;
@@ -380,8 +395,15 @@
     }
   }, { passive: false });
   canvas.addEventListener("touchend", function (ev) {
+    // A single-finger touch that never moved past the slop threshold is a TAP -> identify the car under
+    // it (the mobile equivalent of a left click). changedTouches carries the just-lifted finger's point.
+    if (touchState && touchState.mode === "pan" && touchState.tap === true &&
+        ev.changedTouches && ev.changedTouches.length > 0) {
+      pickVehAt(ev.changedTouches[0].clientX, ev.changedTouches[0].clientY);
+    }
     if (ev.touches.length === 0) touchState = null;
-    else if (ev.touches.length === 1) touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    else if (ev.touches.length === 1) touchState = { mode: "pan", x: ev.touches[0].clientX, y: ev.touches[0].clientY,
+                                                     sx: ev.touches[0].clientX, sy: ev.touches[0].clientY, tap: false };
   });
 
   // ---------------------------------------------------------------------
