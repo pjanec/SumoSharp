@@ -69,7 +69,8 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   touch, must stay parity-inert). Handoff: `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
 ## Demo integrity (from the 2026-07 replay review — realism-A/B session)
-Full evidence + root causes: **`docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`** (F1–F4). Diagnostics:
+Full evidence + root causes: **`docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`** (F1–F4). **Resume/handoff state:
+`docs/LIVE-CITY-DEMO-INTEGRITY-RESUME.md`** (read first when picking this up fresh). Diagnostics:
 `--live-city-cartrace` (authoritative per-car) and `--live-city-drcheck` (DR-render + authoritative overlap
 check). **Order finalized after two analyses — F3 is pre-existing CORE (localized vs `main`), and F3 masks
 F2 in aggregate → the F2 guard must be targeted:** F4a → F1 → Task A redo (this session); **F3 routed to
