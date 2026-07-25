@@ -874,4 +874,273 @@ public class F3JunctionOverlapDiagTests
         // guard. The only assertion is the harness precondition (default config, gate above).
         Assert.True(true);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // BindingConstraint / JunctionYieldArm attribution (below this line).
+    //
+    // Follow-on to F3_JunctionStoppingAttribution's finding (docs/F3-JUNCTION-OVERLAP-DESIGN.md
+    // "(1) HIGHEST VALUE"): __veh127 and __veh140 sit stopped on an internal lane for ~100 steps with
+    // GapAhead=+Inf and NextMouthGap=+Inf (no leader, no blocked exit). This test reads the engine's own
+    // per-vehicle diagnostic fields -- WitnessAuthoritative()'s Binder/JyArm/JyFoeSpeed, which already
+    // surface Engine.cs's BindingConstraint/JunctionYieldArm/JunctionYieldFoeSpeed (VehicleRuntime,
+    // written unconditionally by ComputeMoveIntent's diagnostic argmin fold, see Engine.cs:5067-5183 and
+    // :6756-7239) -- to identify WHICH speed constraint is pinning each vehicle at ~0.
+    //
+    // Pure diagnosis: reads WitnessAuthoritative()/Sample() only, never mutates the engine, makes no
+    // assertions that can fail beyond the harness precondition below.
+    // ---------------------------------------------------------------------------------------------
+
+    // BindingConstraint id -> name, per Engine.cs:5071-5073.
+    private static readonly string[] BinderNames =
+    {
+        "0:none(unconstrained)", "1:leaderFollow", "2:crossJxnLeader", "3:freeFlow", "4:successiveLane",
+        "5:deadLaneMerge", "6:stopLine", "7:redLight", "8:railSignal", "9:railCrossing",
+        "10:junctionYield", "11:keepClear", "12:obstacle", "13:crowd",
+    };
+
+    private static string BinderName(byte b) => b < BinderNames.Length ? BinderNames[b] : $"{b}:UNKNOWN";
+
+    // JunctionYieldArm low bits -> arm name, per the `jyArm` assignments in JunctionYieldConstraint
+    // (Engine.cs:6805 cycleHold, :6886 cautiousApproach, :6964 sameTargetMerge, :7001 externalAgent,
+    // :7016 adaptToJunctionLeader, :7201 approachingCross). High bit (0x80) is egoHasSignalPriority
+    // (Engine.cs:7238), decoded separately.
+    private static readonly string[] JyArmNames =
+    {
+        "0:none", "1:cycleHold", "2:cautiousApproach", "3:sameTargetMerge",
+        "4:externalAgent", "5:adaptToJunctionLeader", "6:approachingCross",
+    };
+
+    private static string JyArmDecoded(byte raw)
+    {
+        var arm = raw & 0x7F;
+        var priority = (raw & 0x80) != 0;
+        var name = arm < JyArmNames.Length ? JyArmNames[arm] : $"{arm}:UNKNOWN";
+        return $"raw={raw,3} arm={arm,2} ({name}) signalPriority={(priority ? "YES" : "no")}";
+    }
+
+    // One step's full diagnostic row for a single tracked vehicle.
+    private sealed record BindRow(
+        int Step, string LaneId, double Pos, double Speed, byte Binder, byte JyArmRaw, float JyFoeSpeed,
+        double GapAhead, char Tl);
+
+    private static string FmtGap(double g) => double.IsPositiveInfinity(g) ? "+Inf" : g.ToString("F3");
+
+    private static string BindRowLine(BindRow r) =>
+        $"step={r.Step,4} | lane={r.LaneId,-16} | pos={r.Pos,7:F2} | spd={r.Speed,6:F3} "
+        + $"| Binder={r.Binder,2} ({BinderName(r.Binder),-22}) | JyArm[{JyArmDecoded(r.JyArmRaw)}] "
+        + $"| JyFoeSpeed={r.JyFoeSpeed,7:F3} | GapAhead={FmtGap(r.GapAhead),8} | tl={FmtTl(r.Tl)}";
+
+    // Longest consecutive run of speed < stoppedThreshold within `rows` (rows assumed sorted by Step,
+    // but not necessarily step-contiguous -- a gap in the row list itself breaks the run). Returns
+    // (-1,-1) if the vehicle is never observed stopped.
+    private static (int Start, int End) LongestStoppedRun(List<BindRow> rows, double stoppedThreshold)
+    {
+        var bestStart = -1; var bestEnd = -1; var bestLen = 0;
+        var curStart = -1; var curLen = 0; var prevStep = int.MinValue;
+        foreach (var r in rows)
+        {
+            var contiguous = r.Step == prevStep + 1;
+            if (r.Speed < stoppedThreshold)
+            {
+                if (curLen > 0 && contiguous)
+                {
+                    curLen++;
+                }
+                else
+                {
+                    curStart = r.Step; curLen = 1;
+                }
+
+                if (curLen > bestLen)
+                {
+                    bestLen = curLen; bestStart = curStart; bestEnd = r.Step;
+                }
+            }
+            else
+            {
+                curLen = 0;
+            }
+
+            prevStep = r.Step;
+        }
+
+        return bestLen == 0 ? (-1, -1) : (bestStart, bestEnd);
+    }
+
+    // Print every step within 5 of the run's start or end boundary, plus every 5th step from
+    // runStart through runEnd otherwise -- per the requested "10 steps around each boundary, every
+    // 5th step through the middle" sampling.
+    private void PrintRunTable(string name, List<BindRow> rows, int runStart, int runEnd)
+    {
+        _out.WriteLine($"--- {name}: stuck run steps {runStart}-{runEnd} ({runEnd - runStart + 1} steps), "
+            + $"printing window [{runStart - 5},{runEnd + 5}] ---");
+        foreach (var r in rows)
+        {
+            if (r.Step < runStart - 5 || r.Step > runEnd + 5) continue;
+            var nearStartBoundary = r.Step >= runStart - 5 && r.Step <= runStart + 5;
+            var nearEndBoundary = r.Step >= runEnd - 5 && r.Step <= runEnd + 5;
+            var everyFifth = (r.Step - runStart) % 5 == 0;
+            if (!nearStartBoundary && !nearEndBoundary && !everyFifth) continue;
+            _out.WriteLine("    " + BindRowLine(r));
+        }
+    }
+
+    [Fact]
+    public void F3_BindingConstraintAttribution()
+    {
+        const int steps = 200;
+        const double stoppedThreshold = 0.5;
+
+        Assert.True(
+            Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") is null or "0",
+            "LIVECITY_F3OCCUPANCY must be unset/0 for this diagnostic -- it must measure the DEFAULT configuration.");
+
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new LiveCitySim(cfg);
+
+        var primaryTargets = new[] { "__veh127", "__veh140" };
+        var cheapTargets = new[] { "__veh79", "__veh133", "__veh163" };
+        var allTargets = primaryTargets.Concat(cheapTargets).ToArray();
+
+        var handleByName = new Dictionary<string, VehicleHandle>();
+        var rowsByName = allTargets.ToDictionary(n => n, n => new List<BindRow>());
+
+        for (var st = 0; st < steps; st++)
+        {
+            sim.Step();
+            var cars = sim.Sample().Cars;
+            var witnesses = sim.WitnessAuthoritative();
+
+            foreach (var c in cars)
+            {
+                if (!handleByName.ContainsKey(c.Name) && Array.IndexOf(allTargets, c.Name) >= 0)
+                {
+                    handleByName[c.Name] = c.Handle;
+                }
+            }
+
+            // WitnessAuthoritative() is engine-authoritative over ALL active vehicles (no crop filter,
+            // unlike Sample().Cars) -- once a target's handle is known, read it here every step so a
+            // vehicle that happens to be cropped out of Sample() this frame is still tracked.
+            foreach (var name in allTargets)
+            {
+                if (!handleByName.TryGetValue(name, out var h)) continue;
+                foreach (var w in witnesses)
+                {
+                    if (!w.Handle.Equals(h)) continue;
+                    rowsByName[name].Add(new BindRow(st, w.LaneId ?? string.Empty, w.Pos, w.Speed, w.Binder, w.JyArm, w.JyFoeSpeed, w.GapAhead, w.Tl));
+                    break;
+                }
+            }
+        }
+
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-BIND DIAGNOSTIC -- BindingConstraint / JunctionYieldArm attribution for the stuck-in-junction vehicles");
+        _out.WriteLine(new string('=', 100));
+
+        foreach (var name in primaryTargets)
+        {
+            var rows = rowsByName[name];
+            _out.WriteLine("");
+            _out.WriteLine(new string('-', 100));
+            if (rows.Count == 0)
+            {
+                _out.WriteLine($"{name}: NEVER OBSERVED (not found in any step's WitnessAuthoritative()).");
+                continue;
+            }
+
+            var (runStart, runEnd) = LongestStoppedRun(rows, stoppedThreshold);
+            var lastRow = rows[^1];
+            _out.WriteLine(
+                $"{name}: observed steps {rows[0].Step}-{lastRow.Step} ({rows.Count} rows); "
+                + $"longest stopped(<{stoppedThreshold:F1})-run = "
+                + (runStart < 0 ? "NONE" : $"steps {runStart}-{runEnd} ({runEnd - runStart + 1} steps)"));
+            _out.WriteLine($"    last observed: step={lastRow.Step} lane={lastRow.LaneId} pos={lastRow.Pos:F2} speed={lastRow.Speed:F3}"
+                + (lastRow.Step < steps - 1 ? "  <-- disappears from WitnessAuthoritative() before the final step (arrived/teleported/removed)" : "  <-- still present at the final observed step"));
+            _out.WriteLine("");
+
+            if (runStart >= 0)
+            {
+                PrintRunTable(name, rows, runStart, runEnd);
+
+                // Binder/JyArm histogram over the run, for the "dominant constraint" answer.
+                var binderCounts = new Dictionary<byte, int>();
+                var jyArmCounts = new Dictionary<byte, int>();
+                foreach (var r in rows)
+                {
+                    if (r.Step < runStart || r.Step > runEnd) continue;
+                    binderCounts[r.Binder] = binderCounts.GetValueOrDefault(r.Binder) + 1;
+                    if (r.Binder == 10) jyArmCounts[r.JyArmRaw] = jyArmCounts.GetValueOrDefault(r.JyArmRaw) + 1;
+                }
+
+                _out.WriteLine("");
+                _out.WriteLine($"    BindingConstraint histogram over the run [{runStart}-{runEnd}]:");
+                foreach (var kv in binderCounts.OrderByDescending(kv => kv.Value))
+                {
+                    _out.WriteLine($"        {BinderName(kv.Key),-24} : {kv.Value} steps");
+                }
+
+                if (jyArmCounts.Count > 0)
+                {
+                    _out.WriteLine($"    JunctionYieldArm histogram (rows where Binder==10) over the run [{runStart}-{runEnd}]:");
+                    foreach (var kv in jyArmCounts.OrderByDescending(kv => kv.Value))
+                    {
+                        _out.WriteLine($"        {JyArmDecoded(kv.Key),-60} : {kv.Value} steps");
+                    }
+                }
+
+                // Transition: the row(s) immediately before the run began.
+                _out.WriteLine("");
+                _out.WriteLine("    Transition into the stuck state (rows immediately before runStart):");
+                foreach (var r in rows)
+                {
+                    if (r.Step < runStart - 3 || r.Step >= runStart) continue;
+                    _out.WriteLine("        " + BindRowLine(r));
+                }
+            }
+        }
+
+        _out.WriteLine("");
+        _out.WriteLine(new string('-', 100));
+        _out.WriteLine("Cheap dominant-constraint check for the remaining top-10 stuck vehicles:");
+        foreach (var name in cheapTargets)
+        {
+            var rows = rowsByName[name];
+            if (rows.Count == 0)
+            {
+                _out.WriteLine($"    {name}: NEVER OBSERVED.");
+                continue;
+            }
+
+            var (runStart, runEnd) = LongestStoppedRun(rows, stoppedThreshold);
+            if (runStart < 0)
+            {
+                _out.WriteLine($"    {name}: observed {rows.Count} rows, no stopped run found.");
+                continue;
+            }
+
+            var binderCounts = new Dictionary<byte, int>();
+            var jyArmCounts = new Dictionary<byte, int>();
+            foreach (var r in rows)
+            {
+                if (r.Step < runStart || r.Step > runEnd) continue;
+                binderCounts[r.Binder] = binderCounts.GetValueOrDefault(r.Binder) + 1;
+                if (r.Binder == 10) jyArmCounts[r.JyArmRaw] = jyArmCounts.GetValueOrDefault(r.JyArmRaw) + 1;
+            }
+
+            var domBinder = binderCounts.OrderByDescending(kv => kv.Value).First();
+            var domJyArm = jyArmCounts.Count > 0 ? jyArmCounts.OrderByDescending(kv => kv.Value).First().Key : (byte?)null;
+            _out.WriteLine(
+                $"    {name,-10} run={runStart}-{runEnd} ({runEnd - runStart + 1} steps) "
+                + $"dominantBinder={domBinder.Key} ({BinderName(domBinder.Key)}) [{domBinder.Value}/{runEnd - runStart + 1} steps]"
+                + (domJyArm is null ? string.Empty : $" dominantJyArm=[{JyArmDecoded(domJyArm.Value)}]"));
+        }
+
+        _out.WriteLine("");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-BIND DIAGNOSTIC -- end. No assertions made -- diagnostic only.");
+        _out.WriteLine(new string('=', 100));
+
+        Assert.True(true);
+    }
 }

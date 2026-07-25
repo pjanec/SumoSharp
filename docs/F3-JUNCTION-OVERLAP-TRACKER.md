@@ -28,7 +28,7 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
 - [x] **T1.3** Verify the flag's effect — **DONE, and the result is NEGATIVE.** The gate makes the F3
       target bucket **worse**: 8 → **33** events, worst penetration 3.035 → **3.385 m**, stopped
       cars/frame ≈19.7 → ≈26.2. Braking without symmetry-breaking strands cars *inside* junctions, where
-      they become new obstacles. **The flag must stay OFF until T1.4 lands.** See design §3d.
+      they become new obstacles. **The flag must stay OFF.** See design §3d and the revised plan in §6a.
 - [-] **T1.4-old** ~~Port `isLeader()` as *the* remaining blocker~~ — **superseded.** `isLeader`'s first
       clause was tried (`!egoOnInternal`) and still measured worse (F3 bucket 8 → 27). Evidence says
       `isLeader` is needed only for the *residual* 8 BOTH-MOVING events, and only AFTER T1.5. See design §6a.
@@ -43,11 +43,6 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
       entry-time state for whatever BOTH-MOVING residue remains (worst 1.696 m; 5 of 8 are 0.497–0.602 m).
       Check first whether the three identical-speed pairs (2.600/2.600, 2.600/2.600, 3.900/3.900) are
       actually N2 (co-located vehicles) rather than an admission-gate failure.
-- [-] **T1.4-superseded** ~~Port SUMO's `isLeader()`~~
-      (`MSVehicle.cpp:7343-7483`): break mutual-conflict symmetry by junction **entry time**, tie-broken by
-      speed then vehicle id. Requires **new per-vehicle junction entry-time state**. Without it, two cars in
-      a mutual physical conflict both yield and saturated grids deadlock (measured: 290 stuck / 250 stuck /
-      3-vs-2 teleports). **This is what stands between the flag and being default-on.**
 
 ## Stage 2 — parity gate
 
@@ -55,11 +50,13 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
       `Sim.ParityTests` **661/4/0** · `Sim.Bench` **`D96213B7BB4021A7`** par==single ·
       `Sim.LiveCity.Tests` **46/46** · `Sim.Pedestrians.Tests` **272/272**
 - [-] **T2.2** Golden-shift adjudication — **not needed: no golden shifted.** All 661 stayed
-      byte-identical. (Also blocked in principle: apt ships SUMO **1.18.0** vs the **1.20.0** pin, and
-      `pip install eclipse-sumo==1.20.0` failed here — so no valid SUMO diff was available anyway. Recorded
-      because a future golden shift *will* need this resolved first.)
+      byte-identical. **SUMO 1.20.0 (the pinned version) IS available** for future diffs at
+      `/usr/local/lib/python3.11/dist-packages/sumo/bin/` (via `pip install eclipse-sumo==1.20.0`). Put that
+      `bin/` FIRST on `PATH`: bare `sumo` resolves to apt's **1.18.0**, which is not a valid parity anchor.
+      (An earlier note in this doc claimed the pip install failed — that was wrong; pip succeeded and the
+      error came from a bad verification command.)
 - [~] **T2.3** No-new-deadlock check — **flag OFF: verified no regression** (gate green).
-      **flag ON: FAILS** — 3 gridlock diagnostics. This is precisely why the flag is off and T1.4 exists.
+      **flag ON: FAILS** — 3 gridlock diagnostics. This is precisely why the flag is off; see T1.5/T1.6 for the revised plan.
 
 ## Stage 3 — F4b and the residual causes
 
@@ -97,12 +94,15 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
    **9 consecutive steps** (also `__veh83`/`__veh121`, 1 step). Two perfectly superposed vehicles; nothing
    to do with junctions. → N2.
 8. **The obvious fix is counterproductive on its own.** Widening the foe set to `FoeWith` — even with SUMO's
-   correct narrow `inTheWay` predicate — makes both throughput AND the overlap it targets worse, because a
-   yield that cannot resolve strands cars inside the junction. `isLeader()` entry-time ordering is
-   load-bearing, not a later refinement.
+   narrow `inTheWay` predicate, and even with `isLeader`'s first clause — makes both throughput AND the
+   overlap it targets WORSE (F3 bucket 8 → 33, then 8 → 27), because a yield that cannot resolve strands
+   cars inside the junction. Three hypotheses were tested; all three were refuted. See design §6a.
 9. **"All goldens byte-identical" does NOT mean parity-inert** in this repo. The demo and the gridlock
    diagnostics are not goldens and must be measured separately. This cost a wrong "inert" call mid-session
    (design §3e).
+10. **The biggest single lead is a stuck-vehicle bug, not an admission gate:** `__veh127` stopped on an
+   internal lane for **95 consecutive steps** with `GapAhead`/`NextMouthGap` both `+Inf` — nothing ahead of
+   it. It accounts for the F3 bucket's worst event and 60 of 62 events in the largest bucket. → T1.5.
 
 ## Net state of this branch
 
@@ -111,4 +111,6 @@ partial port **behind `Engine.JunctionPhysicalOccupancyGate`, default OFF**.
 **Default behaviour is unchanged and fully verified:** `Sim.ParityTests` **661/4/0** ·
 `Sim.Bench` **`D96213B7BB4021A7`** par==single · `Sim.LiveCity.Tests` **46/46** ·
 `Sim.Pedestrians.Tests` **272/272** · demo overlap baseline reproduced exactly (61 events / 3.035 m).
-**F3 is NOT fixed.** The one remaining blocker is **T1.4 (`isLeader()`)**.
+**F3 is NOT fixed** — no behavioural change ships enabled. Three fix hypotheses were tested and all three
+were refuted (design §6a); the attempt is quarantined behind the default-off flag with its negative results
+recorded so it is not repeated. **Next step is T1.5** (the stuck-in-junction bug), then T1.6.
