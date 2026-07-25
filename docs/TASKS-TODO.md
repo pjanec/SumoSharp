@@ -104,10 +104,12 @@ core junction work**; F4b deferred until F3 fixed.
   Detects F2 by its true signature: `PosLat` frozen unchanged past the lane edge (>1.2 m) for ≥10
   consecutive stopped ticks (raw peak `|PosLat|` can't separate — the crowd-swerve reaches ~5 m both ways).
   Verified: green freeze-off (0 ticks); FAILS freeze-on (58 ticks, Vehicle#19.1 @3.18 m); LiveCity 27/27.
-- [ ] **F1 — DR reconstruction renders a braking car through a red/junction** (render-only; engine respects
-  the light). Clamp the reconstructed arc so a decelerating car can't render past its stop position + damp
-  the look-ahead for near-stopped cars + verify `accel` is published. Files: `DrClock.cs`,
-  `DrExtrapolation.Arc`, `KinematicReconstructor.cs`, `VizReplayBuilder.cs`. §F1.
+- [x] **F1 — RESOLVED / DOWNGRADED (not a render bug).** Repro-first (authoritative `--live-city-cartrace`/
+  `--live-city-drcheck`): the engine respects the red (veh80 stops on red, enters on GREEN); the player cannot
+  overshoot position (`template.js` `clampBox`); the demo TLs are all `static`/`offset=0` so the rendered light
+  is in lock-step with the engine (no desync). "veh80 drove through veh120 ignoring red" = a **misread** (veh80
+  on green) **+ a real car–car overlap** (veh80's green crossing runs through stopped veh120/veh134, ~1.8 m) =
+  **F3-family**, folded into F3 (garage-stub-into-junction / keep-clear sub-case). No render-layer fix. §F1.
 - [x] **F2 — Task A redo — DONE**: targeted crowd-swerve suppression (`Engine.SuppressHeldCrowdSwerve`, NOT a
   blanket lateral freeze), guarded by F4a. Empirically discriminated by `binder 13` (held) vs `binder 3` (passing).
   See the **A** item above + `LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2. §F2.
@@ -115,7 +117,8 @@ core junction work**; F4b deferred until F3 fixed.
   LOCALIZED: present on `main` too (identical worst pair `veh134/veh38`, 3.035 m) — long-standing, not a
   realism regression. Cars on crossing internal junction lanes overlap ~3 m. Into-occupied / conflict-point
   family (`LANE-CHANGE-OVERLAP-*`, `ISSUE2-JUNCTION-*`, `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`). Blocks the
-  clean zero-overlap invariant (F4b). §F3.
+  clean zero-overlap invariant (F4b). Now also owns the F1 **keep-clear / garage-stub-into-junction** sub-case
+  (veh80/veh120, veh80/veh134 ~1.8 m). §F3.
 - [ ] **F4b — general zero-overlap invariant (DEFERRED until F3 fixed).** Tighten the committed authoritative
   test + add a DR-render overlap check, asserting ZERO once F3 is resolved. The current
   `DemoCarOverlapInvariantTests` stays as an F3 characterization + gross-regression tripwire meanwhile. §F4.
