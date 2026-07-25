@@ -91,6 +91,102 @@ the vehicle's actual lane index, or begin the loop at the lane *after* the curre
 twice — plus a separate correctness fix for (3): use a genuine "am I on any internal lane of this junction?"
 predicate rather than string equality against the link-controlling lane.
 
+## DIFFERENTIAL ANALYSIS vs SUMO — CONFIRMED MIS-PORT, and the fix is cheap
+
+Method: SUMO does not have this bug, so either we ported something wrong or we omit a mechanism. Answer:
+**both, and the mis-port is the actionable one.**
+
+### SUMO's predicate is a LANE PROPERTY; ours is a lane-id string match
+
+`sumo/src/microsim/MSEdge.h:264-266`:
+```cpp
+inline bool isInternal() const {
+    return myFunction == SumoXMLEdgeFunc::INTERNAL;
+}
+```
+`sumo/src/microsim/MSLane.cpp:2498-2501`:
+```cpp
+bool MSLane::isInternal() const { return myEdge->isInternal(); }
+```
+Set once at load from the edge's `function` attribute. **True for every internal lane of every stage of
+every junction**, with no reference to link or stage.
+
+The load-bearing call site, `MSVehicle::isLeader` (`sumo/src/microsim/MSVehicle.cpp:7348`):
+```cpp
+if (!myLane->isInternal() || myLane->getEdge().getToJunction() != link->getJunction()) {
+    // if this vehicle is not yet on the junction, every vehicle is a leader
+    return true;
+}
+```
+The second clause compares the internal edge's **junction node**, not a lane id — it exists to exclude an
+*adjacent* junction's internal lane, not a different stage of the same one.
+
+**Ours** (`Engine.cs:6711`): `var egoOnInternal = v.LaneId == egoInternalLaneId;` — equality against the one
+lane that happens to be link-controlling for this request row. The two predicates **coincide for a
+single-stage turn and diverge exactly on a cont turn**, where the vehicle is on the first-stage lane:
+`isInternal()` is true, string-match is false.
+
+**Our own code already asserts the false equivalence.** The comment block at `Engine.cs:7035-7061` claims
+`egoOnInternal` "is exactly SUMO's `myLane->isInternal()` for this junction". It is not. That comment is the
+bug, written down.
+
+### Why netconvert makes this inevitable (traced to the writer)
+
+`sumo/src/netwrite/NWWriter_SUMO.cpp:634-649`:
+```cpp
+if (!(*k).haveVia) { intLanes.push_back((*k).getInternalLaneID()); }
+else               { intLanes.push_back((*k).viaID + "_0"); }
+```
+`getInternalLaneID()` is the **first**-stage lane; `viaID` is the **second**-stage lane. So for a cont
+connection (`haveVia`) `intLanes[i]` is the **second**-stage lane and the first-stage lane is *never* written
+into `intLanes`. Confirmed empirically on two independent nets (`d_3_4` and scenario 44's `C`).
+
+One further consequence to know: for a cont turn, `MSInternalJunction::postloadInit`
+(`sumo/src/microsim/MSInternalJunction.cpp:53-107`) calls `setRequestInformation` **twice** with the **same**
+`ownLinkIndex` — so **one** request row / link index governs **two** physical links and two internal lanes.
+Any code assuming "one request row ↔ one internal lane" is wrong on cont turns.
+
+### The missing mechanism (context, not required for the fix)
+
+SUMO has an `MSLink` whose before-lane **is** the first-stage internal lane (`thisLink` in `postloadInit`),
+with `getViaLane()` = the second-stage lane and `myAmCont = true`; plus `isInternalJunctionLink()`,
+`isExitLinkAfterInternalJunction()`, `getCorrespondingEntryLink()` (`MSLink.cpp:1282-1342`) to walk that
+two-link chain. We model only the **lane** chain, never these link objects — which is *why* the only
+lane-identity available to our code was the link-controlling lane. **The fix does not require modelling that
+extra link.**
+
+### THE FIX (minimal, faithful, cheap)
+
+`NetworkModel` currently has **no `IsInternal` field at all** on `Lane`/`Edge` (`NetworkModel.cs:28-62`); the
+only notion of "internal" is the `':'`-prefix convention, duplicated privately in `NetworkRouter.cs:358` and
+`RerouteEdgeWeights.cs:102`, and never consulted by `Engine.cs`. `LinkByInternalLane` (`NetworkModel.cs:235`)
+is keyed only by link-controlling lanes.
+
+1. Add a lookup covering **every** internal lane, not just `intLanes` members — e.g.
+   `IReadOnlyDictionary<string, Junction> JunctionByInternalLane`, or an `IsInternal` + owning-junction field
+   on `Lane`. **The data is already gathered**: the via-chain walk at `NetworkModel.cs:487-506` already
+   enumerates first-stage lanes; nothing currently records their owning junction.
+2. Replace `egoOnInternal = v.LaneId == egoInternalLaneId` with a probe: "is ego's current lane an internal
+   lane **of this junction**" — a dictionary lookup, correct for every stage of a cont turn.
+
+### A DIRECT, non-vacuous test for the fix (better than any overlap metric)
+
+Because the defect is a wrong predicate, it can be asserted **directly** — no trajectory statistics needed:
+
+- On a net with a cont turn (scenario 44's `C`, or `_diag/cont-turn-sequence`, both committed and offline):
+  assert the model answers **true** for "is `:C_3_0` an internal lane of junction `C`" while `:C_3_0` is
+  **absent** from `C`'s `intLanes`. That single assertion fails today and passes only when fixed.
+- Then assert `egoOnInternal` is true for a vehicle positioned on `:C_3_0`.
+
+This is fast, deterministic, SUMO-free, and cannot pass vacuously.
+
+### Other sites that inherit the same defect
+
+Every place a port gates on "am I on the junction" must use the lane property, not a lane-id match. SUMO call
+sites to check: `checkRewindLinkLanes` (`MSVehicle.cpp:5025`), `isLeader`'s first clause (`:7348`, which our
+`Engine.cs:7035-7061` already mis-describes), and the general `myLane->getEdge().isInternal()` guards at
+`MSVehicle.cpp:2351, 2428, 4211, 5378, 5782, 6248, 7333, 7971, 7990`.
+
 ## Why this matters for F3
 
 Fixing this targets, per the attribution measured in `docs/F3-JUNCTION-OVERLAP-DESIGN.md` §6a:
