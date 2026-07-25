@@ -13,7 +13,7 @@ Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
 
 | Session | Branch | Status | Scope / tracker |
 |---|---|---|---|
-| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A DONE** (`03986a7`) | Task A (stopped-car lateral wobble) — shipped; no further active task (B handed off) |
+| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A REOPENED** — fix reverted | Task A (stopped-car lateral wobble): first fix caused car–car overlaps, reverted (`c30dee6`+); needs targeted redesign |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling: B + #4 + #5 · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — PR to main** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` (+ Engine gate fix) · fixture + tests — all DONE; **C5 seam BLOCKED** (ped–vehicle session) · W4 handed off. Detail: `TASKS-DONE.md` → "Arbitrary road-net import"; `LIVE-CITY-ARBITRARY-NET-{DESIGN,TASKS,TRACKER}.md` |
 
@@ -38,15 +38,18 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
 `docs/COORDINATION-livecity-realism-sessions.md`. Briefs: `docs/LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`,
 `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
-- [x] **A — stopped car wiggles sideways at a crosswalk — DONE** (`03986a7`). Demo-gated
-  `Engine.FreezeLateralWhenStopped` clamp at the lateral commit choke (`Engine.cs` ~9587), parity-inert
-  (flag default false). **Diagnosis correction:** the demo sets no `lateral-resolution` (`_sublane`
-  false), so the SL2015 sublane driver named in the brief is dead code; the real lateral path is
-  `ComputeLateralEvasion`'s crowd-swerve — the commit-choke clamp is path-agnostic and handles it. Guard:
-  `tests/Sim.ParityTests/StoppedCarLateralFreezeTests.cs` (freeze-OFF reproduces the wobble, freeze-ON
-  freezes it). Gates: parity 660/4, LiveCity 25/25, bench `D96213B7BB4021A7`. Real-demo `veh218` posLat
-  swing 3.0 m → 0.00, resumes cleanly. Note: a stopped car now waits rather than swerving around an
-  obstacle until moving ≥ `LaneChangeMinSpeed` (intended crosswalk-hold behavior; boundary with Task B).
+- [ ] **A — stopped car wiggles sideways at a crosswalk — REOPENED** (first fix reverted). The wobble is
+  `ComputeLateralEvasion`'s crowd-swerve oscillating posLat while a car is held (nearly) stopped by a ped
+  (`_sublane` false in the demo, so the SL2015 driver named in the brief is dead code). The first attempt
+  (`Engine.FreezeLateralWhenStopped`: freeze ALL lateral commit below `LaneChangeMinSpeed`, `03986a7`) was
+  **too blunt** and **caused car–car overlaps** — A/B-confirmed: it also pinned cars **mid-lane-change**
+  (straddling two lanes → `gap=Infinity` to trailing cars → followers creep in → overlap: veh17/26 0.00m,
+  veh18/49, veh117/26). **Reverted** (demo opt-in off; Engine flag now default-off, `LIVECITY_FREEZELAT=1`
+  to experiment). **Redesign direction:** suppress only the held-car **crowd-swerve** (don't try to dodge
+  a ped you're stopped for) while leaving lane-change completion / recentering intact — NOT a blanket
+  lateral freeze. **Missing guard to add first:** a demo-level "no two vehicle footprints overlap" (+ red
+  respected, + minGap) invariant over N steps at density — none exists today, which is why this slipped
+  past parity 660/4 + LiveCity 25/25. Repro/brief: `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A.
 - [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
   unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,

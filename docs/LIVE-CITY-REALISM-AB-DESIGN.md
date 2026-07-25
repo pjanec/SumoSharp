@@ -54,16 +54,25 @@ Run from `src/Sim.Viz` (`dotnet run --project src/Sim.Viz -c Release --no-build 
 
 ## TASK A — stopped car wiggles sideways while held at a crosswalk
 
-> **STATUS: DONE** (commit `03986a7`, branch `claude/livecity-realism-fixes-vr4k4b`).
+> **STATUS: REOPENED — first fix reverted** (branch `claude/livecity-realism-fixes-vr4k4b`).
 > **Correction to the diagnosis below:** the mechanism is NOT the MSLCM_SL2015 sublane driver. The demo
 > config sets no `lateral-resolution`, so `Engine._sublane` is false and `ComputeSublaneLateral` never
-> runs — the doc's proposed driver-level fix would have been a no-op. The actual lateral path is
-> `ComputeLateralEvasion`'s crowd-swerve (it treats `CrowdSource` ped discs as dodgeable threats, Q6).
-> The shipped fix is `Engine.FreezeLateralWhenStopped` (default false → parity-inert), a **path-agnostic**
-> freeze at the lateral commit choke (`Engine.cs` ~9587) when new speed < `LaneChangeMinSpeed`, opted in
-> by `LiveCitySim`. Verified: parity 660/4, LiveCity 25/25, bench `D96213B7BB4021A7`; real-demo `veh218`
-> stopped-window posLat swing 3.0 m → 0.00 with clean resume. Guard:
-> `tests/Sim.ParityTests/StoppedCarLateralFreezeTests.cs`.
+> runs. The actual lateral path is `ComputeLateralEvasion`'s crowd-swerve (it treats `CrowdSource` ped
+> discs as dodgeable threats, Q6), which oscillates posLat while a car is held (nearly) stopped by a ped.
+>
+> **First attempt (`03986a7`) — REVERTED.** `Engine.FreezeLateralWhenStopped`: freeze the whole lateral
+> commit (`Engine.cs` ~9587) below `LaneChangeMinSpeed`. It killed the wobble AND passed parity 660/4 +
+> LiveCity 25/25 + bench — but it was **too blunt**: it also froze cars **mid-lane-change**, leaving them
+> **straddling two lanes** → they report `gap=Infinity` to trailing cars (laterally invisible to
+> car-following) → followers creep into them → **car–car overlaps/collisions** (A/B-confirmed on
+> veh17/26 = 0.00 m, veh18/49, veh117/26; all resolve with the freeze off). The gates missed it because
+> the demo has **no car–car-overlap invariant** and the unit test only froze a car at posLat 0 (never a
+> mid-lane-change offset). Demo opt-in disabled; the Engine flag is default-off (`LIVECITY_FREEZELAT=1`
+> to experiment); `tests/Sim.ParityTests/StoppedCarLateralFreezeTests.cs` still passes (single-lane).
+>
+> **Redesign direction:** suppress ONLY the held-car crowd-swerve (a car stopped for a ped should not try
+> to dodge that ped) — leave lane-change completion and recentering untouched, NOT a blanket lateral
+> freeze. Add a demo "no vehicle footprints overlap" (+ red-respected + minGap) guard FIRST, fail-first.
 
 ### Diagnosis (already done — do not re-derive)
 A car stopped for a crossing pedestrian **drifts laterally back and forth by a full lane-width while its
