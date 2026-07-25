@@ -7,6 +7,18 @@ coordinate here (add/claim items), keep it short, move finished items' detail to
 Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4** byte-identical;
 `Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); `Sim.LiveCity.Tests` **25/25**; no `System.Random`.
 
+**In-flight by session** (live-city cluster; full boundary + no-touch lists in
+`docs/COORDINATION-livecity-realism-sessions.md`):
+
+| Session | Branch | Status | Scope / tracker |
+|---|---|---|---|
+| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | in progress | Task A (stopped-car sublane wobble) |
+| ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling: B + #4 + #5 · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
+| arbitrary-net | `claude/discussion-eqp53m` | active | net import · `SumoRouteGraphNav` · single zone · `RegionPlan` · C5 seam · `LIVE-CITY-ARBITRARY-NET-{TASKS,TRACKER}.md` (on that branch) |
+
+*W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
+not a repo-wide board; other `claude/*` branches are not tracked here.*
+
 ---
 
 ## Live-city realism (high-realism-zone demo) — active
@@ -36,8 +48,9 @@ zone-bound the fed disc set). Multi-camera zones (W4) also handed off. Full boun
   one-sided `PedLodManager` promote handoff. (task #25)
 - [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /
   doesn't restore the sidewalk route. *(ped–vehicle avoidance bucket; overlaps B's "wandering ORCA" residual)* (task #25)
-- [ ] **Realism #5 (= "C5") — ORCA peds don't dodge a car standing on the crosswalk**; needs a car→ped
-  obstacle feed (mirror of the ped→car `CrowdSource`). *(ped–vehicle avoidance session)* (task #26)
+- [ ] **Realism #5 (= arbitrary-net task "C5"; distinct from Group-C C5 `keepClear` below) — ORCA peds
+  don't dodge a car standing on the crosswalk**; needs a car→ped obstacle feed (mirror of the ped→car
+  `CrowdSource`). *(ped–vehicle avoidance session)* (task #26)
 - [ ] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle there
   (occasionally recolour ORCA); randomize ped destinations / idle spots.
 - [ ] **W4 — multiple / large / overlapping camera realism zones** *(handed off; unallocated — ped–vehicle
