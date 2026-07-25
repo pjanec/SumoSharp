@@ -9387,7 +9387,24 @@ public sealed partial class Engine : IEngine
         // path anyway, but gate to be safe). Per-vehicle moves are independent (each writes only its
         // own Kinematics/lane); arrivals go through the now-thread-safe command buffer and apply
         // order-independently at Flush, so the result is byte-identical regardless of thread timing.
-        if (RegionPlan && _actuatedLogics.Count == 0)
+        //
+        // BUGFIX (docs/LIVE-CITY-ARBITRARY-NET-TASKS.md C6): this gate was missing the
+        // `ShouldParallelizePlan()` conjunct every OTHER `RegionPlan` gate in this file requires
+        // (PlanMovements/PrePlanVehicle/the post-move phase, above and below) -- `_regionActive` is
+        // populated ONLY inside `if (ShouldParallelizePlan()) { ... BuildRegionActive(); }` at the top
+        // of AdvanceOneStep, which auto-engages only once `_vehicles.Count >= ParallelPlanThreshold`
+        // (256, a cumulative "big scenario" proxy). Below that threshold `_regionActive[r]` stays
+        // permanently empty, so with the old gate (`RegionPlan` alone), EVERY vehicle's move silently
+        // never executed -- speed pinned at 0 forever, a total freeze, for any RegionPlan=true run
+        // with under 256 total (ever-spawned) vehicles. Reproduced directly against
+        // `scenarios/_ped/roadnet_min`: RegionPlan=true gave ArrivedTotal=0 over 400 steps (cars never
+        // moved) vs RegionPlan=false's normal flow -- caught by C6's own "RegionPlan on/off must be
+        // byte-identical" test, which is the first place in this codebase to actually assert that
+        // invariant (the existing RegionPlan smoke test only asserts a non-empty trajectory, which a
+        // frozen vehicle still produces). Inert for every parity/bench golden (RegionPlan is false in
+        // all of them) and for the one pre-existing RegionPlan test (city-organic-L2's ~620-vehicle
+        // demand crosses the 256 threshold quickly, masking this exact bug there).
+        if (RegionPlan && ShouldParallelizePlan() && _actuatedLogics.Count == 0)
         {
             var vehicles = _vehicles;
             System.Threading.Tasks.Parallel.For(0, _regionCount, _parallelOptions, r =>
