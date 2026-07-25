@@ -104,7 +104,10 @@ Therefore:
   stopped on a crosswalk** (jammed junction) and around abandoned cars. Feed live vehicle discs to the ped
   crowd (`OrcaCrowd.SetExternalObstacles`) — **navmesh-independent**, one-sided (cars already avoid peds via
   the existing yield coupling). Only high-power peds avoid (LOD design); config-gated, **on** for road-net
-  import, **off** for the demo so its liveness regression stays byte-identical.
+  import, **off** for the demo so its liveness regression stays byte-identical. The feed is **zone-bounded**
+  (only cars near the realism zone) because `OrcaCrowd` scans external discs per agent — see design §5.8.
+- **Enable the engine's `RegionPlan`** for large nets — a bit-identical, parity-safe car-solve parallelism
+  toggle already in `Engine`, on for road-net import, off for the demo (design §5.9).
 
 ### Out of scope (this round)
 - **Any crop feature** — done offline (§3).
@@ -120,7 +123,11 @@ Therefore:
   and is an attractive later source).
 - **Polygon / TAZ crops** — n/a given §3.
 - **Low-power pedestrian obstacle avoidance** — not planned. By LOD design, low-power PathArc peds avoid
-  nothing; only high-power (ORCA) peds avoid cars/each other (see the in-scope item below).
+  nothing; only high-power (ORCA) peds avoid cars/each other (see the in-scope item above).
+- **Multiple / large / overlapping camera-frustum realism zones** — a distinct capability owned by a
+  **separate session** (`LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`). This work delivers the
+  **single-zone** surface and clean seams for it (design §12). The arbitrary-net feature ships and hits its
+  DoD with one zone; multi-camera rides on top afterwards.
 
 ---
 

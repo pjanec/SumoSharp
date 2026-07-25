@@ -240,12 +240,24 @@ avoids the crowd through its own lane solve; `OrcaCrowd.cs:731-745`). The discs 
 position data, never the navigation seam. So **route-graph mode does ped-avoids-car identically to navmesh
 mode.**
 
-**What road-net mode does:** in `LiveCitySim.Step`, project each live vehicle from the engine snapshot
-(`_lastSnapshot`: `PosX/PosY`, velocity, a bounding radius from `Length/Width`) to a `WorldDisc[]` and pass
-that as `externalEntities` (replacing the current `NoEntities`, `LiveCitySim.cs:451`). One disc per car
+**What road-net mode does:** in `LiveCitySim.Step`, project live vehicles from the engine snapshot
+(`_lastSnapshot`: `PosX/PosY`, velocity, a bounding radius from `Length/Width`) to a reused `WorldDisc[]` and
+pass it as `externalEntities` (replacing the current `NoEntities`, `LiveCitySim.cs:451`). One disc per car
 centre for v1 (radius ≈ half the larger body dimension); a short chain of discs along the body is a later
 refinement if single-disc corner clipping shows. Deterministic (derived from the snapshot, no RNG).
-`OrcaCrowd`'s range cutoff means feeding all live cars is fine — only nearby ones influence a ped.
+
+**Bounded feed (mandatory — the perf hazard):** `OrcaCrowd` does **not** spatially index external discs —
+every high-power agent scans **all** external discs each step (`O(agents × #discs)`, `OrcaCrowd.cs:731-745`;
+the range cutoff prunes which become constraints but not the scan). Feeding *all* net cars is therefore
+unacceptable at scale, and the realism zone can itself be **large** (a distant / flat-angle camera frustum),
+so this bites even with a single zone. Road-net mode feeds **only cars within ~`NeighbourDist` of the active
+realism-zone union** — peds only exist as ORCA *inside* a zone, so a car far from every zone can never be any
+ped's neighbour. This caps `#discs` to "cars near a zone", computed from the same zone geometry the ped
+promotion uses (`_lcZone*` today; the zone set once the multi-camera work lands — see §12). The residual
+in-zone `O(peds × cars)` is acceptable for a single frustum; if a dense downtown frustum ever exceeds
+budget, the escalation is a spatial index over external discs in `OrcaCrowd` (a bit-identical `Sim.Core`
+optimization — the range cutoff already fixes the constraint set; an index only skips scanning far discs).
+That escalation is **flagged, not built here**, and belongs to the multi-camera design (§12).
 
 **LOD boundary (by design, expected):** only **high-power (ORCA) peds** avoid cars (and each other); this is
 the whole point of the LOD split. **Low-power PathArc peds avoid nothing** — they are cheap dead-reckoning
@@ -258,6 +270,17 @@ low-power peds do not, and are not meant to. No low-power avoidance is in scope 
 (the demo currently passes `NoEntities`; turning the feed on there changes ped positions that loop back into
 the crossing gate → `CrowdSource` → car metrics, so the demo default stays off and the pinned liveness test
 is untouched). The feed is additive and never runs in parity/bench (they drive `Engine` directly).
+
+### 5.9 Enable the engine's region decomposition for large nets
+
+The vehicle `Engine` already has an opt-in, **bit-identical** spatial region decomposition
+(`Engine.RegionPlan` / `RegionGrid` — a G×G grid over the network bounding box, one parallel task per region;
+`Engine.cs:538-635`). LiveCitySim constructs a bare `new Engine()` today and leaves it off. Road-net mode
+enables it (via a `LiveCityConfig.RegionPlan` knob, default **on** for `ForDataset`, **off** for
+`ForRepoRoot`) so a large net's car solve parallelizes. Because the decomposition is bit-identical, this is a
+pure performance toggle; keeping it **off for the demo** guarantees the pinned dense-flow liveness regression
+is untouched (belt-and-suspenders — even on, the result is claimed identical). Not enabled in parity/bench
+(they drive `Engine` directly with their own config).
 
 ## 6. Capability detection + graceful degrade (R3)
 
@@ -348,3 +371,30 @@ recipe section. The **regression fixture** (§9) is generated the same offline w
 
 Crop; density calibration; navmesh for road-net mode; ORCA walkable-area confinement; runtime ped-infra
 generation; `personFlows`/demand-file O/D (deferred); polygon/TAZ crops.
+
+## 12. Boundary with the multi-camera realism-zones work (separate session)
+
+Multiple / large / overlapping **camera-frustum realism zones** are a distinct capability owned by a
+separate session — see `LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`. This design deliberately stops at
+the **single-zone** surface and leaves clean seams for that work; the two must not collide.
+
+**This (arbitrary-net) session delivers / owns:**
+- The road-net-import mode, `SumoRouteGraphNav`, capability degrade, drivable-edges, config surfacing.
+- The **single** realism zone exactly as today (`_lcZone*` + `SetLcRealismZone`, one `InterestSource`) —
+  unchanged in shape.
+- The **ped-avoids-car disc feed (C5)**, bounded to the current single-zone geometry (§5.8).
+- The `Engine.RegionPlan` enablement for large nets (§5.9).
+
+**The multi-camera session owns (NOT built here):**
+- Generalizing the ped promotion to **N `InterestSource`s** (the engine already supports this;
+  `InterestField` is multi-source — only `LiveCitySim`'s single `_orcaSource` is the limit).
+- Generalizing the **car LC-realism** test to "inside ANY of N zones" (replacing the single-circle
+  `IsLowRealismLaneChangePos` / `_lcZone*` scalars) and the `SetLcRealismZones([...])` consumer API.
+- Re-pointing the **C5 disc-feed bound** at the multi-zone union (this design bounds it at the single zone;
+  the multi-camera work swaps in the zone-set union — a one-line change at the seam C5 leaves for it).
+- IF profiling requires it: a **spatial index over external discs** in `OrcaCrowd` (bit-identical
+  `Sim.Core` optimization; §5.8).
+
+**Shared invariants both sessions honour:** the `IPedNavigation` seam; no `Sim.Core` motion-math edits
+(the disc index, if built, is an index not a math change and must be bit-identical); no `System.Random`;
+parity 654/4 + bench hash; the demo stays byte-identical (single zone, disc feed off, `RegionPlan` off).

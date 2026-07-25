@@ -143,9 +143,12 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
   (`PedAvoidVehicles` knob).
 - **Deps:** C1.
 - **Do:** add `LiveCityConfig.PedAvoidVehicles` (default **true** for `ForDataset`, **false** for
-  `ForRepoRoot`); when on, project each live vehicle from `_lastSnapshot` (pos, velocity, bounding radius
-  from `Length/Width`) to a reused `WorldDisc[]` and pass it as `externalEntities` to `_demand.Step`
-  (replacing `NoEntities`); when off, keep `NoEntities`.
+  `ForRepoRoot`); when on, project live vehicles from `_lastSnapshot` (pos, velocity, bounding radius from
+  `Length/Width`) to a reused `WorldDisc[]` and pass it as `externalEntities` to `_demand.Step` (replacing
+  `NoEntities`); when off, keep `NoEntities`. **Bound the feed** to cars within ~`NeighbourDist` of the
+  active realism zone (`_lcZone*`) — `OrcaCrowd` scans all external discs per agent (`O(agents×#discs)`), so
+  the feed must be zone-bounded, not all net cars. Leave the bound behind a small helper so the multi-camera
+  session can swap the single zone for the zone-set union (design §12).
 - **Success:**
   1. With `PedAvoidVehicles==false`, `_demand.Step` receives an empty `externalEntities` and behaviour is
      **byte-identical** to today (demo dense-flow liveness + scene tests unchanged).
@@ -154,7 +157,22 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
      of passing through — deterministic headless fixture test.
   3. A **low-power** ped is unaffected (walks its polyline through the car) — asserts the LOD boundary is
      intentional and the feed is high-power-only.
-  4. Disc projection is deterministic (no `System.Random`); two runs identical.
+  4. The fed disc set contains **only** cars within the zone bound (a car far outside the realism zone is
+     absent from `externalEntities`) — asserts the perf bound holds.
+  5. Disc projection + bounding are deterministic (no `System.Random`); two runs identical.
+
+### C6 — Enable `Engine.RegionPlan` for large nets  *(design §5.9)*
+- **Files:** `src/Sim.LiveCity/LiveCityConfig.cs` (`RegionPlan` knob), `src/Sim.LiveCity/LiveCitySim.cs`
+  (ctor sets `_engine.RegionPlan`).
+- **Deps:** A1.
+- **Do:** add `LiveCityConfig.RegionPlan` (default **true** for `ForDataset`, **false** for `ForRepoRoot`);
+  the ctor sets `_engine.RegionPlan` accordingly.
+- **Success:**
+  1. `ForRepoRoot` leaves `RegionPlan==false` → demo `Engine` config unchanged; dense-flow liveness + scene
+     tests byte-identical.
+  2. `ForDataset` sets `RegionPlan==true`; the road-net smoke test runs green with it on.
+  3. A determinism check: the road-net fixture run produces identical peak/arrival metrics with `RegionPlan`
+     on vs off (confirms the bit-identical claim in this host).
 
 ---
 
