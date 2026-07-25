@@ -32,7 +32,15 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
 - [-] **T1.4-old** ~~Port `isLeader()` as *the* remaining blocker~~ — **superseded.** `isLeader`'s first
       clause was tried (`!egoOnInternal`) and still measured worse (F3 bucket 8 → 27). Evidence says
       `isLeader` is needed only for the *residual* 8 BOTH-MOVING events, and only AFTER T1.5. See design §6a.
-- [ ] **T1.5** *(NEW — HIGHEST VALUE, do this first)* **Fix the stuck-in-junction bug.** `__veh127` sits
+- [~] **T1.5** *(HIGHEST VALUE — DIAGNOSED, fix not attempted)* **Stuck-in-junction bug** →
+      **`docs/NEED-contturn-stuck-in-junction.md`**. CONFIRMED from the net: junction `d_3_4`'s `intLanes`
+      lists `:d_3_4_20_0` but **NOT** `:d_3_4_5_0` (a cont turn's first-stage lane), so it is absent from
+      `LinkByInternalLane`, the forward scan skips it, and **`egoOnInternal` is FALSE while the car is
+      physically inside the junction** — firing the cautious-approach arm (binder 10 / arm 2, 95/95 steps)
+      against its own documented precondition. LEADING (unverified) hypothesis for the freeze: `seen`
+      double-counts the current lane when `LaneSeqIndex` lags, giving 7.37 m — permanently above the 4.5 m
+      visibility gate, so the brake re-applies forever. The NEED names the 4-value experiment that settles it.
+- [ ] **T1.5b** *(superseded description, kept for the payoff figures)* ~~Fix the stuck-in-junction bug.~~ `__veh127` sits
       stopped on `:d_3_4_5_0` for **95 consecutive steps** and `__veh140` on `:d_5_4_12_0` for **75**, both
       with `GapAhead = +Inf` AND `NextMouthGap = +Inf` throughout — no leader, no blocked exit, nothing in
       front of them. Some constraint pins them at ~0 indefinitely. Payoff: the 5 deepest F3-bucket events

@@ -930,25 +930,28 @@ public class F3JunctionOverlapDiagTests
         + $"| Binder={r.Binder,2} ({BinderName(r.Binder),-22}) | JyArm[{JyArmDecoded(r.JyArmRaw)}] "
         + $"| JyFoeSpeed={r.JyFoeSpeed,7:F3} | GapAhead={FmtGap(r.GapAhead),8} | tl={FmtTl(r.Tl)}";
 
-    // Longest consecutive run of speed < stoppedThreshold within `rows` (rows assumed sorted by Step,
-    // but not necessarily step-contiguous -- a gap in the row list itself breaks the run). Returns
-    // (-1,-1) if the vehicle is never observed stopped.
+    // Longest consecutive run of speed < stoppedThreshold ON THE SAME INTERNAL (':') LANE within `rows`
+    // (rows assumed sorted by Step) -- matches F3_JunctionStoppingAttribution's RunState semantics
+    // exactly (same Handle + same Lane + LastStep == st-1), not just "speed below threshold anywhere":
+    // a vehicle merely driving slowly while changing internal lanes must NOT count as one long run.
+    // Returns (-1,-1,"") if the vehicle is never observed stopped on one internal lane for 2+ steps.
     private static (int Start, int End) LongestStoppedRun(List<BindRow> rows, double stoppedThreshold)
     {
         var bestStart = -1; var bestEnd = -1; var bestLen = 0;
-        var curStart = -1; var curLen = 0; var prevStep = int.MinValue;
+        var curStart = -1; var curLen = 0; var curLane = string.Empty; var prevStep = int.MinValue;
         foreach (var r in rows)
         {
             var contiguous = r.Step == prevStep + 1;
-            if (r.Speed < stoppedThreshold)
+            var stoppedOnInternal = r.Speed < stoppedThreshold && r.LaneId.Length > 0 && r.LaneId[0] == ':';
+            if (stoppedOnInternal)
             {
-                if (curLen > 0 && contiguous)
+                if (curLen > 0 && contiguous && r.LaneId == curLane)
                 {
                     curLen++;
                 }
                 else
                 {
-                    curStart = r.Step; curLen = 1;
+                    curStart = r.Step; curLen = 1; curLane = r.LaneId;
                 }
 
                 if (curLen > bestLen)
