@@ -199,5 +199,5 @@ A public way to run `LiveCitySim` on an arbitrary **ped-equipped** SUMO road-net
 crop); peds walk sidewalks and cross at crossings via route-graph navigation (no bake); a net with sidewalks
 but no crossings runs walk-only; a bare vehicle-only net runs vehicles-only without throwing; the active mode
 is queryable. The `demo_city/box` demo is byte-for-byte unchanged and stays on the navmesh regime. Parity
-(654/4) and the bench determinism hash are intact. netstandard2.1 and the consumer contract are preserved.
+(byte-identical; 657/4 on the rebased base) and the bench determinism hash are intact. netstandard2.1 and the consumer contract are preserved.
 The offline net-prep recipe is documented.

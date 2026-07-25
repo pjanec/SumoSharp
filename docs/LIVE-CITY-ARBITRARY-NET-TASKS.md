@@ -5,11 +5,24 @@ section, never copied) and `LIVE-CITY-ARBITRARY-NET-SCOPING.md` (the WHAT). Each
 reference, the files it touches, its dependencies, and **mandatory success conditions** the implementor must
 satisfy before the task is closed. Tracker: `LIVE-CITY-ARBITRARY-NET-TRACKER.md`.
 
-**Global gate (applies to every task):** `dotnet test tests/Sim.ParityTests` stays 654/4 byte-identical and
-the `Sim.Bench` determinism hash is unchanged. Any task that moves either is reverted.
+**Global gate (applies to every task):** `dotnet test tests/Sim.ParityTests` stays **byte-identical** and
+the `Sim.Bench` determinism hash is unchanged. Any task that moves either is reverted. (Test count tracks
+the base: 654/4 on the original handoff, **657/4 after rebasing onto realism-1** — hold whatever the rebased
+base reports; the invariant is byte-identical trajectories, not the number.)
 
 **Model routing:** B* and E1/E2 (mechanical port + offline gen) suit a Sonnet implementor; A3/C1/C2/C4 and
 the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
+
+**Cross-session coordination (as of the split confirmation):**
+- **realism-A/B session** confirmed the split; it touches `LiveCitySim` only in a *different* method (Task A:
+  a demo-gated sublane-lateral freeze on stopped cars, `ComputeSublaneLateral`/commit-choke ~9587 + a new
+  `FreezeLateralWhenStopped` flag) and never touches our zone/import/nav/`RegionPlan` seams. No conflict.
+- **Base parity is 657/4** (realism-1 added 3 tests) — we inherit it on rebase; all "byte-identical" gates
+  below hold against that base.
+- **⚠ C5 ownership is NOT ours to assume.** The `WorldDisc`/`externalEntities` car↔ped coupling
+  ("car-stops-before-ped" + "ped-avoids-jammed-car") is **owned by the ORCA-ped session**. **C5 is blocked
+  pending an ownership sync with them** (see the C5 note). Everything else (A, B, C1-C4, C6, D, E, F) is
+  fully ours and unblocked — start there.
 
 ---
 
@@ -139,9 +152,15 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
   `RerouteDriver` / concrete `SumoNavMesh` is constructed in road-net mode (type assertion / no-throw).
 
 ### C5 — Feed live vehicle discs to the ped crowd (ped-avoids-car)  *(design §5.8)*
+- **⚠ BLOCKED — ownership sync required.** The `WorldDisc`/`externalEntities` car↔ped coupling is owned by
+  the **ORCA-ped session**. Do not implement C5 until ownership is agreed. Likely split: *they* own the
+  coupling mechanism (project cars → discs, feed the crowd, the avoidance behaviour); *we* own enabling it in
+  road-net mode + the **zone-bounding** (which cars to feed, tied to our realism zone) + the
+  `PedAvoidVehicles` knob. Confirm before building; if they own the whole feed, C5 collapses to "enable +
+  bound their feed in road-net mode".
 - **Files:** `src/Sim.LiveCity/LiveCitySim.cs` (`Step`, `:451`); `src/Sim.LiveCity/LiveCityConfig.cs`
   (`PedAvoidVehicles` knob).
-- **Deps:** C1.
+- **Deps:** C1; **ORCA-ped ownership sync.**
 - **Do:** add `LiveCityConfig.PedAvoidVehicles` (default **true** for `ForDataset`, **false** for
   `ForRepoRoot`); when on, project live vehicles from `_lastSnapshot` (pos, velocity, bounding radius from
   `Length/Width`) to a reused `WorldDisc[]` and pass it as `externalEntities` to `_demand.Step` (replacing
@@ -231,7 +250,7 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
 ### F1 — Accept gate  *(design §10)*
 - **Deps:** all above.
 - **Success (Opus verifies first-hand, does not trust reports):**
-  1. `dotnet test tests/Sim.ParityTests` — 654/4 byte-identical.
+  1. `dotnet test tests/Sim.ParityTests` — byte-identical (657/4 on the rebased base).
   2. `Sim.Bench` determinism hash — unchanged.
   3. `tests/Sim.LiveCity.Tests` — scene + dense-flow liveness green (demo `Navmesh` path proven untouched).
   4. Full `dotnet test` green on a fresh checkout **without SUMO**.

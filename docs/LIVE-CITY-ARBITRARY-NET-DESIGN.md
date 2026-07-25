@@ -347,7 +347,8 @@ recipe section. The **regression fixture** (§9) is generated the same offline w
   vehicles-only with `PedestriansEnabled==false` and no throw.
 - **Robustness:** a fixture (or unit) exercising large-magnitude, negative, and 3-D (elevation) coordinates
   through parse → route → sample.
-- **Parity/bench gate:** `dotnet test tests/Sim.ParityTests` byte-identical (654/4); `Sim.Bench` hash
+- **Parity/bench gate:** `dotnet test tests/Sim.ParityTests` byte-identical (657/4 after rebasing onto
+  realism-1; the count tracks the base — the invariant is *byte-identical*, not a fixed number); `Sim.Bench` hash
   intact; demo dense-flow liveness + scene tests green (proves the `Navmesh` path is untouched).
 
 ---
@@ -397,4 +398,4 @@ the **single-zone** surface and leaves clean seams for that work; the two must n
 
 **Shared invariants both sessions honour:** the `IPedNavigation` seam; no `Sim.Core` motion-math edits
 (the disc index, if built, is an index not a math change and must be bit-identical); no `System.Random`;
-parity 654/4 + bench hash; the demo stays byte-identical (single zone, disc feed off, `RegionPlan` off).
+parity byte-identical (657/4 on the rebased base) + bench hash; the demo stays byte-identical (single zone, disc feed off, `RegionPlan` off).

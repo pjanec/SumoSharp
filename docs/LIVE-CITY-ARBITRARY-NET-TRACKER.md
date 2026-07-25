@@ -2,7 +2,7 @@
 
 At-a-glance checklist for `LIVE-CITY-ARBITRARY-NET-TASKS.md`. Tick a box only when the task's stated success
 conditions are verified first-hand (Opus gate for the reviewed tasks). Global gate on every tick: parity
-654/4 byte-identical + bench hash unchanged.
+parity byte-identical (657/4 on the rebased base) + bench hash unchanged.
 
 ## Stage A — dataset param, drivable edges, capability probe
 - [ ] **A1** `LiveCityConfig.ForDataset` + `PedNavMode`; `ForRepoRoot` delegates (demo identical)
@@ -20,7 +20,7 @@ conditions are verified first-hand (Opus gate for the reviewed tasks). Global ga
 - [ ] **C2** crossings-only bake + gate/signals + walk-only degrade
 - [ ] **C3** O/D sampling from sidewalk centrelines (deterministic)
 - [ ] **C4** `RerouteDriver`/concrete-`SumoNavMesh` not wired in road-net mode
-- [ ] **C5** feed live vehicle discs to ped crowd (ped-avoids-car; high-power only; **zone-bounded**; demo off)
+- [ ] **C5** feed live vehicle discs to ped crowd (ped-avoids-car; **zone-bounded**; demo off) — ⚠ BLOCKED: sync world-disc ownership with ORCA-ped session
 - [ ] **C6** enable `Engine.RegionPlan` for large nets (parity-safe toggle; demo off)
 
 ## Stage D — config surfacing
@@ -33,5 +33,5 @@ conditions are verified first-hand (Opus gate for the reviewed tasks). Global ga
 - [ ] **E4** coordinate robustness (large/negative/3-D)
 
 ## Stage F — final gate (Opus)
-- [ ] **F1** parity 654/4 + bench hash + demo liveness/scene green; no `Sim.Core` diff; netstandard2.1 +
+- [ ] **F1** parity byte-identical (657/4) + bench hash + demo liveness/scene green; no `Sim.Core` diff; netstandard2.1 +
   consumer contract intact

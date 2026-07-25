@@ -71,7 +71,8 @@ each design coherent. See `LIVE-CITY-ARBITRARY-NET-DESIGN.md` §12 for the bound
 
 ## 5. Hard constraints (inherited)
 
-- **Determinism / parity iron law:** `dotnet test tests/Sim.ParityTests` stays 654/4 byte-identical; the
+- **Determinism / parity iron law:** `dotnet test tests/Sim.ParityTests` stays **byte-identical** (count
+  tracks the base — 657/4 after realism-1); the
   `Sim.Bench` hash is unchanged. Parity/bench drive `Engine` directly (never `LiveCitySim`), so zone work is
   invisible to them — *provided* the `OrcaCrowd` disc index (R-E), if built, is bit-identical.
 - **No `System.Random`** — zone add/move/remove and any-zone tests are deterministic and order-independent.
@@ -114,5 +115,5 @@ each design coherent. See `LIVE-CITY-ARBITRARY-NET-DESIGN.md` §12 for the bound
 
 `LiveCitySim` accepts N movable, possibly-large, overlapping realism zones; peds promote to ORCA inside the
 union, cars run high-realism LC inside the union; the ped-avoids-car feed is bounded to the union; the demo
-(single zone) is byte-identical; parity 654/4 + bench hash intact; consumer contract preserved; any
+(single zone) is byte-identical; parity byte-identical (657/4) + bench hash intact; consumer contract preserved; any
 `OrcaCrowd` disc index (if built) proven bit-identical.
