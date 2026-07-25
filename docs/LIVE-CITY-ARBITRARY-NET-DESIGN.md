@@ -98,6 +98,18 @@ the query cell and its 8 neighbours, keep the nearest point-on-segment; widen th
 Determinism: grid construction and query iteration order are by node/segment index; ties broken by lower
 index. No RNG, no floating-point-order hazards beyond standard `<` comparisons.
 
+**Two latent limitations (accepted; verified not to affect real usage — as-built in Stage B):**
+1. *First-hit-ring nearest.* `NearestLane` returns the nearest segment found at the first ring that contains
+   any candidate; for a query point sitting **far off every lane** in a sparse area, a strictly-nearer
+   segment one ring further out could be missed. This never occurs in real usage — O/D is sampled *on*
+   sidewalk centrelines (distance ≈ 0, resolved in the centre cell) and `HalfWidthsAlong` runs on
+   on-lane/portal path vertices. If a future caller queries genuinely off-network points, harden the search
+   to keep expanding until `ring·cellSize ≥ bestDist`.
+2. *Seam width label.* A portal vertex on a walkingarea/crossing boundary can be attributed to the adjoining
+   walkingarea rather than the crossing in `HalfWidthsAlong` (nearest-wins at distance 0). Cosmetic — it
+   only labels the width at that seam; `FindPath` still crosses at the right place. Both are documented in
+   `SumoRouteGraphNav`'s own remarks.
+
 ---
 
 ## 4. `SumoRouteGraphNav.FindPath` — algorithm

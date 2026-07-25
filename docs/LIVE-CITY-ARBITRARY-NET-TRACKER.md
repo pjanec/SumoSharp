@@ -10,10 +10,10 @@ parity byte-identical (657/4 on the rebased base) + bench hash unchanged.
 - [x] **A3** capability probe + graceful degrade + `PedestriansEnabled`/`CrossingsEnabled`
 
 ## Stage B — SumoRouteGraphNav
-- [ ] **B1** node/edge graph + nearest-lane spatial index
-- [ ] **B2** `FindPath` (A* + polyline assembly through crossings/walkingareas)
-- [ ] **B3** `HalfWidthsAlong` from real lane widths
-- [ ] **B4** determinism (no `System.Random`, repeat-identical)
+- [x] **B1** node/edge graph + nearest-lane spatial index
+- [x] **B2** `FindPath` (A* + polyline assembly through crossings/walkingareas)
+- [x] **B3** `HalfWidthsAlong` from real lane widths
+- [x] **B4** determinism (no `System.Random`, repeat-identical)
 
 ## Stage C — road-net mode wiring
 - [ ] **C1** mode branch: build route-graph nav, skip sidewalk bake (demo path unchanged)
