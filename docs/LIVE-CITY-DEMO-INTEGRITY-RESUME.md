@@ -9,7 +9,7 @@ if it misrenders, visual observations through it are suspect; prefer authoritati
 - Branch: **`claude/livecity-realism-fixes-vr4k4b`**, HEAD `24d17fd` (based on the old `claude/livecity-realism-fixes`
   tip, reset early in the session). Docs are also synced to `main`.
 - **Gates (all currently green, verified first-hand):**
-  - `dotnet test tests/Sim.ParityTests -c Release` = **660/4** byte-identical (657 base + 3 from `StoppedCarLateralFreezeTests`).
+  - `dotnet test tests/Sim.ParityTests -c Release` = **661/4** byte-identical (657 base + 4 from `HeldCrowdSwerveSuppressionTests`; was 660 with the old 3-fact `StoppedCarLateralFreezeTests`, now removed).
   - `dotnet run --project src/Sim.Bench -c Release` → hash **`D96213B7BB4021A7`** (par==single).
   - `dotnet test tests/Sim.LiveCity.Tests -c Release` = **27/27** — run **WITHOUT** `--no-build` (this project is NOT in `Traffic.sln`).
 - Commit identity: `git config user.email noreply@anthropic.com && git config user.name Claude`. The 21 inherited
@@ -38,10 +38,15 @@ Three sessions; only THIS one is active. Full boundary: `docs/COORDINATION-livec
   instrument/observe the player's Catmull-Rom output for a stopping car (a car with a cruise-then-hard-brake profile;
   veh80's braking was smooth −4.5 m/s² so it doesn't trigger it). If no repro exists, downgrade F1 (render lags; the
   "red-run" was a misread or a car-vs-light render desync). Treat the player as SUSPECT until proven.
-- **F2 — Task A blanket lateral freeze caused car–car overlaps. REAL, REVERTED.** `Engine.FreezeLateralWhenStopped`
-  (freeze all lateral commit below `LaneChangeMinSpeed`, `Engine.cs:9599-9603`) also pinned cars MID-LANE-CHANGE →
-  straddling two lanes → `gap=Infinity` to followers → creep-in → overlaps. Reverted: demo opt-in off (default false;
-  `LIVECITY_FREEZELAT=1` re-enables for A/B experiments). Guard: **F4a** (below).
+- **F2 — Task A blanket lateral freeze caused car–car overlaps. REVERTED → FIXED (targeted redo). DONE.** The old
+  `Engine.FreezeLateralWhenStopped` (freeze all lateral commit below `LaneChangeMinSpeed`) pinned cars MID-LANE-CHANGE →
+  straddle → `gap=Infinity` → overlaps. **Reverted and the blanket clamp removed.** Replaced by
+  `Engine.SuppressHeldCrowdSwerve` (default false; demo opt-in **on** by default, `LIVECITY_HELDSWERVE=0` disables): in
+  `ComputeLateralEvasion`'s crowd-swerve branch, when ego is HELD (`BindingConstraint == 13`) AND the ped is laterally
+  STATIC (`LatSpeed ≈ 0`), recentre + wait in-lane. Only recentres → cannot straddle. **Empirically discriminated**
+  (traced the two crowd-swerve fixtures): held = `binder 13`, at-speed pass = `binder 3`; the fix touches only the former.
+  Verified: parity 661/4, bench, LiveCity 27/27, F4a green, no new/worse overlap class (worst 3.035 m F3 + pairs/frame 4
+  unchanged; adds only 0.74/0.09 m normal-lane overlaps, shallower than 6 pre-existing). See FINDINGS §F2.
 - **F3 — pre-existing junction-overlap engine bug. REAL, on `main` too → ROUTED to core junction work (NOT this session).**
   Cars on crossing internal junction lanes overlap ~3 m (identical worst pair `veh134/veh38` 3.035 m on main and this
   branch; this branch ~2x'd the count). Into-occupied / conflict-point family. Blocks a clean zero-overlap invariant.
@@ -73,7 +78,14 @@ Three sessions; only THIS one is active. Full boundary: `docs/COORDINATION-livec
 - `accel` IS published (`ReplicationPublisher.PublishStep` reads `snap.Accel`). `DrExtrapolation.Arc` decel-clamps only when
   packet `accel < 0`.
 
-## Task A redo — APPROVED by owner, ready to implement (design)
+## Task A redo — ✅ DONE (shipped). Design of record below.
+
+**Status: implemented and verified** (see §F2 above for numbers). What shipped: `Engine.SuppressHeldCrowdSwerve`
+gate in `ComputeLateralEvasion` (the crowd-swerve branch, right after the non-crowd stop gate ~9266); removed the
+reverted blunt clamp in `ExecuteMoves`; renamed `FreezeLateralWhenStopped → SuppressHeldCrowdSwerve`; demo opt-in
+on by default at `LiveCitySim.cs`; new `tests/Sim.ParityTests/HeldCrowdSwerveSuppressionTests.cs` (4 facts, replaced
+`StoppedCarLateralFreezeTests`). The empirical discriminator (binder 13 held vs binder 3 passing) was confirmed by
+tracing both fixtures before writing the fix. Original design (kept for the record):
 
 Goal: kill the crosswalk wobble (posLat oscillating while a car is held stopped by a ped) WITHOUT the F2 collateral
 (the blanket freeze pinned lane-changes/recentering). All lines `src/Sim.Core/Engine.cs`.
@@ -97,8 +109,8 @@ Goal: kill the crosswalk wobble (posLat oscillating while a car is held stopped 
 
 ## Fixing order (finalized)
 
-1. **Task A redo** (approved, designed above; guarded by F4a).
-2. **F1** — get a SOLID PLAYER-LEVEL repro before any fix; player is suspect. Downgrade if none.
+1. ~~**Task A redo**~~ — ✅ **DONE** (guarded by F4a; see §F2).
+2. **F1** — get a SOLID PLAYER-LEVEL repro before any fix; player is suspect. Downgrade if none. **← next**
 3. **F3** — routed to core junction work (not this session).
 4. **F4b** — zero-overlap invariant, deferred until F3 fixed.
 

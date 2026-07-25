@@ -54,7 +54,17 @@ Run from `src/Sim.Viz` (`dotnet run --project src/Sim.Viz -c Release --no-build 
 
 ## TASK A — stopped car wiggles sideways while held at a crosswalk
 
-> **STATUS: REOPENED — first fix reverted** (branch `claude/livecity-realism-fixes-vr4k4b`).
+> **STATUS: ✅ DONE (targeted redo).** Shipped `Engine.SuppressHeldCrowdSwerve` (default false; demo opt-in
+> on by default, `LIVECITY_HELDSWERVE=0` disables): in `ComputeLateralEvasion`'s crowd-swerve branch, when ego
+> is HELD by the crowd (`BindingConstraint == 13`) AND the ped is laterally STATIC (`LatSpeed ≈ 0`), recentre
+> and wait in-lane instead of swerving. Only recentres → cannot straddle (the F2 mechanism is structurally
+> impossible). Empirically discriminated by tracing both crowd-swerve fixtures: held = `binder 13` (suppressed),
+> at-speed pass = `binder 3` (untouched). Removed the reverted blanket clamp. Verified: parity **661/4**, bench
+> `D96213B7BB4021A7`, LiveCity **27/27**, F4a straddle guard green, no new/worse overlap class. Test:
+> `tests/Sim.ParityTests/HeldCrowdSwerveSuppressionTests.cs`. Full writeup: `docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`
+> §F2. History of the reverted first attempt kept below for context.
+>
+> **STATUS (historical): REOPENED — first fix reverted** (branch `claude/livecity-realism-fixes-vr4k4b`).
 > **Correction to the diagnosis below:** the mechanism is NOT the MSLCM_SL2015 sublane driver. The demo
 > config sets no `lateral-resolution`, so `Engine._sublane` is false and `ComputeSublaneLateral` never
 > runs. The actual lateral path is `ComputeLateralEvasion`'s crowd-swerve (it treats `CrowdSource` ped
