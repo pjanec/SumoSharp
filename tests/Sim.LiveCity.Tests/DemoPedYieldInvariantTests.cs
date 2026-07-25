@@ -79,79 +79,73 @@ public class DemoPedYieldInvariantTests
     private const double FastSpeedMps = 2.0;
 
     private sealed record ArmResult(
-        long CloseFastPassCount,
-        double WorstClearance,
-        double WorstClearanceSpeed,
+        long CloseFastPassCount,      // in-zone, any geometry
+        long HeadOnCount,             // in-zone AND the ped is AHEAD of the bumper, inside ego's corridor
+        double HeadOnMaxSpeed,
+        long NetWideCount,            // whole net, including cars that cannot see the ped at all (see below)
         long ArrivedTotal);
 
     [Fact]
     public void DemoAuthoritative_NoCarPassesPedInZoneCloseAndFast()
     {
-        const int steps = 300; // 150 s at Dt=0.5 -- long enough for downtown traffic + crossing peds to
-                                // actually interact inside the high-realism zone, short enough for a
-                                // couple of minutes total across both arms.
+        // DENSITY MATTERS, AND AN EARLIER VERSION OF THIS TEST GOT IT WRONG. At 160 peds / 300 steps the
+        // baseline produced only 7 in-zone events and the fixed arm 0, which read as "the guard eliminates
+        // close-fast-passes". It does not: that sample simply did not contain the hard cases. Re-run at the
+        // demo's real crowd density (800 peds, the LIVECITY_PEDS figure the demo brief uses) over twice the
+        // horizon, the baseline produces 200 in-zone events and the fixed arm 70 -- a large, real reduction,
+        // but NOT zero. The thresholds below assert the reduction that is actually there.
+        const int steps = 600;   // 300 s at Dt=0.5
+        const int peds = 800;    // the demo's real crowd density
 
         var sw = Stopwatch.StartNew();
-        var baseline = RunArm(pedYieldEnv: "0", steps, "BASELINE (LIVECITY_PEDYIELD=0)");
+        var baseline = RunArm(pedYieldEnv: "0", steps, peds, "BASELINE (LIVECITY_PEDYIELD=0)");
         var baselineElapsed = sw.Elapsed;
         sw.Restart();
-        var fixedArm = RunArm(pedYieldEnv: null, steps, "FIXED (Task-B guard on)");
+        var fixedArm = RunArm(pedYieldEnv: null, steps, peds, "FIXED (Task-B guard on)");
         var fixedElapsed = sw.Elapsed;
 
         _out.WriteLine(
-            $"BASELINE: close-fast-pass events = {baseline.CloseFastPassCount}, worst clearance "
-            + $"{baseline.WorstClearance:F3} m @ {baseline.WorstClearanceSpeed:F2} m/s, ArrivedTotal = "
-            + $"{baseline.ArrivedTotal}, wall time {baselineElapsed.TotalSeconds:F1} s.");
+            $"BASELINE: in-zone close-fast-passes = {baseline.CloseFastPassCount} (of which HEAD-ON = "
+            + $"{baseline.HeadOnCount}, max speed {baseline.HeadOnMaxSpeed:F2} m/s), net-wide = "
+            + $"{baseline.NetWideCount}, ArrivedTotal = {baseline.ArrivedTotal}, {baselineElapsed.TotalSeconds:F0} s.");
         _out.WriteLine(
-            $"FIXED:    close-fast-pass events = {fixedArm.CloseFastPassCount}, worst clearance "
-            + $"{fixedArm.WorstClearance:F3} m @ {fixedArm.WorstClearanceSpeed:F2} m/s, ArrivedTotal = "
-            + $"{fixedArm.ArrivedTotal}, wall time {fixedElapsed.TotalSeconds:F1} s.");
-        _out.WriteLine(
-            $"Total wall time (both arms): {(baselineElapsed + fixedElapsed).TotalSeconds:F1} s.");
+            $"FIXED:    in-zone close-fast-passes = {fixedArm.CloseFastPassCount} (of which HEAD-ON = "
+            + $"{fixedArm.HeadOnCount}, max speed {fixedArm.HeadOnMaxSpeed:F2} m/s), net-wide = "
+            + $"{fixedArm.NetWideCount}, ArrivedTotal = {fixedArm.ArrivedTotal}, {fixedElapsed.TotalSeconds:F0} s.");
 
-        if (fixedArm.CloseFastPassCount == 0)
-        {
-            _out.WriteLine("FIXED arm reached ZERO close-fast-pass events over this run.");
-        }
-        else
-        {
-            _out.WriteLine(
-                $"FIXED arm did NOT reach zero: {fixedArm.CloseFastPassCount} close-fast-pass event(s) "
-                + "remain. This is a legitimate result (the L2 guarantee bounds speed near a ped, it does "
-                + "not claim zero over an arbitrary demo-scale run) -- reported plainly, not hidden.");
-        }
+        // WHY THE NET-WIDE COUNT BARELY MOVES, AND WHY THAT IS NOT THIS GUARD'S FAILURE.
+        // The car-side crowd feed is `Composite(PedLodManager.HighPowerFootprints, CrossingOccupancySource)`
+        // (LiveCitySim ctor). Pedestrians promote to HighPower via the InterestSource, which IS the
+        // LC-realism zone -- so OUTSIDE that zone a car can only see a pedestrian if that pedestrian is
+        // walking on a crossing. Measured cross-tab at 800 peds confirms it exactly: every HighPower event
+        // is in-zone and every LowPowerWalking/Paused event is out-of-zone. No yield-zone radius can fix
+        // out-of-zone behaviour, because out-of-zone cars have no pedestrian data to react to; that is a
+        // ped-LOD feed question, not a car-yield question. Hence the assertions below are scoped to
+        // IN-ZONE, which is exactly the region the guard is armed over.
 
-        // (1) LIVE + NON-VACUOUS: the probe must actually detect the pre-Task-B defect (close AND fast
-        //     passes are real and common in the baseline arm). If this is 0, the probe itself is dead
-        //     (wrong zone, wrong radius, or no traffic ever entered the zone) -- per instructions this is
-        //     reported, NOT patched by weakening the assertion.
+        // (1) LIVE + NON-VACUOUS.
         Assert.True(baseline.CloseFastPassCount > 0,
-            $"expected the BASELINE arm (LIVECITY_PEDYIELD=0) to record > 0 close-fast-pass events "
-            + $"(clearance < {CloseClearanceMeters:F1} m, speed > {FastSpeedMps:F1} m/s, car inside the "
-            + $"high-realism zone), got 0. The probe is either dead or no car-ped close-fast encounter "
-            + "occurred inside the zone during this run.");
+            $"expected the BASELINE arm to record > 0 in-zone close-fast-pass events, got 0 -- the probe is "
+            + "dead (wrong zone, wrong radius, or no traffic entered the zone).");
 
-        // (2) THE FIX: the FIXED arm (Task-B guard on) must record strictly fewer close-fast-pass events
-        //     than the baseline -- the core regression guard for §3.1 (L1 swerve suppression) + §3.2
-        //     (L2 CrowdYieldConstraint proximity cap).
-        Assert.True(fixedArm.CloseFastPassCount < baseline.CloseFastPassCount,
-            $"REGRESSION: FIXED arm close-fast-pass count ({fixedArm.CloseFastPassCount}) was not strictly "
-            + $"less than the BASELINE count ({baseline.CloseFastPassCount}). The Task-B guard "
-            + "(docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.1/§3.2) should reduce close-fast passes.");
+        // (2) THE FIX, at the demo's real crowd density. Measured 200 -> 70 (a 65% cut); the bar is set at
+        //     a 40% cut so normal run-to-run structure cannot flake it, while any real regression trips it.
+        //     NOTE the bar is deliberately NOT "== 0": at 160 peds it WAS 0, and asserting that here would
+        //     have been a false claim about the demo (see the density comment above).
+        Assert.True(fixedArm.CloseFastPassCount <= baseline.CloseFastPassCount * 0.60,
+            $"REGRESSION: FIXED arm in-zone close-fast-passes ({fixedArm.CloseFastPassCount}) is not at least "
+            + $"40% below BASELINE ({baseline.CloseFastPassCount}).");
 
-        // (3) NO-NEW-GRIDLOCK TRIPWIRE: the guard must not tank throughput. "Within 15%" with a small
-        //     absolute floor (2 vehicles) so the check stays meaningful even when the 150 s window yields
-        //     a modest arrival count (a strict multiplicative 15% of a small integer rounds to near-zero
-        //     tolerance, which would make the check flaky rather than diagnostic).
+        // (3) NO-NEW-GRIDLOCK TRIPWIRE.
         var throughputTolerance = Math.Max(2.0, baseline.ArrivedTotal * 0.15);
         var throughputDelta = Math.Abs(fixedArm.ArrivedTotal - baseline.ArrivedTotal);
         Assert.True(throughputDelta <= throughputTolerance,
             $"REGRESSION: FIXED arm ArrivedTotal ({fixedArm.ArrivedTotal}) diverged from BASELINE "
             + $"({baseline.ArrivedTotal}) by {throughputDelta}, exceeding the 15% tripwire "
-            + $"(tolerance {throughputTolerance:F1}). The Task-B guard should not newly gridlock the demo.");
+            + $"(tolerance {throughputTolerance:F1}).");
     }
 
-    private ArmResult RunArm(string? pedYieldEnv, int steps, string label)
+    private ArmResult RunArm(string? pedYieldEnv, int steps, int peds, string label)
     {
         var prevEnv = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD");
         try
@@ -164,8 +158,8 @@ public class DemoPedYieldInvariantTests
             // discipline as LiveCitySimTests' DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock:
             // explicit values for every knob a stray LIVECITY_* env var could otherwise perturb.
             cfg.CarTargetConcurrent = 160;      // default demo density
-            cfg.PedPopulationCap = 160;         // ped count comparable to the demo (default)
-            cfg.PedSpawnRatePerSecond = 8.0;    // default fill rate
+            cfg.PedPopulationCap = peds;        // the demo's real crowd density
+            cfg.PedSpawnRatePerSecond = 8.0 * Math.Max(1.0, peds / 160.0);   // LiveCityConfig's own LIVECITY_PEDS scaling
             cfg.Dt = 0.5;                       // car/ped coupling step
             cfg.TimeToTeleportSeconds = 0.0;    // teleport OFF -- would mask a jam by removing stuck cars
             cfg.YieldEnabled = true;            // full crossing-yield + ped-signal coupling (the demo)
@@ -194,9 +188,8 @@ public class DemoPedYieldInvariantTests
             // either literal.
             var pedRadius = cfg.PedRadius;
 
-            long closeFastPassCount = 0;
-            var worstClearance = double.PositiveInfinity;
-            var worstClearanceSpeed = 0.0;
+            long closeFastPassCount = 0, headOnCount = 0, netWideCount = 0;
+            var headOnMaxSpeed = 0.0;
             var speedByHandle = new Dictionary<VehicleHandle, double>();
 
             for (var st = 0; st < steps; st++)
@@ -227,21 +220,34 @@ public class DemoPedYieldInvariantTests
                         var clearance = VehicleFootprint.ClearanceToDisc(
                             car.X, car.Y, car.AngleDeg, car.Length, car.Width, ped.X, ped.Y, pedRadius);
 
-                        if (carSpeed > FastSpeedMps && clearance < worstClearance)
+                        if (clearance >= CloseClearanceMeters || carSpeed <= FastSpeedMps)
                         {
-                            worstClearance = clearance;
-                            worstClearanceSpeed = carSpeed;
+                            continue;
                         }
 
-                        if (inZone && clearance < CloseClearanceMeters && carSpeed > FastSpeedMps)
+                        netWideCount++;
+                        if (!inZone)
                         {
-                            closeFastPassCount++;
+                            continue;
+                        }
+
+                        closeFastPassCount++;
+
+                        // The SHARP sub-metric: the ped is AHEAD of the front bumper and inside ego's own
+                        // corridor -- "the car is driving at a person", as opposed to "a person is standing
+                        // near a car that is passing by", which on a city net with kerbside footways is
+                        // ordinary traffic and dominates the raw count.
+                        var (along, lat) = VehicleFootprint.ToBodyFrame(car.X, car.Y, car.AngleDeg, ped.X, ped.Y);
+                        if (along > 0.0 && Math.Abs(lat) < (car.Width / 2.0) + pedRadius + 0.3)
+                        {
+                            headOnCount++;
+                            if (carSpeed > headOnMaxSpeed) headOnMaxSpeed = carSpeed;
                         }
                     }
                 }
             }
 
-            return new ArmResult(closeFastPassCount, worstClearance, worstClearanceSpeed, sim.ArrivedTotal);
+            return new ArmResult(closeFastPassCount, headOnCount, headOnMaxSpeed, netWideCount, sim.ArrivedTotal);
         }
         finally
         {

@@ -129,10 +129,16 @@ inside the high-realism zone, compute the world clearance to every ORCA ped and 
 `clearance < 1.5 m && Speed > 2.0 m/s` events.
 
 **Success conditions**
-1. The **baseline arm** (yield zone off) records **> 0** close-fast-pass events -- proving the check is
-   live, not vacuous. MEASURED: 7, worst a body OVERLAP (-0.30 m) at 5.30 m/s.
-2. The **fixed arm** (yield zone on) records **0**. MEASURED: 0, worst 1.79 m at 2.4 m/s.
-3. Throughput reported for both arms and within tolerance. MEASURED: 42 -> 44 arrivals.
+1. The **baseline arm** (yield zone off) records **> 0** in-zone close-fast-pass events -- proving the
+   check is live, not vacuous. MEASURED at 800 peds / 600 steps: **200**.
+2. **CORRECTED after measurement.** The original condition was "the fixed arm records 0", and at 160 peds /
+   300 steps it did (7 -> 0) -- but that sample was UNDERPOWERED and the claim was false for the demo. At
+   the demo's real 800-ped density the fixed arm records **70** (a 65% cut). The test now runs at real
+   density and asserts a **>= 40% reduction**, plus reports the sharp HEAD-ON sub-metric (ped ahead of the
+   bumper, inside ego's corridor): 10 -> 7.
+3. Throughput reported for both arms and within tolerance. MEASURED: 173 -> 175 arrivals.
+4. Residual documented with its cause, not hidden: out-of-zone cars have no ped data (ped-LOD feed), and
+   `OrcaCrowd.QueryNear` truncates at 16 discs in slot order. See the tracker's "Remaining defects".
 
 ### CY-7 — Extend `CrosswalkCrossingPedTests`
 *Design ref:* §1, §3. *Files:* `tests/Sim.ParityTests/CrosswalkCrossingPedTests.cs`. *Depends:* CY-4

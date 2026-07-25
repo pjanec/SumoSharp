@@ -244,20 +244,40 @@ sweep takes the nearest by `back` with the same strict-`<` tie-break the existin
 | holds while the ped is in the lane | no | yes (Speed 0.00 at t=5) |
 | back at maxSpeed after the ped clears | — | 1 tick |
 
-**Demo scale** (`DemoPedYieldInvariantTests`, real `LiveCitySim`, 300 steps at Dt=0.5, 160 cars / 160 peds,
-close-fast-pass = clearance < 1.5 m while > 2.0 m/s, car inside the zone):
+**Demo scale** (`DemoPedYieldInvariantTests`, real `LiveCitySim`, the demo's OWN crowd density -- 800 peds,
+600 steps at Dt=0.5; close-fast-pass = clearance < 1.5 m while > 2.0 m/s):
 
 | | baseline (`LIVECITY_PEDYIELD=0`) | fixed |
 |---|---|---|
-| close-fast-pass events in-zone | **7** | **0** |
-| worst case | body **overlap** (−0.30 m) at 5.30 m/s — a drive-through | 1.79 m at 2.4 m/s |
-| `ArrivedTotal` (throughput) | 42 | **44** |
+| in-zone close-fast-passes | **200** | **70** (-65%) |
+| of which HEAD-ON (ped ahead, in ego's corridor) | 10 | 7 |
+| net-wide close-fast-passes | 3968 | 3739 |
+| `ArrivedTotal` (throughput) | 173 | **175** |
 
-The baseline's worst offender (`__veh46`) *accelerated* through the encounter — 2.46 → 3.76 → 5.06 → 6.36
-m/s as clearance fell to 0.67 m; `__veh19` drove straight through a pedestrian's body at 5.30 m/s. Neither
-happens with the guard on. Throughput went slightly UP (42 → 44), and
-`DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock` stays green with the guard armed, so the yield
-introduces no new gridlock.
+**An earlier version of this measurement was underpowered and its headline was wrong.** At 160 peds / 300
+steps the baseline produced 7 in-zone events and the fixed arm 0, which read as "the guard eliminates
+close-fast-passes". It does not -- that sample just did not contain the hard cases. The test now runs at
+the demo's real density and asserts the reduction that is actually there (a >= 40% cut), not zero.
+
+Two structural reasons the remaining events are NOT reachable by tuning this guard:
+
+1. **Out-of-zone cars cannot see pedestrians at all.** The car-side feed is
+   `Composite(PedLodManager.HighPowerFootprints, CrossingOccupancySource)`; peds promote to HighPower via
+   the InterestSource, which IS the LC-realism zone. The measured cross-tab is unambiguous -- every
+   `HighPower` event is in-zone, every `LowPowerWalking`/`Paused` event is out-of-zone. Arming the yield
+   NET-WIDE was measured too (a third probe arm) and barely helped: 3739 -> 3458, because the cars still
+   have no pedestrian data. That is a ped-LOD feed question, not a car-yield question. It also means the
+   net-wide column above is largely NOT a defect: ~85% of those events are `offside` (the ped is beside the
+   road, not in the car's path), which on a city net with kerbside footways is ordinary traffic.
+2. **`ICrowdFootprintSource.QueryNear` truncates arbitrarily.** `OrcaCrowd.QueryNear`
+   (`src/Sim.Core/Orca/OrcaCrowd.cs:817`) fills the caller's span in SLOT ORDER and stops when it is full;
+   it is not nearest-first. Every crowd consumer -- this constraint, `CrowdLongitudinalConstraint`, and the
+   crowd-threat scan in `ComputeLateralEvasion` -- passes `stackalloc WorldDisc[16]`. At 800 peds a car
+   inside the zone has far more than 16 peds inside its ~66 m query radius, so peds are silently dropped,
+   including one directly ahead. This is the leading suspect for the residual HEAD-ON events (a car at
+   16.5 m/s with a ped in its corridor). PRE-EXISTING, shared across consumers, and NOT fixed here --
+   fixing it means either a nearest-k `QueryNear` or per-consumer radius/capacity budgets, which changes
+   crowd behaviour for every consumer and wants its own design pass.
 
 **Gates:** `Sim.ParityTests` 680 passed / 4 skipped (= the 664/4 baseline plus exactly the 16 tests added
 here, no pre-existing test perturbed); `Sim.Bench` hash `D96213B7BB4021A7`, par == single; all 48
