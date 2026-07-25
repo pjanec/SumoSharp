@@ -252,7 +252,9 @@ public sealed class LiveCitySim : IDisposable
         // pedestrian must sit still, not drift sideways. Freeze the lateral driver below
         // LaneChangeMinSpeed (the lateral mirror of that same standstill gate). Engine-default false,
         // so parity/bench stay byte-identical; the demo opts in here.
-        _engine.FreezeLateralWhenStopped = true;
+        // Default on. Diagnostic A/B override: LIVECITY_NOFREEZELAT=1 disables the Task-A lateral
+        // freeze, to isolate whether it is implicated in a reported unrealism.
+        _engine.FreezeLateralWhenStopped = Environment.GetEnvironmentVariable("LIVECITY_NOFREEZELAT") != "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
