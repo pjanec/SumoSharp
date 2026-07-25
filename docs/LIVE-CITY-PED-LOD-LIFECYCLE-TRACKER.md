@@ -5,7 +5,7 @@ in `docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md`. Tick a box only when its stated
 first-hand (re-run the gate / read the trace), never on a report.
 
 ## Stage 0 — baseline + repro (gates everything)
-- [ ] T0.1 — confirm iron-law baseline on the clean tree (parity 661/4, bench D96213B7BB4021A7, LiveCity 27/27, Pedestrians green)
+- [x] T0.1 — iron-law baseline confirmed on the clean tree: parity 661/4-skip (657 pass), bench D96213B7BB4021A7 (par==single), LiveCity **43/43**, Pedestrians 272/272 (handoff/COORDINATION "27"/"25" are stale)
 - [ ] T0.2 — `PedLodManager.DiagnosticSnapshot` (additive, read-only)
 - [ ] T0.3 — `--live-city-pedtrace` headless trace (server-truth + wire-reconstructed pose)
 - [ ] T0.4 — capture #3 / #4a / #4b / #6 baselines from the trace → set Stage 2–4 targets
@@ -33,7 +33,7 @@ first-hand (re-run the gate / read the trace), never on a report.
 
 ## Findings log (filled in as Stage 0 runs)
 
-- **Baseline (T0.1):** _pending_
+- **Baseline (T0.1):** parity 661 total / 4 skipped / 657 pass; bench `D96213B7BB4021A7` (par==single); LiveCity 43/43; Pedestrians 272/272. (Handoff said 27/27, COORDINATION 25/25 — both stale.)
 - **#3 (T0.4):** _pending_
 - **#4a (T0.4):** _pending_
 - **#4b (T0.4):** _pending_

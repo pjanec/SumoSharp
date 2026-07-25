@@ -244,11 +244,12 @@ edits stay local to the demand-wiring lines (§5).
 
 ## 7. Iron laws / gates (re-run to prove parity-inert)
 
-- `dotnet test tests/Sim.ParityTests -c Release` = **661/4** byte-identical (baseline to be confirmed on the
-  clean tree before any change).
-- `Sim.Bench` hash **`D96213B7BB4021A7`** (par == single).
-- `dotnet test tests/Sim.LiveCity.Tests` = **27/27** (run **without** `--no-build`; not in `Traffic.sln`).
-- `dotnet test tests/Sim.Pedestrians.Tests` green, plus the new lifecycle/demand tests.
+**Measured baseline on the clean tree (T0.1, 2026-07-25):**
+- `dotnet test tests/Sim.ParityTests -c Release` = **661 total / 4 skipped (657 pass, 0 fail)** byte-identical.
+- `dotnet run -c Release --project src/Sim.Bench` hash **`D96213B7BB4021A7`** (par == single, confirmed).
+- `dotnet test tests/Sim.LiveCity.Tests` = **43/43** (run **without** `--no-build`; not in `Traffic.sln`). Note:
+  the handoff/COORDINATION say `27`/`25` — both stale; the suite has grown to 43. **43/43 is the real gate.**
+- `dotnet test tests/Sim.Pedestrians.Tests` = **272/272**, plus the new lifecycle/demand tests this work adds.
 - No `System.Random`; every new draw seeded per-ped via `VehicleRng`.
 
 ## 8. Open decisions carried into implementation (trace-gated)

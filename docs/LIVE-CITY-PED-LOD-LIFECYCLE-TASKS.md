@@ -5,9 +5,10 @@ its **dependencies**, and **mandatory success conditions** (specific assertions 
 `docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md`; the WHAT is the handoff. Tracker:
 `docs/LIVE-CITY-PED-LOD-LIFECYCLE-TRACKER.md`.
 
-**Global gates (every stage must keep green):** parity `661/4` byte-identical, bench `D96213B7BB4021A7`
-(par==single), `Sim.LiveCity.Tests` `27/27`, `Sim.Pedestrians.Tests` green, no `System.Random`. Confirm the
-baseline on the clean tree in **Stage 0** before any change.
+**Global gates (every stage must keep green), measured baseline (T0.1, 2026-07-25):** parity `661 total / 4
+skipped (657 pass)` byte-identical, bench `D96213B7BB4021A7` (par==single), `Sim.LiveCity.Tests` `43/43` (run
+WITHOUT `--no-build`; not in `Traffic.sln`), `Sim.Pedestrians.Tests` `272/272`, no `System.Random`. (The
+handoff/COORDINATION `27`/`25` LiveCity counts are stale — 43/43 is the real gate.)
 
 ---
 
@@ -18,7 +19,8 @@ baseline on the clean tree in **Stage 0** before any change.
 - **Files:** none (measurement only).
 - **Deps:** none.
 - **Success:** record actual counts for parity / bench hash / LiveCity / Pedestrians on the untouched branch; they
-  match §7 (or the doc is corrected to the measured truth before proceeding).
+  match §7 (or the doc is corrected to the measured truth before proceeding). **DONE (2026-07-25):** parity
+  661/4-skip (657 pass), bench `D96213B7BB4021A7` par==single, LiveCity 43/43, Pedestrians 272/272.
 
 ### T0.2 — `PedLodManager.DiagnosticSnapshot` (additive, read-only)
 - **Design ref:** §1.
