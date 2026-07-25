@@ -35,11 +35,21 @@ a fresh braking packet snaps it back (the `DrClock` back-step metric exists for 
 `KinematicReconstructor`'s upcoming-lane look-ahead aims a stopped car's nose down the through-junction lane.
 **Note:** `--live-city-cartrace` reads `LiveCitySim.Sample()` = raw AUTHORITATIVE positions, so it cannot
 show this overshoot; only `--live-city-drcheck` (the reconstruction path) can.
-**Fix direction:** clamp the reconstructed arc so a decelerating car cannot render past the next packet's
-stop position (no crossing the line it is braking for); damp/disable the look-ahead for near-stopped cars;
-verify `accel` is actually published so the existing decel-clamp engages; consider a small playout-delay bump.
-Files: `src/Sim.Viewer.Motion/DrClock.cs` (`ResolveAt`/interpolate blend), `DrExtrapolation.Arc`
-(`src/Sim.Replication/`), `KinematicReconstructor.cs` (look-ahead), `VizReplayBuilder.cs` (delay/publish).
+**UPDATE — F1 NOT reproduced at the DR-frame level; likely a PLAYER artifact.** Characterizing veh80 via
+`--live-city-drcheck` (the DR-reconstructed frames): the reconstruction **LAGS ~2.5 m behind** the
+authoritative car through the stop window (monotonic, no snap-back) — the OPPOSITE of an overshoot. veh80's
+braking is a smooth −4.5 m/s² (not the cruise-then-hard-brake profile the extrapolation-overshoot needs),
+and `accel` IS published (`ReplicationPublisher.PublishStep` reads `snap.Accel`), so the decel-clamp is not
+starved. So the originally-hypothesized DR-extrapolation overshoot is **unconfirmed**. **New leading
+hypothesis (owner: "the player may be wrong — dangerous, can't be trusted"):** the artifact is in the
+**PLAYER** — `src/Sim.Viz/template.js`, `interpolatedVehicles` / **Catmull-Rom** between DR frames (~line
+458+) — which can overshoot a decelerating stop on its own, and which `--live-city-drcheck` (frame-level)
+cannot see. There are THREE layers (authoritative → DR reconstruction → player Catmull-Rom); an artifact can
+live in any. **Next step: a SOLID repro at the PLAYER level before ANY fix** (instrument/observe the
+Catmull-Rom output for a stopping car; find a cruise-then-hard-brake car). If none, downgrade F1 (render
+lags; the "red-run" was a misread or a car-vs-light render desync). Do NOT fix an unreproduced artifact.
+Candidate fix files IF confirmed: `template.js` (Catmull-Rom clamp), else `DrClock.cs`/`DrExtrapolation.Arc`/
+`KinematicReconstructor.cs`/`VizReplayBuilder.cs`.
 
 ## F2 — Task A lateral freeze caused car–car overlaps (REGRESSION, REVERTED)
 
