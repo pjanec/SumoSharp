@@ -333,6 +333,16 @@ public sealed class LiveCitySim : IDisposable
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
+        // Task A (redo): suppress ONLY the held-car crowd-swerve -- a car held (nearly) stopped by a
+        // laterally-static pedestrian (BindingConstraint == 13) recentres and waits in-lane instead of
+        // steering a full lane-width sideways at ~0 forward speed (the demo's "floating"/wobble). This
+        // replaces a reverted blanket lateral freeze, which also pinned cars MID-LANE-CHANGE -> straddle
+        // -> trailing cars saw gap=Infinity -> queue overlaps (F2: veh17/26, 18/49, 117/26). The targeted
+        // gate cannot straddle (it only recentres) and leaves moving-ped dodging / lane changes / passes
+        // untouched. On by default (delivers the fix); LIVECITY_HELDSWERVE=0 disables for A/B. Guarded by
+        // DemoCarOverlapInvariantTests' straddle test (F4a). See docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A
+        // and docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2.
+        _engine.SuppressHeldCrowdSwerve = Environment.GetEnvironmentVariable("LIVECITY_HELDSWERVE") != "0";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
