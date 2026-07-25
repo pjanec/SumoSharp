@@ -118,10 +118,15 @@ core junction work**; F4b deferred until F3 fixed.
   realism regression. Cars on crossing internal junction lanes overlap ~3 m. Into-occupied / conflict-point
   family (`LANE-CHANGE-OVERLAP-*`, `ISSUE2-JUNCTION-*`, `LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`). Blocks the
   clean zero-overlap invariant (F4b). Now also owns the F1 **keep-clear / garage-stub-into-junction** sub-case
-  (veh80/veh120, veh80/veh134 ~1.8 m). §F3.
+  (veh80/veh120, veh80/veh134 ~1.8 m). **Self-contained handoff (reuses this branch): `docs/F3-JUNCTION-OVERLAP-HANDOFF.md`**
+  — root cause = missing into-occupied admission gate in `JunctionYieldConstraint`'s foe loop
+  (`Engine.cs:6890–7134`, gated on `RespondsTo`/`egoHasSignalPriority`); port `MSVehicle::checkLinkLeaderCurrentAndParallel`
+  /`checkRewindLinkLanes`; NOT parity-inert (SUMO-diff + golden regen). §F3.
 - [ ] **F4b — general zero-overlap invariant (DEFERRED until F3 fixed).** Tighten the committed authoritative
   test + add a DR-render overlap check, asserting ZERO once F3 is resolved. The current
-  `DemoCarOverlapInvariantTests` stays as an F3 characterization + gross-regression tripwire meanwhile. §F4.
+  `DemoCarOverlapInvariantTests` stays as an F3 characterization + gross-regression tripwire meanwhile.
+  **Bundled with F3 in `docs/F3-JUNCTION-OVERLAP-HANDOFF.md` §6** (the `--live-city-drcheck` DR pass is the
+  ready-made infra). §F4.
 
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)
