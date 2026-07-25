@@ -5,7 +5,8 @@ the archive `TASKS-DONE.md`** — this file is just the open items with pointers
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
 Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4** byte-identical;
-`Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); `Sim.LiveCity.Tests` **25/25**; no `System.Random`.
+`Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` =
+**43/43** once the arbitrary-net PR lands (25 base + the road-net/route-graph suite it adds; was 25/25).
 
 **In-flight by session** (live-city cluster; full boundary + no-touch lists in
 `docs/COORDINATION-livecity-realism-sessions.md`):
@@ -14,7 +15,7 @@ Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
 |---|---|---|---|
 | realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | in progress | Task A (stopped-car sublane wobble) |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling: B + #4 + #5 · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
-| arbitrary-net | `claude/discussion-eqp53m` | active | net import · `SumoRouteGraphNav` · single zone · `RegionPlan` · C5 seam · `LIVE-CITY-ARBITRARY-NET-{TASKS,TRACKER}.md` (on that branch) |
+| arbitrary-net | `claude/discussion-eqp53m` | **complete — PR to main** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` (+ Engine gate fix) · fixture + tests — all DONE; **C5 seam BLOCKED** (ped–vehicle session) · W4 handed off. Detail: `TASKS-DONE.md` → "Arbitrary road-net import"; `LIVE-CITY-ARBITRARY-NET-{DESIGN,TASKS,TRACKER}.md` |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
 not a repo-wide board; other `claude/*` branches are not tracked here.*
@@ -29,10 +30,11 @@ high-realism zones".
 **Session ownership (coordinated 2026-07):** this branch (`claude/livecity-realism-fixes-vr4k4b`) owns
 **A only**. **B + C5 (#5) + the wandering-ORCA residual (#4) are ONE car↔ped coupling workstream** → the
 **ped–vehicle avoidance** session (`claude/livecity-ped-vehicle-avoidance`, to be started), NOT this one —
-one owner for one mechanism. The arbitrary-net session (`claude/discussion-eqp53m`) owns net import +
-`SumoRouteGraphNav`/`IPedNavigation` + the single realism zone + `RegionPlan`, delivers the seams, and has
-marked its C5 enablement **BLOCKED** pending the ped–vehicle session (it will later only road-net-enable +
-zone-bound the fed disc set). Multi-camera zones (W4) also handed off. Full boundary + no-touch lists:
+one owner for one mechanism. The arbitrary-net session (`claude/discussion-eqp53m`) owned net import +
+`SumoRouteGraphNav`/`IPedNavigation` + the single realism zone + `RegionPlan` and has **delivered** them
+(PR to main — see `TASKS-DONE.md` → "Arbitrary road-net import"), leaving the seams in place; its C5
+enablement is **BLOCKED** for the ped–vehicle session (which will road-net-enable + zone-bound the fed disc
+set on the seam left behind). Multi-camera zones (W4) also handed off. Full boundary + no-touch lists:
 `docs/COORDINATION-livecity-realism-sessions.md`. Briefs: `docs/LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`,
 `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
