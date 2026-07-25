@@ -126,10 +126,13 @@ From `src/Sim.Viz` (`dotnet run --project src/Sim.Viz -c Release --no-build -- <
 
 ## 8. Boundary — do NOT touch (owned by other sessions)
 
-- **realism-A/B (us):** the sublane lateral driver `ComputeSublaneLateral`/`ComputeRvoLateral` (~8654–8712)
-  and the lateral commit choke (~9587) + the `FreezeLateralWhenStopped` flag. When your work makes a car
-  stop for a ped, our freeze handles its lateral drift — that's intended; don't add a competing lateral
-  nudge on stopped cars.
+- **realism-A/B (us, Task A DONE):** the sublane lateral driver `ComputeSublaneLateral`/`ComputeRvoLateral`
+  (~8654–8712), the lateral commit apply (~9604), and the crowd-swerve suppression gate +
+  `SuppressHeldCrowdSwerve` flag in `ComputeLateralEvasion` (~9270). NOTE: the old blanket
+  `FreezeLateralWhenStopped` clamp was **reverted and removed** (it caused car–car overlaps, §F2). The redo is
+  targeted: when a car is HELD by a static crowd agent (`BindingConstraint == 13`) it **recentres** (does not
+  swerve, does not freeze) — so don't add a competing lateral nudge on a car stopped for a ped; it already
+  sits centred in-lane.
 - **arbitrary-net:** net import, `SumoRouteGraphNav`/`IPedNavigation`, the single realism-zone surface
   (`_lcZone*`, `SetLcRealismZone`, one `InterestSource`), `Engine.RegionPlan`/`RegionGrid` (538–635). They
   will later road-net-enable + zone-bound your C5 feed behind their helper — coordinate the fed disc set
