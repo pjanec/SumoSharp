@@ -318,4 +318,137 @@ public class SumoRouteGraphNavTests
             }
         }
     }
+
+    // ======================================================================================
+    // E4 -- coordinate robustness (design §9, -TASKS.md E4): the demo net is small (~a few
+    // hundred metres), all-positive, and 2-D. A real imported net can carry a Geneva/CH1903-style
+    // frame (large-magnitude, negative x/y) and 3-D shape strings (a z component -- Vec2 is 2-D so
+    // PedNetworkParser's ParseShape already drops it, see that method's remarks; the guarantee
+    // this test cares about is that large/negative x,y alone never break the route-graph's grid
+    // indexing, A*, or portal geometry). Same "sw_a -- wa_1 -- c_ab -- wa_2 -- sw_b" topology as
+    // ConnectedFixture above, just translated onto a large-magnitude negative origin
+    // (~x=-108000, y=-136900, the fixture's own scale unchanged) instead of the origin-centred one.
+    // ======================================================================================
+
+    private const double GenevaOriginX = -108000.0;
+    private const double GenevaOriginY = -136900.0;
+
+    private static PedNetwork LargeNegativeCoordFixture()
+    {
+        Vec2 T(double x, double y) => new(GenevaOriginX + x, GenevaOriginY + y);
+
+        var swA = new PedLane("sw_a_0", "e_a", 2.0, new[] { T(-20, 0), T(-5, 0) });
+        var swB = new PedLane("sw_b_0", "e_b", 2.0, new[] { T(5, 0), T(20, 0) });
+
+        var crossing = new PedCrossing(
+            "c_ab_0", "j0", 3.0,
+            Shape: new[] { T(-3, 0), T(0, 0), T(3, 0) },
+            Outline: new[] { T(-3, -1.5), T(3, -1.5), T(3, 1.5), T(-3, 1.5) },
+            CrossingEdges: Array.Empty<string>(),
+            TlLogicId: null);
+
+        var wa1 = new PedWalkingArea(
+            "wa_1_0", "j0", 2.4,
+            Polygon: new[] { T(-5, -1), T(-3, -1), T(-3, 1), T(-5, 1) });
+        var wa2 = new PedWalkingArea(
+            "wa_2_0", "j0", 2.4,
+            Polygon: new[] { T(3, -1), T(5, -1), T(5, 1), T(3, 1) });
+
+        return new PedNetwork(
+            Sidewalks: new[] { swA, swB },
+            Crossings: new[] { crossing },
+            WalkingAreas: new[] { wa1, wa2 },
+            WalkablePolygons: Array.Empty<WalkablePolygon>(),
+            AccessPoints: Array.Empty<WalkableAccessPoint>())
+        {
+            PedConnections = new[]
+            {
+                new PedConnection(swA.Id, wa1.Id),
+                new PedConnection(wa1.Id, crossing.Id),
+                new PedConnection(crossing.Id, wa2.Id),
+                new PedConnection(wa2.Id, swB.Id),
+            },
+        };
+    }
+
+    private static bool IsFiniteNumber(double d) => !double.IsNaN(d) && !double.IsInfinity(d);
+
+    [Fact]
+    public void Construction_OnLargeNegativeCoordFixture_DoesNotThrow_AndNodesAreFinite()
+    {
+        var nav = new SumoRouteGraphNav(LargeNegativeCoordFixture());
+
+        Assert.Equal(5, nav.Nodes.Count);
+        foreach (var node in nav.Nodes)
+        {
+            Assert.True(IsFiniteNumber(node.Centroid.X), $"node '{node.Id}' has non-finite centroid.X");
+            Assert.True(IsFiniteNumber(node.Centroid.Y), $"node '{node.Id}' has non-finite centroid.Y");
+            foreach (var v in node.Geometry)
+            {
+                Assert.True(IsFiniteNumber(v.X), $"node '{node.Id}' has non-finite vertex.X");
+                Assert.True(IsFiniteNumber(v.Y), $"node '{node.Id}' has non-finite vertex.Y");
+            }
+        }
+    }
+
+    [Fact]
+    public void NearestLane_OnLargeNegativeCoordFixture_ResolvesCorrectLane()
+    {
+        var nav = new SumoRouteGraphNav(LargeNegativeCoordFixture());
+
+        var onSwA = nav.NearestLane(new Vec2(GenevaOriginX - 10, GenevaOriginY));
+        Assert.NotNull(onSwA);
+        Assert.Equal("sw_a_0", nav.Nodes[onSwA!.Value.NodeIndex].Id);
+        Assert.True(IsFiniteNumber(onSwA.Value.Point.X));
+        Assert.True(IsFiniteNumber(onSwA.Value.Point.Y));
+
+        var onCrossing = nav.NearestLane(new Vec2(GenevaOriginX, GenevaOriginY));
+        Assert.NotNull(onCrossing);
+        Assert.Equal("c_ab_0", nav.Nodes[onCrossing!.Value.NodeIndex].Id);
+    }
+
+    [Fact]
+    public void FindPath_OnLargeNegativeCoordFixture_ReturnsOnNetworkFinitePolyline_AndIsDeterministic()
+    {
+        var nav = new SumoRouteGraphNav(LargeNegativeCoordFixture());
+
+        var start = new Vec2(GenevaOriginX - 15, GenevaOriginY + 0.2);
+        var goal = new Vec2(GenevaOriginX + 15, GenevaOriginY - 0.2);
+
+        var path = nav.FindPath(start, goal);
+        Assert.NotNull(path);
+        Assert.True(path!.Count >= 2);
+
+        foreach (var vertex in path)
+        {
+            Assert.True(IsFiniteNumber(vertex.X), $"path vertex ({vertex.X},{vertex.Y}) has non-finite X");
+            Assert.True(IsFiniteNumber(vertex.Y), $"path vertex ({vertex.X},{vertex.Y}) has non-finite Y");
+
+            var nearest = nav.NearestLane(vertex);
+            Assert.NotNull(nearest);
+            var node = nav.Nodes[nearest!.Value.NodeIndex];
+            var dist = (vertex - nearest.Value.Point).Abs;
+            Assert.True(dist <= node.HalfWidth + 1e-6,
+                $"vertex ({vertex.X:F3},{vertex.Y:F3}) is {dist:F3} m from node '{node.Id}' " +
+                $"(half-width {node.HalfWidth:F3})");
+        }
+
+        var widths = nav.HalfWidthsAlong(path);
+        Assert.Equal(path.Count, widths.Count);
+        foreach (var w in widths)
+        {
+            Assert.True(IsFiniteNumber(w), "HalfWidthsAlong produced a non-finite width");
+        }
+
+        // Determinism: repeat the query, expect byte-identical output at large magnitude too (no
+        // floating-point-order hazard introduced by the larger coordinate values).
+        var again = nav.FindPath(start, goal);
+        Assert.NotNull(again);
+        Assert.Equal(path.Count, again!.Count);
+        for (var i = 0; i < path.Count; i++)
+        {
+            Assert.Equal(path[i].X, again[i].X, precision: 9);
+            Assert.Equal(path[i].Y, again[i].Y, precision: 9);
+        }
+    }
 }

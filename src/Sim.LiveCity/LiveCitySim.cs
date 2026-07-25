@@ -247,18 +247,21 @@ public sealed class LiveCitySim : IDisposable
                 SpawnRatePerSecond = cfg.PedSpawnRatePerSecond, // LIVECITY_PEDS scales this (default 8.0)
                 PopulationCap = cfg.PedPopulationCap,           // LIVECITY_PEDS overrides this (default 160)
                 Seed = cfg.PedSeed,
-                MaxSpeed = 1.3,
-                Radius = 0.3,
-                ArrivalRadius = 0.6,
+                // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: these were ctor-hardcoded
+                // literals; now read from cfg, each defaulted to the exact former literal so
+                // `ForRepoRoot` (the demo) builds a byte-identical PedDemandConfig.
+                MaxSpeed = cfg.PedMaxSpeed,
+                Radius = cfg.PedRadius,
+                ArrivalRadius = cfg.PedArrivalRadius,
                 Liveliness = new PedLivelinessConfig
                 {
-                    PauseProbability = 0.15,
-                    MinPauseSeconds = 2.0,
-                    MaxPauseSeconds = 5.0,
-                    MaxPausesPerTrip = 1,
-                    PauseAnimTag = "idle",
+                    PauseProbability = cfg.PedPauseProbability,
+                    MinPauseSeconds = cfg.PedMinPauseSeconds,
+                    MaxPauseSeconds = cfg.PedMaxPauseSeconds,
+                    MaxPausesPerTrip = cfg.PedMaxPausesPerTrip,
+                    PauseAnimTag = cfg.PedPauseAnimTag,
                 },
-                EnableWeave = true,
+                EnableWeave = cfg.PedEnableWeave,
                 CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
             };
 

@@ -152,6 +152,26 @@ public sealed class LiveCityConfig
     public int PedPopulationCap { get; set; } = 160;
     public double PedSpawnRatePerSecond { get; set; } = 8.0;
 
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: ped-demand knobs promoted from
+    // LiveCitySim's ctor-hardcoded literals. Each default is the EXACT literal the ctor used to inline
+    // (PedDemandConfig.MaxSpeed/Radius/ArrivalRadius/EnableWeave), so `ForRepoRoot` (the demo) builds a
+    // byte-identical `PedDemandConfig` to before this knob existed. Not overridable via any LIVECITY_*
+    // env var (unlike PedPopulationCap/PedSpawnRatePerSecond above) -- this stage only surfaces the
+    // field on the config object; no new env knob was requested.
+    public double PedMaxSpeed { get; set; } = 1.3;
+    public double PedRadius { get; set; } = 0.3;
+    public double PedArrivalRadius { get; set; } = 0.6;
+    public bool PedEnableWeave { get; set; } = true;
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: the PedLivelinessConfig block, likewise
+    // promoted as a group from LiveCitySim's ctor-hardcoded literals (same byte-identical-demo argument
+    // as PedMaxSpeed et al. above).
+    public double PedPauseProbability { get; set; } = 0.15;
+    public double PedMinPauseSeconds { get; set; } = 2.0;
+    public double PedMaxPauseSeconds { get; set; } = 5.0;
+    public int PedMaxPausesPerTrip { get; set; } = 1;
+    public string PedPauseAnimTag { get; set; } = "idle";
+
     // Car spawn PRNG seed (SceneGen.BuildLiveCity's `rng` initializer for the deterministic SplitMix64).
     public ulong CarRngSeed { get; set; } = 0x243F6A8885A308D3UL;
 

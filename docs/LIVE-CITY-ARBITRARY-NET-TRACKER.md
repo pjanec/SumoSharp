@@ -24,14 +24,18 @@ parity byte-identical (657/4 on the rebased base) + bench hash unchanged.
 - [x] **C6** enable `Engine.RegionPlan` for large nets (parity-safe toggle; demo off) — required a Sim.Core `RegionPlan` gate fix (see coordination note in `-TASKS.md`)
 
 ## Stage D — config surfacing
-- [ ] **D1** ped-demand knobs promoted to config (demo `PedDemandConfig` byte-identical)
+- [x] **D1** ped-demand knobs promoted to config (demo `PedDemandConfig` byte-identical)
 
 ## Stage E — offline prep, fixture, tests
-- [ ] **E1** `scripts/prep-ped-net.sh` + recipe
-- [ ] **E2** committed synthetic road-net fixture (`scenarios/_ped/roadnet_min/`, no proprietary data)
-- [ ] **E3** unit + smoke/regression tests (green without SUMO)
-- [ ] **E4** coordinate robustness (large/negative/3-D)
+- [x] **E1** `scripts/prep-ped-net.sh` + recipe
+- [x] **E2** committed synthetic road-net fixture (`scenarios/_ped/roadnet_min/`, no proprietary data)
+- [x] **E3** unit + smoke/regression tests (green without SUMO) — SumoRouteGraphNav unit tests (B) +
+  road-net smoke/bare-net/determinism (C, A3) + robustness (E4); whole suite green with no SUMO on PATH
+- [x] **E4** coordinate robustness (large/negative/3-D)
 
-## Stage F — final gate (Opus)
-- [ ] **F1** parity byte-identical (657/4) + bench hash + demo liveness/scene green; no `Sim.Core` diff; netstandard2.1 +
-  consumer contract intact
+## Stage F — final gate (Opus) — delivered scope (all tasks except C5)
+- [x] **F1** parity 657/4 byte-identical + bench hash `8F1CD03232BA88ED` (deterministic + par==single) +
+  demo liveness/scene green (LiveCity 43/43); netstandard2.1 + consumer contract intact. **One approved
+  Sim.Core diff** (the `RegionPlan` gate fix, option A) — provably inert on parity/bench/demo, not the
+  "zero Sim.Core diff" the original gate wording assumed. **C5 remains OUT** (owned by the ORCA-ped
+  session); the feature is complete for everything except that coupling.
