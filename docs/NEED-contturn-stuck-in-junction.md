@@ -187,6 +187,61 @@ sites to check: `checkRewindLinkLanes` (`MSVehicle.cpp:5025`), `isLeader`'s firs
 `Engine.cs:7035-7061` already mis-describes), and the general `myLane->getEdge().isInternal()` guards at
 `MSVehicle.cpp:2351, 2428, 4211, 5378, 5782, 6248, 7333, 7971, 7990`.
 
+## IMPLEMENTED (flag-gated) AND MEASURED — the predicate is fixed; the FREEZE IS NOT
+
+Landed on branch `claude/f3-junction-overlap-handoff-okf5nu`:
+
+- **`NetworkModel.IsInternalLaneOfJunction(laneId, junction)`** + a new `JunctionByInternalLane` index
+  covering **every** internal lane, built by walking `link.Connection.From` backwards while it is an
+  internal edge (for a cont turn the link's own connection starts on the first-stage internal edge).
+  Needs no new parsing.
+- **`tests/Sim.ParityTests/ContTurnInternalLaneOwnershipTests.cs`** — 9 direct, offline, deterministic
+  assertions. It pins `:C_3_0`/`:C_11_0` (scenario 44) and `:d_3_4_5_0` (demo net) as internal lanes of
+  their junction **while asserting they are absent from `intLanes`**, so the test cannot become vacuous;
+  plus negative cases (normal lanes not "inside", a lane not owned by an adjacent junction).
+- **`Engine.ContTurnInsideJunctionGate`** (default **OFF**): a new `egoInsideJunction` predicate replaces
+  `!egoOnInternal` at the cautious-approach gate. `egoOnInternal` is deliberately RETAINED for every
+  lane-relative computation (notably `AdaptToJunctionLeader`'s `seen`, where using the wider predicate
+  would subtract a position measured on a different lane). Two distinct concepts, previously conflated.
+
+### Result 1 — the predicate fix is correct but regresses a saturated grid
+
+| gate | flag OFF | flag ON |
+| --- | --- | --- |
+| all 661 goldens | byte-identical | **byte-identical** |
+| `RungHDp2g2CoordinatedLaneChangeTests` (`_diag/willpass-saturation`) | ~1 stuck | **28 stuck** (ceiling 5) |
+
+Diagnosis: **the spurious brake was accidentally standing in for a mechanism we do not implement** —
+SUMO's `MSVehicle::checkRewindLinkLanes` (`MSVehicle.cpp:5025`), "do not enter a junction whose exit you
+cannot clear". Remove the accidental brake without that upstream admission control and an over-saturated
+grid lets too many cars commit into junction interiors at once. Our `KeepClearConstraint` is a partial port
+with four documented simplifications (`lengthsInFront` = 0, single-internal-lane back-propagation, fires
+only on an ALREADY-stopped downstream vehicle, blind to `IsParked`).
+
+**Order of work: port/strengthen `checkRewindLinkLanes` FIRST, then enable this flag.** The predicate itself
+needs no further work.
+
+### Result 2 — this fix does NOT cause the 95-step freeze (hypothesis above is REFUTED)
+
+Measured with the flag ON: `__veh127` is **still frozen for exactly 95 steps** on `:d_3_4_5_0` (98–192),
+`__veh140` still 75 (113–187), and `__veh127`'s binder/arm are **unchanged**: `10:junctionYield` /
+`arm 2 cautiousApproach`, 95/95 steps.
+
+So the chain "mis-predicate → cautious-approach fires mid-junction → freeze" is **NOT supported**. The
+mis-port is real and is now fixed; it is simply **not the cause of this symptom**.
+
+**New leading hypothesis for the freeze (untested):** `JunctionYieldConstraint`'s forward scan is resolving
+a **DOWNSTREAM** junction, not `d_3_4`. If `LaneSeqIndex` has advanced past `:d_3_4_20_0`, the scan finds a
+later junction's internal lane, so `junction` is not `d_3_4` — and `IsInternalLaneOfJunction(":d_3_4_5_0",
+<later junction>)` correctly returns **false**, leaving the arm enabled for a junction ego really has not
+reached. That also explains why the corrected predicate changed nothing here.
+
+**The decisive experiment (unchanged in spirit, sharpened):** for `__veh127` across steps 93–195, print
+`v.LaneSeqIndex`, the lane id at that pool index, **`junction.Id`**, `egoInternalLaneId`, `egoLinkSeqIndex`,
+`approachLane.Id`, and the computed `seen`. If `junction.Id != "d_3_4"`, the freeze is a lane-sequence /
+scan-target bug, not a predicate bug, and the `seen` double-count arithmetic above becomes the next thing to
+check.
+
 ## Why this matters for F3
 
 Fixing this targets, per the attribution measured in `docs/F3-JUNCTION-OVERLAP-DESIGN.md` §6a:

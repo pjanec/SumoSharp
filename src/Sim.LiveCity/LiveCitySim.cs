@@ -348,6 +348,11 @@ public sealed class LiveCitySim : IDisposable
         // grids deadlock; see the Engine property comment). LIVECITY_F3OCCUPANCY=1 enables it for A/B
         // measurement of the crossing-internal-lane overlap it is meant to remove.
         _engine.JunctionPhysicalOccupancyGate = Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") == "1";
+        // F3/cont-turn predicate fix (docs/NEED-contturn-stuck-in-junction.md). OFF by default -- correct
+        // in isolation but it regresses a saturated-grid diagnostic until checkRewindLinkLanes is ported
+        // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
+        // mid-junction freeze it removes.
+        _engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("LIVECITY_CONTTURNFIX") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).

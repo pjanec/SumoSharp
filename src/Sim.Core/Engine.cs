@@ -6708,7 +6708,32 @@ public sealed partial class Engine : IEngine
         var approachLane = egoLinkSeqIndex >= 1
             ? _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]]
             : null;
+        // "Ego is on THE LINK-CONTROLLING internal lane" -- i.e. the lane that owns this <request> row
+        // and whose geometry every lane-relative computation below is expressed in. Keep using this
+        // (and ONLY this) wherever the arithmetic mixes ego's Pos with `egoLane`, e.g.
+        // AdaptToJunctionLeader's `seen`: on a cont turn ego can be inside the junction on the
+        // FIRST-stage lane, where `egoLane.Length - v.Kinematics.Pos` would subtract a position measured
+        // on a DIFFERENT lane.
         var egoOnInternal = v.LaneId == egoInternalLaneId;
+
+        // "Ego is physically inside THIS junction" -- the faithful port of SUMO's
+        // `myLane->isInternal() && myLane->getEdge().getToJunction() == link->getJunction()`
+        // (sumo/src/microsim/MSVehicle.cpp:7348, via MSLane::isInternal() MSLane.cpp:2498 ->
+        // MSEdge::isInternal() MSEdge.h:264). TRUE for every internal lane of every STAGE of the
+        // junction, which `egoOnInternal` above is NOT: netconvert writes only the link-controlling lane
+        // into `intLanes` (NWWriter_SUMO.cpp:634-649), so on a `cont` turn a vehicle on the first-stage
+        // lane makes `egoOnInternal` false while it sits squarely in the middle of the junction.
+        //
+        // These two were previously conflated, which let arms gated on "not yet on the junction" fire
+        // MID-JUNCTION. Measured consequence: a car frozen for 95 consecutive steps on a first-stage
+        // lane with no leader and no blocked exit. See docs/NEED-contturn-stuck-in-junction.md and
+        // ContTurnInternalLaneOwnershipTests.
+        // Behind ContTurnInsideJunctionGate (default OFF) -- with the flag off this collapses to
+        // `egoOnInternal` and every use below takes its original path, byte-identical by construction.
+        // The flag exists because the CORRECTED predicate, though provably right (see
+        // ContTurnInternalLaneOwnershipTests), regresses a saturated-grid diagnostic: see the flag's comment.
+        var egoInsideJunction = egoOnInternal
+            || (ContTurnInsideJunctionGate && _network.IsInternalLaneOfJunction(v.LaneId, junction));
 
         // Low-density teleport fix (docs/SUMOSHARP-LOWDENSITY-TELEPORT-DESIGN.md mechanism A): does
         // ego's junction link hold a protected-green traffic signal (SUMO havePriority())? When it
@@ -6829,7 +6854,14 @@ public sealed partial class Engine : IEngine
         // TL-controlled link the static matrix is NOT the RoW authority -- a protected-green ('G')
         // link IS major (havePriority) regardless of geometric conflicts, so `egoHasSignalPriority`
         // suppresses this minor cautious-approach exactly as SUMO's `!havePriority()` gate does.
-        if (!egoOnInternal && approachLane is not null && request.Response.Contains('1') && !egoHasSignalPriority)
+        // F3/cont-turn: gated on `!egoInsideJunction`, NOT `!egoOnInternal`. The precondition this arm
+        // states two comments up -- "once it has entered its internal lane the link is behind it" -- is a
+        // statement about being INSIDE THE JUNCTION, which is SUMO's `myLane->isInternal()` test, not
+        // "is ego on the link-controlling lane". With `!egoOnInternal` this arm kept braking a car that
+        // was already mid-junction on a cont turn's first-stage lane (the 95-step freeze in
+        // docs/NEED-contturn-stuck-in-junction.md). Inert for every single-stage turn, where the two
+        // predicates are identical by construction.
+        if (!egoInsideJunction && approachLane is not null && request.Response.Contains('1') && !egoHasSignalPriority)
         {
             // NLHandler.cpp:1413: a link with no explicit `visibility` attribute defaults its
             // foe-visibility distance to 4.5 (for non-ZIPPER links) -- this net specifies none.
@@ -11421,6 +11453,32 @@ public sealed partial class Engine : IEngine
     // two cars yields and the conflict actually clears. It needs new per-vehicle junction entry-time
     // state. See docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c/§3d.
     public bool JunctionPhysicalOccupancyGate { get; set; }
+
+    // F3/cont-turn "am I inside the junction" predicate fix (docs/NEED-contturn-stuck-in-junction.md).
+    // DEFAULT false = OFF = byte-identical (with it off, `egoInsideJunction` collapses to
+    // `egoOnInternal` and every gate takes its original path).
+    //
+    // WHAT IT FIXES (a CONFIRMED mis-port, pinned by ContTurnInternalLaneOwnershipTests): SUMO's
+    // "am I on the junction" test is a LANE PROPERTY -- MSLane::isInternal() (MSLane.cpp:2498) ->
+    // MSEdge::isInternal() (MSEdge.h:264) -- true for every internal lane of every STAGE, used that way
+    // in MSVehicle::isLeader's opening guard (MSVehicle.cpp:7348). We substituted equality against the
+    // LINK-CONTROLLING lane, which netconvert alone populates into `intLanes`
+    // (NWWriter_SUMO.cpp:634-649). On a `cont` turn that makes the predicate FALSE while the car sits
+    // mid-junction on the first-stage lane, so the cautious-approach arm brakes it there -- measured as
+    // a 95-step freeze with no leader and no blocked exit.
+    //
+    // WHY IT IS OFF BY DEFAULT: correct in isolation, but it regresses
+    // RungHDp2g2CoordinatedLaneChangeTests (scenarios/_diag/willpass-saturation): stuck 1 -> 28, against
+    // a ceiling of 5. All 661 goldens stay byte-identical. Diagnosis: the spurious brake was accidentally
+    // standing in for a mechanism we do NOT implement -- SUMO's MSVehicle::checkRewindLinkLanes
+    // (MSVehicle.cpp:5025), "do not enter a junction whose exit you cannot clear". Remove the accidental
+    // brake without that upstream admission control and an over-saturated grid lets too many cars commit
+    // into junction interiors at once.
+    //
+    // ORDER OF WORK: strengthen keepClear / port checkRewindLinkLanes FIRST (our KeepClearConstraint is
+    // a partial port with four documented simplifications), THEN enable this. The predicate itself needs
+    // no further work -- it is correct and directly tested.
+    public bool ContTurnInsideJunctionGate { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a

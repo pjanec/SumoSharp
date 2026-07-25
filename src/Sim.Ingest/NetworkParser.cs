@@ -207,6 +207,67 @@ public static class NetworkParser
             }
         }
 
+        // F3/cont-turn (docs/NEED-contturn-stuck-in-junction.md): "which junction does this internal
+        // lane belong to", for EVERY internal lane -- the port of SUMO's MSLane::isInternal()
+        // (sumo/src/microsim/MSLane.cpp:2498 -> MSEdge::isInternal(), MSEdge.h:264), which is a LANE
+        // PROPERTY true for every internal lane of every STAGE of a junction.
+        //
+        // `LinkByInternalLane` above CANNOT answer this: it is keyed off `Junction.IntLanes`, and
+        // netconvert writes only the LINK-CONTROLLING lane there -- for a `cont` turn (one split by an
+        // internal junction) it emits the SECOND-stage lane and omits the first
+        // (NWWriter_SUMO.cpp:634-649: `haveVia ? viaID + "_0" : getInternalLaneID()`). So a vehicle on
+        // the FIRST-stage lane (e.g. :C_3_0, with only :C_16_0 in intLanes) is invisible to any
+        // "am I inside the junction" test written against IntLanes -- see the NEED doc for the
+        // 95-step mid-junction freeze that caused.
+        //
+        // Recovering the first-stage lanes needs no new parsing: for a cont turn the link's own
+        // connection STARTS on the first-stage internal edge (`<connection from=":C_3" to="CE"
+        // via=":C_16_0"/>`), so walking `Connection.From` backwards while it is an internal (':')
+        // edge enumerates every earlier stage. The walk is bounded (guard 8, as in the pool's
+        // via-chain walk) and terminates as soon as `From` is a normal edge.
+        var junctionByInternalLane = new Dictionary<string, Junction>(StringComparer.Ordinal);
+        foreach (var junction in junctions)
+        {
+            foreach (var link in junction.Links)
+            {
+                junctionByInternalLane[link.InternalLaneId] = junction;
+
+                var fromEdgeId = link.Connection.From;
+                for (var guard = 0; guard < 8 && fromEdgeId.Length > 0 && fromEdgeId[0] == ':'; guard++)
+                {
+                    if (!edgesById.TryGetValue(fromEdgeId, out var internalEdge))
+                    {
+                        break;
+                    }
+
+                    foreach (var lane in internalEdge.Lanes)
+                    {
+                        junctionByInternalLane[lane.Id] = junction;
+                    }
+
+                    // Step one stage further back: the connection whose `via` lands on this edge.
+                    Connection? previousHop = null;
+                    foreach (var c in connections)
+                    {
+                        if (c.Via is { } via
+                            && lanesById.TryGetValue(via, out var viaLane)
+                            && string.Equals(viaLane.EdgeId, fromEdgeId, StringComparison.Ordinal))
+                        {
+                            previousHop = c;
+                            break;
+                        }
+                    }
+
+                    if (previousHop is null)
+                    {
+                        break;
+                    }
+
+                    fromEdgeId = previousHop.From;
+                }
+            }
+        }
+
         // D2: LaneHandleById mirrors lanesById's keys 1:1 (every lane got exactly one handle
         // above), just projecting Id -> Handle instead of Id -> Lane.
         var laneHandleById = new Dictionary<string, int>(lanesById.Count, StringComparer.Ordinal);
@@ -227,7 +288,8 @@ public static class NetworkParser
             junctionsById,
             linkByInternalLane,
             lanesByHandle,
-            laneHandleById);
+            laneHandleById,
+            junctionByInternalLane);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert

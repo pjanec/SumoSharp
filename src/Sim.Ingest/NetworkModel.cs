@@ -238,8 +238,32 @@ public sealed record NetworkModel(
     // resolution point for I/O-boundary callers (e.g. AddObstacle(laneId,...) resolving its
     // handle once at call time, not per step).
     IReadOnlyList<Lane> LanesByHandle,
-    IReadOnlyDictionary<string, int> LaneHandleById)
+    IReadOnlyDictionary<string, int> LaneHandleById,
+    // F3/cont-turn: the owning junction of EVERY internal lane, including the FIRST-stage lanes of a
+    // `cont` turn that netconvert omits from `intLanes` (see the build comment in NetworkParser and
+    // docs/NEED-contturn-stuck-in-junction.md). This is the port of SUMO's MSLane::isInternal()
+    // (MSLane.cpp:2498 -> MSEdge::isInternal(), MSEdge.h:264) -- a LANE property, true for every
+    // internal lane of every stage -- as opposed to `LinkByInternalLane`, which is keyed off
+    // `IntLanes` and therefore knows only LINK-CONTROLLING lanes. Use this to answer "is this vehicle
+    // inside junction J"; use LinkByInternalLane to answer "which link does this lane control".
+    //
+    // Defaulted so existing NetworkModel construction sites (tests that build a model by hand) keep
+    // compiling; an empty map degrades to the old IntLanes-only behaviour rather than misreporting.
+    IReadOnlyDictionary<string, Junction>? JunctionByInternalLane = null)
 {
+    // F3/cont-turn: SUMO's `myLane->isInternal() && myLane->getEdge().getToJunction() == junction`
+    // (the guard opening MSVehicle::isLeader, sumo/src/microsim/MSVehicle.cpp:7348). True when
+    // `laneId` is an internal lane of `junction` -- at ANY stage of a multi-stage (`cont`) turn.
+    //
+    // Do NOT substitute `laneId == someLink.InternalLaneId` for this: that is only the
+    // link-controlling (last-stage) lane, so it answers FALSE for a vehicle physically sitting on a
+    // cont turn's first-stage lane. That substitution is the confirmed defect this method exists to
+    // remove.
+    public bool IsInternalLaneOfJunction(string laneId, Junction junction) =>
+        JunctionByInternalLane is { } map
+        && map.TryGetValue(laneId, out var owner)
+        && ReferenceEquals(owner, junction);
+
     // Rung 10: find the (at most one, in this rung's scope) TL-controlled connection leaving a
     // given lane -- i.e. the connection a vehicle currently on this lane would use to exit it,
     // irrespective of which specific destination edge its route picks (this scenario has only
