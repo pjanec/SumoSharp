@@ -638,7 +638,7 @@ internal static class Program
                 var nearCross = false; double cd = 1e9;
                 foreach (var (cx, cy, hw) in crossings) { var d = Math.Sqrt((c.X - cx) * (c.X - cx) + (c.Y - cy) * (c.Y - cy)); if (d < cd) cd = d; if (d < hw + 3.0) nearCross = true; }
                 Console.WriteLine($"  {c.Name} t={t:F1} authSpd={w.Speed:F2} fdSpd={fdSpd:F2} lane={w.LaneId} binder={w.Binder} "
-                    + $"pos1d={w.Pos:F2} posLat={w.PosLat:F2} pos=({c.X:F2},{c.Y:F2}) angle={c.AngleDeg:F0} nearCrossing={nearCross} distCross={cd:F1}");
+                    + $"tl={w.Tl} gap={w.GapAhead:F1} pos1d={w.Pos:F2} posLat={w.PosLat:F2} pos=({c.X:F2},{c.Y:F2}) angle={c.AngleDeg:F0} nearCrossing={nearCross} distCross={cd:F1}");
             }
 
             prev.Clear();
