@@ -21,35 +21,41 @@ evidence, root causes, and the fix directions. Tracker items in `TASKS-TODO.md` 
 - **Mobile tap-to-identify** in `template.js` (the click-to-identify feature was desktop-only; tap didn't
   reach the pick logic on Android — now wired via touchend tap detection).
 
-## F1 — Event 1: DR reconstruction renders a braking car through a red / junction (RENDER-ONLY)
+## F1 — Event 1: "veh80 runs a red / drives through veh120" — RESOLVED: misread + a real F3 overlap; NOT a render bug
 
-**Symptom (owner):** at ~t=23 a car appeared to drive through a junction on red.
-**Evidence:** `--live-city-cartrace __veh80` — veh80 does not exist at t=23; when it reaches the junction it
-authoritatively decelerates (4.81 → 0.31 m/s) and **stops on red** at the stop line (`pos1d≈225.2`,
-`tl=r`), only accelerating once `tl=G`. **The engine respects the light — no authoritative red-run.**
-**Root cause:** the HTML replay reconstructs position from published packets via `DrClock`.
-`DrExtrapolation.Arc` freezes a decelerating car at its stopping point **only when the packet `accel < 0`**.
-A car cruising steadily (accel≈0) then braking hard has a last steady packet with accel≈0, so the
-reconstruction coasts/extrapolates it forward at cruise speed **past the stop line into the junction** until
-a fresh braking packet snaps it back (the `DrClock` back-step metric exists for exactly this). Additionally
-`KinematicReconstructor`'s upcoming-lane look-ahead aims a stopped car's nose down the through-junction lane.
-**Note:** `--live-city-cartrace` reads `LiveCitySim.Sample()` = raw AUTHORITATIVE positions, so it cannot
-show this overshoot; only `--live-city-drcheck` (the reconstruction path) can.
-**UPDATE — F1 NOT reproduced at the DR-frame level; likely a PLAYER artifact.** Characterizing veh80 via
-`--live-city-drcheck` (the DR-reconstructed frames): the reconstruction **LAGS ~2.5 m behind** the
-authoritative car through the stop window (monotonic, no snap-back) — the OPPOSITE of an overshoot. veh80's
-braking is a smooth −4.5 m/s² (not the cruise-then-hard-brake profile the extrapolation-overshoot needs),
-and `accel` IS published (`ReplicationPublisher.PublishStep` reads `snap.Accel`), so the decel-clamp is not
-starved. So the originally-hypothesized DR-extrapolation overshoot is **unconfirmed**. **New leading
-hypothesis (owner: "the player may be wrong — dangerous, can't be trusted"):** the artifact is in the
-**PLAYER** — `src/Sim.Viz/template.js`, `interpolatedVehicles` / **Catmull-Rom** between DR frames (~line
-458+) — which can overshoot a decelerating stop on its own, and which `--live-city-drcheck` (frame-level)
-cannot see. There are THREE layers (authoritative → DR reconstruction → player Catmull-Rom); an artifact can
-live in any. **Next step: a SOLID repro at the PLAYER level before ANY fix** (instrument/observe the
-Catmull-Rom output for a stopping car; find a cruise-then-hard-brake car). If none, downgrade F1 (render
-lags; the "red-run" was a misread or a car-vs-light render desync). Do NOT fix an unreproduced artifact.
-Candidate fix files IF confirmed: `template.js` (Catmull-Rom clamp), else `DrClock.cs`/`DrExtrapolation.Arc`/
-`KinematicReconstructor.cs`/`VizReplayBuilder.cs`.
+**Symptom (owner):** "time≈23 veh120 standing on red, veh80 driving through him and through the crossroad
+ignoring red." Originally filed as a DR/player render artifact (a braking car rendered past its stop).
+
+**Resolved (repro-first, authoritative): F1 is NOT a render/DR/player bug — the player is exonerated.**
+Four independent lines of evidence, from `--live-city-cartrace`/`--live-city-drcheck` and the source:
+
+1. **The engine respects the light.** `--live-city-cartrace __veh80` (Dt=0.5, so t≈step×0.5): veh80 approaches
+   on **red**, brakes 13.89→0.31 m/s and **stops** at **t=28.5** (`pos=(2862.90,2851.60)`, `tl=r`,
+   `distCross≈4.1`), then the light goes **`tl=G` at t=29.0** and it proceeds. **No authoritative red-run —
+   veh80 stops on red and enters on GREEN.**
+2. **The player cannot overshoot position.** `template.js interpolatedVehicles` (~:497–500) **clamps** each
+   rendered pose to the AABB of the segment's two real DR endpoints (`clampBox`), on top of centripetal
+   Catmull-Rom (α=0.5, :429). So a rendered car cannot be drawn past its next DR frame; and the DR frames
+   themselves LAG behind (never ahead). A position overshoot past the stop is structurally impossible.
+3. **No light desync.** All **51** demo TLs are `type="static"` `offset="0"` (`scenarios/_ped/demo_city/box/
+   net.xml`) — no actuation. The player derives light colour from the static program (`tlLinkState`,
+   template.js:166) which "mirrors `Sim.Core/TrafficLightState.cs GetLinkState` exactly" → the rendered light
+   is in lock-step with the engine. No stale/adaptive-light mismatch.
+4. **The real artifact is a car–car OVERLAP (F3-family), not a red-run.** `--live-city-cartrace __veh120`:
+   veh120 sits **motionless** at **`(2862.90,2851.60)`** (angle 270, lane `e_d_garage_stub_d_5_5_1`, `tl=r`)
+   the whole window — "standing on red" ✓. veh80 at **t=28.5 is at the IDENTICAL pose** `(2862.90,2851.60)`
+   angle 270, then accelerates through junction lane `:d_5_5_6_1` traversing veh120's spot. The authoritative
+   OBB check flags **`__veh120 / __veh80` at 1.80 m** penetration (and `__veh134 / __veh80` at 1.80 m — the
+   same veh134/veh80 pair that appears in the pre-existing normal-lane overlap set). So veh80's **green**
+   junction-crossing path runs straight through **stopped** veh120: "driving through him" is a **real overlap**;
+   "ignoring red" is a **misread** (veh80 was on green; it looked like a red-run because it passed through the
+   red-stopped veh120 that occupies its crossing path — a garage-stub-into-junction / keep-clear conflict).
+
+**Disposition: DOWNGRADE F1 and FOLD its overlap into F3.** There is nothing to fix in the render/DR/player
+layer. The genuine defect (veh80's crossing overlaps stopped veh120/veh134 by ~1.8 m) is a **pre-existing
+F3-family junction/keep-clear overlap** — the garage-stub-into-junction sub-case — routed to **core junction
+work** with the rest of F3 (§F3). The owner's instinct to distrust the player as a *reporting instrument* was
+right (it conflated a real overlap + a light misread into "running a red"), while the player's *math* is sound.
 
 ## F2 — Task A lateral freeze caused car–car overlaps (REGRESSION, REVERTED → **FIXED via targeted redo**)
 
@@ -84,6 +90,11 @@ crossing internal junction lanes occupy the same space.
 **Assessment:** a junction conflict-point / into-occupied admission bug — the same family as
 `docs/LANE-CHANGE-OVERLAP-*`, `docs/ISSUE2-JUNCTION-*`, `docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md`. Present
 on this branch at default density; **not caused by Task A or the density chosen for the replay.**
+**Sub-case (folded in from F1 — the owner's "veh80 drove through veh120"):** a car stopped on a
+**garage-stub** approach (veh120 on `e_d_garage_stub_d_5_5_1`, motionless on red) sits in the path of a car
+legally crossing the junction on green (veh80 via `:d_5_5_6_1`) — identical pose `(2862.90,2851.60)` at
+t=28.5, authoritative OBB overlap `veh80/veh120` and `veh80/veh134` ~1.8 m. A **keep-clear / stub-into-junction**
+variant of the same conflict-point family; the crossing car is NOT admitted-clear of the occupied point.
 **LOCALIZED (resolved):** F3 is **pre-existing on `main`** — running the authoritative overlap check against
 `main`'s engine yields the **identical worst overlap** (`3.035 m`, pair `veh134/veh38`, step 197) as this
 branch. It is a **long-standing core junction bug, NOT introduced by this session.** The realism-fixes
@@ -123,10 +134,13 @@ F2 guard must be **targeted** (a straddle detector), not aggregate.
 2. **Task A redo (F2)** *(this session)* — **DONE**. Targeted crowd-swerve suppression (`SuppressHeldCrowdSwerve`,
    not a blanket lateral freeze), protected by F4a. Empirically discriminated by `binder 13` (held) vs `binder 3`
    (passing at speed). See §F2 above for the full verification (parity 661/4, bench, LiveCity 27/27, no new overlap class).
-3. **F1 — DR overshoot fix** *(this session)*. Render integrity; owner-prioritized; tractable viz/DR work.
-   **Repro-first**: F1 is UNCONFIRMED at the frame level (engine respects reds; DR reconstruction LAGS, no
-   overshoot) → the PLAYER (Catmull-Rom, `template.js`) is the suspect. No fix without a solid player-level repro.
-4. **F3 — route to core junction work** *(NOT this session)*. Pre-existing core bug; documented above.
+3. **F1 — RESOLVED / DOWNGRADED** *(this session)*. Repro-first showed it is NOT a render/DR/player bug:
+   engine respects the red (veh80 stops on red, enters on green), the player cannot overshoot position
+   (`clampBox`), and the demo TLs are static/offset-0 so the rendered light is in lock-step with the engine.
+   The genuine defect is a real car–car overlap (veh80's green crossing runs through stopped veh120/veh134,
+   ~1.8 m) → **F3-family**, folded into F3. No render-layer fix. See §F1.
+4. **F3 — route to core junction work** *(NOT this session)*. Pre-existing core bug; documented above. Now
+   also owns the F1 "garage-stub-into-junction / keep-clear" overlap sub-case (veh80/veh120, veh80/veh134).
 5. **F4b — tighten the general no-overlap invariant to ZERO** — deferred until F3 is fixed (only then is
    overlap-free the true baseline). The committed authoritative test stays as an F3 characterization +
    gross-regression tripwire until then.

@@ -29,15 +29,15 @@ Three sessions; only THIS one is active. Full boundary: `docs/COORDINATION-livec
 
 ## Findings state (see LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md for evidence)
 
-- **F1 — braking car appears to run a red / cross a junction. UNCONFIRMED; likely a PLAYER artifact.**
-  Authoritatively the engine respects reds (veh80 stops on red). At the DR-FRAME level (`--live-city-drcheck`
-  focus veh80) the reconstruction actually **LAGS ~2.5 m behind** — no overshoot, no snap-back. So F1 is NOT the
-  DR-extrapolation overshoot originally hypothesized. **NEW leading hypothesis: the PLAYER (`src/Sim.Viz/template.js`,
-  `interpolatedVehicles` / Catmull-Rom between DR frames, ~line 458+) overshoots a decelerating stop on its own** —
-  the frame-level `drcheck` cannot see this. **DO NOT FIX F1 without a solid repro at the PLAYER level.** Next step:
-  instrument/observe the player's Catmull-Rom output for a stopping car (a car with a cruise-then-hard-brake profile;
-  veh80's braking was smooth −4.5 m/s² so it doesn't trigger it). If no repro exists, downgrade F1 (render lags; the
-  "red-run" was a misread or a car-vs-light render desync). Treat the player as SUSPECT until proven.
+- **F1 — RESOLVED / DOWNGRADED (not a render/player bug). DONE.** Repro-first, authoritative: the engine
+  respects the red (veh80 stops on red at t=28.5, enters on GREEN t=29.0); the player **cannot** overshoot
+  position (`template.js` `clampBox` clamps every rendered pose to the AABB of its two real DR endpoints); and
+  all 51 demo TLs are `static`/`offset=0`, so the player's `tlLinkState` mirrors the engine's `GetLinkState`
+  exactly (no light desync). The owner's "veh80 drove through veh120 ignoring red" = a **misread** (veh80 was on
+  green) **+ a REAL car–car overlap** (veh80's green crossing traverses stopped veh120's pose `(2862.90,2851.60)`;
+  authoritative OBB `veh80/veh120` and `veh80/veh134` ~1.8 m) → **F3-family**, folded into F3 (keep-clear /
+  garage-stub-into-junction sub-case). The player's *math* is sound; the owner's distrust of it as a *reporting
+  instrument* was right. No render-layer fix. See FINDINGS §F1.
 - **F2 — Task A blanket lateral freeze caused car–car overlaps. REVERTED → FIXED (targeted redo). DONE.** The old
   `Engine.FreezeLateralWhenStopped` (freeze all lateral commit below `LaneChangeMinSpeed`) pinned cars MID-LANE-CHANGE →
   straddle → `gap=Infinity` → overlaps. **Reverted and the blanket clamp removed.** Replaced by
@@ -110,9 +110,11 @@ Goal: kill the crosswalk wobble (posLat oscillating while a car is held stopped 
 ## Fixing order (finalized)
 
 1. ~~**Task A redo**~~ — ✅ **DONE** (guarded by F4a; see §F2).
-2. **F1** — get a SOLID PLAYER-LEVEL repro before any fix; player is suspect. Downgrade if none. **← next**
-3. **F3** — routed to core junction work (not this session).
+2. ~~**F1**~~ — ✅ **RESOLVED / DOWNGRADED** (not a render bug; misread + F3 overlap, folded into F3).
+3. **F3** — routed to core junction work (not this session); now also owns the F1 keep-clear sub-case.
 4. **F4b** — zero-overlap invariant, deferred until F3 fixed.
+
+**This session (realism-A/B) is now complete:** Task A (F2) shipped; F1 resolved; F3 routed out; F4b deferred.
 
 ## Open threads / notes
 
