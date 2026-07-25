@@ -5,9 +5,9 @@ conditions are verified first-hand (Opus gate for the reviewed tasks). Global ga
 parity byte-identical (657/4 on the rebased base) + bench hash unchanged.
 
 ## Stage A — dataset param, drivable edges, capability probe
-- [ ] **A1** `LiveCityConfig.ForDataset` + `PedNavMode`; `ForRepoRoot` delegates (demo identical)
-- [ ] **A2** drivable edges from `net.xml` fallback (demo edge set unchanged)
-- [ ] **A3** capability probe + graceful degrade + `PedestriansEnabled`/`CrossingsEnabled`
+- [x] **A1** `LiveCityConfig.ForDataset` + `PedNavMode`; `ForRepoRoot` delegates (demo identical)
+- [x] **A2** drivable edges from `net.xml` fallback (demo edge set unchanged)
+- [x] **A3** capability probe + graceful degrade + `PedestriansEnabled`/`CrossingsEnabled`
 
 ## Stage B — SumoRouteGraphNav
 - [ ] **B1** node/edge graph + nearest-lane spatial index
