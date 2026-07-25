@@ -545,6 +545,46 @@ public class PedLodManagerTests
         Assert.True(everPromoted, "a lively low-power ped inside a promote radius must promote to FreeKinematic");
     }
 
+    // ---- #3 promote flicker: seed-on-switch (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §2) ------
+    // Reproduces the vanish: a promotion is delivered as a DrSwitchEvent, but the ped's FIRST
+    // FreeKinematicSample is absent from the wire (the publish scheduler under-sends a just-promoted ped).
+    // Before the fix the IG reconstructs a FreeKinematic ped from LastPos == default(Vec2) == (0,0) -- the
+    // ped snaps to the world origin (culled from the view => "vanishes"). After the fix, the switch seeds
+    // the high-power pose from the ped's low-power pose at the switch instant, so the rendered pose stays
+    // on-body; and a real sample, when it does arrive, still wins.
+    [Fact]
+    public void PromoteSwitch_SeedsFreeKinematicPose_FromLowPowerPose_WhenFirstSampleAbsent()
+    {
+        // A simple low-power PathArc leg: straight west->east at 1 m/s from t=0.
+        var path = new List<Vec2> { new(0.0, 0.0), new(10.0, 0.0) };
+        const double speed = 1.0;
+        const double tSwitch = 3.0;
+
+        var ig = new HeadlessIg();
+        ig.Apply(new PathArcRecord(1, 0.0, path, 0.0, speed));
+
+        // The expected low-power pose at the switch instant (the same function the server evaluates).
+        var lowPowerPose = PathArcMotion.PositionAt(path, 0.0, speed, tSwitch);
+        Assert.True((lowPowerPose - new Vec2(3.0, 0.0)).Abs < 1e-9); // sanity: (3,0)
+
+        // Promote, but DO NOT deliver a FreeKinematicSample this "step".
+        ig.Apply(new DrSwitchEvent(1, tSwitch, PedDrModel.PathArc, PedDrModel.FreeKinematic));
+
+        Assert.Equal(PedDrModel.FreeKinematic, ig.ModelOf(1));
+
+        // The reconstructed high-power pose must be the on-body low-power pose, NOT the origin.
+        var reconstructed = ig.Reconstruct(1, tSwitch);
+        Assert.True((reconstructed - lowPowerPose).Abs < 1e-9,
+            $"seed-on-switch expected on-body pose {lowPowerPose}, got {reconstructed}");
+        Assert.True(reconstructed.Abs > 1.0, "reconstructed FreeKinematic pose must not be the (0,0) origin snap");
+
+        // When a real first sample finally arrives, it wins over the seed.
+        ig.Apply(new FreeKinematicSample(1, tSwitch + 0.5, new Vec2(3.5, 0.0), new Vec2(1.0, 0.0)));
+        var afterSample = ig.Reconstruct(1, tSwitch + 0.5);
+        Assert.True((afterSample - new Vec2(3.5, 0.0)).Abs < 1e-9,
+            $"a delivered FreeKinematicSample must override the seed, got {afterSample}");
+    }
+
     // ---- P1-2: forced high-power (evac panic pin) -----------------------------------------------
 
     [Fact]

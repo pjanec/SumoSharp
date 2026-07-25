@@ -14,9 +14,9 @@ first-hand (re-run the gate / read the trace), never on a report.
 - [ ] Owner reviews T0.4 findings; fix variant selected for #3 / #4b / #6 before Stage 2 begins
 
 ## Stage 2 — #3 promote flicker
-- [ ] T2.1 — seed-on-switch in `HeadlessIg`
-- [ ] T2.2 — (conditional) producer first-sample force-publish (only if T2.1 insufficient)
-- [ ] T2.3 — whole-run trace invariant: zero invisible/origin frames at any transition
+- [x] T2.1 — seed-on-switch in `HeadlessIg` — **origin-snap eliminated** (near-origin far-snaps 2326 → 0; Pedestrians 273/273 with new test). But it revealed the ped now *freezes* at its promote spot (far-snap >10m still 3218) because the producer under-publishes a promoted ped's samples → T2.2 is now REQUIRED, not optional.
+- [ ] T2.2 — **producer first-sample / re-baseline on promote** (`PedReplicationPublisher`/`PedPublishScheduler`, both in-surface) — required: without it a promoted ped is frozen ~82 steps on the wire.
+- [ ] T2.3 — whole-run trace invariant: zero origin/frozen frames (wireSrvDist small) across any transition
 
 ## Stage 3 — #4 stuck-ORCA / wander
 - [ ] T3.1 — #4b off-graph route recovery (multi-segment on-graph, no straight-line fallback)
