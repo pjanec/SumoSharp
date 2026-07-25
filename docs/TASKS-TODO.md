@@ -12,7 +12,7 @@ Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
 
 | Session | Branch | Status | Scope / tracker |
 |---|---|---|---|
-| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | in progress | Task A (stopped-car sublane wobble) |
+| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A DONE** (`03986a7`) | Task A (stopped-car lateral wobble) — shipped; no further active task (B handed off) |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling: B + #4 + #5 · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | active | net import · `SumoRouteGraphNav` · single zone · `RegionPlan` · C5 seam · `LIVE-CITY-ARBITRARY-NET-{TASKS,TRACKER}.md` (on that branch) |
 
@@ -36,10 +36,15 @@ zone-bound the fed disc set). Multi-camera zones (W4) also handed off. Full boun
 `docs/COORDINATION-livecity-realism-sessions.md`. Briefs: `docs/LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`,
 `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
-- [ ] **A — stopped car wiggles sideways at a crosswalk** *(THIS session, in progress)*. Sublane `PosLat`
-  drift while forward speed ≈ 0 → demo-gated `FreezeLateralWhenStopped` clamp at the lateral commit choke
-  (`Engine.cs` ~9587), parity-inert (flag default false). Repro: a dedicated tiny net (ped crosses, car
-  arrives a beat later) asserting the held car's world X/Y are frozen while `authSpd≈0`. Brief: AB-DESIGN §Task A.
+- [x] **A — stopped car wiggles sideways at a crosswalk — DONE** (`03986a7`). Demo-gated
+  `Engine.FreezeLateralWhenStopped` clamp at the lateral commit choke (`Engine.cs` ~9587), parity-inert
+  (flag default false). **Diagnosis correction:** the demo sets no `lateral-resolution` (`_sublane`
+  false), so the SL2015 sublane driver named in the brief is dead code; the real lateral path is
+  `ComputeLateralEvasion`'s crowd-swerve — the commit-choke clamp is path-agnostic and handles it. Guard:
+  `tests/Sim.ParityTests/StoppedCarLateralFreezeTests.cs` (freeze-OFF reproduces the wobble, freeze-ON
+  freezes it). Gates: parity 660/4, LiveCity 25/25, bench `D96213B7BB4021A7`. Real-demo `veh218` posLat
+  swing 3.0 m → 0.00, resumes cleanly. Note: a stopped car now waits rather than swerving around an
+  obstacle until moving ≥ `LaneChangeMinSpeed` (intended crosswalk-hold behavior; boundary with Task B).
 - [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
   unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,

@@ -54,6 +54,17 @@ Run from `src/Sim.Viz` (`dotnet run --project src/Sim.Viz -c Release --no-build 
 
 ## TASK A — stopped car wiggles sideways while held at a crosswalk
 
+> **STATUS: DONE** (commit `03986a7`, branch `claude/livecity-realism-fixes-vr4k4b`).
+> **Correction to the diagnosis below:** the mechanism is NOT the MSLCM_SL2015 sublane driver. The demo
+> config sets no `lateral-resolution`, so `Engine._sublane` is false and `ComputeSublaneLateral` never
+> runs — the doc's proposed driver-level fix would have been a no-op. The actual lateral path is
+> `ComputeLateralEvasion`'s crowd-swerve (it treats `CrowdSource` ped discs as dodgeable threats, Q6).
+> The shipped fix is `Engine.FreezeLateralWhenStopped` (default false → parity-inert), a **path-agnostic**
+> freeze at the lateral commit choke (`Engine.cs` ~9587) when new speed < `LaneChangeMinSpeed`, opted in
+> by `LiveCitySim`. Verified: parity 660/4, LiveCity 25/25, bench `D96213B7BB4021A7`; real-demo `veh218`
+> stopped-window posLat swing 3.0 m → 0.00 with clean resume. Guard:
+> `tests/Sim.ParityTests/StoppedCarLateralFreezeTests.cs`.
+
 ### Diagnosis (already done — do not re-derive)
 A car stopped for a crossing pedestrian **drifts laterally back and forth by a full lane-width while its
 forward speed is exactly 0**, and the DR replay renders it as "floating + rotating weirdly" in front of
