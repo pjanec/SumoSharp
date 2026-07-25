@@ -18,9 +18,18 @@ first-hand (re-run the gate / read the trace), never on a report.
 - [x] T2.2 — **producer crowd-frame de-fragmentation** (`PedLodManager.Step`): the real root was NOT the bandwidth governor (it never truncates — verified `governed=False`/`deferred=0`) nor a stale (0,0) baseline. It was that the final publish loop **interleaved** FreeKinematicSamples with low-power Heartbeats, so `PedReplicationPublisher` fragmented one step's crowd into several frames and the receiver (latest-frame-only) froze every ped but the last fragment. Fix: emit all samples contiguously, then all heartbeats — restores the publisher's documented "consecutive samples ⇒ one crowd frame/step" contract. New test `Step_EmitsFreeKinematicSamplesContiguously_...`.
 - [x] T2.3 — whole-run trace invariant met: **freeKinematicWireMismatches 3627 → 0**; every FreeKinematic row tracks within **max 0.28 m** (p50/p90 = 0.20 m, just the 0.15 s playout lag). Pedestrians 274/274, LiveCity 43/43.
 
-## Stage 3 — #4 stuck-ORCA / wander
-- [ ] T3.1 — #4b off-graph route recovery (multi-segment on-graph, no straight-line fallback)
-- [ ] T3.2 — #4a leaky dwell + stuck-ORCA watchdog (bounded-time demote guaranteed)
+## Stage 3 — #4 stuck-ORCA / wander  — REDIAGNOSED (mostly subsumed by the #3 fix)
+- [x] Moving-zone repro added to `--live-city-pedtrace` (`moving` arg sweeps `SetLcRealismZone` in a circle
+  — camera-Follow). Even so, at **both 400 and 1600 peds** the max consecutive run of a ped FreeKinematic
+  while beyond the demote radius is **3 steps** (~dwellSeconds) — demotion works. Demoted peds rejoin proper
+  multi-segment on-graph routes (routeVtx 6–13). After the #3 fix, low-power wire fidelity is **0.16 m mean /
+  0.48 m max** at 1600 peds — the "wandering ORCA that won't switch back" was the #3 wire-fragmentation bug
+  showing moving/demoted peds as frozen-then-extrapolating. **#4a leaky-dwell/watchdog is NOT needed** (would
+  be machinery for a non-existent server bug). ← owner decision requested before dropping formally.
+- [ ] T3.1 — #4b off-graph route recovery — OPTIONAL cheap hardening only (straight-line fallback is 0.2% /
+  3 peds; genuine but tiny). Keep or skip per owner.
+- [x] ~~T3.2 — #4a leaky dwell + watchdog~~ — DROPPED (evidence: no stuck-ORCA reproduces at 400 or 1600, static
+  or moving zone; demotion is correct). Pending owner ratification.
 
 ## Stage 4 — #6 idle clustering (LOW PRI)
 - [ ] T4.1 — per-ped seeded destination jitter (or pause-spot spread), demo-only, jitter-off byte-identical

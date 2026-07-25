@@ -406,9 +406,27 @@ internal static class Program
             steps = stepsArg;
         }
 
+        // Optional "moving" mode (#4a repro): sweep the LC-realism zone around the pocket centre on a
+        // circle each step (simulating a camera-Follow that pans across the scene), so peds are promoted
+        // as the bubble passes and LEFT BEHIND as it moves on -- the case that exercises the demote dwell /
+        // OutsideSince reset the static-zone trace does not. Radius held constant (SetLcRealismZone only
+        // moves the source when the radius is unchanged); centre steps deterministically off `step`.
+        var movingZone = false;
+        foreach (var a in args)
+        {
+            if (string.Equals(a, "moving", StringComparison.Ordinal)) { movingZone = true; break; }
+        }
+
         // Same construction as LiveCitySource.cs: LiveCityConfig.ForRepoRoot reads LIVECITY_PEDS itself.
         var cfg = Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot());
         using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+
+        // Sweep geometry for moving mode: a circle of this radius around the pocket centre, one full loop
+        // over the run, at the pocket's own promote radius (SetLcRealismZone sets demote = radius * 1.3).
+        const double sweepRadius = 80.0;
+        var zoneRadius = sim.HighRealismPromoteRadius;
+        var pocketCx = sim.HighRealismPocketX;
+        var pocketCy = sim.HighRealismPocketY;
 
         // Server-authoritative per-ped LOD state via the additive read-only passthrough (LiveCitySim
         // .PedLodDiagnostics -> PedLodManager.DiagnosticSnapshot).
@@ -428,6 +446,17 @@ internal static class Program
 
         for (var step = 0; step < steps; step++)
         {
+            if (movingZone)
+            {
+                // Push the zone BEFORE Step (mirrors the viewer's Follow/Locked push), sweeping the centre
+                // one full circle over the run so peds fall out of the demote radius as it moves away.
+                var theta = 2.0 * Math.PI * step / Math.Max(1, steps);
+                sim.SetLcRealismZone(
+                    pocketCx + sweepRadius * Math.Cos(theta),
+                    pocketCy + sweepRadius * Math.Sin(theta),
+                    zoneRadius);
+            }
+
             sim.Step();
             reconstructor.Pump(sim.Time);
 
@@ -457,8 +486,11 @@ internal static class Program
 
                     lastModel[d.Id] = d.Model;
 
-                    var dzx = d.Pos.X - sim.HighRealismPocketX;
-                    var dzy = d.Pos.Y - sim.HighRealismPocketY;
+                    // Distance from the CURRENT zone centre (LcZone tracks SetLcRealismZone; == the static
+                    // pocket when the zone is never moved), so #4a's "ped left behind by a moving zone" is
+                    // measured against where the promotion bubble actually is this step.
+                    var dzx = d.Pos.X - sim.LcZoneX;
+                    var dzy = d.Pos.Y - sim.LcZoneY;
                     var distFromZone = Math.Sqrt(dzx * dzx + dzy * dzy);
 
                     var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out var wvis, out var wtag);
