@@ -6889,7 +6889,41 @@ public sealed partial class Engine : IEngine
 
         for (var j = 0; j < junction.IntLanes.Count; j++)
         {
-            if (j == egoLink.Index || !request.RespondsTo(j))
+            if (j == egoLink.Index)
+            {
+                continue;
+            }
+
+            // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §2/§3): SUMO keeps TWO foe sets per link, built
+            // from TWO different <request> bitstrings, used for two DIFFERENT jobs
+            // (MSRightOfWayJunction.cpp:92-146):
+            //
+            //   myFoeLinks <- RESPONSE -> opened()/blockedByFoe()/hasApproachingFoe(): right-of-way
+            //                             arbitration, i.e. "links I must YIELD to".
+            //   myFoeLanes <- FOES     -> MSLink::getLeaderInfo (MSLink.cpp:1373): lanes that
+            //                             PHYSICALLY conflict, irrespective of who yields.
+            //
+            // getLeaderInfo walks myFoeLanes (the PHYSICAL set); MSVehicle::checkLinkLeader then adapts
+            // on `isLeader(...) || it->inTheWay()` (MSVehicle.cpp:3429). The `|| inTheWay()` is
+            // load-bearing: a foe whose footprint is ON ego's crossing point constrains ego even when
+            // ego holds right-of-way, and getLeaderInfo's "foe won't pass" skip is explicitly
+            // overridden by inTheWay (MSLink.cpp:1498-1509).
+            //
+            // This loop used to be gated on RespondsTo alone, collapsing SUMO's two sets into one.
+            // That made AdaptToJunctionLeader -- our ONLY occupancy-reactive arm -- unreachable for a
+            // foe ego does not yield to, so a major/green ego drove straight through a car physically
+            // sitting on a crossing internal lane. Split the gate the way SUMO does: ARBITRATION stays
+            // on RespondsTo (approaching-foe yield, sameTarget merge, external-agent), OCCUPANCY moves
+            // to FoeWith (the on-junction AdaptToJunctionLeader arm). This is the same reasoning
+            // already applied to egoHasSignalPriority above (see the EgoLinkHasSignalPriority comment):
+            // car-following safety is not subject to priority.
+            // Behind JunctionPhysicalOccupancyGate (default OFF): with the flag off `physicalFoe` is
+            // always false, so this reduces EXACTLY to the pre-F3 `!request.RespondsTo(j) => continue`
+            // and every downstream `respondsTo`/`physicalFoe` branch takes its original path --
+            // byte-identical by construction.
+            var respondsTo = request.RespondsTo(j);
+            var physicalFoe = JunctionPhysicalOccupancyGate && request.FoeWith(j);
+            if (!respondsTo && !physicalFoe)
             {
                 continue;
             }
@@ -6910,6 +6944,14 @@ public sealed partial class Engine : IEngine
 
             if (conflict is null)
             {
+                // F3: ARBITRATION arm -- RespondsTo-gated, so its reachability is unchanged by the
+                // FoeWith widening above (a FoeWith-only foe must not invent a merge yield SUMO does
+                // not perform; that would deepen the NEED-multilane-junction-passage over-yield).
+                if (!respondsTo)
+                {
+                    continue;
+                }
+
                 // C4-iv: no geometric CROSSING is recorded for this foe link -- but a sameTarget
                 // MERGE (ego's link and the foe's link feed the SAME downstream lane) still
                 // requires ego to follow-yield to the merging foe. Own arm; +infinity when not a
@@ -6944,7 +6986,10 @@ public sealed partial class Engine : IEngine
             // approaching-foe formula while the agent occupies the lane. Once ego itself has
             // already been granted entry (egoOnInternal) it is no longer gated, identical to the
             // SUMO-foe approaching branch's own egoOnInternal short-circuit.
-            if (ExternalAgentOnFoeLane(foeInternalLaneId, time))
+            // F3: ARBITRATION arm -- RespondsTo-gated (see the loop head). An external agent on a
+            // link ego merely physically conflicts with must not trigger the approaching-foe stop-line
+            // formula; only the occupancy arm below is widened to FoeWith.
+            if (respondsTo && ExternalAgentOnFoeLane(foeInternalLaneId, time))
             {
                 var extConstraint = egoOnInternal
                     ? double.PositiveInfinity
@@ -6969,6 +7014,29 @@ public sealed partial class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 thisArm = 5;
+
+                // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c): for a foe ego merely PHYSICALLY conflicts
+                // with (FoeWith) but does NOT yield to (no RespondsTo bit), SUMO does not brake for the
+                // foe's mere presence on the lane -- it brakes only when the foe is `inTheWay`
+                // (MSLink.cpp:1440-1443), a deliberately NARROW predicate:
+                //
+                //   inTheWay = !pastTheCrossingPoint && distToCrossing > 0 && enteredTheCrossingPoint
+                //
+                // `enteredTheCrossingPoint` (`leaderBackDist < leader->getLength()`) is the load-bearing
+                // term: the foe must have actually REACHED the conflict point, not merely be somewhere
+                // on the conflicting lane. Without it BOTH cars of a mutual physical conflict yield to
+                // each other and the junction deadlocks -- measured: 5 gridlock diagnostics failed
+                // (dense drainage 290 -> 235 arrivals, saturated grid 304 stuck, 70 spurious teleports)
+                // while all 661 goldens stayed byte-identical.
+                //
+                // RespondsTo foes are deliberately NOT subject to this test: they keep the exact
+                // pre-F3 path (presence alone suffices), so existing parity is bit-for-bit unchanged and
+                // the narrowing applies only to the newly-reachable FoeWith-only case.
+                if (!respondsTo && !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe))
+                {
+                    continue;
+                }
+
                 // On-junction: MSVehicle::adaptToJunctionLeader.
                 // Rung ER2: an emergency vehicle with jmIgnoreJunctionFoeProb IGNORES the
                 // on-junction link-leader (MSVehicle.cpp:3430 -- checkLinkLeaderCurrentAndParallel's
@@ -6978,8 +7046,14 @@ public sealed partial class Engine : IEngine
                     ? double.PositiveInfinity
                     : AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
-            else if (foeInternalSeqIndex > foe.LaneSeqIndex)
+            else if (respondsTo && foeInternalSeqIndex > foe.LaneSeqIndex)
             {
+                // F3: ARBITRATION arm -- RespondsTo-gated (see the loop head). SUMO decides whether an
+                // APPROACHING foe blocks ego via opened()/blockedByFoe() over myFoeLinks (the RESPONSE
+                // set), never over myFoeLanes. Widening this arm to FoeWith would invent yields SUMO
+                // does not perform and would deepen NEED-multilane-junction-passage's over-yield
+                // deadlock. Only the on-junction OCCUPANCY arm above is widened.
+                //
                 // Approaching (foe hasn't reached its own internal lane yet): the stop-line
                 // yield only guards ENTRY onto ego's own internal lane -- once ego has already
                 // been granted entry (egoOnInternal), it is no longer gated by this foe's
@@ -7931,6 +8005,50 @@ public sealed partial class Engine : IEngine
     // `foe` is already confirmed to be ON its own internal lane (foe.LaneId equals the
     // conflict's foe internal lane, i.e. `_network.LanesByHandle[foe.LaneHandle]` below IS that
     // lane) by JunctionYieldConstraint before calling in.
+    // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c): MSLink::getLeaderInfo's `inTheWay` predicate
+    // (sumo/src/microsim/MSLink.cpp:1440-1443) -- "the foe's footprint is ON my conflict point right
+    // now", as opposed to the foe merely being somewhere on a lane that conflicts with mine.
+    //
+    //   const bool pastTheCrossingPoint    = leaderBackDist + foeCrossingWidth + sagitta < 0;
+    //   const bool enteredTheCrossingPoint = leaderBackDist < leader->getVehicleType().getLength();
+    //   const bool inTheWay = ((!pastTheCrossingPoint && distToCrossing > 0) || ...)
+    //                          && enteredTheCrossingPoint && ...;
+    //
+    // Only the plain crossing-internal-lane case is reachable here, so the `sameTarget` alternative
+    // (a merge -- handled by SameTargetMergeConstraint, and never carrying a JunctionConflict record)
+    // and the bidi/opposite-direction disjunct are structurally false and omitted. DEVIATION
+    // (deliberate, as in AdaptToJunctionLeader): the `sagitta` curvature-slack term needs
+    // MSLink::myRadius, which JunctionConflict does not carry, so it is omitted.
+    //
+    // Used ONLY to gate the newly-reachable FoeWith-without-RespondsTo occupancy case; a RespondsTo
+    // foe keeps the pre-F3 presence-only path, which is why existing parity is unchanged.
+    private bool FoeIsInTheWay(
+        VehicleRuntime ego,
+        Lane egoLane,
+        Lane? approachLane,
+        bool egoOnInternal,
+        JunctionConflict conflict,
+        VehicleRuntime foe)
+    {
+        var foeLane = _network!.LanesByHandle[foe.LaneHandle];
+
+        // Same `seen`/distToCrossing derivation as AdaptToJunctionLeader (MSVehicle.cpp:3428/3473).
+        var seen = egoOnInternal
+            ? egoLane.Length - ego.Kinematics.Pos
+            : (approachLane!.Length - ego.Kinematics.Pos) + egoLane.Length;
+
+        var distToCrossing = seen - conflict.EgoLengthBehindCrossing;
+        var foeDistToCrossing = foeLane.Length - conflict.FoeLengthBehindCrossing;
+
+        var leaderBack = foe.Kinematics.Pos - foe.VType.Length;
+        var leaderBackDist = foeDistToCrossing - leaderBack;
+
+        var pastTheCrossingPoint = leaderBackDist + conflict.FoeConflictSize < 0;
+        var enteredTheCrossingPoint = leaderBackDist < foe.VType.Length;
+
+        return !pastTheCrossingPoint && distToCrossing > 0 && enteredTheCrossingPoint;
+    }
+
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
         Lane egoLane,
@@ -7959,6 +8077,50 @@ public sealed partial class Engine : IEngine
         var leaderBack = foe.Kinematics.Pos - foe.VType.Length;
         var leaderBackDist = foeDistToCrossing - leaderBack;
         var foeCrossingWidth = conflict.FoeConflictSize;
+
+        // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3b): MSLink::getLeaderInfo's GEOMETRIC skip
+        // conditions. These were previously unnecessary because this arm was only ever reached for a
+        // foe ego YIELDS to; now that it also runs for a merely physically-conflicting foe (the FoeWith
+        // widening in JunctionYieldConstraint's foe loop) they are mandatory, because without them a
+        // conflict point ego has ALREADY CLEARED would brake ego to a standstill in the middle of the
+        // junction:
+        //
+        //   distToCrossing < 0  =>  gap < 0  =>  the else-branch below calls StopSpeedFor with a
+        //   NEGATIVE stop distance (seen - egoLane.Length - eps), i.e. an emergency stop for a
+        //   conflict that is behind ego. That is a new deadlock, and exactly the over-yield direction
+        //   NEED-multilane-junction-passage.md warns about.
+        //
+        // Skip #1 (MSLink.cpp:1398) -- ego is past this crossing point:
+        //   if (distToCrossing + crossingWidth < 0 && !sameTarget) continue;
+        // Foe-side (MSLink.cpp:1633, `pastTheCrossingPoint`) -- the foe has fully vacated it:
+        //   pastTheCrossingPoint = leaderBackDist + foeCrossingWidth < 0  =>  not a leader.
+        //
+        // `sameTarget` is structurally false here: a sameTarget MERGE never produces a
+        // JunctionConflict record (NetworkParser.cs builds a MergeConflict instead and that case is
+        // handled by SameTargetMergeConstraint), so the `&& !sameTarget` guard is satisfied by
+        // construction. DEVIATION (deliberate, recorded): SUMO adds a `sagitta` curvature-slack term
+        // derived from MSLink::myRadius, which JunctionConflict does not carry; it is omitted, matching
+        // the existing scope of this port.
+        // Gated on JunctionPhysicalOccupancyGate (default OFF). These guards are SUMO-faithful and are
+        // REQUIRED by the widened FoeWith path, but they are NOT parity-inert on their own: they replace a
+        // hard brake with +infinity for a RespondsTo foe whose conflict point ego has already passed. Every
+        // golden stayed byte-identical (no committed fixture reaches that state), which is exactly why the
+        // first measurement wrongly called them inert -- the live-city DEMO is not a golden scenario, and
+        // leaving them unconditional moved it measurably (front-anchor overlap events 61 -> 94, F3 bucket
+        // 8 -> 27). Keeping them behind the flag makes "flag off" a true no-op EVERYWHERE, not just across
+        // the golden suite. Un-gate them only together with the rest of the port (see the flag's comment).
+        if (JunctionPhysicalOccupancyGate)
+        {
+            if (distToCrossing + conflict.EgoConflictSize < 0)
+            {
+                return double.PositiveInfinity;
+            }
+
+            if (leaderBackDist + foeCrossingWidth < 0)
+            {
+                return double.PositiveInfinity;
+            }
+        }
 
         var gap = distToCrossing - ego.VType.MinGap - leaderBackDist - foeCrossingWidth;
 
@@ -11206,6 +11368,33 @@ public sealed partial class Engine : IEngine
     // lane-changes are unaffected. Enforces "lateral motion only with forward motion" for the held case.
     // Set by LiveCitySim.
     public bool SuppressHeldCrowdSwerve { get; set; }
+
+    // F3 junction physical-occupancy gate (docs/F3-JUNCTION-OVERLAP-DESIGN.md). DEFAULT false = OFF =
+    // byte-identical to every golden; the whole new path is behind this flag, so parity is untouched.
+    //
+    // WHAT IT DOES when on: restores SUMO's TWO-foe-set split. SUMO builds myFoeLinks from the RESPONSE
+    // bitstring (right-of-way arbitration) and myFoeLanes from the FOES bitstring (physical conflict),
+    // and MSVehicle::checkLinkLeader adapts on `isLeader(...) || inTheWay()` (MSVehicle.cpp:3429) -- so
+    // a foe physically ON ego's conflict point constrains ego even when ego holds right-of-way. We had
+    // collapsed both sets into RespondsTo, making our only occupancy-reactive arm
+    // (AdaptToJunctionLeader) unreachable for a non-yielded foe: a major/green car drove straight
+    // through a car sitting on a crossing internal lane.
+    //
+    // WHY IT IS OFF BY DEFAULT -- THE PORT IS INCOMPLETE AND, AS IT STANDS, COUNTERPRODUCTIVE.
+    // DO NOT ENABLE THIS UNTIL SUMO's `isLeader()` IS PORTED. Measured with the flag forced on:
+    //   * 3 gridlock diagnostics regress: willpass-saturation 0 -> 290 stuck, dense-LC saturated grid
+    //     -> 250 stuck, synthetic-junction2 3 yield-teleports vs a ceiling of 2.
+    //   * the demo's crossing-internal-lane overlap -- the thing this is meant to REMOVE -- gets WORSE:
+    //     8 -> 33 events, worst penetration 3.035 m -> 3.385 m, stopped cars/frame ~19.7 -> ~26.2.
+    // Reason: braking for an occupied conflict point WITHOUT symmetry-breaking does not avoid the
+    // overlap, it strands cars INSIDE the junction, where each becomes a fresh obstacle for every
+    // crossing stream. A yield that cannot resolve is worse than no yield.
+    //
+    // The missing piece is `isLeader()` (MSVehicle.cpp:7343-7483), which breaks the symmetry of a mutual
+    // physical conflict by junction ENTRY TIME (then speed, then vehicle id) so that exactly ONE of the
+    // two cars yields and the conflict actually clears. It needs new per-vehicle junction entry-time
+    // state. See docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c/§3d.
+    public bool JunctionPhysicalOccupancyGate { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a

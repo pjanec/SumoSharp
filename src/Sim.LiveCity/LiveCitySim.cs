@@ -343,6 +343,11 @@ public sealed class LiveCitySim : IDisposable
         // DemoCarOverlapInvariantTests' straddle test (F4a). See docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A
         // and docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2.
         _engine.SuppressHeldCrowdSwerve = Environment.GetEnvironmentVariable("LIVECITY_HELDSWERVE") != "0";
+        // F3 junction physical-occupancy gate (docs/F3-JUNCTION-OVERLAP-DESIGN.md). OFF by default --
+        // the port is INCOMPLETE (missing SUMO's isLeader() entry-time symmetry break, so saturated
+        // grids deadlock; see the Engine property comment). LIVECITY_F3OCCUPANCY=1 enables it for A/B
+        // measurement of the crossing-internal-lane overlap it is meant to remove.
+        _engine.JunctionPhysicalOccupancyGate = Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
