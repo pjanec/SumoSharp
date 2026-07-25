@@ -1,3 +1,4 @@
+using System.Globalization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
@@ -47,6 +48,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-dense-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city-demo <outPath>   (FAITHFUL: real LiveCitySim + LiveCityConfig)");
+            Console.Error.WriteLine("       Sim.Viz --live-city-pedtrace <outPath.csv> [steps]   (headless per-ped LOD lifecycle trace)");
             Console.Error.WriteLine("       Sim.Viz --engine-replay <scenarioDir> <outPath>   (REAL deterministic engine run, DR-smoothed)");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
@@ -73,6 +75,7 @@ internal static class Program
             "--ped-dense-city" => RunPedDenseCity(args),
             "--live-city" => RunLiveCity(args),
             "--live-city-demo" => RunLiveCityDemo(args),
+            "--live-city-pedtrace" => RunLiveCityPedTrace(args),
             "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
@@ -378,6 +381,147 @@ internal static class Program
         Console.WriteLine(
             $"  FAITHFUL(real LiveCitySim): near-collision(car within 2.5m of a ped ON a crossing)={nearCollision} "
             + $"over pedOnCrossingSamples={pedOnCrossingSamples}; minCarSpeedNearOccupiedCrossing={minStr} m/s");
+        return 0;
+    }
+
+    // Headless per-ped LOD lifecycle trace (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md investigation):
+    // diagnostic-only, ADDITIVE. Builds the REAL LiveCitySim (same LiveCityConfig.ForRepoRoot
+    // construction RunLiveCityDemo/LiveCitySource use -- honors LIVECITY_PEDS via that config), steps it,
+    // pumps a PedRemoteReconstructor over its ped wire (sim.PedSource), and for every ped in
+    // PedLodManager.DiagnosticSnapshot cross-references the server-authoritative LOD state against what
+    // the wire has reconstructed -- one CSV row per (step, ped). Never touches parity/goldens; not part
+    // of `dotnet test`.
+    private static int RunLiveCityPedTrace(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --live-city-pedtrace requires an output CSV path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var steps = 400;
+        if (args.Length > 2 && int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var stepsArg))
+        {
+            steps = stepsArg;
+        }
+
+        // Same construction as LiveCitySource.cs: LiveCityConfig.ForRepoRoot reads LIVECITY_PEDS itself.
+        var cfg = Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+
+        // Server-authoritative per-ped LOD state via the additive read-only passthrough (LiveCitySim
+        // .PedLodDiagnostics -> PedLodManager.DiagnosticSnapshot).
+        var reconstructor = new Sim.Pedestrians.Lod.PedRemoteReconstructor(sim.PedSource);
+
+        var rows = 0;
+        var distinctPeds = new HashSet<int>();
+        var lastModel = new Dictionary<int, Sim.Pedestrians.Lod.PedDrModel>();
+        var promotions = 0;
+        var demotions = 0;
+        var wireMismatches = 0;
+
+        using var writer = new StreamWriter(outPath);
+        writer.WriteLine(
+            "step,now,id,model,highIndexValid,stateEnteredAt,outsideSince,routeVertexCount,srvX,srvY,"
+            + "distFromZone,wireKnown,wireVisible,wireX,wireY,wireSrvDist,regime,animTag");
+
+        for (var step = 0; step < steps; step++)
+        {
+            sim.Step();
+            reconstructor.Pump(sim.Time);
+
+            var sample = sim.Sample();
+            var byId = new Dictionary<int, (Sim.LiveCity.PedRegime Regime, string AnimTag, Sim.Core.Orca.Vec2 Pos)>(sample.Peds.Count);
+            foreach (var p in sample.Peds)
+            {
+                byId[p.Id] = (p.Regime, p.AnimTag, new Sim.Core.Orca.Vec2(p.X, p.Y));
+            }
+
+            {
+                foreach (var d in sim.PedLodDiagnostics(sim.Time))
+                {
+                    distinctPeds.Add(d.Id);
+
+                    var wasFreeKinematic = lastModel.TryGetValue(d.Id, out var prevModel)
+                        && prevModel == Sim.Pedestrians.Lod.PedDrModel.FreeKinematic;
+                    var isFreeKinematic = d.Model == Sim.Pedestrians.Lod.PedDrModel.FreeKinematic;
+                    if (isFreeKinematic && !wasFreeKinematic && lastModel.ContainsKey(d.Id))
+                    {
+                        promotions++;
+                    }
+                    else if (!isFreeKinematic && wasFreeKinematic)
+                    {
+                        demotions++;
+                    }
+
+                    lastModel[d.Id] = d.Model;
+
+                    var dzx = d.Pos.X - sim.HighRealismPocketX;
+                    var dzy = d.Pos.Y - sim.HighRealismPocketY;
+                    var distFromZone = Math.Sqrt(dzx * dzx + dzy * dzy);
+
+                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out var wvis, out var wtag);
+                    string wireXStr, wireYStr, wireSrvDistStr, wireVisibleStr;
+                    if (wireKnown)
+                    {
+                        var wsx = wpos.X - d.Pos.X;
+                        var wsy = wpos.Y - d.Pos.Y;
+                        var wireSrvDist = Math.Sqrt(wsx * wsx + wsy * wsy);
+                        wireXStr = wpos.X.ToString(CultureInfo.InvariantCulture);
+                        wireYStr = wpos.Y.ToString(CultureInfo.InvariantCulture);
+                        wireSrvDistStr = wireSrvDist.ToString(CultureInfo.InvariantCulture);
+                        wireVisibleStr = wvis ? "1" : "0";
+
+                        if (isFreeKinematic && ((wvis && wireSrvDist > 10.0) || !wvis))
+                        {
+                            wireMismatches++;
+                        }
+                    }
+                    else
+                    {
+                        wireXStr = string.Empty;
+                        wireYStr = string.Empty;
+                        wireSrvDistStr = string.Empty;
+                        wireVisibleStr = string.Empty;
+                    }
+
+                    var regimeStr = string.Empty;
+                    var animTagStr = string.Empty;
+                    if (byId.TryGetValue(d.Id, out var s))
+                    {
+                        regimeStr = s.Regime.ToString();
+                        animTagStr = s.AnimTag;
+                    }
+
+                    writer.WriteLine(string.Join(",",
+                        step.ToString(CultureInfo.InvariantCulture),
+                        sim.Time.ToString(CultureInfo.InvariantCulture),
+                        d.Id.ToString(CultureInfo.InvariantCulture),
+                        d.Model.ToString(),
+                        d.HighIndexValid ? "1" : "0",
+                        d.StateEnteredAt.ToString(CultureInfo.InvariantCulture),
+                        double.IsNaN(d.OutsideSince) ? string.Empty : d.OutsideSince.ToString(CultureInfo.InvariantCulture),
+                        d.RouteVertexCount.ToString(CultureInfo.InvariantCulture),
+                        d.Pos.X.ToString(CultureInfo.InvariantCulture),
+                        d.Pos.Y.ToString(CultureInfo.InvariantCulture),
+                        distFromZone.ToString(CultureInfo.InvariantCulture),
+                        wireKnown ? "1" : "0",
+                        wireVisibleStr,
+                        wireXStr,
+                        wireYStr,
+                        wireSrvDistStr,
+                        regimeStr,
+                        animTagStr));
+                    rows++;
+                }
+            }
+        }
+
+        writer.Flush();
+        Console.WriteLine(
+            $"wrote {outPath}  rows={rows} distinctPeds={distinctPeds.Count} promotions={promotions} "
+            + $"demotions={demotions} freeKinematicWireMismatches={wireMismatches}");
         return 0;
     }
 

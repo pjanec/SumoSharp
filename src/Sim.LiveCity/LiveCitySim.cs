@@ -495,6 +495,13 @@ public sealed class LiveCitySim : IDisposable
     public double HighRealismPromoteRadius { get; private set; }
     public double HighRealismDemoteRadius { get; private set; }
 
+    // Diagnostic-only (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §1), ADDITIVE, read-only: a passthrough
+    // to the ped LOD manager's per-ped internal state (Model/HighIndex/dwell timers/route/pos), for the
+    // headless --live-city-pedtrace harness to correlate server-side LOD transitions against the wire.
+    // Empty when peds are disabled (`_manager` null). Never consulted by Step() or any sim behavior.
+    public IEnumerable<Sim.Pedestrians.Lod.PedLodDiag> PedLodDiagnostics(double now)
+        => _manager?.DiagnosticSnapshot(now) ?? Array.Empty<Sim.Pedestrians.Lod.PedLodDiag>();
+
     // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md). The per-area
     // lane-change realism gate in Step() tests against THIS zone (not the static ped-ORCA pocket above),
     // so the viewer can move it to the camera look-at (Follow) or freeze it (Locked). SUMO world coords;

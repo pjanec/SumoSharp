@@ -39,6 +39,15 @@ namespace Sim.Pedestrians.Lod;
 // with stable per-source ids (Register/Move/Remove) and a bounded, grid-indexed per-ped query
 // (RebuildIndex once per step, Query once per ped) -- same promotion/demotion semantics and hysteresis
 // as POC-3, but the per-step scan no longer multiplies with the source count.
+
+// Diagnostic-only, ADDITIVE: one ped's internal LOD state, exposed read-only by
+// PedLodManager.DiagnosticSnapshot for external investigation tooling (e.g. Sim.Viz
+// --live-city-pedtrace). Mirrors fields that are otherwise private on PedLodManager.PedEntry;
+// never consulted by any existing behavior.
+public readonly record struct PedLodDiag(
+    int Id, PedDrModel Model, bool HighIndexValid,
+    double StateEnteredAt, double OutsideSince, int RouteVertexCount, Sim.Core.Orca.Vec2 Pos);
+
 public sealed class PedLodManager
 {
     private sealed class PedEntry
@@ -306,6 +315,28 @@ public sealed class PedLodManager
     // quantify how far the high-water mark has drifted above the live count after a churn spike. Never
     // consulted by Step() itself; purely observability.
     public int HighCrowdSlotHighWater => _highCrowd.Count;
+
+    // Diagnostic-only, ADDITIVE (live-city ped LOD lifecycle investigation): a read-only snapshot of
+    // every ped's internal LOD state, otherwise private on `PedEntry`. Never consulted by Step() or any
+    // other existing behavior -- purely observability, for a headless trace tool to correlate
+    // server-side LOD transitions against the wire (see Sim.Viz --live-city-pedtrace).
+    public IEnumerable<PedLodDiag> DiagnosticSnapshot(double now)
+    {
+        var ids = new List<int>(_peds.Keys);
+        ids.Sort();
+        foreach (var id in ids)
+        {
+            var e = _peds[id];
+            yield return new PedLodDiag(
+                id,
+                e.Model,
+                e.HighIndex.IsValid,
+                e.StateEnteredAt,
+                e.OutsideSince,
+                e.Path.Count,
+                PositionOf(id, now));
+        }
+    }
 
     // The ped's current world position: for Low-power this is the pure PathArcMotion function
     // evaluated AT `now` (so it can be queried for any `now`, not just at a Step boundary); for
