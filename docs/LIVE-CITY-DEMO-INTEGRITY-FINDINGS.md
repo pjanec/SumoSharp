@@ -51,14 +51,27 @@ lags; the "red-run" was a misread or a car-vs-light render desync). Do NOT fix a
 Candidate fix files IF confirmed: `template.js` (Catmull-Rom clamp), else `DrClock.cs`/`DrExtrapolation.Arc`/
 `KinematicReconstructor.cs`/`VizReplayBuilder.cs`.
 
-## F2 — Task A lateral freeze caused car–car overlaps (REGRESSION, REVERTED)
+## F2 — Task A lateral freeze caused car–car overlaps (REGRESSION, REVERTED → **FIXED via targeted redo**)
 
-Fully documented in `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. Summary: `Engine.FreezeLateralWhenStopped`
-(freeze ALL lateral commit below `LaneChangeMinSpeed`) also pinned cars **mid-lane-change**, leaving them
-**straddling two lanes** → they report `gap=Infinity` to trailing cars (laterally invisible to car-following)
-→ followers creep into them → overlaps. A/B-confirmed (`LIVECITY_FREEZELAT` on/off): veh17/26 (0.00 m),
-veh18/49, veh117/26 — all resolve with the freeze off. **Reverted** (demo opt-in off; Engine flag default
-off, `LIVECITY_FREEZELAT=1` to experiment). Task A reopened for a targeted redesign.
+Fully documented in `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. Summary of the reverted attempt:
+`Engine.FreezeLateralWhenStopped` (freeze ALL lateral commit below `LaneChangeMinSpeed`) also pinned cars
+**mid-lane-change**, leaving them **straddling two lanes** → they report `gap=Infinity` to trailing cars
+(laterally invisible to car-following) → followers creep into them → overlaps. A/B-confirmed
+(`LIVECITY_FREEZELAT` on/off): veh17/26 (0.00 m), veh18/49, veh117/26 — all resolve with the freeze off.
+**Reverted**, then the blanket clamp **removed** entirely.
+
+**Task A redo — DONE (targeted, replaces the blanket freeze).** New flag `Engine.SuppressHeldCrowdSwerve`
+(default false; demo opt-in **on** by default, `LIVECITY_HELDSWERVE=0` disables). In
+`ComputeLateralEvasion`'s crowd-swerve branch, when ego is HELD by the crowd this step
+(`BindingConstraint == 13`) AND the agent is laterally STATIC (`LatSpeed ≈ 0`), it recentres and waits
+in-lane instead of steering a full lane-width sideways at ~0 forward speed. **Empirically discriminated
+(traced on the two crowd-swerve fixtures):** the wobble case is `binder 13` while it steers; a car swerving
+PAST a static ped at speed is `binder 3` throughout (never held) → legitimate dodges/passes/lane-changes are
+untouched, only the held static-ped swerve is suppressed. The gate only *recentres* (reduces `|PosLat|`), so
+it **cannot straddle** — the F2 mechanism is structurally impossible. Verified:
+- The held car's `PosLat` stays `0.000` for all held ticks (was 0→2.0→2.7); the at-speed swerve is byte-identical to fix-off (`HeldCrowdSwerveSuppressionTests`, ParityTests).
+- **F4a straddle guard green** (no frozen straddle); parity **661/4** byte-identical; bench `D96213B7BB4021A7`; LiveCity **27/27**.
+- **No new/worse overlap class** (lane-classified A/B over 200 steps): worst-overall `3.035 m` (F3 junction, unchanged), max pairs/frame `4` (unchanged); junction pairs `30→30`, normal-lane pairs `7→8` with worst `1.800 m` unchanged. The fix adds only two SHALLOW normal-lane overlaps (`0.74 m`, `0.09 m`) — both shallower than 6 pre-existing normal-lane overlaps — because a car now correctly STOPS for a crosswalk ped (where it used to swerve through) and its follower queues tightly. Total overlap *events* rose `116→178` (same pre-existing overlaps exposed across more frames), but no severity metric worsened.
 
 ## F3 — Pre-existing junction-overlap engine bug (REAL, authoritative, NOT Task A)
 
@@ -104,12 +117,15 @@ block on it; (ii) with F3 present, an aggregate no-overlap invariant **cannot cl
 dominates: freeze-on adds only 467→544 events at density 800, worst penetration F3-pinned at 3.03m) → the
 F2 guard must be **targeted** (a straddle detector), not aggregate.
 
-1. **F4a — targeted F2 straddle guard** *(this session)*. Assert no stopped/slow car has `|PosLat|` past its
-   lane edge (F2's exact mechanism: a frozen mid-lane-change car straddling). F3-independent, green now,
+1. **F4a — targeted F2 straddle guard** *(this session)* — **DONE**. Assert no stopped/slow car has `|PosLat|`
+   past its lane edge (F2's exact mechanism: a frozen mid-lane-change car straddling). F3-independent, green now,
    actually trips on the freeze regression. This is the guard that protects the Task A redo.
-2. **F1 — DR overshoot fix** *(this session)*. Render integrity; owner-prioritized; tractable viz/DR work.
-3. **Task A redo (F2)** *(this session)*. Targeted crowd-swerve suppression (not a blanket lateral freeze),
-   protected by F4a.
+2. **Task A redo (F2)** *(this session)* — **DONE**. Targeted crowd-swerve suppression (`SuppressHeldCrowdSwerve`,
+   not a blanket lateral freeze), protected by F4a. Empirically discriminated by `binder 13` (held) vs `binder 3`
+   (passing at speed). See §F2 above for the full verification (parity 661/4, bench, LiveCity 27/27, no new overlap class).
+3. **F1 — DR overshoot fix** *(this session)*. Render integrity; owner-prioritized; tractable viz/DR work.
+   **Repro-first**: F1 is UNCONFIRMED at the frame level (engine respects reds; DR reconstruction LAGS, no
+   overshoot) → the PLAYER (Catmull-Rom, `template.js`) is the suspect. No fix without a solid player-level repro.
 4. **F3 — route to core junction work** *(NOT this session)*. Pre-existing core bug; documented above.
 5. **F4b — tighten the general no-overlap invariant to ZERO** — deferred until F3 is fixed (only then is
    overlap-free the true baseline). The committed authoritative test stays as an F3 characterization +

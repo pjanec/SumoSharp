@@ -4,7 +4,7 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4** byte-identical;
+Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **661/4** byte-identical;
 `Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` =
 **43/43** once the arbitrary-net PR lands (25 base + the road-net/route-graph suite it adds; was 25/25).
 
@@ -13,7 +13,7 @@ Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
 
 | Session | Branch | Status | Scope / tracker |
 |---|---|---|---|
-| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A REOPENED** — fix reverted | Task A (stopped-car lateral wobble): first fix caused car–car overlaps, reverted (`c30dee6`+); needs targeted redesign |
+| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A DONE (redo)** | Task A (stopped-car lateral wobble): first blanket-freeze fix caused car–car overlaps (reverted); targeted redo shipped — `Engine.SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression), guarded by F4a. Parity 661/4, bench `D96213B7BB4021A7`, LiveCity 27/27 |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling: B + #4 + #5 · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — PR to main** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` (+ Engine gate fix) · fixture + tests — all DONE; **C5 seam BLOCKED** (ped–vehicle session) · W4 handed off. Detail: `TASKS-DONE.md` → "Arbitrary road-net import"; `LIVE-CITY-ARBITRARY-NET-{DESIGN,TASKS,TRACKER}.md` |
 
@@ -38,18 +38,21 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
 `docs/COORDINATION-livecity-realism-sessions.md`. Briefs: `docs/LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`,
 `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
 
-- [ ] **A — stopped car wiggles sideways at a crosswalk — REOPENED** (first fix reverted). The wobble is
-  `ComputeLateralEvasion`'s crowd-swerve oscillating posLat while a car is held (nearly) stopped by a ped
-  (`_sublane` false in the demo, so the SL2015 driver named in the brief is dead code). The first attempt
-  (`Engine.FreezeLateralWhenStopped`: freeze ALL lateral commit below `LaneChangeMinSpeed`, `03986a7`) was
-  **too blunt** and **caused car–car overlaps** — A/B-confirmed: it also pinned cars **mid-lane-change**
-  (straddling two lanes → `gap=Infinity` to trailing cars → followers creep in → overlap: veh17/26 0.00m,
-  veh18/49, veh117/26). **Reverted** (demo opt-in off; Engine flag now default-off, `LIVECITY_FREEZELAT=1`
-  to experiment). **Redesign direction:** suppress only the held-car **crowd-swerve** (don't try to dodge
-  a ped you're stopped for) while leaving lane-change completion / recentering intact — NOT a blanket
-  lateral freeze. **Missing guard to add first:** a demo-level "no two vehicle footprints overlap" (+ red
-  respected, + minGap) invariant over N steps at density — none exists today, which is why this slipped
-  past parity 660/4 + LiveCity 25/25. Repro/brief: `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A.
+- [x] **A — stopped car wiggles sideways at a crosswalk — DONE (targeted redo).** The wobble was
+  `ComputeLateralEvasion`'s crowd-swerve steering posLat a full lane-width while a car is held (nearly)
+  stopped by a ped (`_sublane` false in the demo, so the SL2015 driver named in the brief is dead code). The
+  first attempt (`Engine.FreezeLateralWhenStopped`: freeze ALL lateral commit below `LaneChangeMinSpeed`) was
+  **too blunt** and **caused car–car overlaps** — it also pinned cars **mid-lane-change** (straddling → `gap=Infinity`
+  → followers creep in → veh17/26, 18/49, 117/26). **Reverted, blanket clamp removed.** **Shipped redo:**
+  `Engine.SuppressHeldCrowdSwerve` (default false; demo opt-in **on**, `LIVECITY_HELDSWERVE=0` disables) —
+  in the crowd-swerve branch, when ego is HELD (`BindingConstraint == 13`) AND the ped is laterally STATIC
+  (`LatSpeed ≈ 0`), recentre and wait in-lane instead of swerving. Only recentres (can't straddle → F2
+  structurally impossible); leaves at-speed dodges / passes / lane-changes untouched (empirically: held =
+  `binder 13`, passing = `binder 3`). **Guard added:** F4a straddle detector
+  (`DemoAuthoritative_NoStoppedCarStraddlesPastItsLane`). Verified: parity **661/4**, bench
+  `D96213B7BB4021A7`, LiveCity **27/27**, no new/worse overlap class (worst 3.035 m F3 + max pairs/frame 4
+  unchanged; fix adds only 0.74 m / 0.09 m normal-lane overlaps, shallower than 6 pre-existing). Detail:
+  `docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2, `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A.
 - [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
   unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,
@@ -84,8 +87,9 @@ core junction work**; F4b deferred until F3 fixed.
   the light). Clamp the reconstructed arc so a decelerating car can't render past its stop position + damp
   the look-ahead for near-stopped cars + verify `accel` is published. Files: `DrClock.cs`,
   `DrExtrapolation.Arc`, `KinematicReconstructor.cs`, `VizReplayBuilder.cs`. §F1.
-- [ ] **F2 — Task A redo** (fix reverted): targeted crowd-swerve suppression (NOT a blanket lateral freeze),
-  guarded by F4a. See the reopened **A** item above + `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A. §F2.
+- [x] **F2 — Task A redo — DONE**: targeted crowd-swerve suppression (`Engine.SuppressHeldCrowdSwerve`, NOT a
+  blanket lateral freeze), guarded by F4a. Empirically discriminated by `binder 13` (held) vs `binder 3` (passing).
+  See the **A** item above + `LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2. §F2.
 - [ ] **F3 — pre-existing junction-overlap engine bug — ROUTE TO CORE JUNCTION WORK (not this session).**
   LOCALIZED: present on `main` too (identical worst pair `veh134/veh38`, 3.035 m) — long-standing, not a
   realism regression. Cars on crossing internal junction lanes overlap ~3 m. Into-occupied / conflict-point

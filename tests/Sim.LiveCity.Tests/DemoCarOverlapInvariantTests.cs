@@ -166,8 +166,15 @@ public class DemoCarOverlapInvariantTests
         //     regression (laterally-invisible straddling cars, followers creeping in) blows far past this.
         //     Ceilings encode the MEASURED §F3 baseline on this branch (200 steps, default density):
         //       worst penetration = 3.035 m (pair __veh134/__veh38, step 197); max overlapping pairs in
-        //       any single frame = 4; total overlapping-pair events = 116.
+        //       any single frame = 4.
         //     Set just above the measured baseline (worst < 4.0 m; pairs ceiling = 4 + 3 margin = 7).
+        //     NOTE (Task A redo, SuppressHeldCrowdSwerve now ON by default): total overlapping-pair EVENTS
+        //     rose 116 -> 178 because cars that used to swerve THROUGH a crosswalk ped now correctly STOP
+        //     and queue, so the SAME pre-existing §F3 junction overlaps are exposed across more frames. The
+        //     two SEVERITY ceilings above are UNCHANGED (worst still 3.035 m, max pairs/frame still 4). Lane-
+        //     classified diff (fix on vs off): junction pairs 30->30 (worst 3.035 m both), normal-lane pairs
+        //     7->8 (worst 1.800 m both) -- the fix adds only shallow normal-lane overlaps (0.74 m, 0.09 m),
+        //     both shallower than 6 pre-existing normal-lane overlaps, and never a straddle (see §F4a).
         Assert.True(worstPenetration < 4.0,
             $"REGRESSION: worst car-car penetration {worstPenetration:F3} m exceeded the §F3 bound (4.0 m) "
             + $"on pair [{worstPair}] at step {worstStep}.");
@@ -185,11 +192,19 @@ public class DemoCarOverlapInvariantTests
     // §F4a -- TARGETED regression guard for the reverted Task-A §F2 bug.
     // docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2/§F4a.
     //
-    // §F2 mechanism: with Engine.FreezeLateralWhenStopped ON, a car that dropped below LaneChangeMinSpeed
-    // (1.5 m/s) *mid-lane-change* had its lateral offset (PosLat) FROZEN at whatever large value it held --
-    // leaving it pinned straddling two lanes / jutting past its lane edge. A stopped straddler reports
-    // gap=Infinity to followers (laterally invisible to car-following), so followers creep into it -> the
-    // §F2 overlaps. The invariant we want: NO stopped/slow car may sit straddling past its lane edge.
+    // NOTE: the flag that CAUSED §F2, Engine.FreezeLateralWhenStopped (blanket lateral freeze), was reverted
+    // and REMOVED; the Task A redo (Engine.SuppressHeldCrowdSwerve, on by default in the demo) only recentres
+    // a held car and so structurally cannot straddle -- this guard passes with the redo on. It remains as a
+    // GENERAL straddle tripwire: any future change that pins a stopped car past its lane edge trips it. The
+    // calibration numbers below were measured against the (now-removed) FreezeLateralWhenStopped flag, which
+    // is why they can no longer be reproduced via LIVECITY_FREEZELAT -- they are kept as the record that the
+    // guard is non-vacuous (it demonstrably caught a real straddle).
+    //
+    // §F2 mechanism (historical): with Engine.FreezeLateralWhenStopped ON, a car that dropped below
+    // LaneChangeMinSpeed (1.5 m/s) *mid-lane-change* had its lateral offset (PosLat) FROZEN at whatever large
+    // value it held -- leaving it pinned straddling two lanes / jutting past its lane edge. A stopped straddler
+    // reports gap=Infinity to followers (laterally invisible to car-following), so followers creep into it ->
+    // the §F2 overlaps. The invariant we want: NO stopped/slow car may sit straddling past its lane edge.
     //
     // Why a raw peak-|PosLat| guard does NOT work here (measured, 200 steps, this demo):
     //   The demo's crowd-swerve (Engine.ComputeLateralEvasion) legitimately pushes a slow car far
@@ -283,8 +298,8 @@ public class DemoCarOverlapInvariantTests
         }
 
         _out.WriteLine(
-            $"§F4a stopped-car straddle guard ({steps} steps, freeze="
-            + $"{(Environment.GetEnvironmentVariable("LIVECITY_FREEZELAT") == "1" ? "ON" : "off")}, peds="
+            $"§F4a stopped-car straddle guard ({steps} steps, heldSwerveSuppress="
+            + $"{(Environment.GetEnvironmentVariable("LIVECITY_HELDSWERVE") == "0" ? "off" : "ON(default)")}, peds="
             + $"{Environment.GetEnvironmentVariable("LIVECITY_PEDS") ?? "default"}): "
             + $"longest frozen straddle (|PosLat| > {STRADDLE_EDGE:F1} m, stopped, unchanged) = {maxFrozenRun} ticks "
             + $"(handle {worstHandle} on lane [{worstLane}] at |PosLat| {maxRunLat:F3} m, step {worstStep}); "
@@ -295,8 +310,8 @@ public class DemoCarOverlapInvariantTests
             $"§F2 STRADDLE REGRESSION: a stopped/slow car (speed < {stoppedSpeed} m/s) stayed FROZEN with "
             + $"|PosLat| > {STRADDLE_EDGE:F1} m for {maxFrozenRun} consecutive ticks (>= ceiling "
             + $"{MAX_FROZEN_STRADDLE_TICKS}) -- pinned straddling past its lane edge (handle {worstHandle}, "
-            + $"lane [{worstLane}], |PosLat| {maxRunLat:F3} m, ending step {worstStep}). This is the reverted "
-            + "Task-A Engine.FreezeLateralWhenStopped bug: a car frozen mid-lane-change straddling two lanes. "
+            + $"lane [{worstLane}], |PosLat| {maxRunLat:F3} m, ending step {worstStep}). A car pinned mid-lane-change "
+            + "straddling two lanes -- the signature of the reverted Task-A Engine.FreezeLateralWhenStopped bug (§F2). "
             + "A legitimate crowd-swerve resolves within a tick or two and never sustains a deep frozen offset.");
     }
 }

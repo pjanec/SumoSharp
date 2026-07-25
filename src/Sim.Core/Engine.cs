@@ -9265,6 +9265,26 @@ public sealed partial class Engine : IEngine
             return DriftToward(curLat, 0.0, maxStep);
         }
 
+        // Task A redo (docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A, LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md
+        // §F2): when ego is HELD (nearly) stopped by THIS crowd agent this step -- CrowdLongitudinalConstraint
+        // is the binding term (v.BindingConstraint == 13, set by ComputeMoveIntent's fold BEFORE this lateral
+        // call, on the real pass) -- AND the agent is laterally STATIC (LatSpeed ~ 0, the flip-flop tie-break
+        // below), do NOT prefer the swerve. There is nothing to gain by dodging a pedestrian you are already
+        // stopping behind, and the static-agent tie-break otherwise steers posLat a full lane-width sideways
+        // while forward speed is ~0 (owner rule: "lateral motion must always be accompanied by forward
+        // motion" -- the DR replay renders it as a car floating/wobbling). Recentre instead: wait centred
+        // behind it (like the non-crowd stop gate above), so a held car RESUMES + recentres once unblocked.
+        // The discriminator is empirically exact (traced on the two crowd-swerve fixtures): the wobble case
+        // is binder 13 while it steers; a car swerving PAST a static ped at speed is binder 3 throughout
+        // (never held), so this never suppresses a legitimate pass. A MOVING agent (LatSpeed != 0) keeps its
+        // vacating-side dodge below (do not re-introduce the velocity-0 over-brake). Demo opt-in
+        // (SuppressHeldCrowdSwerve, default false) inside the CrowdSource-gated branch -> doubly unreachable
+        // on every parity path, so byte-identical.
+        if (SuppressHeldCrowdSwerve && threatIsCrowd && v.BindingConstraint == 13 && Math.Abs(th.LatSpeed) < 1e-9)
+        {
+            return DriftToward(curLat, 0.0, maxStep);
+        }
+
         var halfEgo = v.VType.Width / 2.0;
         var halfLane = lane.Width / 2.0;
         // Car-centre offsets that put ego's near edge SwerveLateralGap beyond the obstacle's PREDICTED
@@ -9584,23 +9604,12 @@ public sealed partial class Engine : IEngine
             // Phase 2 (P2.1/P2.3): lateral velocity = this step's lateral displacement / dt (computed
             // from the OLD offset before it is overwritten). 0 for every lane-centred vehicle (Intent
             // .LatOffset == current == 0), so inert for phase-1; not hashed/compared, so byte-identical.
-            //
-            // Task A (docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A): a car held (nearly) stopped -- e.g.
-            // by a pedestrian at a crosswalk (binder 13, CrowdLongitudinalConstraint) -- must not keep
-            // drifting sideways. The active lateral driver here is ComputeLateralEvasion's crowd-swerve
-            // (the demo has no lateral-resolution, so _sublane is false and the SL2015 driver is not the
-            // path); it otherwise oscillates posLat by a full lane width while forward speed is ~0, which
-            // the DR replay renders as "floating". Owner rule: "lateral motion must always be accompanied
-            // by forward motion". Freeze the per-step lateral commit to the CURRENT offset whenever the
-            // vehicle's new speed is below LaneChangeMinSpeed. Demo-gated: FreezeLateralWhenStopped
-            // defaults false and no golden/bench sets it, so this branch is unreachable on every parity
-            // path -> byte-identical. Path-agnostic: clamps whatever produced Intent.LatOffset
-            // (ComputeLateralEvasion, ComputeSublaneLateral, or ComputeRvoLateral).
-            var committedLat = FreezeLateralWhenStopped && v.Intent.NewSpeed < LaneChangeMinSpeed
-                ? v.Kinematics.LatOffset
-                : v.Intent.LatOffset;
-            v.Kinematics.LatSpeed = (committedLat - v.Kinematics.LatOffset) / dt;
-            v.Kinematics.LatOffset = committedLat;
+            // Task A's stopped-car anti-wobble lives UPSTREAM in ComputeLateralEvasion's crowd-swerve gate
+            // (SuppressHeldCrowdSwerve) -- suppressing only the held static-ped swerve at the source -- not
+            // here; the commit is the plain, path-agnostic apply (the earlier blanket freeze was reverted:
+            // it also pinned mid-swerve/lane-change offsets and caused car-car overlaps, F2).
+            v.Kinematics.LatSpeed = (v.Intent.LatOffset - v.Kinematics.LatOffset) / dt;
+            v.Kinematics.LatOffset = v.Intent.LatOffset;
 
             // C6-ii: feed the actuated-TLS induction loops this vehicle's within-step motion along
             // its START-of-step lane, using the RAW advanced position (before the lane-boundary wrap
@@ -11181,15 +11190,19 @@ public sealed partial class Engine : IEngine
     // demo; every parity scenario leaves it 0.
     public double LaneChangeMinSpeed { get; set; }
 
-    // Realism knob (live-city demo; docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A). Default false =
-    // byte-identical to every golden and the bench (nothing on a parity path sets it, so the freeze
-    // branch in ExecuteMoves is unreachable there). When true, a vehicle whose new speed is below
-    // LaneChangeMinSpeed has its per-step lateral-offset commit frozen to its current value -- it
-    // cannot drift/wobble sideways while (nearly) stopped (e.g. a car held at a crosswalk by a
-    // pedestrian, whose ComputeLateralEvasion crowd-swerve would otherwise oscillate posLat a full
-    // lane width). The lateral mirror of LaneChangeMinSpeed's gate on discrete lane changes:
-    // "lateral motion only with forward motion". Set by LiveCitySim.
-    public bool FreezeLateralWhenStopped { get; set; }
+    // Realism knob (live-city demo; docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A,
+    // docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2). Default false = byte-identical to every golden and
+    // the bench (nothing on a parity path sets it AND the branch it gates lives inside the CrowdSource
+    // crowd-swerve, itself parity-inert, so it is doubly unreachable on the golden path). When true, a
+    // car HELD (nearly) stopped by a laterally-STATIC crowd agent this step (CrowdLongitudinalConstraint
+    // binding, BindingConstraint == 13) does NOT swerve around it -- it recentres and waits in-lane,
+    // instead of steering posLat a full lane-width sideways at ~0 forward speed (the "floating"/wobble
+    // the demo replay showed). Targeted successor to the reverted blanket lateral freeze (F2): only the
+    // held static-ped swerve is suppressed -- a MOVING agent is still dodged, and a car swerving PAST a
+    // ped at speed (never held, BindingConstraint != 13) is untouched, so legitimate passes and
+    // lane-changes are unaffected. Enforces "lateral motion only with forward motion" for the held case.
+    // Set by LiveCitySim.
+    public bool SuppressHeldCrowdSwerve { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a
