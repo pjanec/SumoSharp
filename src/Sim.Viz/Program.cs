@@ -77,6 +77,7 @@ internal static class Program
             "--live-city-yieldtrace" => RunLiveCityYieldTrace(args),
             "--live-city-orcatrace" => RunLiveCityOrcaTrace(args),
             "--live-city-cartrace" => RunLiveCityCarTrace(args),
+            "--live-city-drcheck" => RunLiveCityDrCheck(args),
             "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
@@ -646,6 +647,127 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    // DR-space integrity check: run the SAME reconstruction the HTML replay uses (VizReplayBuilder ->
+    // DrClock -> KinematicReconstructor) and report, per rendered frame, any two vehicle footprints that
+    // OVERLAP (oriented-box SAT). Unlike --live-city-cartrace (which reads authoritative engine state),
+    // this sees exactly what the viewer draws -- so it catches DR-caused overlaps/overshoots that are
+    // invisible to an authoritative-only check. Optional focus id dumps that car's reconstructed pose per
+    // frame (to characterise an overshoot vs the authoritative stop position from --live-city-cartrace).
+    // Usage: --live-city-drcheck <steps> [focusVehId]
+    private static int RunLiveCityDrCheck(string[] args)
+    {
+        var steps = args.Length >= 2 && int.TryParse(args[1], out var s) ? s : 200;
+        var focus = args.Length >= 3 ? args[2] : null;
+        using var source = new LiveCitySource(RepoRoot());
+        var opts = new VizReplayOptions("drcheck", "DR-space overlap integrity check", Steps: steps);
+        var scene = VizReplayBuilder.Build(source, opts);
+        var ids = scene.VehIds ?? Array.Empty<string>();
+        var dt = scene.Dt > 0 ? scene.Dt : 1.0;
+
+        // Authoritative baseline pass: run the ENGINE directly and OBB-check its OWN car positions
+        // (Sample() = raw authoritative). This separates DR-INTRODUCED overlaps (present in the render
+        // but not the engine) from real engine collisions. A fresh sim (deterministic) at the same steps.
+        int authFrames = 0, authPairs = 0; double authWorst = 0;
+        using (var asim = new Sim.LiveCity.LiveCitySim(Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot())))
+        {
+            for (var st = 0; st < steps; st++)
+            {
+                asim.Step();
+                var cars = asim.Sample().Cars;
+                var had = false;
+                for (var i = 0; i < cars.Count; i++)
+                    for (var j = i + 1; j < cars.Count; j++)
+                    {
+                        var pen = ObbOverlap(
+                            new[] { cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
+                            new[] { cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
+                        if (pen <= 0.05) continue;
+                        authPairs++; had = true; if (pen > authWorst) authWorst = pen;
+                    }
+                if (had) authFrames++;
+            }
+        }
+        Console.WriteLine($"AUTHORITATIVE overlaps: frames={authFrames} pairEvents={authPairs} worst={authWorst:F2}m (engine's own positions)");
+
+        int overlapFrames = 0, overlapPairs = 0;
+        double worstPen = 0; string worstDesc = "";
+        var pairMaxPen = new Dictionary<string, double>();
+
+        for (var f = 0; f < scene.Frames.Length; f++)
+        {
+            var V = scene.Frames[f].V;
+            var t = f * dt;
+            var frameHadOverlap = false;
+            for (var i = 0; i < V.Length; i++)
+            {
+                if (V[i] is null || V[i]!.Length < 5) continue;
+                for (var j = i + 1; j < V.Length; j++)
+                {
+                    if (V[j] is null || V[j]!.Length < 5) continue;
+                    var pen = ObbOverlap(V[i]!, V[j]!);
+                    if (pen <= 0.05) continue; // ignore sub-5cm grazes (numeric noise)
+                    overlapPairs++;
+                    frameHadOverlap = true;
+                    var idA = i < ids.Length ? ids[i] : ("v" + i);
+                    var idB = j < ids.Length ? ids[j] : ("v" + j);
+                    var key = string.CompareOrdinal(idA, idB) < 0 ? idA + " / " + idB : idB + " / " + idA;
+                    if (!pairMaxPen.TryGetValue(key, out var mp) || pen > mp) pairMaxPen[key] = pen;
+                    if (pen > worstPen) { worstPen = pen; worstDesc = $"t={t:F1} {key} penetration={pen:F2}m"; }
+                }
+            }
+            if (frameHadOverlap) overlapFrames++;
+            if (focus != null)
+            {
+                for (var i = 0; i < V.Length; i++)
+                {
+                    if (V[i] is null || V[i]!.Length < 5 || i >= ids.Length || ids[i] != focus) continue;
+                    Console.WriteLine($"  {focus} t={t:F2} recon=({V[i]![0]:F2},{V[i]![1]:F2}) heading={V[i]![2]:F0}");
+                }
+            }
+        }
+
+        Console.WriteLine($"DRCHECK: frames={scene.Frames.Length} dt={dt:F3} overlapFrames={overlapFrames} overlapPairEvents={overlapPairs} distinctPairs={pairMaxPen.Count}");
+        Console.WriteLine($"  worst: {worstDesc}");
+        foreach (var kv in pairMaxPen.OrderByDescending(k => k.Value).Take(15))
+            Console.WriteLine($"  pair {kv.Key}: max penetration {kv.Value:F2}m");
+        return 0;
+    }
+
+    // Oriented-box overlap depth (metres) between two vehicles, each encoded as the replay's 5-tuple
+    // [cx, cy, headingDeg, length, width]. Separating-axis test over the 4 box axes; returns the minimum
+    // penetration across axes (0 if a separating axis exists = disjoint). Heading maps to a forward axis
+    // (cos,sin); the exact heading convention only rotates both boxes identically, so relative overlap is
+    // preserved for the "do these two footprints intersect" question.
+    private static double ObbOverlap(double[] a, double[] b)
+    {
+        double PenOnAxis(double axX, double axY)
+        {
+            double Half(double[] v, double ax, double ay)
+            {
+                var th = v[2] * Math.PI / 180.0;
+                var fx = -Math.Sin(th); var fy = Math.Cos(th);   // forward (length) axis
+                var rx = -fy; var ry = fx;                       // right (width) axis
+                var hl = v[3] * 0.5; var hw = v[4] * 0.5;
+                return Math.Abs((fx * ax + fy * ay) * hl) + Math.Abs((rx * ax + ry * ay) * hw);
+            }
+            var centerGap = Math.Abs((b[0] - a[0]) * axX + (b[1] - a[1]) * axY);
+            return Half(a, axX, axY) + Half(b, axX, axY) - centerGap; // >0 => overlap on this axis
+        }
+        double minPen = double.PositiveInfinity;
+        foreach (var v in new[] { a, b })
+        {
+            var th = v[2] * Math.PI / 180.0;
+            var fx = Math.Cos(th); var fy = Math.Sin(th);
+            foreach (var (ax, ay) in new[] { (fx, fy), (-fy, fx) })
+            {
+                var p = PenOnAxis(ax, ay);
+                if (p <= 0) return 0; // separating axis found -> disjoint
+                if (p < minPen) minPen = p;
+            }
+        }
+        return minPen;
     }
 
     private static int RunLiveCityDemo(string[] args)
