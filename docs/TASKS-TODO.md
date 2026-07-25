@@ -4,7 +4,7 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **661/4** byte-identical;
+Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **664/4** byte-identical;
 `Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` =
 **43/43** once the arbitrary-net PR lands (25 base + the road-net/route-graph suite it adds; was 25/25).
 
@@ -71,10 +71,17 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   `D96213B7BB4021A7`, LiveCity **27/27**, no new/worse overlap class (worst 3.035 m F3 + max pairs/frame 4
   unchanged; fix adds only 0.74 m / 0.09 m normal-lane overlaps, shallower than 6 pre-existing). Detail:
   `docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2, `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A.
-- [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
+  **Crosswalk scope verified** (repro `tests/Sim.ParityTests/CrosswalkCrossingPedTests.cs`, findings §F2
+  "Crosswalk scope"): the wobble is the *static/stopped-mid-crossing* ped case → **fixed**; a *moving*
+  crossing ped never floats a stopped car (fix inert). The distinct "car weaves around a crossing ped at
+  speed instead of stopping" is NOT the wobble → routed to **B** below.
+- [ ] **B — car close-fast-passes / weaves around ORCA peds instead of stopping** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
-  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,
-  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`.
+  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. **Also owns** the crosswalk
+  residual from Task A's repro: a car **anticipatorily dodges a crossing ped at ~5 m/s** rather than yielding
+  (crowd-swerve's "prefer swerve over hard-stop", `ComputeLateralEvasion`) — the hard guard must override it.
+  Minimal unit repro: `CrosswalkCrossingPedTests`' crossing-ped setup. Briefs: AB-DESIGN §Task B,
+  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` §4.
 - [ ] **Realism #3 — low-power peds DISAPPEAR on promotion** into the pocket (re-appear as ORCA later);
   one-sided `PedLodManager` promote handoff. *(ped-LOD-lifecycle session — parallel-safe, see table note)* (task #25)
 - [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /

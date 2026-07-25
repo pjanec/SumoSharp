@@ -89,6 +89,17 @@ crossing ped on a short/curved internal lane**, so the ped slips the gate and th
 r=0.6 footprint inflate fixed head-on cases, not this diagonal-on-internal-lane one. → the fix must NOT
 rely on lane projection; use a **world-space** proximity test inside the zone.
 
+**Additional diagnosis (from Task A's crosswalk repro — `CrosswalkCrossingPedTests`, findings §F2 "Crosswalk
+scope"):** a car approaching a ped **walking across a crosswalk** does NOT stop for it — it does an
+**anticipatory dodge at full speed** (weaves around the crossing ped at ~5 m/s, `posLat`→1.4 m while
+Speed=5). That is `ComputeLateralEvasion`'s crowd-swerve (Q6 "prefer swerve over hard-stop") doing exactly
+what it was designed to do; it is NOT the Task-A stopped-wobble (which only occurs for a laterally-STATIC
+ped and is fixed). **The realistic behaviour — a car STOPS/yields for a ped crossing a crosswalk rather than
+weaving past at speed — is your hard ped-safety guard (B-guard):** a world-space "do not close-fast-pass a
+ped" cap must fire for the crossing ped and hold the car, overriding the swerve's prefer-to-dodge choice.
+Reuse `CrosswalkCrossingPedTests`' setup (a `CrowdSource` ped crossing `bridge-crossing-normal`'s lane) as a
+minimal unit repro for "car stops for a crossing ped".
+
 ## 5. Repro & verification diagnostics (already built)
 
 From `src/Sim.Viz` (`dotnet run --project src/Sim.Viz -c Release --no-build -- <mode>`):

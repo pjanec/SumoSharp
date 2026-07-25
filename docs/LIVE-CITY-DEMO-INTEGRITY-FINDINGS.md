@@ -79,6 +79,29 @@ it **cannot straddle** — the F2 mechanism is structurally impossible. Verified
 - **F4a straddle guard green** (no frozen straddle); parity **661/4** byte-identical; bench `D96213B7BB4021A7`; LiveCity **27/27**.
 - **No new/worse overlap class** (lane-classified A/B over 200 steps): worst-overall `3.035 m` (F3 junction, unchanged), max pairs/frame `4` (unchanged); junction pairs `30→30`, normal-lane pairs `7→8` with worst `1.800 m` unchanged. The fix adds only two SHALLOW normal-lane overlaps (`0.74 m`, `0.09 m`) — both shallower than 6 pre-existing normal-lane overlaps — because a car now correctly STOPS for a crosswalk ped (where it used to swerve through) and its follower queues tightly. Total overlap *events* rose `116→178` (same pre-existing overlaps exposed across more frames), but no severity metric worsened.
 
+### F2 — Crosswalk scope (repro'd + verified; test `CrosswalkCrossingPedTests`)
+
+"Is the stopped-car wobble fixed for a ped ON A CROSSWALK, moving or standing?" — built a controlled repro
+(a ped walking across the car's lane, `bridge-crossing-normal` fixture, timed mid-lane as the car arrives).
+It splits into two physically distinct cases, both verified fix on/off:
+
+- **Ped keeps WALKING THROUGH (moving, `LatSpeed ≠ 0`)** → the car does an anticipatory dodge **at speed**
+  (posLat grows while Speed≈5), briefly brakes as the ped passes, and has **no lateral motion while stopped**.
+  `SuppressHeldCrowdSwerve` is **inert** here (gated on `LatSpeed ≈ 0`) → byte-identical fix on/off. **A moving
+  ped never floats a stopped car — there is no wobble to fix in this case.**
+- **Ped WALKS IN AND STOPS mid-crossing (becomes static, `LatSpeed → 0`)** → **this is the wobble.** Fix OFF: the
+  held car steers `1.23 → 2.0 m` sideways **while fully stopped** (Speed 0), then drives *around* the ped. Fix ON:
+  it **recentres to ~0 and waits centred** behind it. **So the wobble IS fixed for a ped that is (or becomes)
+  static in the car's path — standing OR stopped mid-crossing.**
+
+**Distinct residual surfaced (NOT the wobble → routed to Task B / ped–vehicle avoidance):** in the moving case the
+car **weaves around the crossing ped at 5 m/s** rather than **stopping/yielding** for it. That is the crowd-swerve's
+core "prefer swerve over hard-stop" design (Q6 option b) in `ComputeLateralEvasion`, not the tie-break wobble;
+making a car *stop* for a crossing ped needs a world-space ped-safety yield = the ped–vehicle session's hard guard
+(AB-DESIGN §Task B). **Tradeoff the repro exposed:** with the fix on, a car *waits* behind a ped that lingers in its
+lane instead of driving around it — realistic for a crosswalk, but it can stall if an ORCA ped gets stuck there
+(the demo's `DenseFlow…NoGridlock` throughput test still passes, so no gridlock at demo scale).
+
 ## F3 — Pre-existing junction-overlap engine bug (REAL, authoritative, NOT Task A)
 
 **Symptom (owner):** cars colliding at/near junctions in the high-realism area.
