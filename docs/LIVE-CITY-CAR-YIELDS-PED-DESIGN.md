@@ -45,8 +45,8 @@ Two independent mechanisms combine:
    **while ego's CURRENT lateral footprint overlaps it** (`Engine.cs:8602`:
    `|latOff - v.LatOffset| >= egoHalf + disc.Radius ⇒ skip`). Ego swerving off-centre ends the overlap, the
    brake releases, ego re-accelerates. It is also *reactive*, not anticipatory — it uses the ped's CURRENT
-   lateral position, so on this fixture it first binds at t=3 with only a 1.3 m gap at 5 m/s (a
-   3.7 m/s² emergency stop), not a driver-like early yield.
+   lateral position, so on this fixture it first binds at t=3 with only a 1.3 m gap at 5 m/s (an abrupt
+   3.7 m/s² stop), and -- worse -- at coarse steps it can miss the overlap sample entirely (§3.2a).
 
 Task A's `SuppressHeldCrowdSwerve` (`Engine.cs:9273`) already suppresses (1) — but only for a ped that is
 **held + laterally static** (`BindingConstraint == 13 && |LatSpeed| < 1e-9`). A ped that keeps walking never
@@ -69,12 +69,13 @@ Minimum clearance **2.05 m** (vs 0.70), maximum speed inside 3 m **2.6 m/s** (vs
 within one step of the ped clearing — **no stall**. So suppressing the swerve is *sufficient* to produce a
 real yield on this fixture. Two things it does **not** give us:
 
-- it is **not a guarantee** — it is a behaviour that depends on the reactive current-overlap release, so
-  geometries where the ped enters ego's neighbourhood outside the threat window (alongside, at the lane
-  edge, a ped promoted to ORCA late) can still produce a close pass;
-- the stop is a **late 3.7 m/s² emergency brake**, not a driver-like early yield.
+- it is **not a guarantee** — it is a behaviour that rides on binder 13's *reactive, current-overlap*
+  release. Geometries where the ped never lands in that sample (alongside, at the lane edge, a car that
+  covers 5 m in one step) still produce a close pass; §3.2a pins three of them where binder 13 fires
+  **zero** times and the car holds 5.00 m/s straight through the crossing;
+- it does nothing at all for a car that is off-centre for some other reason (mid-lane-change, give-way).
 
-The design below therefore has a *behaviour* layer and a *guarantee* layer.
+The design below therefore has a *behaviour* layer (L1, this suppression) and a *guarantee* layer (L2).
 
 ---
 
@@ -144,8 +145,17 @@ inPath   = |latOff| < H  ||  |predLat| < H  ||  sign(latOff) != sign(predLat)
 `inPath` is "the ped's lateral track over [now, arrival] intersects ego's safety corridor" — the third
 clause catches a ped that traverses the whole corridor within `tte`. The nearest such ped becomes a virtual
 leader at `back = offset - r` through the SAME `FollowSpeedFor` call `CrowdLongitudinalConstraint` uses, so
-the stop is a smooth Krauss deceleration to `MinGap` behind the conflict point instead of a late emergency
-brake.
+it decelerates to `MinGap` behind the conflict point exactly as it would for a stopped car.
+
+**What this buys over binder 13 (measured, not assumed).** It does NOT brake *earlier* on a given
+geometry — it shares Krauss's safe-speed curve, so on the §1 fixture (1 s steps) both first bind at the
+same tick. What it adds is *coverage*: binder 13 tests the ped's CURRENT lateral position against ego's
+CURRENT footprint, so a 5 m/s car at a 1 s step can walk clean over a crossing ped without the overlap ever
+being sampled. `CrowdYieldZoneTests.CrossingPedBinder13Misses_ZoneOffDrivesThroughAtSpeed_ZoneOnYields`
+pins three such geometries: with the zone off the car holds **5.00 m/s for the entire crossing and binder 13
+never fires once**; with it on, binder 14 binds and the car yields. It is also *sticky* — the corridor is
+centred on the LANE, not on ego's current offset, so an off-centre ego (mid-lane-change, a give-way shift)
+does not release it the way binder 13 does.
 
 Why this is **stable** (no brake/release oscillation, the `GateOrcaPedsOnCrossing` lesson): the only ego
 feedback is through `tte`, and it is *monotone in the safe direction* — a slower ego gets a LONGER
@@ -156,22 +166,36 @@ ego yields to where the ped WILL be and releases the instant its corridor track 
 explicit fix for the "velocity-0 over-brake" that cost 15% throughput.
 
 **(b) World-space proximity cap — the hard "never close AND fast" backstop.** For each disc that is not
-fully behind ego's rear bumper, the exact rectangle-to-disc clearance is computed **in world space** (ego's
-body frame from `LaneGeometry.PositionAtOffset`'s naviDegree heading — NOT a lane-membership test, per the
-owner's framing), and ego's speed is capped:
+fully behind ego's rear bumper, the exact rectangle-to-disc clearance is computed **in world space**
+(`VehicleFootprint.ClearanceToDisc`, ego's body frame from `LaneGeometry.PositionAtOffset`'s naviDegree
+heading — NOT a lane-membership test, per the owner's framing), and ego's speed is capped by
+`Engine.ProximitySpeedCap`:
 
 ```
-cap = CrowdYieldCreepSpeed + max(0, clearance - CrowdYieldNearDistance) * CrowdYieldProximityGain
-    = 1.5 m/s + max(0, clearance - 1.5 m) * 3.0 /s
+cap(c) =  0                                    for c <= 0        (contact: full stop)
+          creep * c / near                     for 0 < c < near  (ramp)
+          creep + (c - near) * gain            for c >= near     (relax)
+        with near = 1.5 m, creep = 1.5 m/s, gain = 3.0 /s
 ```
 
-i.e. **at 1.5 m from a pedestrian, never faster than 1.5 m/s**; the cap stops binding beyond ~2.7 m for a
-5 m/s car, so it only ever bites in the close regime. Discs fully behind ego's rear are dropped so ego is
-not trailed/slowed by peds it has already passed. This term is what makes success condition 1/2 a
-*guarantee* rather than an emergent behaviour: whatever the swerve does, a close pass is a slow pass.
+i.e. **at 1.5 m from a pedestrian, never faster than 1.5 m/s; touching one, stopped**; the cap stops
+binding beyond ~2.7 m for a 5 m/s car, so it only bites in the close regime. Discs fully behind ego's rear
+are dropped so ego is not trailed by peds it has already passed. `FinalizeSpeed`'s `vMin` clamp
+(`KraussModel.cs:406-408`) bounds the resulting deceleration at `emergencyDecel`, so a raw cap can never
+teleport speed to 0.
 
-`FinalizeSpeed`'s `vMin` clamp (`KraussModel.cs:406-408`) bounds the resulting deceleration at
-`emergencyDecel`, so a raw cap can never teleport speed to 0.
+**Evaluated on the PREDICTED clearance, not just the current one.** Because braking is bounded, a cap keyed
+only on the current clearance is always met one step late. The demo run measured exactly that: with the
+current-clearance-only form, one car spent a single 0.5 s sample at 2.70 m/s and 1.36 m while braking at its
+emergency limit toward the creep speed — the cap was being obeyed as fast as physics allowed, and still
+produced a nominal violation. So `c` above is the **worse of** the current clearance and the clearance ego
+will have `CrowdYieldCapHorizon` (1.0 s) from now, with ego carried forward along its heading and the agent
+along its own velocity (all in the body frame, `VehicleFootprint.ClearanceFromBodyFrame` +
+`VectorToBodyFrame`). Ego's advance uses `max(speed, CrowdYieldRefSpeed)`, so it is monotone INCREASING in
+speed: going faster looks further and caps harder. That is the stable direction — braking can never
+un-trigger the cap and re-accelerate ego into a pedestrian.
+
+With the prediction in, the demo's residual went to **0** (see §7).
 
 ### 3.3 Data flow / ordering
 
@@ -205,9 +229,48 @@ sweep takes the nearest by `back` with the same strict-`<` tie-break the existin
 | `CrowdYieldNearDistance` | 1.5 m | "close" — inside this, creep only |
 | `CrowdYieldCreepSpeed` | 1.5 m/s | the speed a car may pass a ped at, at touching distance |
 | `CrowdYieldProximityGain` | 3.0 /s | cap slope; unbinds at ~2.7 m for a 5 m/s car |
+| `CrowdYieldCapHorizon` | 1.0 s | how far the proximity cap looks ahead, so the cap is reachable under braking |
 | `SwervePredictionHorizon` | 4.0 s (existing) | reused as the anticipation cap |
 
-## 6. What this session does NOT do
+## 6. Measured results
+
+**Isolated crosswalk repro** (`CrosswalkCrossingPedTests`, the §1 fixture):
+
+| | zone OFF (= every golden) | zone ON |
+|---|---|---|
+| worst clearance while moving > 2 m/s | **0.70 m** | **2.00 m** |
+| speed at that moment | **3.90 m/s** | 3.67 m/s |
+| max abs posLat (the weave) | 1.41 m | **0.00 m** |
+| holds while the ped is in the lane | no | yes (Speed 0.00 at t=5) |
+| back at maxSpeed after the ped clears | — | 1 tick |
+
+**Demo scale** (`DemoPedYieldInvariantTests`, real `LiveCitySim`, 300 steps at Dt=0.5, 160 cars / 160 peds,
+close-fast-pass = clearance < 1.5 m while > 2.0 m/s, car inside the zone):
+
+| | baseline (`LIVECITY_PEDYIELD=0`) | fixed |
+|---|---|---|
+| close-fast-pass events in-zone | **7** | **0** |
+| worst case | body **overlap** (−0.30 m) at 5.30 m/s — a drive-through | 1.79 m at 2.4 m/s |
+| `ArrivedTotal` (throughput) | 42 | **44** |
+
+The baseline's worst offender (`__veh46`) *accelerated* through the encounter — 2.46 → 3.76 → 5.06 → 6.36
+m/s as clearance fell to 0.67 m; `__veh19` drove straight through a pedestrian's body at 5.30 m/s. Neither
+happens with the guard on. Throughput went slightly UP (42 → 44), and
+`DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock` stays green with the guard armed, so the yield
+introduces no new gridlock.
+
+**Gates:** `Sim.ParityTests` 680 passed / 4 skipped (= the 664/4 baseline plus exactly the 16 tests added
+here, no pre-existing test perturbed); `Sim.Bench` hash `D96213B7BB4021A7`, par == single; all 48
+`Sim.LiveCity.Tests` green.
+
+### 6.1 Known residual, and whose it is
+
+Even with the guard on, a pedestrian can still end up geometrically overlapping a car — because
+**pedestrians do not yet avoid cars**. That is C5 (the ped-avoids-car disc feed), explicitly NOT started and
+owned by the ped–vehicle avoidance session (§7). What the car side now guarantees is that it is never the
+one doing the fast approaching: it stops at contact and creeps below 1.5 m.
+
+## 7. What this session does NOT do
 
 - **B-api** (retiring the string `ExternalObstacle` onto `WorldDisc`) — left to the ped–vehicle session
   (handoff §8 Q4), it is an API refactor with its own parity surface.

@@ -343,6 +343,20 @@ public sealed class LiveCitySim : IDisposable
         // DemoCarOverlapInvariantTests' straddle test (F4a). See docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A
         // and docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2.
         _engine.SuppressHeldCrowdSwerve = Environment.GetEnvironmentVariable("LIVECITY_HELDSWERVE") != "0";
+
+        // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md): inside the high-realism zone a car
+        // YIELDS to a pedestrian in its path instead of weaving past it at speed, and can never pass one
+        // at close distance AND high speed. Task A stopped the held car from FLOATING sideways; this stops
+        // the car from dodging a CROSSING ped at 5 m/s (measured on the committed crosswalk repro: 0.70 m
+        // of body-to-ped clearance at 3.90 m/s -> 2.05 m at 2.60 m/s). Pointed at the SAME camera-driven
+        // LC-realism zone the viewer highlights, so the yield region is exactly the region the user sees;
+        // SetLcRealismZone keeps the two in step. On by default; LIVECITY_PEDYIELD=0 disables for A/B.
+        // Demo-only: parity/bench drive Engine directly and never set a zone, so it stays fully inert.
+        _pedYieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD") != "0";
+        if (_pedYieldEnabled)
+        {
+            _engine.SetCrowdYieldZone(_lcZoneX, _lcZoneY, _lcZoneR);
+        }
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
@@ -512,9 +526,21 @@ public sealed class LiveCitySim : IDisposable
     private double _lcZoneX;
     private double _lcZoneY;
     private double _lcZoneR;
+
+    // Task B-guard opt-out latch (LIVECITY_PEDYIELD=0). Read in the ctor and honoured by every later
+    // SetLcRealismZone push, so the A/B arm never re-arms the yield zone behind the flag's back.
+    private readonly bool _pedYieldEnabled;
     public double LcZoneX => _lcZoneX;
     public double LcZoneY => _lcZoneY;
     public double LcZoneRadius => _lcZoneR;
+
+    // Task B-guard: the ENGINE's live car->ped yield zone (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.0).
+    // Read-only pass-throughs so a viewer can render exactly the region the yield is armed over, and so a
+    // test can confirm it tracks SetLcRealismZone rather than drifting from the highlighted zone. Radius
+    // stays 0 for the whole run when LIVECITY_PEDYIELD=0 (the A/B baseline arm).
+    public double PedYieldZoneX => _engine.CrowdYieldZoneX;
+    public double PedYieldZoneY => _engine.CrowdYieldZoneY;
+    public double PedYieldZoneRadius => _engine.CrowdYieldZoneRadius;
 
     // Set the LC-realism zone (the viewer pushes this once per step BEFORE Step(), for Follow/Locked
     // modes). Demo-only: parity/bench drive Engine directly, never LiveCitySim, so goldens never call this
@@ -524,6 +550,12 @@ public sealed class LiveCitySim : IDisposable
         _lcZoneX = centreX;
         _lcZoneY = centreY;
         _lcZoneR = radius;
+
+        // Task B-guard: the car->ped yield region follows the same zone (see the ctor's own comment).
+        if (_pedYieldEnabled)
+        {
+            _engine.SetCrowdYieldZone(centreX, centreY, radius);
+        }
 
         // Unify ped ORCA with the high-realism zone: peds within the zone promote to full ORCA (turn
         // high-power) wherever the viewer looks. The promote radius follows the zone radius (owner
