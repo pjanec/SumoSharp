@@ -16,19 +16,25 @@ flag no golden sets); netstandard2.1 + `LiveCitySim` consumer contract preserved
 | Session | Branch | Owns | Brief |
 |---|---|---|---|
 | **realism-A/B** | `claude/livecity-realism-fixes-vr4k4b` | **Task A** — stopped-car lateral wobble → **DONE**: demo-gated `SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression in `ComputeLateralEvasion`; the earlier blanket `FreezeLateralWhenStopped` clamp was reverted+removed). | `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A |
-| **ped–vehicle avoidance** | `claude/livecity-ped-vehicle-avoidance` *(to be started)* | **car↔ped coupling**: B-guard (world-space hard ped-safety in zone) + B-api (`ExternalObstacle` string→`WorldDisc`/handle) + **C5** (ped-avoids-car disc feed, realism #5). *(#4 moved to ped-LOD-lifecycle — root is demotion, not coupling.)* | `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
-| **ped-LOD-lifecycle** | `claude/livecity-ped-lod-lifecycle` *(to be started — parallel-safe)* | **ped LOD promote/demote switching** (low↔high power): #3 promote handoff (ped vanishes), #4 demote trigger + route restore (wandering ORCA), #6 idle clustering / randomize destinations. Edit surface `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot). Only *produces* `ICrowdFootprintSource`; consumes nothing car-side. | `LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md` |
+| **car-yields-ped** | `claude/car-yields-crossing-ped` *(to be started)* | **car→ped YIELD (Task B-guard)**: a car STOPS for a ped crossing/standing in its path instead of weaving past at speed. Edits `ComputeLateralEvasion` (crowd-swerve prefer-gate ~9253–9310) + `CrowdLongitudinalConstraint` (~8582). Repro committed: `CrosswalkCrossingPedTests`. | `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` |
+| **ped–vehicle avoidance** | `claude/livecity-ped-vehicle-avoidance` *(to be started)* | **car↔ped coupling minus the yield**: B-api (`ExternalObstacle` string→`WorldDisc`/handle) + **C5** (ped-avoids-car disc feed, realism #5). *(B-guard moved to car-yields-ped — the car→ped yield is that session's mechanism; #4 moved to ped-LOD-lifecycle.)* | `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
+| **ped-LOD-lifecycle** | `claude/livecity-ped-lod-lifecycle-bylitj` *(STARTED — parallel-safe)* | **ped LOD promote/demote switching** (low↔high power): #3 promote handoff (ped vanishes), #4 demote trigger + route restore (wandering ORCA), #6 idle clustering / randomize destinations. Edit surface `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot). Only *produces* `ICrowdFootprintSource`; consumes nothing car-side. | `LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md` |
+| **F3 junction overlap** | `claude/f3-junction-overlap-handoff-okf5nu` *(STARTED)* | pre-existing junction car–car overlap (into-occupied / keep-clear) + F4b zero-overlap invariant. Edits `Engine.cs` **junction** methods (`JunctionYieldConstraint` ~6642–7134, `AdaptToJunctionLeader`, `KeepClear`). | `F3-JUNCTION-OVERLAP-HANDOFF.md` |
 | **arbitrary-net** | `claude/discussion-eqp53m` | net import, `SumoRouteGraphNav`/`IPedNavigation`, single realism zone (`_lcZone*`/`SetLcRealismZone`/one `InterestSource`), `Engine.RegionPlan` enablement. Delivers seams; later road-net-enables + zone-bounds the C5 feed. | `LIVE-CITY-ARBITRARY-NET-DESIGN.md`, `LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md` |
 | *W4 multi-camera zones* | *unallocated* | N `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones`, C5 union re-point, optional bit-identical `OrcaCrowd` disc index. Deferred — ped–vehicle session or a later dedicated one. | `LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md` |
 
 ## No-touch lists (edit surface, by owner)
 
-- **realism-A/B owns → others don't touch:** `ComputeSublaneLateral`/`ComputeRvoLateral` (~8654–8712), the
-  lateral commit apply (~9604), the crowd-swerve suppression gate + `SuppressHeldCrowdSwerve` flag in
-  `ComputeLateralEvasion` (~9270).
-- **ped–vehicle avoidance owns → others don't touch:** `CrowdLongitudinalConstraint` (~8582), the B6 swerve
-  (~9198), the `WorldDisc`/`ICrowdFootprintSource`/`CrossRegimeCoupling` seam, `ExternalObstacle` public
-  API, `OrcaCrowd` **external-disc** handling (`SetExternalObstacles`).
+- **realism-A/B — DONE & MERGED (Task A).** Its `SuppressHeldCrowdSwerve` gate + the lateral commit apply
+  (~9604) are on `main`; the car-yields-ped session inherits and widens the crowd-swerve gate (below). Other
+  sessions still don't touch `ComputeSublaneLateral`/`ComputeRvoLateral` (~8654–8712).
+- **car-yields-ped owns → others don't touch:** the `ComputeLateralEvasion` **crowd-swerve prefer-gate**
+  (~9253–9310) + the `SuppressHeldCrowdSwerve` flag/gate (~9270, inherited from Task A), `CrowdLongitudinalConstraint`
+  (~8582), the B6 swerve (~9198). (i.e. the entire car→ped longitudinal/lateral reaction.)
+- **ped–vehicle avoidance owns → others don't touch:** the `WorldDisc`/`ICrowdFootprintSource`/
+  `CrossRegimeCoupling` seam, `ExternalObstacle` public API, `OrcaCrowd` **external-disc** handling
+  (`SetExternalObstacles`). *(The car→ped yield reaction moved to car-yields-ped; this session is the API +
+  ped-side C5 feed.)*
 - **ped-LOD-lifecycle owns → others don't touch:** `src/Sim.Pedestrians/Lod/` promote/demote internals
   (`PedLodManager`, `InterestSource`, route re-derivation, dwell/demote timing), ped demand/idle-destination
   assignment. May use `OrcaCrowd` **agent lifecycle** (`Add`/`Remove`) — a different surface from the

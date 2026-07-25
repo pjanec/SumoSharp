@@ -35,17 +35,21 @@ See `docs/COORDINATION-livecity-realism-sessions.md` for the full three-way boun
 
 This is a **guarantee**, not best-effort tuning.
 
-## 2. Scope — three items that are ONE mechanism
+## 2. Scope — the API + the ped-side feed (the car→ped YIELD moved out)
+
+> **SCOPE CHANGE (2026-07):** **B-guard — the car→ped yield (a car STOPS/never-close-fast-passes a ped) — is
+> now owned by the separate `car-yields-ped` session** (`docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`), which owns
+> the `ComputeLateralEvasion` crowd-swerve gate + `CrowdLongitudinalConstraint`. That session has a committed
+> repro (`CrosswalkCrossingPedTests`). **This session must NOT re-touch the car→ped reaction** — coordinate on
+> the shared `WorldDisc`/`ExternalObstacle` seam only. Your scope is now B-api + C5:
 
 | Item | What | Prior brief |
 |---|---|---|
-| **B-guard** | High-realism-zone **world-space hard ped-safety guard**: a car inside the zone can never overlap or close-fast-pass a ped, computed in world space (NOT lane projection). | `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task B |
 | **B-api** | Retire the string-keyed public `ExternalObstacle` registration onto the neutral **`WorldDisc`/integer-handle** seam (the performance redesign the owner asked for). | AB-DESIGN §Task B "Fix design" |
 | **C5** | Feed live vehicles as world discs into the demo's ORCA crowd (**ped-avoids-car**), zone-bounded, so peds dodge stopped cars. | `LIVE-CITY-ARBITRARY-NET-DESIGN.md` §5.8; realism #5 |
 
-**Also inherit the overlap note:** realism **#4** (ORCA peds leaving the zone stay ORCA and wander
-off-route) overlaps B's "wandering ORCA" residual — coordinate, but it's primarily a `PedLodManager`
-demotion bug (task #25), not the collision guard.
+*(B-guard's world-space "never close-fast-pass a ped" guarantee is the car-yields-ped session's; if you ship
+B-api first, that session consumes your `WorldDisc` seam for its yield.)*
 
 ## 3. The substrate already exists — read it first [verified]
 
