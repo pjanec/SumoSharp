@@ -23,6 +23,15 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
   ("car-stops-before-ped" + "ped-avoids-jammed-car") is **owned by the ORCA-ped session**. **C5 is blocked
   pending an ownership sync with them** (see the C5 note). Everything else (A, B, C1-C4, C6, D, E, F) is
   fully ours and unblocked — start there.
+- **⚠ Sim.Core edit made in C6 — flag to engine owners + other sessions.** C6 exposed a pre-existing
+  `Engine.cs` bug: `ExecuteMoves`'s region-parallel gate (`if (RegionPlan && _actuatedLogics.Count==0)`, ~9407)
+  was missing the `&& ShouldParallelizePlan()` conjunct that every other `_regionActive`-dependent gate
+  requires (3030, 10407), so `RegionPlan=true` on a net with <256 vehicles hit an empty `_regionActive` and
+  **froze every car**. Fixed with the one-line conjunct (owner-approved, option A). **Provably inert on all
+  committed goldens** — parity/bench/demo all run `RegionPlan=false`, so the edited branch is never entered
+  (verified: parity 657/4, bench hash `8F1CD03232BA88ED` deterministic + par==single, demo 37/37). It is in
+  `ExecuteMoves` (~9407), a different method from realism-A/B's `ComputeSublaneLateral` (~9587). Engine owners
+  should be aware; the other sessions should expect this one-line change on rebase.
 
 ---
 

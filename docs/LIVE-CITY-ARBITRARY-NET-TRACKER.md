@@ -16,12 +16,12 @@ parity byte-identical (657/4 on the rebased base) + bench hash unchanged.
 - [x] **B4** determinism (no `System.Random`, repeat-identical)
 
 ## Stage C — road-net mode wiring
-- [ ] **C1** mode branch: build route-graph nav, skip sidewalk bake (demo path unchanged)
-- [ ] **C2** crossings-only bake + gate/signals + walk-only degrade
-- [ ] **C3** O/D sampling from sidewalk centrelines (deterministic)
-- [ ] **C4** `RerouteDriver`/concrete-`SumoNavMesh` not wired in road-net mode
+- [x] **C1** mode branch: build route-graph nav, skip sidewalk bake (demo path unchanged)
+- [x] **C2** crossings-only bake + gate/signals + walk-only degrade
+- [x] **C3** O/D sampling from sidewalk centrelines (deterministic)
+- [x] **C4** `RerouteDriver`/concrete-`SumoNavMesh` not wired in road-net mode
 - [ ] **C5** feed live vehicle discs to ped crowd (ped-avoids-car; **zone-bounded**; demo off) — ⚠ BLOCKED: sync world-disc ownership with ORCA-ped session
-- [ ] **C6** enable `Engine.RegionPlan` for large nets (parity-safe toggle; demo off)
+- [x] **C6** enable `Engine.RegionPlan` for large nets (parity-safe toggle; demo off) — required a Sim.Core `RegionPlan` gate fix (see coordination note in `-TASKS.md`)
 
 ## Stage D — config surfacing
 - [ ] **D1** ped-demand knobs promoted to config (demo `PedDemandConfig` byte-identical)

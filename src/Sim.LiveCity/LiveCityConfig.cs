@@ -31,6 +31,13 @@ public sealed class LiveCityConfig
     // wires up. Defaults to `Navmesh` (today's only wired behaviour); `ForDataset` sets `RouteGraph`.
     public PedNavMode NavMode { get; set; } = PedNavMode.Navmesh;
 
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.9, -TASKS.md C6: opt-in Engine.RegionPlan (a
+    // bit-identical spatial-region decomposition of the parallel car plan -- see Engine.RegionPlan's
+    // own header) for large road-net-import datasets. Default OFF so `ForRepoRoot` (the demo) keeps
+    // today's Engine config byte-identical; `ForDataset` turns it on. Never enabled by parity/bench
+    // (they construct their own Engine directly, never LiveCityConfig).
+    public bool RegionPlan { get; set; } = false;
+
     // PINNED crop = SumoData's co-located downtown HERO block (SUMOSHARP-LIVE-CITY-DECISIONS.md Q7).
     public double X0 { get; set; } = 2055;
     public double Y0 { get; set; } = 2055;
@@ -160,6 +167,7 @@ public sealed class LiveCityConfig
         var cfg = WithEnvOverrides(new LiveCityConfig());
         cfg.DatasetDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box");
         cfg.NavMode = PedNavMode.Navmesh;
+        cfg.RegionPlan = false;
         return cfg;
     }
 
@@ -174,6 +182,7 @@ public sealed class LiveCityConfig
         var cfg = WithEnvOverrides(new LiveCityConfig());
         cfg.DatasetDir = datasetDir;
         cfg.NavMode = PedNavMode.RouteGraph;
+        cfg.RegionPlan = true;
         return cfg;
     }
 
