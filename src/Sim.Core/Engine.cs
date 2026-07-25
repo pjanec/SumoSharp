@@ -7032,7 +7032,33 @@ public sealed partial class Engine : IEngine
                 // RespondsTo foes are deliberately NOT subject to this test: they keep the exact
                 // pre-F3 path (presence alone suffices), so existing parity is bit-for-bit unchanged and
                 // the narrowing applies only to the newly-reachable FoeWith-only case.
-                if (!respondsTo && !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe))
+                // F3 second half of the port: SUMO's isLeader() (MSVehicle.cpp:7343-7483) decides whether
+                // ego must treat this occupant as a leader at all. Its FIRST clause is the deadlock-critical
+                // one (MSVehicle.cpp:7348-7351):
+                //
+                //   if (!myLane->isInternal() || myLane->getEdge().getToJunction() != link->getJunction()) {
+                //       // if this vehicle is not yet on the junction, every vehicle is a leader
+                //       return true;
+                //   }
+                //
+                // i.e. a car that has NOT yet entered the junction always yields (it stops OUTSIDE), and
+                // once ego is already ON the junction the decision falls to entry-time ordering
+                // (`return egoET > foeET` -- whoever entered FIRST does not yield, so it can clear).
+                //
+                // `egoOnInternal` is exactly SUMO's `myLane->isInternal()` for this junction, so gating on
+                // !egoOnInternal implements the first clause faithfully AND is conservative for the second:
+                // a car already on the junction is never braked by this arm, so it always retains the
+                // ability to clear. That is precisely the failure this replaces -- braking mid-junction
+                // stranded cars inside the conflict area where they became new obstacles (measured: F3
+                // overlaps 8 -> 33, stopped cars/frame ~19.7 -> ~26.2, 3 gridlock diagnostics red).
+                //
+                // Full entry-time ordering (myJunctionEntryTime / myJunctionConflictEntryTime and the
+                // speed-then-id tie-break) is still NOT ported; it is only needed to let a first-entrant
+                // yield-free case be distinguished from a second-entrant one for cars already on the
+                // junction, and this gate sidesteps that by never braking them at all.
+                if (!respondsTo
+                    && (egoOnInternal
+                        || !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
                 {
                     continue;
                 }

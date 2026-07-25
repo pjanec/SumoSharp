@@ -29,7 +29,21 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
       target bucket **worse**: 8 → **33** events, worst penetration 3.035 → **3.385 m**, stopped
       cars/frame ≈19.7 → ≈26.2. Braking without symmetry-breaking strands cars *inside* junctions, where
       they become new obstacles. **The flag must stay OFF until T1.4 lands.** See design §3d.
-- [ ] **T1.4** *(NEW — the remaining blocker)* **Port SUMO's `isLeader()`**
+- [-] **T1.4-old** ~~Port `isLeader()` as *the* remaining blocker~~ — **superseded.** `isLeader`'s first
+      clause was tried (`!egoOnInternal`) and still measured worse (F3 bucket 8 → 27). Evidence says
+      `isLeader` is needed only for the *residual* 8 BOTH-MOVING events, and only AFTER T1.5. See design §6a.
+- [ ] **T1.5** *(NEW — HIGHEST VALUE, do this first)* **Fix the stuck-in-junction bug.** `__veh127` sits
+      stopped on `:d_3_4_5_0` for **95 consecutive steps** and `__veh140` on `:d_5_4_12_0` for **75**, both
+      with `GapAhead = +Inf` AND `NextMouthGap = +Inf` throughout — no leader, no blocked exit, nothing in
+      front of them. Some constraint pins them at ~0 indefinitely. Payoff: the 5 deepest F3-bucket events
+      (incl. the bucket's worst, 1.987 m) **and 60 of the 62** `ONE-INTERNAL-ONE-NORMAL` events (the largest
+      bucket). Diagnose by reading the already-recorded `BindingConstraint` / `JunctionYieldArm` (diag #15)
+      for those vehicles across the stuck run — a lookup, not a port.
+- [ ] **T1.6** Re-measure the occupancy gate **after** T1.5, then port `isLeader()` with real junction
+      entry-time state for whatever BOTH-MOVING residue remains (worst 1.696 m; 5 of 8 are 0.497–0.602 m).
+      Check first whether the three identical-speed pairs (2.600/2.600, 2.600/2.600, 3.900/3.900) are
+      actually N2 (co-located vehicles) rather than an admission-gate failure.
+- [-] **T1.4-superseded** ~~Port SUMO's `isLeader()`~~
       (`MSVehicle.cpp:7343-7483`): break mutual-conflict symmetry by junction **entry time**, tie-broken by
       speed then vehicle id. Requires **new per-vehicle junction entry-time state**. Without it, two cars in
       a mutual physical conflict both yield and saturated grids deadlock (measured: 290 stuck / 250 stuck /

@@ -540,4 +540,338 @@ public class F3JunctionOverlapDiagTests
         // DemoCarOverlapInvariantTests for the pass/fail guard on this same phenomenon.
         Assert.True(true);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // STOPPED-IN-JUNCTION hypothesis quantification (below this line).
+    //
+    // Hypothesis under test: the dominant cause of car-car overlap on crossing junction internal
+    // lanes is NOT a missing junction-admission gate, but that vehicles come to a STOP while sitting
+    // ON an internal (':'-prefixed) lane -- they block the junction interior and everything crossing
+    // then overlaps them (SUMO prevents this upstream via keepClear / MSVehicle::checkRewindLinkLanes).
+    //
+    // Pure diagnosis: reads WitnessAuthoritative() and Sample() only, never mutates the engine. Makes
+    // no assertions that can fail -- see the pass/fail guards elsewhere for the bounded-regression gate.
+    // ---------------------------------------------------------------------------------------------
+
+    // Mutable per-(vehicle) run-in-progress state: the vehicle is stopped (speed < threshold) on the
+    // SAME internal lane for a maximal span of consecutive steps. Samples carries GapAhead/NextMouthGap
+    // per step in the run for the blocked-exit check (question C).
+    private sealed class RunState
+    {
+        public string Lane = string.Empty;
+        public int StartStep;
+        public int LastStep;
+        public double MinSpeed;
+        public readonly List<(int Step, double GapAhead, double NextMouthGap)> Samples = new();
+    }
+
+    [Fact]
+    public void F3_JunctionStoppingAttribution()
+    {
+        const int steps = 200;
+        const double stoppedThreshold = 0.5;
+
+        Assert.True(
+            Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") is null or "0",
+            "LIVECITY_F3OCCUPANCY must be unset/0 for this diagnostic -- it must measure the DEFAULT configuration.");
+
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new LiveCitySim(cfg);
+
+        // ---- A. bookkeeping ------------------------------------------------------------------
+        var stoppedInternalPairs = new HashSet<(VehicleHandle Handle, string Lane)>();
+        long vehicleStepsObservedTotal = 0;
+        long vehicleStepsStoppedAny = 0;
+        long vehicleStepsStoppedInternal = 0;
+        var distinctInternalLanesStopped = new HashSet<string>();
+        var distinctVehiclesStoppedInternal = new HashSet<VehicleHandle>();
+        var carNameByHandle = new Dictionary<VehicleHandle, string>();
+
+        var activeRuns = new Dictionary<VehicleHandle, RunState>();
+        var completedRuns = new List<(VehicleHandle Handle, RunState Run)>();
+
+        // ---- B. F3-target bucket, CENTRE-CORRECTED anchor only (the hypothesis's own preferred
+        // anchor, per the F3 handoff) --------------------------------------------------------------
+        var centreEvents = new List<EventRow>();
+
+        for (var st = 0; st < steps; st++)
+        {
+            sim.Step();
+            var cars = sim.Sample().Cars;
+            var witnesses = sim.WitnessAuthoritative();
+
+            foreach (var c in cars)
+            {
+                carNameByHandle[c.Handle] = c.Name;
+            }
+
+            var byHandle = new Dictionary<VehicleHandle, LiveCitySim.CarAuthWitness>(witnesses.Count);
+            foreach (var w in witnesses)
+            {
+                byHandle[w.Handle] = w;
+            }
+
+            // ---- A: per-witness accounting + run tracking ----
+            foreach (var w in witnesses)
+            {
+                vehicleStepsObservedTotal++;
+                var stoppedAny = w.Speed < stoppedThreshold;
+                if (stoppedAny) vehicleStepsStoppedAny++;
+
+                var onInternal = IsInternal(w.LaneId);
+                var stoppedInternal = stoppedAny && onInternal;
+
+                if (stoppedInternal)
+                {
+                    vehicleStepsStoppedInternal++;
+                    stoppedInternalPairs.Add((w.Handle, w.LaneId));
+                    distinctInternalLanesStopped.Add(w.LaneId);
+                    distinctVehiclesStoppedInternal.Add(w.Handle);
+
+                    if (activeRuns.TryGetValue(w.Handle, out var run) && run.Lane == w.LaneId && run.LastStep == st - 1)
+                    {
+                        run.LastStep = st;
+                        if (w.Speed < run.MinSpeed) run.MinSpeed = w.Speed;
+                        run.Samples.Add((st, w.GapAhead, w.NextMouthGap));
+                    }
+                    else
+                    {
+                        if (activeRuns.TryGetValue(w.Handle, out var oldRun))
+                        {
+                            completedRuns.Add((w.Handle, oldRun));
+                        }
+
+                        var newRun = new RunState { Lane = w.LaneId, StartStep = st, LastStep = st, MinSpeed = w.Speed };
+                        newRun.Samples.Add((st, w.GapAhead, w.NextMouthGap));
+                        activeRuns[w.Handle] = newRun;
+                    }
+                }
+                else if (activeRuns.TryGetValue(w.Handle, out var oldRun2))
+                {
+                    completedRuns.Add((w.Handle, oldRun2));
+                    activeRuns.Remove(w.Handle);
+                }
+            }
+
+            // ---- B: CENTRE-CORRECTED overlap events (identical math to F3_ClassifyAuthoritativeOverlaps) ----
+            var centreXY = new (double X, double Y)[cars.Count];
+            for (var i = 0; i < cars.Count; i++)
+            {
+                var th = cars[i].AngleDeg * Math.PI / 180.0;
+                var fx = -Math.Sin(th); var fy = Math.Cos(th);
+                var halfLen = cars[i].Length / 2.0;
+                centreXY[i] = (cars[i].X - halfLen * fx, cars[i].Y - halfLen * fy);
+            }
+
+            for (var i = 0; i < cars.Count; i++)
+            {
+                for (var j = i + 1; j < cars.Count; j++)
+                {
+                    byHandle.TryGetValue(cars[i].Handle, out var wa);
+                    byHandle.TryGetValue(cars[j].Handle, out var wb);
+
+                    var pen = ObbOverlap(
+                        new[] { centreXY[i].X, centreXY[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
+                        new[] { centreXY[j].X, centreXY[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
+                    if (pen > NoiseThreshold)
+                    {
+                        centreEvents.Add(new EventRow(
+                            st,
+                            cars[i].Name, wa.LaneId ?? string.Empty, wa.Pos, wa.PosLat, wa.Speed, wa.Tl,
+                            cars[j].Name, wb.LaneId ?? string.Empty, wb.Pos, wb.PosLat, wb.Speed, wb.Tl,
+                            pen));
+                    }
+                }
+            }
+        }
+
+        // Flush any runs still in progress at the final step.
+        foreach (var kv in activeRuns)
+        {
+            completedRuns.Add((kv.Key, kv.Value));
+        }
+
+        // ============================================================================================
+        // A. Prevalence of stopping inside a junction.
+        // ============================================================================================
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-STOP DIAGNOSTIC -- A. Prevalence of stopping inside a junction");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine($"A1. Distinct (vehicle, internal-lane) pairs with speed < {stoppedThreshold:F1} on a ':' lane = {stoppedInternalPairs.Count}");
+        _out.WriteLine($"A2. Total vehicle-steps with speed < {stoppedThreshold:F1} on a ':' lane           = {vehicleStepsStoppedInternal}");
+
+        _out.WriteLine("");
+        _out.WriteLine("A3. Top 10 longest consecutive stopped-on-same-internal-lane runs:");
+        _out.WriteLine($"    {"vehicle",-14} {"lane",-16} {"runSteps",8} {"minSpeed",9} {"stepRange",-14}");
+        var top10Runs = completedRuns
+            .OrderByDescending(r => r.Run.LastStep - r.Run.StartStep + 1)
+            .Take(10)
+            .ToList();
+        if (top10Runs.Count == 0)
+        {
+            _out.WriteLine("    (no stopped-on-internal-lane runs observed)");
+        }
+        foreach (var (handle, run) in top10Runs)
+        {
+            var name = carNameByHandle.GetValueOrDefault(handle, handle.ToString());
+            var len = run.LastStep - run.StartStep + 1;
+            _out.WriteLine($"    {name,-14} {run.Lane,-16} {len,8} {run.MinSpeed,9:F3} {$"{run.StartStep}-{run.LastStep}",-14}");
+        }
+
+        _out.WriteLine("");
+        _out.WriteLine($"A4. Distinct internal lanes that ever host a stopped vehicle = {distinctInternalLanesStopped.Count}");
+        _out.WriteLine($"    Distinct vehicles that ever stop on an internal lane      = {distinctVehiclesStoppedInternal.Count}");
+
+        _out.WriteLine("");
+        _out.WriteLine($"A5. Total vehicle-steps observed (all lanes)                       = {vehicleStepsObservedTotal}");
+        _out.WriteLine($"    Total vehicle-steps with speed < {stoppedThreshold:F1} on ANY lane            = {vehicleStepsStoppedAny}");
+        _out.WriteLine($"    Total vehicle-steps with speed < {stoppedThreshold:F1} on an internal (':') lane = {vehicleStepsStoppedInternal}");
+        var fractionOfStopsInJunction = vehicleStepsStoppedAny > 0 ? (double)vehicleStepsStoppedInternal / vehicleStepsStoppedAny : 0.0;
+        _out.WriteLine($"    => fraction of ALL stopped vehicle-steps that occur on an internal lane = {fractionOfStopsInJunction:P1}");
+
+        // ============================================================================================
+        // B. Attribution of F3 overlaps to stopped-in-junction cars.
+        // ============================================================================================
+        _out.WriteLine("");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-STOP DIAGNOSTIC -- B. Attribution of F3 overlaps (CENTRE-CORRECTED anchor)");
+        _out.WriteLine(new string('=', 100));
+
+        void ReportBucketSplit(string bucketName, bool withLanePairTable)
+        {
+            var inBucket = centreEvents.Where(e => e.Bucket == bucketName).ToList();
+            var stoppedFoe = inBucket.Where(e => e.SpdA < stoppedThreshold || e.SpdB < stoppedThreshold).ToList();
+            var bothMoving = inBucket.Where(e => e.SpdA >= stoppedThreshold && e.SpdB >= stoppedThreshold).ToList();
+
+            _out.WriteLine($"Bucket {bucketName}: {inBucket.Count} total events");
+            var stoppedWorst = stoppedFoe.Count > 0 ? stoppedFoe.OrderByDescending(e => e.Penetration).First() : (EventRow?)null;
+            var movingWorst = bothMoving.Count > 0 ? bothMoving.OrderByDescending(e => e.Penetration).First() : (EventRow?)null;
+            _out.WriteLine($"  STOPPED-FOE (>=1 car < {stoppedThreshold:F1}): {stoppedFoe.Count} events, worst penetration {(stoppedWorst is null ? 0.0 : stoppedWorst.Penetration):F3} m");
+            if (stoppedWorst is not null) _out.WriteLine($"      worst -> {DetailLine(stoppedWorst)}");
+            _out.WriteLine($"  BOTH-MOVING (both cars >= {stoppedThreshold:F1}):  {bothMoving.Count} events, worst penetration {(movingWorst is null ? 0.0 : movingWorst.Penetration):F3} m");
+            if (movingWorst is not null) _out.WriteLine($"      worst -> {DetailLine(movingWorst)}");
+
+            if (!withLanePairTable) return;
+
+            _out.WriteLine("  Distinct lane-pairs in this bucket (class = class of the worst-penetration event for that pair):");
+            var laneGroups = new Dictionary<(string, string), (int Count, EventRow Worst)>();
+            foreach (var e in inBucket)
+            {
+                var key = string.CompareOrdinal(e.LaneA, e.LaneB) <= 0 ? (e.LaneA, e.LaneB) : (e.LaneB, e.LaneA);
+                if (laneGroups.TryGetValue(key, out var existing))
+                {
+                    var worst = e.Penetration > existing.Worst.Penetration ? e : existing.Worst;
+                    laneGroups[key] = (existing.Count + 1, worst);
+                }
+                else
+                {
+                    laneGroups[key] = (1, e);
+                }
+            }
+
+            if (laneGroups.Count == 0)
+            {
+                _out.WriteLine("    (none)");
+            }
+            foreach (var kv in laneGroups.OrderByDescending(kv => kv.Value.Worst.Penetration))
+            {
+                var (lane1, lane2) = kv.Key;
+                var (count, worst) = kv.Value;
+                var cls = worst.SpdA < stoppedThreshold || worst.SpdB < stoppedThreshold ? "STOPPED-FOE" : "BOTH-MOVING";
+                _out.WriteLine(
+                    $"    laneA=[{lane1}] laneB=[{lane2}] class={cls} events={count} worstPenetration={worst.Penetration:F3} m "
+                    + $"spdA={worst.SpdA:F3} spdB={worst.SpdB:F3} (at worst: A={worst.NameA} B={worst.NameB} step={worst.Step})");
+            }
+        }
+
+        _out.WriteLine("B6/B7. BOTH-INTERNAL-DIFFERENT-LANE bucket (the F3 target):");
+        ReportBucketSplit(BothInternalDifferentLane, withLanePairTable: true);
+
+        _out.WriteLine("");
+        _out.WriteLine("B8. ONE-INTERNAL-ONE-NORMAL bucket (counts + worst per class only):");
+        ReportBucketSplit(OneInternalOneNormal, withLanePairTable: false);
+
+        // ============================================================================================
+        // C. Blocked-exit check for the top stop events from A3.
+        // ============================================================================================
+        _out.WriteLine("");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-STOP DIAGNOSTIC -- C. Blocked-exit check (GapAhead / NextMouthGap for the longest stop runs)");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine(
+            "NOTE: CarAuthWitness does not expose the NEXT lane's string id (only NextLaneHandles internally, "
+            + "which is not part of the public WitnessAuthoritative() surface) -- so the actual next-lane id "
+            + "cannot be determined through existing public API. GapAhead (same-lane leader gap) and "
+            + "NextMouthGap (distance to the nearest car on the NEXT lane, measured from that lane's start; "
+            + "+Inf if the exit is clear/unknown) are reported instead -- a small NextMouthGap while GapAhead "
+            + "is +Inf (own lane clear ahead) is the fingerprint of a blocked-exit/keepClear-type stop.");
+        _out.WriteLine("");
+
+        var topFewForC = completedRuns
+            .OrderByDescending(r => r.Run.LastStep - r.Run.StartStep + 1)
+            .Take(5)
+            .ToList();
+        if (topFewForC.Count == 0)
+        {
+            _out.WriteLine("(no stopped-on-internal-lane runs to inspect)");
+        }
+        foreach (var (handle, run) in topFewForC)
+        {
+            var name = carNameByHandle.GetValueOrDefault(handle, handle.ToString());
+            _out.WriteLine($"Run: vehicle={name} lane={run.Lane} steps={run.StartStep}-{run.LastStep} minSpeed={run.MinSpeed:F3}");
+            foreach (var (stepNo, gapAhead, nextMouthGap) in run.Samples)
+            {
+                var gapStr = double.IsPositiveInfinity(gapAhead) ? "+Inf" : gapAhead.ToString("F3");
+                var mouthStr = double.IsPositiveInfinity(nextMouthGap) ? "+Inf" : nextMouthGap.ToString("F3");
+                _out.WriteLine($"    step={stepNo,4} GapAhead={gapStr,8} NextMouthGap={mouthStr,8}");
+            }
+        }
+
+        // ============================================================================================
+        // Verdict.
+        // ============================================================================================
+        _out.WriteLine("");
+        _out.WriteLine(new string('=', 100));
+        _out.WriteLine("§F3-STOP DIAGNOSTIC -- VERDICT");
+        _out.WriteLine(new string('=', 100));
+
+        var f3Bucket = centreEvents.Where(e => e.Bucket == BothInternalDifferentLane).ToList();
+        var f3StoppedFoe = f3Bucket.Count(e => e.SpdA < stoppedThreshold || e.SpdB < stoppedThreshold);
+        var f3BothMoving = f3Bucket.Count - f3StoppedFoe;
+        var majorityStoppedFoe = f3Bucket.Count > 0 && f3StoppedFoe > f3BothMoving;
+
+        _out.WriteLine(
+            $"BOTH-INTERNAL-DIFFERENT-LANE: {f3Bucket.Count} events total, {f3StoppedFoe} STOPPED-FOE, {f3BothMoving} BOTH-MOVING.");
+        _out.WriteLine(
+            $"Stopping inside a junction: {stoppedInternalPairs.Count} distinct (vehicle,lane) pairs, "
+            + $"{vehicleStepsStoppedInternal} vehicle-steps, {fractionOfStopsInJunction:P1} of all stopped vehicle-steps.");
+
+        if (f3Bucket.Count == 0)
+        {
+            _out.WriteLine(
+                "VERDICT: INCONCLUSIVE -- no BOTH-INTERNAL-DIFFERENT-LANE overlap events occurred in this 200-step run "
+                + "under the default configuration, so the hypothesis cannot be scored against this bucket.");
+        }
+        else if (majorityStoppedFoe && stoppedInternalPairs.Count > 0)
+        {
+            _out.WriteLine(
+                $"VERDICT: SUPPORTED -- {f3StoppedFoe}/{f3Bucket.Count} ({(double)f3StoppedFoe / f3Bucket.Count:P1}) of "
+                + $"BOTH-INTERNAL-DIFFERENT-LANE overlap events involve at least one car stopped (< {stoppedThreshold:F1} m/s), "
+                + $"and stopping inside a junction is not rare ({stoppedInternalPairs.Count} distinct (vehicle,lane) pairs, "
+                + $"{fractionOfStopsInJunction:P1} of all stopped vehicle-steps happen on an internal lane).");
+        }
+        else
+        {
+            _out.WriteLine(
+                $"VERDICT: REFUTED -- only {f3StoppedFoe}/{f3Bucket.Count} ({(double)f3StoppedFoe / f3Bucket.Count:P1}) of "
+                + "BOTH-INTERNAL-DIFFERENT-LANE overlap events involve a stopped car; most F3-target overlaps are "
+                + "BOTH-MOVING, so stopping-in-junction is not the dominant cause under this run.");
+        }
+
+        _out.WriteLine(new string('=', 100));
+
+        // No assertions on the hypothesis outcome -- this is a diagnostic instrument, not a regression
+        // guard. The only assertion is the harness precondition (default config, gate above).
+        Assert.True(true);
+    }
 }

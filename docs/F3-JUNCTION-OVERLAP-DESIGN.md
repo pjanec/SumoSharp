@@ -330,10 +330,18 @@ Fixtures to watch (their tests are the regression guard): `08-junction-straight`
 3. Only if we moved **toward** SUMO → regenerate via `scripts/regen-goldens.sh` and commit, with the diff
    recorded in the task tracker. Otherwise the fix is wrong → rework.
 
-**Toolchain blocker to resolve before any regen:** `apt` provides SUMO **1.18.0**, but `SUMO_VERSION` pins
-**1.20.0**, and `pip install eclipse-sumo==1.20.0` failed in this environment. A 1.18.0 diff is not a valid
-parity anchor ("source and goldens MUST come from this exact version"). If a golden shifts, obtaining a real
-1.20.0 build is a prerequisite task, not a footnote.
+**Toolchain: SUMO 1.20.0 IS available — use it.** `apt install sumo` gives **1.18.0**, which is NOT a valid
+parity anchor against the **1.20.0** pin ("source and goldens MUST come from this exact version"). The pinned
+build comes from pip and is present at:
+
+```
+/usr/local/lib/python3.11/dist-packages/sumo/bin/sumo        # Eclipse SUMO Version 1.20.0
+/usr/local/lib/python3.11/dist-packages/sumo/bin/netconvert  # (duarouter, netgenerate, ... alongside)
+```
+
+installed via `pip install eclipse-sumo==1.20.0`. Put that `bin/` ahead of `/usr/bin` on `PATH` (or point
+`SUMO_HOME` at the package dir) so `sumo`/`netconvert` resolve to 1.20.0 and not apt's 1.18.0 — the bare
+`sumo` on `PATH` is the WRONG version. Golden diffing and `scripts/regen-goldens.sh` are therefore unblocked.
 
 ## 6. Success conditions (what "done" means for F3)
 
@@ -343,6 +351,65 @@ parity anchor ("source and goldens MUST come from this exact version"). If a gol
 4. `Sim.LiveCity.Tests` green (run **without** `--no-build` — not in `Traffic.sln`).
 5. **No new deadlock:** `NEED-multilane-junction-passage` and `NEED-priorityjunction-farrouted-foe-falsepositive`
    do not regress; demo throughput (`DenseFlow_…NoGridlock`) stays green. Guard §3b explicitly.
+
+## 6a. EVIDENCE-BASED FIX PLAN (two hypotheses tested, both refuted; this is what the data says)
+
+Two fix attempts were implemented and measured. **Both made things worse.** Recording them so nobody
+re-runs the experiment:
+
+| attempt | F3 bucket (front-anchor) | worst | verdict |
+| --- | --- | --- | --- |
+| baseline (no change) | 8 | 3.035 m | — |
+| H1: `FoeWith` widening + narrow `inTheWay` | **33** | 3.385 m | WORSE |
+| H2: H1 + `isLeader`'s first clause (`!egoOnInternal`) | **27** | 3.385 m | still WORSE |
+
+**H3 ("cars stopped ON internal lanes are the dominant cause, so port `checkRewindLinkLanes`") was tested
+BEFORE writing any code — and REFUTED.** Attribution of the 13 centre-corrected F3-bucket events:
+
+| class | events | worst |
+| --- | --- | --- |
+| `STOPPED-FOE` (≥1 car below 0.5 m/s) | 5 | 1.987 m |
+| **`BOTH-MOVING`** | **8 (62%)** | 1.696 m |
+
+Stopping inside a junction is real but *not* dominant for F3: 14 distinct (vehicle, internal-lane) pairs,
+206 vehicle-steps, **2.2%** of all stopped vehicle-steps. So `keepClear`/rewind work is NOT the lever for
+the F3 bucket.
+
+### What the evidence actually points at, in value order
+
+**(1) HIGHEST VALUE — a stuck-vehicle bug: cars parked inside a junction for ~100 steps with NOTHING ahead.**
+
+| vehicle | internal lane | consecutive stopped steps | min speed | `GapAhead` | `NextMouthGap` |
+| --- | --- | --- | --- | --- | --- |
+| `__veh127` | `:d_3_4_5_0` | **95** (steps 98–192) | 0.000 | **+Inf** | **+Inf** |
+| `__veh140` | `:d_5_4_12_0` | **75** (steps 113–187) | 0.000 | **+Inf** | **+Inf** |
+
+`GapAhead = +Inf` and `NextMouthGap = +Inf` for **every step of both runs**: no leader, no blocked exit
+mouth. These cars are stopped in the middle of a junction with **no obstacle in front of them at all**, for
+nearly half the run. That is not keepClear, not car-following, and not an admission-gate question — some
+constraint is pinning them at ~0 speed indefinitely. Payoff if fixed:
+- the **5 deepest F3-bucket events**, including the bucket's worst (**1.987 m**, `__veh5` at 10.40 m/s vs
+  `__veh127` at 0.00), and
+- **60 of the 62** `ONE-INTERNAL-ONE-NORMAL` events (that bucket is 60/62 `STOPPED-FOE`) — the single
+  largest overlap bucket in the demo.
+
+Method: instrument `BindingConstraint` / `JunctionYieldArm` (both already recorded per-vehicle for diag #15)
+for `__veh127` across steps 98–192 and read off which constraint is returning ~0. It is one lookup, not a
+port. **Do this first.**
+
+**(2) THEN the genuine simultaneous-admission residue.** The 8 `BOTH-MOVING` events are the true "both cars
+admitted into crossing paths at once" case — the actual F3 as conceived. Note the magnitudes are **small**:
+worst 1.696 m, and 5 of the 8 are 0.497–0.602 m. Three of those pairs also show *identical* speeds
+(2.600/2.600, 2.600/2.600, 3.900/3.900), which smells related to N2 (co-located vehicles) and should be
+checked before assuming an admission-gate cause. Only this residue needs the full occupancy port —
+`FoeWith` + `inTheWay` + **`isLeader` with real junction entry-time state** (`myJunctionEntryTime` /
+`myJunctionConflictEntryTime`, tie-broken by speed then vehicle id, `MSVehicle.cpp:7433-7475`).
+
+**Why (1) must precede (2):** H1/H2 both failed by *braking* cars, which grows the stuck-in-junction
+population — the very thing (1) is about. Adding an occupancy brake on top of a stuck-vehicle bug parks a
+second car in the junction. Any occupancy gate must be re-measured only after (1) is fixed.
+
+**(3) Independently, fix N1 (the OBB anchor).** Until then no overlap number in the repo means what it says.
 
 ## 6b. F4b IS NOT ACHIEVABLE AS SPECIFIED — SUMO does not guarantee zero OBB overlap
 
