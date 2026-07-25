@@ -23,6 +23,19 @@ public sealed record PedNetwork(
     // component -- the net says a pedestrian walks straight through. Init-only with an empty default, so every
     // existing `new PedNetwork(...)` caller is unaffected.
     public IReadOnlyList<PedConnection> PedConnections { get; init; } = Array.Empty<PedConnection>();
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6 (capability probe + graceful degrade): the empty
+    // network -- every record list empty, no PedConnections -- used as the fallback when
+    // `PedNetworkParser.Load` throws on a malformed net.xml (an internal-edge id that does not match
+    // SUMO's ":<junction>_[cw]<N>" convention, a crossing/walkingarea edge with no pedestrian lane,
+    // etc.). A caller that loads this sees zero sidewalks/crossings and can degrade cleanly (no
+    // pedestrians) instead of propagating the parse exception.
+    public static readonly PedNetwork Empty = new(
+        Array.Empty<PedLane>(),
+        Array.Empty<PedCrossing>(),
+        Array.Empty<PedWalkingArea>(),
+        Array.Empty<WalkablePolygon>(),
+        Array.Empty<WalkableAccessPoint>());
 }
 
 // A declared pedestrian connection between two baked-polygon LANE ids (the id space of BakedPolygon.Id):

@@ -8,6 +8,44 @@ yet-briefed roadmap items are tracked (as one-liners) in `TASKS-TODO.md`.
 
 ---
 
+## Arbitrary road-net import (RouteGraph pedestrians) — DONE ✅ (2026-07-25)
+
+Load `LiveCitySim` on an arbitrary, already-prepared SUMO road-net (folder) with pedestrians **routed** on
+the ped network (walk sidewalks, cross at crosswalks) rather than free-wandering — the demo stays byte-
+identical. Branch `claude/discussion-eqp53m`. Full docs: `LIVE-CITY-ARBITRARY-NET-{SCOPING,DESIGN,TASKS,
+TRACKER}.md`. Delivered:
+
+- **A** — `LiveCityConfig.ForDataset(dir)` + `PedNavMode` (demo `ForRepoRoot` unchanged); drivable spawn
+  edges derived from `net.xml` when no `scenario.rou.xml`; capability probe + graceful degrade
+  (`PedestriansEnabled`/`CrossingsEnabled`, try/catch on malformed ped-nets → bare nets run vehicles-only,
+  sidewalks-no-crossings run walk-only, no throw).
+- **B** — `SumoRouteGraphNav : IPedNavigation` (`src/Sim.Pedestrians/Navigation/RouteGraph/`): routes on the
+  SUMO ped edge/connection graph directly (no `WalkablePolygonBaker` bake, no `SumoNavMesh`), returning the
+  same `Vec2` polyline the seam already consumes. Deterministic; no `System.Random`.
+- **C** — `RouteGraph` mode wiring in `LiveCitySim`: builds the route-graph nav, skips the sidewalk bake,
+  `BakeCrossingsOnly` for the crossing-occupancy gate/signals, whole-net centreline O/D, **no crop**,
+  `RegionPlan` enable — all gated on `NavMode==RouteGraph` so the demo path is byte-identical.
+  `RouteGraphNavigationActive` witness. **C5 (vehicle-disc ped-avoids-car feed) intentionally NOT done** —
+  owned by the ped–vehicle avoidance session; `Step` still passes `NoEntities`.
+- **D** — ped-demand knobs surfaced to `LiveCityConfig` (defaults = former literals; demo `PedDemandConfig`
+  byte-identical).
+- **E** — committed synthetic fixture `scenarios/_ped/roadnet_min/` (SUMO 1.20.0, has `outlineShape`);
+  `scripts/prep-ped-net.sh` offline `netconvert` recipe (dev-side only, never in `dotnet test`); coordinate-
+  robustness tests (large/negative/3-D coords).
+- **Sim.Core fix** (owner-approved): `ExecuteMoves`' region-parallel gate was missing `&& ShouldParallelize
+  Plan()` (froze cars for `RegionPlan=true` with <256 vehicles). One-line fix, matches the other
+  `_regionActive` gates; **provably inert on parity/bench/demo** (all run `RegionPlan=false`). Flag for
+  engine owners: it's in `ExecuteMoves` (~9407), a different method from realism-A/B's `ComputeSublaneLateral`.
+
+Gates (merged with main): `Sim.ParityTests` **657/4** byte-identical; `Sim.Bench` **`D96213B7BB4021A7`**
+(default 500 steps, deterministic + par==single); `Sim.LiveCity.Tests` **43/43** (incl. `DenseFlow` liveness
+→ demo unchanged); `Sim.Pedestrians.Tests` 272; netstandard2.1 + consumer contract intact.
+
+Still open (other sessions): **C5** ped-avoids-car disc feed (ped–vehicle avoidance session; seam left in
+place), **W4** multi-camera/overlapping realism zones (`LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`).
+
+---
+
 # TASKS.md — Work queue for coding sessions
 
 Each task is a **self-contained briefing**. A subagent starts from near-zero context, so a

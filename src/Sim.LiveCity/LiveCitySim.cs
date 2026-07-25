@@ -12,7 +12,9 @@ using Sim.Pedestrians;
 using Sim.Pedestrians.Crossing;
 using Sim.Pedestrians.Demand;
 using Sim.Pedestrians.Lod;
+using Sim.Pedestrians.Navigation;
 using Sim.Pedestrians.Navigation.Bake;
+using Sim.Pedestrians.Navigation.RouteGraph;
 using Sim.Replication;
 
 namespace Sim.LiveCity;
@@ -28,6 +30,11 @@ public sealed class LiveCitySim : IDisposable
 {
     private readonly LiveCityConfig _cfg;
     private readonly double _x0, _y0, _x1, _y1;
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.4 (no crop): true only in `Navmesh` (demo) mode. In
+    // `RouteGraph` mode every crop predicate below (the ctor's local `In`/`InV`, `Sample()`,
+    // `SampleCars()`, and the `_cropEdges` filter) is bypassed -- road-net mode routes/samples/spawns
+    // over the WHOLE net, never just the pinned demo crop.
+    private readonly bool _cropEnabled;
 
     private readonly Engine _engine;
     private readonly VTypeHandle _vtype;
@@ -35,8 +42,11 @@ public sealed class LiveCitySim : IDisposable
     private ulong _rng;
 
     private readonly PedPublisher _pedPublisher;
-    private readonly PedLodManager _manager;
-    private readonly PedDemand _demand;
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: null when `PedestriansEnabled==false` (a bare
+    // vehicle-only net -- no sidewalks). `PedSource`/`_pedPublisher` stay non-null regardless (the
+    // wire is always constructed; it simply carries no peds when these are null).
+    private readonly PedLodManager? _manager;
+    private readonly PedDemand? _demand;
     private readonly InterestField _field;
     // The single ped-ORCA promotion source, re-centred AND re-sized on the live high-realism zone by
     // SetLcRealismZone so peds promote to full ORCA across the WHOLE highlighted zone wherever the viewer
@@ -46,7 +56,9 @@ public sealed class LiveCitySim : IDisposable
     // therefore scales with the zone radius by design (owner: "honor the zone radius, no matter perf").
     private InterestSource _orcaSource;
     private InterestSourceId _orcaSourceId;
-    private readonly Sim.Pedestrians.Crossing.CrossingOccupancySource _crossingOccupancy;
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: null when `CrossingsEnabled==false` (no sidewalks,
+    // or sidewalks but no crossings -- "walk-only" degrade). `OccupiedCrossings` reads 0 when null.
+    private readonly Sim.Pedestrians.Crossing.CrossingOccupancySource? _crossingOccupancy;
     private readonly List<Vec2> _movingLowPowerPositions = new();
     private static readonly WorldDisc[] NoEntities = Array.Empty<WorldDisc>();
 
@@ -110,82 +122,169 @@ public sealed class LiveCitySim : IDisposable
         Network = model;
         LocalLanes = new NetworkLaneSource(model);
 
-        var pedNetwork = PedNetworkParser.Load(netPath);
-        var polygons = WalkablePolygonBaker.Bake(pedNetwork);
-        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons), pedNetwork.PedConnections);
+        // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6 (capability probe + graceful degrade): a malformed
+        // ped-net (e.g. a crossing/walkingarea edge with no pedestrian lane, or an internal edge id
+        // that doesn't match SUMO's ":<junction>_[cw]<N>" convention) degrades to "no pedestrians"
+        // instead of throwing out of the ctor.
+        PedNetwork pedNetwork;
+        try
+        {
+            pedNetwork = PedNetworkParser.Load(netPath);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+        {
+            pedNetwork = PedNetwork.Empty;
+        }
 
-        bool In(double x, double y) => x >= _x0 && x <= _x1 && y >= _y0 && y <= _y1;
-        bool InV(Vec2 p) => In(p.X, p.Y);
+        PedestriansEnabled = pedNetwork.Sidewalks.Count > 0;
+        CrossingsEnabled = PedestriansEnabled && pedNetwork.Crossings.Count > 0;
+
+        // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.2 (C1 mode branch): RouteGraph is the road-net
+        // (arbitrary net) import path -- SumoRouteGraphNav, no sidewalk bake, no crop (§5.4). Navmesh
+        // is today's ONLY-EVER-WIRED demo path (`ForRepoRoot`), untouched below.
+        var routeGraphMode = cfg.NavMode == PedNavMode.RouteGraph;
+        _cropEnabled = !routeGraphMode;
+
+        bool In(double x, double y) => InCrop(x, y);
+        bool InV(Vec2 p) => InCrop(p.X, p.Y);
 
         var cx = (_x0 + _x1) / 2.0;
         var cy = (_y0 + _y1) / 2.0;
-
-        // Pedestrian O-D endpoints = sidewalk spine midpoints inside the crop.
-        var allEndpoints = new List<Vec2>();
-        foreach (var poly in polygons)
+        if (routeGraphMode)
         {
-            if (poly.Kind != BakedPolygonKind.SidewalkSegment) continue;
-            if (!InV(poly.Centroid)) continue;
-            var spine = poly.Spine;
-            var pt = spine is { Count: > 0 } ? spine[spine.Count / 2] : poly.Centroid;
-            if (InV(pt)) allEndpoints.Add(pt);
+            // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.4: road-net mode has no crop, so the
+            // realism-pocket/LC-zone default centre is the NET's own geometric centre (AABB over
+            // every parsed lane shape) rather than a crop midpoint road-net mode ignores.
+            var netCentre = ComputeNetAabbCentre(model);
+            cx = netCentre.X;
+            cy = netCentre.Y;
         }
-
-        const int MaxEndpoints = 90;
-        var odPoints = new List<Vec2>();
-        if (allEndpoints.Count <= MaxEndpoints)
-        {
-            odPoints.AddRange(allEndpoints);
-        }
-        else
-        {
-            var stride = (double)allEndpoints.Count / MaxEndpoints;
-            for (var k = 0; k < MaxEndpoints; k++) odPoints.Add(allEndpoints[(int)(k * stride)]);
-        }
-
-        // Crop crossings, split by signalization -- SceneGen.BuildLiveCity's Phase 2b split.
-        var cropCrossingPolys = new List<BakedPolygon>();
-        foreach (var poly in polygons)
-        {
-            if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
-        }
-
-        var crosswalkSignals = CrosswalkSignals.FromNet(netPath, cropCrossingPolys);
-
-        var config = new PedDemandConfig
-        {
-            Origins = odPoints,
-            Destinations = odPoints,
-            SpawnRatePerSecond = cfg.PedSpawnRatePerSecond, // LIVECITY_PEDS scales this (default 8.0)
-            PopulationCap = cfg.PedPopulationCap,           // LIVECITY_PEDS overrides this (default 160)
-            Seed = cfg.PedSeed,
-            MaxSpeed = 1.3,
-            Radius = 0.3,
-            ArrivalRadius = 0.6,
-            Liveliness = new PedLivelinessConfig
-            {
-                PauseProbability = 0.15,
-                MinPauseSeconds = 2.0,
-                MaxPauseSeconds = 5.0,
-                MaxPausesPerTrip = 1,
-                PauseAnimTag = "idle",
-            },
-            EnableWeave = true,
-            CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
-        };
 
         _pedPublisher = new PedPublisher();
-        _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
-        _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
 
-        // The high-realism pocket, anchored on the crop crossing nearest the crop centre (the same
-        // "peds actually walk here" anchoring SceneGen.BuildLiveCity uses).
+        // Defaults for the "no pedestrians" degrade: the InterestField pocket / LC-realism zone still
+        // need SOME centre, so they fall back to the crop centre (or, in RouteGraph mode, the net AABB
+        // centre computed above) when there is no crossing to anchor on (either because peds are
+        // disabled entirely, or CrossingsEnabled is false).
         var pocketCentre = new Vec2(cx, cy);
-        var bestD2 = double.PositiveInfinity;
-        foreach (var poly in cropCrossingPolys)
+        var cropCrossingPolys = new List<BakedPolygon>();
+
+        if (PedestriansEnabled)
         {
-            var d2 = (poly.Centroid.X - cx) * (poly.Centroid.X - cx) + (poly.Centroid.Y - cy) * (poly.Centroid.Y - cy);
-            if (d2 < bestD2) { bestD2 = d2; pocketCentre = poly.Centroid; }
+            IPedNavigation nav;
+            List<Vec2> odPoints;
+
+            if (routeGraphMode)
+            {
+                // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.2/§5.4 (C1): road-net mode skips
+                // WalkablePolygonBaker.Bake/SumoNavMesh entirely -- SumoRouteGraphNav routes directly
+                // on the PedNetwork's own lane/connection graph. No RerouteDriver is ever constructed
+                // here either (§5.7/C4) -- `RouteGraphNavigationActive` below is the read-only witness
+                // a test can assert this against.
+                nav = new SumoRouteGraphNav(pedNetwork);
+                RouteGraphNavigationActive = true;
+
+                // C3 (§5.5): O/D sampled from whole-net sidewalk centrelines, no crop, deterministic
+                // seeded stride (no System.Random).
+                odPoints = SampleSidewalkCentrelineEndpoints(pedNetwork.Sidewalks);
+
+                // C2 (§5.3): crossings-only bake (whole net, no crop) -- cheap vs. the full
+                // sidewalk/walkingarea bake; feeds the SAME CrossingOccupancySource/CrosswalkSignals
+                // wiring the Navmesh branch below uses.
+                if (CrossingsEnabled)
+                {
+                    cropCrossingPolys.AddRange(WalkablePolygonBaker.BakeCrossingsOnly(pedNetwork));
+                }
+            }
+            else
+            {
+                // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: this stage keeps using the EXISTING
+                // navmesh path (WalkablePolygonBaker + SumoNavMesh) whenever peds are enabled and
+                // NavMode==Navmesh -- unchanged from before Stage C.
+                var polygons = WalkablePolygonBaker.Bake(pedNetwork);
+                nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons), pedNetwork.PedConnections);
+
+                // Pedestrian O-D endpoints = sidewalk spine midpoints inside the crop.
+                var allEndpoints = new List<Vec2>();
+                foreach (var poly in polygons)
+                {
+                    if (poly.Kind != BakedPolygonKind.SidewalkSegment) continue;
+                    if (!InV(poly.Centroid)) continue;
+                    var spine = poly.Spine;
+                    var pt = spine is { Count: > 0 } ? spine[spine.Count / 2] : poly.Centroid;
+                    if (InV(pt)) allEndpoints.Add(pt);
+                }
+
+                const int MaxEndpoints = 90;
+                odPoints = new List<Vec2>();
+                if (allEndpoints.Count <= MaxEndpoints)
+                {
+                    odPoints.AddRange(allEndpoints);
+                }
+                else
+                {
+                    var stride = (double)allEndpoints.Count / MaxEndpoints;
+                    for (var k = 0; k < MaxEndpoints; k++) odPoints.Add(allEndpoints[(int)(k * stride)]);
+                }
+
+                // Crop crossings, split by signalization -- SceneGen.BuildLiveCity's Phase 2b split.
+                foreach (var poly in polygons)
+                {
+                    if (poly.Kind == BakedPolygonKind.Crossing && InV(poly.Centroid)) cropCrossingPolys.Add(poly);
+                }
+            }
+
+            // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: sidewalks-but-no-crossings ("walk-only")
+            // skips the crosswalk-signal wiring entirely, regardless of cfg.YieldEnabled -- there is no
+            // crossing gate to compose it with. `CrosswalkSignals.FromNet` is only ever called when
+            // there is at least one crossing to look up TL logic for.
+            var crosswalkSignals = CrossingsEnabled ? CrosswalkSignals.FromNet(netPath, cropCrossingPolys) : null;
+
+            var config = new PedDemandConfig
+            {
+                Origins = odPoints,
+                Destinations = odPoints,
+                SpawnRatePerSecond = cfg.PedSpawnRatePerSecond, // LIVECITY_PEDS scales this (default 8.0)
+                PopulationCap = cfg.PedPopulationCap,           // LIVECITY_PEDS overrides this (default 160)
+                Seed = cfg.PedSeed,
+                // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: these were ctor-hardcoded
+                // literals; now read from cfg, each defaulted to the exact former literal so
+                // `ForRepoRoot` (the demo) builds a byte-identical PedDemandConfig.
+                MaxSpeed = cfg.PedMaxSpeed,
+                Radius = cfg.PedRadius,
+                ArrivalRadius = cfg.PedArrivalRadius,
+                Liveliness = new PedLivelinessConfig
+                {
+                    PauseProbability = cfg.PedPauseProbability,
+                    MinPauseSeconds = cfg.PedMinPauseSeconds,
+                    MaxPauseSeconds = cfg.PedMaxPauseSeconds,
+                    MaxPausesPerTrip = cfg.PedMaxPausesPerTrip,
+                    PauseAnimTag = cfg.PedPauseAnimTag,
+                },
+                EnableWeave = cfg.PedEnableWeave,
+                CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
+            };
+
+            _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+            _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
+
+            // The high-realism pocket, anchored on the crossing nearest the pocket centre (crop centre
+            // for Navmesh, net AABB centre for RouteGraph -- see cx/cy above) -- the same "peds
+            // actually walk here" anchoring SceneGen.BuildLiveCity uses. Stays at that default centre
+            // when there is no crossing to anchor on.
+            var bestD2 = double.PositiveInfinity;
+            foreach (var poly in cropCrossingPolys)
+            {
+                var d2 = (poly.Centroid.X - cx) * (poly.Centroid.X - cx) + (poly.Centroid.Y - cy) * (poly.Centroid.Y - cy);
+                if (d2 < bestD2) { bestD2 = d2; pocketCentre = poly.Centroid; }
+            }
+
+            // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: no crossings -> no crossing-occupancy gate
+            // (walk-only). Peds still walk via `_manager`/`_demand` above.
+            if (CrossingsEnabled)
+            {
+                _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
+            }
         }
 
         const double promoteRadius = 70.0, demoteRadius = 100.0;
@@ -208,10 +307,13 @@ public sealed class LiveCitySim : IDisposable
         _lcZoneY = pocketCentre.Y;
         _lcZoneR = promoteRadius;
 
-        _crossingOccupancy = new Sim.Pedestrians.Crossing.CrossingOccupancySource(cropCrossingPolys, pedRadius: 0.3);
-
         // ---- cars: real Engine on the full net; a dense LOCAL flow on the crop's drivable edges ----
         _engine = new Engine();
+        // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.9, -TASKS.md C6: opt-in bit-identical spatial
+        // region decomposition of the parallel car plan (Engine.RegionPlan's own header) for large
+        // road-net-import datasets. Set BEFORE LoadNetwork per RegionPlan's own comment ("set before
+        // LoadScenario"); false for the demo (`ForRepoRoot`) so its Engine config stays byte-identical.
+        _engine.RegionPlan = cfg.RegionPlan;
         // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): step-length now tracks cfg.Dt instead of the
         // old hardcoded "0.5" literal -- the live-city coupling invariant (car Dt == ped Dt) requires the
         // engine's own resolution to move with LiveCityConfig.Dt, not just the ped publisher (which
@@ -247,11 +349,28 @@ public sealed class LiveCitySim : IDisposable
         _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
 
-        _engine.CrowdSource = cfg.YieldEnabled
-            ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
-            : _manager.HighPowerFootprints;
+        // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: vehicle-only (CrowdSource left null, "leave
+        // CrowdSource vehicle-only") when peds are disabled; footprints-only (walk-only, no crossing
+        // composite) when crossings are disabled; the full composite otherwise -- byte-identical to
+        // today's behaviour whenever both are enabled (the demo).
+        _engine.CrowdSource = _manager is null
+            ? null
+            : (cfg.YieldEnabled && _crossingOccupancy is not null)
+                ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
+                : _manager.HighPowerFootprints;
 
         var routeEdges = ReadDrivableEdges(Path.Combine(cfg.DatasetDir, "scenario.rou.xml"));
+        if (routeEdges.Count == 0)
+        {
+            // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.6: a dataset with no (or an empty)
+            // scenario.rou.xml has no route-file edge scrape to seed spawn edges from -- derive them
+            // straight from the parsed net instead: any edge with >=1 lane a road vehicle may use,
+            // excluding internal (":"-prefixed) junction-interior edges. The demo always has a
+            // populated scenario.rou.xml, so the scrape above wins there and this fallback never runs
+            // (byte-identical demo edge set).
+            routeEdges = DeriveDrivableEdgesFromNetwork(model);
+        }
+
         _cropEdges = new List<(string Id, int Lane)>();
         foreach (var eid in routeEdges)
         {
@@ -287,6 +406,26 @@ public sealed class LiveCitySim : IDisposable
     }
 
     public NetworkModel Network { get; }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6 (capability probe): true iff the loaded (or
+    // try/catch-degraded) PedNetwork has at least one sidewalk lane. False for a bare vehicle-only net
+    // or one whose ped geometry failed to parse -- the ctor then skips the ped nav/demand/LOD-manager/
+    // crossing-occupancy/crosswalk-signals wiring entirely and cars run alone (`PedSource` stays
+    // non-null but carries no peds).
+    public bool PedestriansEnabled { get; }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: true iff `PedestriansEnabled` AND the network has at
+    // least one crossing. False means either no peds at all, or peds walk with no crossing-occupancy
+    // gate / crosswalk-signal coupling ("walk-only" degrade) -- composes with `cfg.YieldEnabled`
+    // (both must effectively hold for the crossing gate to be wired).
+    public bool CrossingsEnabled { get; }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.7, -TASKS.md C4: read-only diagnostic witness --
+    // true iff the ctor built `SumoRouteGraphNav` (NavMode==RouteGraph and PedestriansEnabled). False
+    // for the Navmesh demo path (SumoNavMesh) and for a bare/degraded net with no peds at all. Proves
+    // road-net mode never constructs `RerouteDriver`/the concrete `SumoNavMesh` -- `RerouteDriver`
+    // holds a `SumoNavMesh`, and this flag is only ever true when the nav object is the OTHER provider.
+    public bool RouteGraphNavigationActive { get; }
 
     // The static world-overlay scene (zones/buildings/pois) loaded once from cfg.DatasetDir in the ctor.
     public LiveCityScene Scene { get; }
@@ -338,7 +477,13 @@ public sealed class LiveCitySim : IDisposable
     // recording, no cost.
     public List<(double Depart, string From, string To)>? SpawnLog { get; set; }
 
-    public int OccupiedCrossings => _crossingOccupancy.OccupiedCount;
+    // docs/LIVE-CITY-ARBITRARY-NET-TASKS.md A2: read-only diagnostic exposing the resolved vehicle
+    // spawn-edge set (route-file scrape, or the net.xml drivable-edge fallback when the scrape is
+    // empty) -- lets a test assert the demo's edge set is unchanged and that a no-rou-file dataset's
+    // fallback produced a sane vehicle-allowed, non-internal edge set.
+    public IReadOnlyList<(string Id, int Lane)> CropEdges => _cropEdges;
+
+    public int OccupiedCrossings => _crossingOccupancy?.OccupiedCount ?? 0;
 
     public int PeakOccupiedCrossings { get; private set; }
 
@@ -386,6 +531,12 @@ public sealed class LiveCitySim : IDisposable
             _orcaSource.Position = centre;
         }
     }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.4 (no crop): the shared crop test every crop-filter
+    // site (the ctor's local `In`/`InV`, `Sample()`, `SampleCars()`) funnels through -- always "inside"
+    // when `_cropEnabled` is false (RouteGraph/road-net mode), the pinned rectangle test otherwise
+    // (Navmesh/demo mode, byte-identical to the pre-Stage-C behaviour).
+    private bool InCrop(double x, double y) => !_cropEnabled || (x >= _x0 && x <= _x1 && y >= _y0 && y <= _y1);
 
     // Deterministic SplitMix64, seeded from LiveCityConfig.CarRngSeed -- identical constants/order to
     // SceneGen.BuildLiveCity's `NextRng`, so two LiveCitySim instances with the same seed spawn the same
@@ -446,25 +597,35 @@ public sealed class LiveCitySim : IDisposable
         }
 
         // (b) step the ped demand; capture the wire-event cursor first so the batch published this tick
-        // includes exactly what this Step call emits (mirrors PedSimSource.Tick).
+        // includes exactly what this Step call emits (mirrors PedSimSource.Tick). Skipped when
+        // PedestriansEnabled==false -- no demand was built, `_demand` is null (docs/LIVE-CITY-
+        // ARBITRARY-NET-DESIGN.md §6): cars run alone and `_pedPublisher` simply never sees an event.
         var beforeCount = _pedPublisher.Events.Count;
-        _demand.Step(_now, dt, _field, NoEntities);
+        _demand?.Step(_now, dt, _field, NoEntities);
         var tNext = _now + dt;
 
-        // (c) gather this tick's WALKING low-power ped positions.
+        // (c) gather this tick's WALKING low-power ped positions (empty when peds are disabled).
         _movingLowPowerPositions.Clear();
-        foreach (var id in _demand.LiveIds)
+        if (_demand is not null && _manager is not null)
         {
-            if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
-                && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+            foreach (var id in _demand.LiveIds)
             {
-                _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+                if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
+                    && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+                {
+                    _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+                }
             }
         }
 
-        // (d) refresh the crossing-occupancy gate from the current walking peds.
-        _crossingOccupancy.Update(_movingLowPowerPositions);
-        if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
+        // (d) refresh the crossing-occupancy gate from the current walking peds. Skipped when
+        // CrossingsEnabled==false (no crossings, or peds disabled entirely) -- `_crossingOccupancy` is
+        // null; `OccupiedCrossings` reads 0 and `PeakOccupiedCrossings` never advances.
+        if (_crossingOccupancy is not null)
+        {
+            _crossingOccupancy.Update(_movingLowPowerPositions);
+            if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
+        }
 
         // (d2) #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): classify each live car's
         // lane-change realism from its PREVIOUS-step position vs the static high-realism pocket, BEFORE the
@@ -496,7 +657,7 @@ public sealed class LiveCitySim : IDisposable
         }
 
         if (_engine.VehicleHandles.Length > PeakCars) PeakCars = _engine.VehicleHandles.Length;
-        if (_demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;
+        if (_demand is not null && _demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;
 
         // Car-yield metric: for each occupied crossing disc, count it once if any car within 10 m has
         // Speed < 2.0 m/s -- a car braking beside a ped-occupied crossing.
@@ -551,7 +712,7 @@ public sealed class LiveCitySim : IDisposable
     // never double-counts a walking ped that is merely near -- not on -- a crossing.
     private int CountYieldObservationsThisStep()
     {
-        if (_crossingOccupancy.OccupiedCount == 0) return 0;
+        if (_crossingOccupancy is null || _crossingOccupancy.OccupiedCount == 0) return 0;
 
         var count = 0;
         var cpx = _engine.PosX;
@@ -592,7 +753,7 @@ public sealed class LiveCitySim : IDisposable
         {
             var x = _lastSnapshot.PosX[i];
             var y = _lastSnapshot.PosY[i];
-            if (x < _x0 || x > _x1 || y < _y0 || y > _y1) continue;
+            if (!InCrop(x, y)) continue;
             _carSampleScratch.Add(new LiveCityCar(
                 _lastSnapshot.Handles[i], x, y, _lastSnapshot.PosZ[i], _lastSnapshot.Angle[i],
                 _lastSnapshot.Length[i], _lastSnapshot.Width[i], _lastSnapshot.VehicleId[i]));
@@ -702,26 +863,122 @@ public sealed class LiveCitySim : IDisposable
         {
             var x = _lastSnapshot.PosX[i];
             var y = _lastSnapshot.PosY[i];
-            if (x < _x0 || x > _x1 || y < _y0 || y > _y1) continue;
+            if (!InCrop(x, y)) continue;
             cars.Add(new LiveCityCar(
                 _lastSnapshot.Handles[i], x, y, _lastSnapshot.PosZ[i], _lastSnapshot.Angle[i],
                 _lastSnapshot.Length[i], _lastSnapshot.Width[i], _lastSnapshot.VehicleId[i]));
         }
 
-        var peds = new List<LiveCityPed>(_demand.LiveCount);
-        foreach (var id in _demand.LiveIds)
+        // Empty when PedestriansEnabled==false -- `_demand`/`_manager` are null and there is nothing to
+        // sample (docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6).
+        var peds = new List<LiveCityPed>(_demand?.LiveCount ?? 0);
+        if (_demand is not null && _manager is not null)
         {
-            var p = _manager.PositionOf(id, _now);
-            if (p.X < _x0 || p.X > _x1 || p.Y < _y0 || p.Y > _y1) continue;
-            var model = _manager.ModelOf(id);
-            var animTag = _manager.AnimTagOf(id, _now);
-            var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
-                : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
-                : PedRegime.Paused;
-            peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+            foreach (var id in _demand.LiveIds)
+            {
+                var p = _manager.PositionOf(id, _now);
+                if (!InCrop(p.X, p.Y)) continue;
+                var model = _manager.ModelOf(id);
+                var animTag = _manager.AnimTagOf(id, _now);
+                var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
+                    : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
+                    : PedRegime.Paused;
+                peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+            }
         }
 
-        return new LiveCitySnapshot(cars, peds, _crossingOccupancy.OccupiedCount);
+        return new LiveCitySnapshot(cars, peds, _crossingOccupancy?.OccupiedCount ?? 0);
+    }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.4, -TASKS.md C1: road-net mode's realism-pocket/
+    // LC-zone default centre -- the AABB (over every parsed lane shape, every edge, vehicle or
+    // pedestrian) of the WHOLE net, since road-net mode has no crop to centre on instead. Falls back
+    // to the origin only for a pathological net with no lane geometry at all (never happens for a
+    // real net.xml; defensive, not exercised by the committed fixture).
+    private static Vec2 ComputeNetAabbCentre(NetworkModel model)
+    {
+        var minX = double.PositiveInfinity;
+        var minY = double.PositiveInfinity;
+        var maxX = double.NegativeInfinity;
+        var maxY = double.NegativeInfinity;
+
+        foreach (var edge in model.Edges)
+        {
+            foreach (var lane in edge.Lanes)
+            {
+                foreach (var p in lane.Shape)
+                {
+                    if (p.X < minX) minX = p.X;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.Y > maxY) maxY = p.Y;
+                }
+            }
+        }
+
+        if (double.IsInfinity(minX) || double.IsInfinity(minY) || double.IsInfinity(maxX) || double.IsInfinity(maxY))
+        {
+            return Vec2.Zero;
+        }
+
+        return new Vec2((minX + maxX) / 2.0, (minY + maxY) / 2.0);
+    }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.5, -TASKS.md C3: whole-net O/D sampling for road-net
+    // mode -- one point (the shape midpoint) per sidewalk lane centreline, no crop, ordered by Id
+    // (ordinal) so construction is fully deterministic: two `LiveCitySim`s built from the SAME
+    // `PedNetwork` sample the IDENTICAL O/D set. Capped at `maxEndpoints` via the SAME deterministic
+    // seeded-stride convention the Navmesh branch's own endpoint cap uses above -- no `System.Random`
+    // anywhere.
+    private static List<Vec2> SampleSidewalkCentrelineEndpoints(IReadOnlyList<PedLane> sidewalks, int maxEndpoints = 90)
+    {
+        var ordered = new List<PedLane>(sidewalks);
+        ordered.Sort((a, b) => string.CompareOrdinal(a.Id, b.Id));
+
+        var allPoints = new List<Vec2>(ordered.Count);
+        foreach (var lane in ordered)
+        {
+            var shape = lane.Shape;
+            if (shape.Count == 0) continue;
+            allPoints.Add(shape[shape.Count / 2]);
+        }
+
+        var odPoints = new List<Vec2>();
+        if (allPoints.Count <= maxEndpoints)
+        {
+            odPoints.AddRange(allPoints);
+        }
+        else
+        {
+            var stride = (double)allPoints.Count / maxEndpoints;
+            for (var k = 0; k < maxEndpoints; k++) odPoints.Add(allPoints[(int)(k * stride)]);
+        }
+
+        return odPoints;
+    }
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.6, -TASKS.md A2: fallback spawn-edge source for a
+    // dataset with no (or an empty) scenario.rou.xml -- every edge in the parsed net with at least one
+    // lane a road vehicle may use (`Lane.AllowsRoadVehicle`), excluding internal (":"-prefixed)
+    // junction-interior edges. Iterates `model.Edges` (not `EdgesById`) so the result order is the
+    // deterministic net.xml parse order, not a dictionary's unspecified enumeration order.
+    private static IReadOnlyList<string> DeriveDrivableEdgesFromNetwork(NetworkModel model)
+    {
+        var edges = new List<string>();
+        foreach (var edge in model.Edges)
+        {
+            if (edge.Id.StartsWith(":", StringComparison.Ordinal)) continue;
+
+            var hasVehicleLane = false;
+            foreach (var lane in edge.Lanes)
+            {
+                if (lane.AllowsRoadVehicle) { hasVehicleLane = true; break; }
+            }
+
+            if (hasVehicleLane) edges.Add(edge.Id);
+        }
+
+        return edges;
     }
 
     // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).

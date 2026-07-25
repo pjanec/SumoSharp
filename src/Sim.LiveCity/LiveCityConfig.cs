@@ -9,11 +9,34 @@ namespace Sim.LiveCity;
 // deliberately overrides a knob. Env-var overrides (LIVECITY_CARS/LCMIN/YIELD) keep the same semantics
 // as the reference so an existing shell habit ("run it with LIVECITY_CARS=300") still works against the
 // new host.
+// docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1: which pedestrian-navigation provider `LiveCitySim`
+// builds. `Navmesh` is today's existing WalkablePolygonBaker + SumoNavMesh path (the demo, pinned,
+// byte-identical). `RouteGraph` is the arbitrary-net-import provider (SumoRouteGraphNav, a later
+// stage's work) -- selecting it here is DATA-ONLY in this stage; the ctor does not yet branch on it
+// (that lands in Stage C, task C1). `ForDataset` sets `RouteGraph`; `ForRepoRoot` (the demo) sets
+// `Navmesh`.
+public enum PedNavMode
+{
+    Navmesh,
+    RouteGraph,
+}
+
 public sealed class LiveCityConfig
 {
     // The demo_city/box dataset directory (contains net.xml + scenario.rou.xml). Set by ForRepoRoot or
     // by the caller directly.
     public string DatasetDir { get; set; } = string.Empty;
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1: selects the pedestrian-navigation provider Stage C
+    // wires up. Defaults to `Navmesh` (today's only wired behaviour); `ForDataset` sets `RouteGraph`.
+    public PedNavMode NavMode { get; set; } = PedNavMode.Navmesh;
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.9, -TASKS.md C6: opt-in Engine.RegionPlan (a
+    // bit-identical spatial-region decomposition of the parallel car plan -- see Engine.RegionPlan's
+    // own header) for large road-net-import datasets. Default OFF so `ForRepoRoot` (the demo) keeps
+    // today's Engine config byte-identical; `ForDataset` turns it on. Never enabled by parity/bench
+    // (they construct their own Engine directly, never LiveCityConfig).
+    public bool RegionPlan { get; set; } = false;
 
     // PINNED crop = SumoData's co-located downtown HERO block (SUMOSHARP-LIVE-CITY-DECISIONS.md Q7).
     public double X0 { get; set; } = 2055;
@@ -129,18 +152,66 @@ public sealed class LiveCityConfig
     public int PedPopulationCap { get; set; } = 160;
     public double PedSpawnRatePerSecond { get; set; } = 8.0;
 
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: ped-demand knobs promoted from
+    // LiveCitySim's ctor-hardcoded literals. Each default is the EXACT literal the ctor used to inline
+    // (PedDemandConfig.MaxSpeed/Radius/ArrivalRadius/EnableWeave), so `ForRepoRoot` (the demo) builds a
+    // byte-identical `PedDemandConfig` to before this knob existed. Not overridable via any LIVECITY_*
+    // env var (unlike PedPopulationCap/PedSpawnRatePerSecond above) -- this stage only surfaces the
+    // field on the config object; no new env knob was requested.
+    public double PedMaxSpeed { get; set; } = 1.3;
+    public double PedRadius { get; set; } = 0.3;
+    public double PedArrivalRadius { get; set; } = 0.6;
+    public bool PedEnableWeave { get; set; } = true;
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: the PedLivelinessConfig block, likewise
+    // promoted as a group from LiveCitySim's ctor-hardcoded literals (same byte-identical-demo argument
+    // as PedMaxSpeed et al. above).
+    public double PedPauseProbability { get; set; } = 0.15;
+    public double PedMinPauseSeconds { get; set; } = 2.0;
+    public double PedMaxPauseSeconds { get; set; } = 5.0;
+    public int PedMaxPausesPerTrip { get; set; } = 1;
+    public string PedPauseAnimTag { get; set; } = "idle";
+
     // Car spawn PRNG seed (SceneGen.BuildLiveCity's `rng` initializer for the deterministic SplitMix64).
     public ulong CarRngSeed { get; set; } = 0x243F6A8885A308D3UL;
 
     // docs/LIVE-CITY-VIEWERS-TASKS.md A2: env knobs with the same semantics as the reference
     // (SceneGen.BuildLiveCity), resolved once here so callers get the exact same defaults/overrides.
+    // Delegates to the shared `WithEnvOverrides` builder (docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1)
+    // so `ForDataset` below applies the IDENTICAL `LIVECITY_*` overrides -- only `DatasetDir` and
+    // `NavMode` differ between the two factories. CRITICAL: this must remain field-for-field
+    // identical to the pre-refactor `ForRepoRoot` (crop X0..Y1, all seeds, all knobs); only the demo's
+    // `DatasetDir`/`NavMode` are set here, on top of the shared defaults.
     public static LiveCityConfig ForRepoRoot(string repoRoot)
     {
-        var cfg = new LiveCityConfig
-        {
-            DatasetDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box"),
-        };
+        var cfg = WithEnvOverrides(new LiveCityConfig());
+        cfg.DatasetDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box");
+        cfg.NavMode = PedNavMode.Navmesh;
+        cfg.RegionPlan = false;
+        return cfg;
+    }
 
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1: the road-net-import factory -- an arbitrary
+    // SUMO dataset directory (net.xml, with or without a companion scenario.rou.xml), routed on
+    // `SumoRouteGraphNav` (Stage C wires the actual provider swap; this stage only sets the data
+    // flag). No crop: `X0..Y1` are left at the shared builder's pinned-crop defaults, but road-net
+    // mode ignores them (Stage C bypasses the crop predicates when `NavMode==RouteGraph`). Applies
+    // the SAME `LIVECITY_*` env overrides as `ForRepoRoot` via the shared builder.
+    public static LiveCityConfig ForDataset(string datasetDir)
+    {
+        var cfg = WithEnvOverrides(new LiveCityConfig());
+        cfg.DatasetDir = datasetDir;
+        cfg.NavMode = PedNavMode.RouteGraph;
+        cfg.RegionPlan = true;
+        return cfg;
+    }
+
+    // Shared builder: applies every `LIVECITY_*` env-var override to a fresh (or caller-supplied)
+    // config and returns it. Both `ForRepoRoot` and `ForDataset` call this so a shell habit
+    // ("run it with LIVECITY_CARS=300") behaves identically regardless of which factory launched the
+    // sim. Factored out of the former `ForRepoRoot` body verbatim -- no override's semantics changed.
+    private static LiveCityConfig WithEnvOverrides(LiveCityConfig cfg)
+    {
         if (int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var cars))
         {
             cfg.CarTargetConcurrent = cars;

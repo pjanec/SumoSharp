@@ -95,4 +95,28 @@ public static class WalkablePolygonBaker
 
     private static bool IsRealArea(IReadOnlyList<Vec2> shape) =>
         shape.Count >= 3 && Math.Abs(PolygonGeometry.SignedArea(shape)) > MinArea;
+
+    // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.3, -TASKS.md C2: ADDITIVE crossings-only bake for
+    // road-net (RouteGraph) mode -- crossings are few (hundreds) vs sidewalks (tens of thousands), so
+    // this skips the expensive sidewalk/walkingarea bake entirely and produces exactly the same
+    // `Crossing`-kind polygons the full `Bake` above would (same filter -- IsRealArea(Outline) --
+    // same deterministic Id-ordinal order, same geometry/half-width). `Index` is 0-based within this
+    // subset (NOT the same absolute index `Bake` would assign, since `Bake`'s global staging order
+    // puts WalkingAreas first) -- callers here (CrossingOccupancySource, CrosswalkSignals.FromNet)
+    // never rely on Index, only on Id/Kind/Vertices/HalfWidth, so this is a safe, additive helper.
+    public static IReadOnlyList<BakedPolygon> BakeCrossingsOnly(PedNetwork network)
+    {
+        var result = new List<BakedPolygon>();
+        var index = 0;
+        foreach (var crossing in network.Crossings.OrderBy(c => c.Id, StringComparer.Ordinal))
+        {
+            if (IsRealArea(crossing.Outline))
+            {
+                var half = crossing.Width > 0.0 ? crossing.Width / 2.0 : 0.5;
+                result.Add(new BakedPolygon(index++, crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null, half));
+            }
+        }
+
+        return result;
+    }
 }
