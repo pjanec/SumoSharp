@@ -97,7 +97,7 @@ Centre-corrected (see N1): totals 97, F3 bucket 13 (5 stopped-foe / **8 both-mov
 | `NetworkModel.JunctionByInternalLane` + `IsInternalLaneOfJunction(laneId, junction)` | **live, unconditional, parity-safe** |
 | Binder diagnostics written on BOTH passes (T1.8) | **live, unconditional, parity-safe** |
 | `ContTurnInternalLaneOwnershipTests` (9 tests) | **live** — direct, offline, non-vacuous |
-| `Engine.ContTurnInsideJunctionGate` | **default OFF** — now covers BOTH mis-gated arms; fixes the freeze; one blocker left (§6 T1.10) |
+| `Engine.ContTurnInsideJunctionGate` | **default OFF** — covers BOTH mis-gated arms; fixes the freeze; blocked by a PRE-EXISTING rescue gap (§6 T1.10), not by itself |
 | `Engine.JunctionPhysicalOccupancyGate` | **default OFF** — measured counterproductive (§6 note) |
 | `F3JunctionOverlapDiagTests`, `Scenario44DefectDiagTests` | live, always-passing instruments |
 | 6 NEED docs + design/tasks/tracker | live |
@@ -106,12 +106,25 @@ Env-var A/B switches for the demo: `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPAN
 
 ## 6. NEXT ACTIONS, in dependency order
 
-**→ T1.10 (THE ONLY BLOCKER LEFT for default-on): `LowDensityTeleportTests` fires 5 yield-teleports.**
-With `ContTurnInsideJunctionGate = true`, `SyntheticJunction2_TlPriorityVehiclesDoNotSpuriouslyTeleport`
-reports **5 teleports (jam=0, yield=5)** against a ceiling of **2** (vanilla SUMO is 0). **All 661 goldens
-stay byte-identical**, and every other gridlock diagnostic is green. `yield=5` means the teleports are
-yield-caused, so look for a car now yielding *longer* somewhere on `scenarios/_diag/synthetic-junction2`.
-This one scenario is all that stands between the cont-turn fix and being enabled by default.
+**→ T1.10 DIAGNOSED (not fixed): the blocker is a PRE-EXISTING rescue gap, not the flag.** →
+`docs/NEED-stuck-reroute-blind-inside-junctions.md`. Measured on `scenarios/_repro/synthetic-junction2`:
+OFF **2** teleports, ON **5**, real SUMO 1.20.0 **0** — and **all five** ON-teleporting vehicles complete
+their routes in SUMO. Three defects, in the order they should be attacked:
+  - **D3 (do this first, likely the real cause):** why is a yield wait **> 120 s** at all, when SUMO's
+    equivalent stall at the same spot resolves in **~10 s**? Smells like a THIRD mis-gated
+    `!egoOnInternal` release path — same family as T1.5a and T1.9, both of which were exactly this. Audit
+    `JunctionYieldConstraint` / `RedLightConstraint` release paths for a vehicle committed inside a cont
+    turn **before** building new rescue machinery.
+  - **D1 (structural):** `Engine.cs:10169` is a hard `return; // inside a junction interior -- no reroute`,
+    so a vehicle wedged on an internal lane can **never** be rescued. 2 of the 5 (veh 95 on `:2336_42_0`,
+    veh 102 on `:2336_3_0`) are exactly this; `:2336_42_0` is a confirmed cont-turn second-stage lane.
+  - **D2 (scope):** the rescue is one-shot (`MaxDeadLaneReroutes = 2`) and only re-plans the FUTURE route —
+    it never unsticks the vehicle, so `waitingTime` crosses 120 s anyway (veh 14, 317). SUMO instead
+    reroutes CONTINUOUSLY (`device.rerouting`, period 30 s, p=1.0; these vehicles show `rerouteNo` 2–8).
+**⚠ Do NOT raise the `<= 2` ceiling to 5.** That guard protects the DEFAULT (flag-OFF) path, which still
+measures 2; raising it would blind the guard everybody actually runs. An ON-path figure belongs in a
+separate, explicitly-labelled test. (Minor: the test's inline comment says "current is 1"; measured is **2**,
+deterministic — the comment is stale, the guard is fine.)
 
 **→ T1.7 (`checkRewindLinkLanes`): NO LONGER BLOCKING — re-scope it.** The 28-stuck regression that
 motivated it is **gone** (`willpass-saturation` stuck 28 → **0**, arrivals 411 → 411) once BOTH mis-gated
@@ -224,3 +237,22 @@ correctness fix shipped (flag-gated) + 9 tests. F3 itself **not fixed**. Freeze 
 engine fixes shipped (one unconditional and parity-safe, one flag-gated). **The 95-step mid-junction freeze
 is FIXED** and the biggest overlap contributor is neutralised. F3 proper (the 8 both-moving events) still
 open. One narrow blocker (T1.10) between the cont-turn fix and default-on.
+
+### Session 2 (continued) — T1.10 diagnosed
+
+18. **T1.10: the blocker is not the flag.** Differential run against real SUMO 1.20.0 (with
+    `--step-method.ballistic false` added, since this scenario's `sumocfg` omits it — the scenario-44 trap
+    again): SUMO fires **0** teleports and **all five** of our ON-teleporting vehicles complete their routes.
+    Vehicle 101 teleports identically OFF and ON, so it is an unaffected control.
+19. **Root causes found, all pre-existing:** (D1) `Engine.cs:10169` hard-returns from the stuck-reroute when
+    the vehicle is on an internal lane, so an in-junction wedge can never be rescued — 2 of 5 vehicles;
+    (D2) the rescue is one-shot and re-plans only the future route without unsticking the vehicle — 2 more;
+    (D3) the open and probably decisive question — our yield wait exceeds 120 s where SUMO's equivalent
+    resolves in ~10 s, which looks like a THIRD mis-gated `!egoOnInternal` release path.
+20. **Decision: flag stays default-OFF and the `<= 2` ceiling is NOT raised.** Raising a shared guard to
+    accommodate an opt-in path would blind the default path. Filed as
+    `docs/NEED-stuck-reroute-blind-inside-junctions.md` with the fix order D3 → D1 → D2, on the principle
+    that fixing the cause beats widening the mitigation.
+
+**State:** gate green (**672/4/0**, `D96213B7BB4021A7`, 48/48, 272/272). The cont-turn fix is complete and
+correct; what blocks default-on is a separate, now precisely-characterised rescue gap.
