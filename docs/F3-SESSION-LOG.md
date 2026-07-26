@@ -252,6 +252,26 @@ gates 1/2/4 now.
    that does not exist, and — worse — it trains the reader to discount the guard exactly when a real
    failure needs to be believed. Fix flakiness in the regression net *before* measuring a behavioural
    change against it, not after.
+10. **Before porting a SUMO mechanism, prove it has a LIVE CONSUMER.** A whole session's "primary
+    hypothesis" was to port `addBlockedLink`. It is **dead code**: `myBlockedFoeLinks` has exactly one
+    reader, and that reader is commented out at **both** of its call sites. Cost of finding out: **one
+    grep**. Cost of building it first: a day, plus a null result needing explanation. The mechanical
+    check is: grep the writer, grep the reader, grep the **reader's** callers — vendored C++ contains
+    plenty of vestigial machinery, and reading `postloadInit` alone makes it look load-bearing.
+11. **A symmetric predicate cannot arbitrate a cycle — check for a tie-break, and copy SUMO's.** Bare
+    occupancy ("is any foe on a foe lane?") is symmetric, so N mutually-conflicting streams all yield
+    forever. Every SUMO junction predicate that could face a cycle carries an explicit ordering, and its
+    tie-break chain is total (entry time → speed → **id**) precisely so no pair can mutually yield. SUMO
+    even says so in a comment at the branch in question: *"in a mutual conflict scenario, use entry time
+    to avoid deadlock"*. **When porting an admission rule, ask what breaks the tie before asking what
+    the foe set is** — the four-way wedge was a missing tie-break, not a missing foe set.
+12. **Commit the instrument, not just the conclusion.** The head-of-queue probe was a scratch edit, run
+    once and reverted, so its numbers had to be taken on trust for a whole session and could not be
+    compared against anything afterwards. Re-created as a committed test, it immediately paid twice: it
+    **reproduced** the historical wedge (same four bays, same pos, 48.7% vs the reported 48.1%,
+    validating the old number) and it revealed that the historical "857 steps" was a mid-run snapshot of
+    a **4890-step** lock. A conclusion whose instrument is deleted is unfalsifiable — and cross-instrument
+    number comparisons are invalid, so a deleted instrument also silently poisons every later comparison.
 
 ## 8. Key code locations
 
@@ -1310,19 +1330,23 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > Then `docs/CONSTRAINT-high-realism-artefact-ladder.md` — the owner's binding believability requirement.
 >
 > ### Where things stand
-> The demo used to gridlock terminally within an hour. With **six default-OFF gates** enabled it now runs an
-> hour with **0 long stalls, +107% throughput, −99% overlaps, 0 teleports**. Three genuine engine fixes and
-> two harness-race fixes shipped. **All 661 goldens byte-identical throughout**; `Sim.Bench`
-> **`D96213B7BB4021A7`** par == single; `Sim.ParityTests` **752/4/0**; `Sim.LiveCity.Tests` **49/49**.
+> The demo used to gridlock terminally within an hour. With **seven default-OFF gates** enabled it runs a
+> full hour at design density with **0 long stalls, +107% throughput, −99% overlaps, 0 teleports** — and at
+> **3x** density with **17** peak concurrent deep stalls (was 469) and **+240%** trips. **All 661 goldens
+> byte-identical throughout**; `Sim.Bench` **`D96213B7BB4021A7`** par == single; `Sim.ParityTests`
+> **752/4/0**; `Sim.LiveCity.Tests` **50/50**.
 >
-> ### YOUR TASK — §6: break the arm-14 four-way circular wait
-> At **3x** density (`LIVECITY_CARS=480`) the demo still gridlocks, and head-of-queue analysis proves it is
-> **a defect I introduced, not saturation**: **48.1%** of stall heads are held by `binder 14`
-> (`InternalJunctionAdmissionConstraint`, my T3.2 fix) and **46.0%** by the resulting `crossJxnLeader` —
-> **94% together**. Four cars wedge in four cont bays of junction `d_5_4`, each at pos 4.91, each yielding to
-> a foe lane occupied by another of them. **Hypothesis: port the `addBlockedLink` mutual registration that
-> design §5 deliberately omitted.** Fallback hypothesis: give arm 14 the same entry-time ordering
-> `isLeader` gives arm 5 (already ported). §6 has the source pointers and 5 success conditions.
+> ### YOUR TASK — §6: attribute and clear the RESIDUAL 9 bay stalls
+> The arm-14 four-way circular wait is **FIXED** (`InternalJunctionAdmissionEntryOrder`, §9.110-114): it was
+> blocking on **bare foe-lane occupancy**, which is symmetric, and SUMO never does that on the driving path —
+> it filters foe-lane candidates through `isLeader(...) || inTheWay()`. Restoring the entry-time ordering took
+> the longest bay lock from **4890 steps to 637** and trips **+57%** from that one variable.
+>
+> What remains: **9** cars per simulated hour still stop on a cont bay for up to 637 steps at 3x. §9.115
+> argues structurally that these are held by foes on **plain internal lanes** which SUMO would ignore once
+> they pass the conflict point — i.e. missing internal-junction **conflict-point geometry**, a conservatism
+> rather than a deadlock. **That is an argument, not a measurement.** §6 specifies the measurement, the
+> decision it feeds, and what NOT to try.
 >
 > ### NON-NEGOTIABLES — every one of these cost real time here
 > 1. **Measure before building.** Five hypotheses were refuted by measurement this session, and **two
@@ -1345,10 +1369,14 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 >    quotes in `-m` get shell-mangled — hit twice).
 >
 > ### Do NOT re-attempt
-> `isLeader` (done, insufficient alone) · the internal-junction port (done, but see §6) · zero-overlap as an
+> `addBlockedLink` / `myBlockedFoeLinks` (**dead code in SUMO 1.20.0** — its only reader
+> `willHaveBlockedFoe` is commented out at both call sites, §9.110) · extending the entry-time ordering to
+> **non-bay** foes (**provably inert**: a cont entry leaves `ConflictEntryTime` at `MAX`, so every `isLeader`
+> branch already yields, §9.115) · `isLeader` (done, insufficient alone) · zero-overlap as an
 > invariant (impossible in principle, §4.4) · `TimeToTeleportSeconds=300` or `IgnoreJunctionBlockerSeconds=5`
 > as demo tools (both retracted, ladder rungs 4 and 5) · `LANE-CHANGE-OVERLAP-DESIGN.md` §3 Stage 3's clamp
-> (falsified: 0/103 negative gaps) · defaulting `InternalJunctionAdmissionGate` ON (§9.108).
+> (falsified: 0/103 negative gaps) · defaulting `InternalJunctionAdmissionGate` ON **without its
+> entry-order sub-gate** (that pairing is the 4890-step wedge).
 
 ### 10b. One-paragraph state summary (if you read nothing else)
 
@@ -1356,10 +1384,15 @@ The live-city demo's acceptance bar is **believability**, and it used to fail ha
 queued behind junctions blocked forever, with no teleport or unblock path. Root causes were **not** the
 briefed "junction occupancy gate" — they were a cont-turn mis-port, an unported `MSInternalJunction`, an
 unported insertion follower-gap check, and perfectly-symmetric co-located vehicles that Krauss can never
-separate. Six default-OFF gates now take the demo to **0 long stalls, +107% trips, −99% overlaps, 0
-teleports** over a full hour, with **all 661 goldens byte-identical**. Four instrument/harness defects were
+separate. **Seven** default-OFF gates now take the demo to **0 long stalls, +107% trips, −99% overlaps, 0
+teleports** over a full hour at design density, and at **3x** density to **+240% trips** with peak concurrent
+deep stalls **469 → 17** — all with **all 661 goldens byte-identical**. Four instrument/harness defects were
 found and fixed along the way (OBB axis, OBB anchor, stale binder diagnostics, two process-global env races),
-each of which had produced confident wrong numbers. **The one open defect is mine:** at 3x density the
-internal-junction admission gate creates a **four-way circular wait** in a junction's cont bays — 94% of
-stall heads — because it has no escape hatch and no ordering. The next step is porting SUMO's
-`addBlockedLink` mutual registration, or giving that arm the entry-time ordering `isLeader` already provides.
+each of which had produced confident wrong numbers. The last defect was **mine**: the internal-junction
+admission gate blocked on **bare foe-lane occupancy**, which is symmetric, so a cycle of cont bays wedged
+four cars motionless for **4890 steps**. SUMO never uses bare occupancy on the driving path — it filters
+foe-lane candidates through `isLeader(...) || inTheWay()`, whose tie-break chain is total precisely to avoid
+this. Restoring that ordering took the longest lock to **637 steps**. The branch's own carried hypothesis
+(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is a residual
+**9** bounded bay stalls per hour at 3x, argued — not yet measured — to be missing conflict-point geometry
+rather than a deadlock, plus the owner's decision on which gates to default ON.
