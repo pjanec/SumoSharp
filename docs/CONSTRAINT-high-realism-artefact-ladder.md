@@ -11,15 +11,25 @@ impossible events fails that goal regardless of its numbers.
 
 | # | Behaviour | High-realism verdict |
 | --- | --- | --- |
-| 1 | **Prevent the blockage** (admission control, right-of-way, ordering) | ✅ the only fully acceptable outcome |
-| 2 | Cars **pass through each other to unblock a blocked junction** | ⚠️ tolerated — *"a bit better"* than teleport — **last resort only**, and only when no more realistic route exists |
+| 1 | **Prevent the blockage** (admission control, right-of-way, ordering) | ✅ the only acceptable *general* solution |
+| 2 | Cars **pass through each other** | ⚠️ permitted **ONLY** when they are **ALREADY crashed into each other AND blocking the junction** — a recovery from an already-broken state. **Otherwise disallowed.** |
 | 3 | Cars **overlap during normal, non-unblocking manoeuvres** | ❌ **NOT allowed** |
-| 4 | **Teleport** | ❌ **NOT allowed** — *"the most unrealistic and most visible artefact"* |
+| 4 | **Teleport** | ❌ **NEVER allowed in high realism — no exception** |
+| 5 | A car **blocked with no obvious reason** (not overlapped) | ❌ must **NOT** be "solved" by teleport or by allowing overlap. Requires finding and fixing the **real cause** — a different, believable fix. |
 
-Two things follow that are easy to get backwards:
+Four things follow that are easy to get backwards:
 
-- **Tier 2 is permitted only as a deliberate unblocking action.** The same *geometry* (two cars
-  overlapping) is acceptable at tier 2 and forbidden at tier 3 — what distinguishes them is **why** it
+- **Tier 2 is a RECOVERY, not a TOOL.** Its precondition is that the cars are *already* interpenetrating and
+  blocking the junction. It may **not** be used to free a car that is merely stuck. So the trigger must be
+  **measured physical overlap**, never elapsed waiting time.
+- **Rung 5 is the load-bearing rule for engineering discipline.** A car stopped for no visible reason is a
+  *symptom of a bug*, and papering over it with a rescue **conceals** that bug. This repo has already been
+  bitten by exactly that: `__veh127` sat frozen for 95 steps with **nothing overlapping it**, and the cause
+  was a mis-gated predicate — *"an ORCA rescue there would have masked the mis-gate"*
+  (`F3-SESSION-LOG.md` §9.26). The owner has been consistent on this from the start: a rescue is *"only for
+  cases when cars are physically overlapping slightly (not the case when just stuck with no visible reason
+  and not overlapping)"*.
+- **Tier 2 and tier 3 are the same GEOMETRY** — two cars overlapping — distinguished only by **why** it
   happened. So an overlap metric alone cannot judge compliance; the cause must be attributable.
 - **Teleport is worse than interpenetration**, which inverts the usual traffic-sim instinct that a
   collision is the worst outcome. Here a car vanishing and reappearing is more damaging to belief than two
@@ -64,8 +74,19 @@ the classification is small.
 
 - **`TimeToTeleportSeconds = 300` is withdrawn** for the high-realism area — see the retraction in
   `NEED-livecity-teleport-safety-net-disabled.md`. It is rung 4.
-- **`IgnoreJunctionBlockerSeconds = 5`** is a legitimate **rung 2** tool (it releases a blocked car past a
-  long-stopped foe without any teleport), to be enabled only if a residual wedge is ever observed with the
-  gates on. It was **not needed** in the measured hour.
-- Any future "rescue" mechanism must be justified against this ladder: prevention first, and a rescue that
-  teleports is not acceptable in the high-realism area no matter how rarely it fires.
+- **⚠ `IgnoreJunctionBlockerSeconds = 5` is ALSO retracted as a general tool.** An earlier version of this
+  document called it "a legitimate rung 2 tool". It is not, because **its trigger is elapsed waiting time,
+  not physical overlap** (`Engine.cs` foe loop: `foe.WaitingTime >= IgnoreJunctionBlockerSeconds`). It
+  therefore fires on cars that are merely *stuck* — rung 5, where a rescue is explicitly disallowed and
+  actively harmful because it hides the real defect. It would only be admissible if re-gated on **measured
+  overlap** of the two vehicles. It was **not needed** in the measured hour, so nothing depends on it.
+  (It remains a faithful port of a real SUMO option and stays shipped at SUMO's own `-1` default; this is a
+  statement about the *demo's* configuration, not about the port.)
+- Any future "rescue" mechanism must be justified against this ladder: **prevention first**; a rescue that
+  teleports is never acceptable here; and a rescue must be **triggered by measured physical overlap**, not
+  by a timer, or it will fire on rung-5 cases and conceal the defect that caused them.
+- **The 59 vehicles still stopped at the horizon with the gates on, and the documented
+  `NEED-multilane-junction-passage.md` wedges, are rung-5 cases** — cars blocked with no obvious reason.
+  Per this constraint they must be fixed at the cause, not rescued. (The 59 appear benign: all began in the
+  final few hundred steps, i.e. ordinary queueing at the cut-off — but that is an observation, not a
+  clearance.)
