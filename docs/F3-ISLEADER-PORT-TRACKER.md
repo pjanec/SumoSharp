@@ -9,8 +9,15 @@ report of "done" is not sufficient (CLAUDE.md, the orchestration loop).
 
 ## Stage 1 — data plumbing (parity-inert by construction)
 
-- [ ] **T2.1** `LinkIndexByInternalLane` (both cont stages) + `EntryConnectionByLink`
-      (`getCorrespondingEntryLink`) — 5 success conditions, incl. the all-nets sweep
+- [x] **T2.1** `LinkIndexByInternalLane` (both cont stages) + `EntryConnectionByLink`
+      (`getCorrespondingEntryLink`) — 5 success conditions, incl. the all-nets sweep.
+      **Confirmed** (`8b9f3d6`): diff and tests read first-hand, all four surfaces re-run —
+      `Sim.ParityTests` **702/4/0** (689 + 13 new), `Sim.Bench` **`D96213B7BB4021A7`** par == single,
+      LiveCity **48/48**, Pedestrians **272/272**, five gridlock diagnostics green by name.
+      Review found and fixed a real weakness: the all-nets sweep wrapped each parse in a `catch` and
+      asserted only `checkedLinks > 0`, so a parser regression would have skipped every in-loop
+      assertion while still passing. Floors re-derived from the measured corpus (134 nets parse, 2927
+      RoW junctions, 37426 `intLanes` entries) and set to 120 nets / 30000 links.
 - [ ] **T2.2** three `long` timestamps on `VehicleRuntime`, assigned at the lane-advance seam,
       **written but never read** — 3 success conditions, incl. `CET == MAX` in the cont bay
 

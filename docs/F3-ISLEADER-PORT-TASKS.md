@@ -3,11 +3,12 @@
 Design reference: `docs/F3-ISLEADER-PORT-DESIGN.md` (sections cited per task; **do not restate the
 design here — read it**). Tracker: `docs/F3-ISLEADER-PORT-TRACKER.md`.
 
-**Baseline confirmed at the start of this work** (re-confirm before claiming any task done):
+**Baseline** (re-confirm before claiming any task done). The parity count moves as tasks add tests;
+the **661 goldens, the bench hash, LiveCity and Pedestrians must never move**:
 
 | Surface | Baseline |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **689 passed / 4 skipped / 0 failed** |
+| `dotnet test tests/Sim.ParityTests -c Release` | **702 passed / 4 skipped / 0 failed** after T2.1 (was 689 before it added 13 tests) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, par == single |
 | `dotnet test tests/Sim.LiveCity.Tests` (no `--no-build`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
@@ -61,8 +62,8 @@ Add two parse-time lookups, both optional ctor params defaulting to null so noth
    `IntLanes` is present in `LinkIndexByInternalLane` with the matching index, and no entry maps to a
    junction that does not contain it. (Sweep test — cheap, and it is what catches a net shape the
    two-junction sample does not cover.)
-5. **Parity:** `Sim.ParityTests` **689/4/0** and `Sim.Bench` hash **`D96213B7BB4021A7`** unchanged.
-   Nothing reads the new maps yet, so any change here is a bug.
+5. **Parity:** `Sim.ParityTests` **702/4/0** and `Sim.Bench` hash **`D96213B7BB4021A7`** unchanged.
+   Nothing reads the new maps yet, so any change here is a bug. **CONFIRMED** — see the tracker.
 
 ### T2.2 — the three per-vehicle timestamps, written but not read
 
@@ -93,8 +94,9 @@ stale timestamp.
    **`CET == long.MaxValue` while in the bay is the load-bearing assertion** — it is what makes a car
    waiting in the bay yield to everything, and it is the one value that distinguishes a correct cont
    port from a plausible wrong one.
-3. `Sim.ParityTests` **689/4/0** + the two new tests; `Sim.Bench` hash unchanged; LiveCity 48/48.
-   Parity-inert by construction — any change is a bug.
+3. `Sim.ParityTests` **702/4/0** + your new tests, 0 failed; `Sim.Bench` hash `D96213B7BB4021A7`
+   par == single; LiveCity 48/48; Pedestrians 272/272. Parity-inert by construction — any movement in
+   the goldens or the hash is a bug in the task, not a result to accept.
 
 ---
 
@@ -151,7 +153,7 @@ byte-identical-with-flag-off is a property of the code shape, not a measurement.
 
 **Success conditions:**
 1. A test asserting the default is `false` (mirroring `IgnoreJunctionBlockerTests.DefaultIsMinusOne`).
-2. Flag **off**: `Sim.ParityTests` 689/4/0 (+new), hash `D96213B7BB4021A7`, LiveCity 48/48,
+2. Flag **off**: `Sim.ParityTests` 702/4/0 (+new), hash `D96213B7BB4021A7`, LiveCity 48/48,
    Pedestrians 272/272 — all byte-identical.
 3. Flag **on**: the full gate runs and its results are **reported**, not asserted, in this task.
 
