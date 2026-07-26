@@ -47,29 +47,62 @@ believability while the safety net is off.**
 
 Neither needs new code; both are settings.
 
-1. **`TimeToTeleportSeconds = 300`** — matches SUMO's own default, so it is *more* faithful than the
-   current value, and gives a last-resort net. Cost: a car visibly jumps, which is jarring — but far less
-   jarring than a permanently frozen city, and it is what the parity anchor itself does.
+1. **`TimeToTeleportSeconds = 300`** — matches SUMO's own default and would give a last-resort net.
+   **⚠ NOT permitted in the high-realism area** (see the retraction below): a teleport is the single most
+   visible and least realistic artefact there. Listed only for completeness / low-realism areas.
 2. **`IgnoreJunctionBlockerSeconds = 5`** (shipped on this branch, CLI `--ignore-junction-blocker`) — a
    **gentler** unblock: the blocked vehicle is simply allowed to proceed past a foe that has been stopped
    ≥ 5 s, with no teleport and no jump. Visually much more believable. It is a SUMO-*optional* deviation
    from SUMO's own `-1` default, but it was measured to resolve the arm-5 deadlock outright (teleports
    5 → 2; vehicles 95 and 102 complete their routes).
 
-**Suggested demo configuration** (the demo is not a parity golden, so it may deviate deliberately):
-the three junction gates ON + `IgnoreJunctionBlockerSeconds = 5` as first-line unblock +
-`TimeToTeleportSeconds = 300` as last resort. That gives three layers: prevent the wedge, release it
-gently, and teleport only if both fail.
+### ⚠ RETRACTED — do NOT enable teleport in the high-realism area
 
-## ⚠ What is NOT yet established
+An earlier version of this document recommended *"the three junction gates ON + `IgnoreJunctionBlocker
+Seconds = 5` + `TimeToTeleportSeconds = 300` as last resort"*. **The teleport half of that is wrong** and
+is withdrawn. The owner's constraint for the high-realism area, in explicit priority order:
 
-That enabling either lever actually prevents the hour-long collapse **in the demo**. The mechanism above
-is certain (with teleport disabled there is no unblock path at all), but the outcome is not measured.
+| Artefact | Allowed in high realism? |
+| --- | --- |
+| **Teleport** | **NO** — the most unrealistic and most visible artefact of all |
+| Cars passing through each other **to unblock a blocked junction** | tolerated — "a bit better", last resort only |
+| Cars overlapping as part of **normal (non-unblocking) manoeuvres** | **NO** |
 
-Note also that every demo diagnostic in the repo runs **200 steps**
-(`F3JunctionOverlapDiagTests.cs:213,478,892`; `DemoCarOverlapInvariantTests`), which is **far too short
-to observe an hour-scale collapse**. Any claim about believability based on those 200-step numbers —
-including this branch's own "45 → 51 overlap events" comparison — is measuring the wrong horizon.
+So the acceptability ladder is: **prevent the block** (best) → **overlap only as a deliberate unblock, last
+resort** → *never* overlap during normal driving → *never* teleport.
+
+**The good news is that the measurement makes the safety net unnecessary.** Over a full hour with the three
+junction gates ON, **teleports fired 0** and there were **0 stopped runs longer than 300 steps**, while
+completed trips more than doubled (1295 → 2709) — see `F3-SESSION-LOG.md` §9.58. Prevention alone
+delivered a flowing city, so no teleport and no through-each-other unblock was needed at all. This
+document's finding therefore stands as a **diagnosis of why the OFF configuration collapses**
+(no unblock path ⇒ absorbing failure), not as a recommendation to switch teleporting on.
+
+`IgnoreJunctionBlockerSeconds = 5` remains available as the **tier-2** last resort if a residual wedge is
+ever observed with the gates on, since it unblocks *without* a teleport. It was not needed in the measured
+hour.
+
+## RESOLVED by measurement — and neither lever was needed
+
+An earlier version of this section said the outcome was unmeasured. **It has since been measured**
+(`F3-SESSION-LOG.md` §9.58, guard `LongHorizonGridlockDiagTests`): a full hour, 7200 steps, gates OFF vs
+ALL THREE ON, with **teleporting disabled in BOTH** runs.
+
+| | gates OFF | all gates ON |
+| --- | --- | --- |
+| stopped runs > 300 consecutive steps | **161** | **0** |
+| completed trips | 1295 | **2709** |
+| teleports fired | 0 | 0 |
+
+**Prevention alone was sufficient**: with the three junction gates on, the city still flows after an hour
+with **zero teleports and zero unblock events**, so the high-realism constraint is satisfiable without
+either lever. The diagnosis in this document explains the **OFF** collapse (no unblock path ⇒ absorbing
+failure); it is no longer a call to action.
+
+Still worth keeping in mind: every *other* demo diagnostic runs **200 steps**
+(`F3JunctionOverlapDiagTests.cs:213,478,892`; `DemoCarOverlapInvariantTests`) — 100 s at dt=0.5 — which is
+far too short to observe an hour-scale collapse, and is why this failure mode was invisible to all 48
+demo tests. That is what `LongHorizonGridlockDiagTests` now covers.
 
 ## Success conditions
 
