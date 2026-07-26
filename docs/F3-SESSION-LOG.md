@@ -557,12 +557,59 @@ source edit per CLAUDE.md). This log stays the running record; the trio holds th
     speeds** (2.600/2.600, 3.900/3.900), so the tie-break's speed-equal rung — and the ordinal-id
     compare beneath it — is reachable in practice.
 
-**State at end of session 3 (so far):** gate green (**717/4/0**, `D96213B7BB4021A7` par==single, 48/48,
-272/272), tree clean, all pushed. Everything shipped so far is **provably unable to change a
-trajectory** (Stage 1 written-not-read + T2.3 additive-with-no-caller). **T2.4b is the first change that
-can**, and whether the 661 goldens survive flag-ON is an **open measurement** — design §6.3 notes the
-port may trade deadlock for junction overlap, so T2.5 re-measures the F3 buckets and reports them either
-way, not just the teleport count.
+47. **T2.4a/T2.4b shipped** (`12e441d`): the gap helper, plus `JunctionIsLeaderGate` (default OFF) wiring
+    `isLeader` into arm 5. Flag-OFF preserved **by construction** — the sole deleted line is
+    `if (!respondsTo` → `else if (!respondsTo`, condition and body byte-identical — and measured
+    byte-identical on all four surfaces (721/4/0, hash unchanged, 48/48, 272/272).
+48. **⚠ T2.5: THE PORT DOES NOT ACHIEVE ITS GOAL. Measured, reported, not dressed up.** Flag ON is
+    *safe* everywhere — no golden moved, all five gridlock diagnostics green, hash unchanged,
+    LiveCity/Pedestrians green — but it delivers **neither** outcome it was chosen for:
+
+    | Metric | Flag OFF | Flag ON |
+    | --- | --- | --- |
+    | `synthetic-junction2` teleports (cont-turn ON, ignore-blocker −1) | 5 | **4** |
+    | veh 95 / 102 arrive? | no | **still no** |
+    | F3 `BOTH-INTERNAL-DIFFERENT-LANE` | 15 (12 both-moving) | **identical** |
+    | internal-lane stopped vehicle-steps | 206 | 204 |
+
+49. **ROOT CAUSE TRACED — and it is NOT `isLeader`.** Instrumented the arm-5 gate and `IsLeader`'s
+    return points, flag ON, over the 120-step window (t=322…441; binder `10`/arm **5** on 120/120 for
+    both vehicles). Per direction, **100% of 121 steps each, not a mix**:
+
+    | ego | `IsLeader` | `FoeIsInTheWay` | gap | `contLane` forced? |
+    | --- | --- | --- | --- | --- |
+    | 95 (foe=102) | **true** 121/121 | false 121/121 | −12.186 | no, 0/121 |
+    | 102 (foe=95) | **false** 121/121 | **true** 121/121 | −9.486 | no, 0/121 |
+
+    **The ordering works exactly as §0a proved** — `IsLeader(102,95)` is false every step, so 102 *is*
+    released by entry order, and the branch mix (mutual 74, `!response` 26/20, default 21/27) matches
+    the design's own table. But the call site is SUMO's own disjunction
+    `isLeader(...) || inTheWay()` (`MSVehicle.cpp:3429`), and `FoeIsInTheWay(102,95)` is independently
+    true every step — a **symmetric geometric fact that no ordering can dissolve.** So the OR stays true
+    both ways and both cars keep braking. **A correct mechanism, applied where it cannot help.**
+50. **The real defect: `MSInternalJunction` is unported — a cont turn's SECOND STAGE has no admission
+    control.** The question the trace forces is why veh 95 is on stage 2 (`:2336_42_0`) at all while 102
+    occupies the conflicting `:2336_3_0`. In SUMO it cannot be:
+    `MSInternalJunction::postloadInit` makes the **first** `incLanes` entry — the stage-1 **bay**
+    `:2336_18_0` — *"the link that needs to do all the checking"*, takes the **parent** junction's
+    `getResponseFor(ownLinkIndex=18)`, and every internal lane of the internal junction that
+    `response[18]` responds to becomes a foe the bay link must respect. `:2336_42_0`'s `intLanes`
+    contains **`:2336_3_0`**, and `response[18]` has **bit 3 set** (established at the start of this
+    workstream). **So SUMO holds 95 in the bay; it never becomes an obstacle.**
+    We model none of it: all **251** internal junctions in this net carry **zero `<request>` rows**, and
+    `NetworkParser.ParseJunction` bails on `requestEls.Count == 0`, so every internal junction parses
+    **inert**; `grep MSInternalJunction src/` finds only comments. A cont vehicle advances bay→stage-2
+    **checking no foe at all.** → `NEED-internal-junction-second-stage-admission.md`.
+    **This also corrects `NEED-arm5-mutual-junction-deadlock.md`**, which concluded *"the only reason
+    SUMO does not hit this deadlock is `isLeader()`"*. SUMO has **two** defences and we had ported
+    neither; `isLeader` was merely the visible one. **Keep `isLeader` — it is necessary, faithful, safe,
+    and its release demonstrably fires — then port the admission control that is actually load-bearing.**
+
+**State at end of session 3:** gate green (**721/4/0**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+tree clean, all pushed. Stage 1 + T2.3 are **provably unable to change a trajectory**; T2.4b is
+behavioural but **default OFF** and byte-identical when off. The `isLeader` port is **complete and
+correct but insufficient**: it resolves who goes first among vehicles legitimately inside a junction,
+while the defect is **who is allowed in**. Next: `MSInternalJunction` second-stage admission.
 
 ---
 
@@ -575,6 +622,15 @@ way, not just the teleport count.
 > bootstrap, gate numbers, six DISPROVEN handoff claims, what is shipped, the next task fully specified,
 > and the traps that cost time. Do not re-derive anything marked disproven, and do not re-attempt anything
 > in §6's "Parked" table.
+>
+> **⚠ SESSION 3 RESULT — the `isLeader` port is COMPLETE, and it is NOT SUFFICIENT.** It is shipped
+> behind a default-OFF `JunctionIsLeaderGate` and is measurably safe, but the arm-5 deadlock and the 12
+> both-moving F3 overlaps **persist**. Traced (§9.49-50): the ordering works — `IsLeader(102,95)` is
+> false 121/121 — but the call site is SUMO's own `isLeader(...) || inTheWay()` disjunction and
+> `FoeIsInTheWay` is independently true 121/121, a symmetric geometric fact ordering cannot dissolve.
+> **The real defect is that `MSInternalJunction` is unported**, so a cont turn's second stage has no
+> admission control and a car enters it checking no foe. **START THERE:**
+> `docs/NEED-internal-junction-second-stage-admission.md`. Do NOT re-attempt `isLeader` — it is done.
 >
 > **⚠ SESSION 3 UPDATE — the `isLeader` port is UNDERWAY, not unstarted.** It has its own design trio:
 > `docs/F3-ISLEADER-PORT-{DESIGN,TASKS,TRACKER}.md`. Read the **DESIGN** (especially §0a's proof, §3b's
@@ -624,11 +680,16 @@ forward axis** *and* a front-bumper-as-centre anchor — correcting both moved e
 axis error had been *hiding* seven real overlaps. What remains is one faithful port, `isLeader()`, which
 resolves both the arm-5 mutual deadlock and the 12 remaining both-moving F3 overlaps.
 
-**Session 3 added, in one line each:** that port is now **underway** behind its own design trio, with
+**Session 3 added, in one line each:** that port is now **COMPLETE but INSUFFICIENT** — behind its own design trio, with
 Stage 1 and the `isLeader` helpers **shipped and provably parity-inert** (written-not-read; 297
 insertions / 0 deletions) and only the flag-gated wiring and the measurement left; the deadlock is now
 backed by a **proof** rather than a plausible mechanism — attempt 1 (`haveRed`), *not* the response
 matrix, is the operative arm, and it makes the symmetric state **structurally unreachable**; and a
 **fourth instrument defect** turned up, this time in the test harness rather than the engine — a
 process-global env var let one test's configuration leak into another, making two of the five gridlock
-diagnostics fail about one run in three for reasons unrelated to any change under test.
+diagnostics fail about one run in three for reasons unrelated to any change under test. And the port
+itself, though faithful and safe, **did not fix the deadlock**: the ordering fires correctly but is
+OR-ed with a physical-presence term that is symmetrically true, and the state it arbitrates should never
+have formed — a cont turn's **second stage has no admission control** because `MSInternalJunction` is
+unported. The lesson generalises past this bug: **a correct port of the wrong mechanism is still a
+wrong fix**, and only measuring the end-to-end outcome (not the mechanism's own unit tests) reveals it.

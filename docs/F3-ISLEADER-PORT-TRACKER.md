@@ -34,17 +34,34 @@ report of "done" is not sufficient (CLAUDE.md, the orchestration loop).
 
 ## Stage 2 — the decision (flag-gated, default OFF)
 
-- [ ] **T2.3** `IsLeader` + `ResponseFor` + a separately callable tie-break — 5 success conditions,
-      incl. the ordinal-comparison and no-indirect-link guards
-- [ ] **T2.4** wire into arm 5 behind `JunctionIsLeaderGate` (default OFF); flag-off path unchanged
-      character-for-character — 3 success conditions
+- [x] **T2.3** `IsLeader` + `ResponseFor` + a separately callable tie-break — **confirmed** (`71ce789`):
+      297 insertions / **0 deletions**, no caller, both audits clean; predicates verified against
+      `MSLink.h:437-454`; ordinal test pins the culture-vs-ordinal disagreement; antisymmetry Theory's
+      three constants verified to land in three *different* phase classes.
+- [x] **T2.4a** `GapForIsLeader` — the gap derivation incl. `contLane ⇒ -DBL_MAX` and the
+      logical-vs-normal predecessor distinction (`12e441d`).
+- [x] **T2.4b** wired into arm 5 behind `JunctionIsLeaderGate` (default OFF) (`12e441d`). Flag-off
+      preserved by construction: the sole deleted line is `if (!respondsTo` → `else if (!respondsTo`,
+      condition and body byte-identical. Flag OFF measured byte-identical on all four surfaces.
 
 ## Stage 3 — measure, then decide
 
-- [ ] **T2.5** full four-surface measurement with the flag ON; F3 buckets re-measured and reported
-      either way; log updated
-- [ ] **Owner decision** — do `JunctionIsLeaderGate` / `ContTurnInsideJunctionGate` go default-ON,
-      and does `IgnoreJunctionBlockerSeconds` stay at SUMO's `-1`?
+- [x] **T2.5** four-surface measurement with the flag ON — **done, and it found a SHORTFALL.** Safe
+      everywhere (no golden moved, five diagnostics green, hash `D96213B7BB4021A7` par == single,
+      LiveCity 48/48, Pedestrians 272/272) but it does **not** deliver either goal it was chosen for:
+      teleports 5 → 4, **veh 95/102 still do not arrive**, F3 buckets **identical** (15 total, **12
+      both-moving** unchanged), internal-lane stopped steps 204 vs 206. Root cause then traced — below.
+- [ ] **BLOCKED — `MSInternalJunction` is unported.** `docs/NEED-internal-junction-second-stage-admission.md`.
+      The trace proves `IsLeader`'s ordering works (`IsLeader(102,95)` false **121/121**) but the call
+      site is SUMO's own `isLeader(...) || inTheWay()` disjunction, and `FoeIsInTheWay(102,95)` is
+      independently true **121/121** — a symmetric *geometric* fact no ordering can dissolve. The reason
+      that geometry exists at all is that a cont turn's **second stage has no admission control**: all
+      251 internal junctions parse inert, so veh 95 entered stage 2 without checking any foe. In SUMO
+      the bay link must yield to the parent's `response[18]` foe lanes, which include `:2336_3_0`.
+      **`isLeader` is necessary but not sufficient — keep it, then port this.**
+- [ ] **Owner decision (deferred until the above)** — do `JunctionIsLeaderGate` /
+      `ContTurnInsideJunctionGate` go default-ON, and does `IgnoreJunctionBlockerSeconds` stay at `-1`?
+      Not yet decidable: with the deadlock unresolved, default-ON still costs teleports.
 
 ## Carried out of this workstream (not part of it)
 
