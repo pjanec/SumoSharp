@@ -47,8 +47,10 @@ Full hour (7200 steps @ dt=0.5), demo, gates OFF vs all three junction gates ON
 | 2 · unblock-by-overlap events needed | — | **0** | ✅ never needed — prevention sufficed |
 | 3 · same-target-merge overlaps (two directions → one exit lane) | 4374 | **0** | ✅ **now compliant** |
 | 3 · **same-lane overlaps during normal driving** | 492 | **696** | ❌ **VIOLATION — and worse** |
+| 5 · cars stopped to horizon with no obvious reason | 156 | **59** | ⚠️ much reduced; the residue looks like ordinary end-of-run queueing, not cleared |
 
-**The gates satisfy three of the four rungs.** The single outstanding violation is rung 3's same-lane case:
+**The gates satisfy four of the five rungs**, and by rung 1 — *prevention* — rather than by any rescue:
+with them on the city needed **zero teleports and zero pass-through events** over the hour. The single outstanding violation is rung 3's same-lane case:
 **696 events, worst penetration 1.800 m — exactly the vehicle width, i.e. two cars fully inside one
 another** — occurring during ordinary driving, not as an unblock. That is categorically disallowed here.
 
