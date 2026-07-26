@@ -5073,7 +5073,15 @@ public sealed partial class Engine : IEngine
         // 12 obstacle, 13 crowd.
         byte binder = 0;
         double dc;
-        if (!prePass) v.JunctionYieldFoeSpeed = -1f; // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds
+        // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds.
+        // T1.8 (docs/NEED-stale-binder-diagnostics-under-reuseintent.md): written on BOTH passes, not
+        // just the real one. These diagnostics must describe *the pass whose Intent is actually used*.
+        // The pre-pass runs first and the real pass overwrites it, so for a normal vehicle the value is
+        // unchanged; but a fusion-eligible vehicle (`ReuseIntent`) NEVER gets a real pass -- PlanMovements
+        // skips it and keeps the pre-pass Intent -- so a `!prePass` guard left these fields frozen at
+        // whatever the last real pass wrote, sometimes for tens of seconds. See the NEED doc: that
+        // staleness produced a confident, wrong root-cause attribution.
+        v.JunctionYieldFoeSpeed = -1f;
 
         // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
         // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
@@ -5180,7 +5188,10 @@ public sealed partial class Engine : IEngine
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
         dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 13; vPos = Math.Min(vPos, dc);
-        if (!prePass) v.BindingConstraint = binder; // diagnostic (#15): argmin of the fold, never read by sim
+        // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
+        // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
+        // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
+        v.BindingConstraint = binder;
 
         // P2G-2 (cooperative LC): consume any speed-advice a blocked lane-changer wrote LAST step's LC
         // phase (informFollower "make room"). +Infinity == none, so byte-identical when CoordinatedLaneChange
@@ -6992,7 +7003,8 @@ public sealed partial class Engine : IEngine
                     constraint,
                     SameTargetMergeConstraint(
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
-                        j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority));
+                        j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority,
+                        egoInsideJunction));
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 3; } // diag: sameTargetMerge
                 continue;
             }
@@ -7262,13 +7274,13 @@ public sealed partial class Engine : IEngine
             }
 
             constraint = Math.Min(constraint, thisConstraint);
-            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; if (!prePass) v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
+            // T1.8: foe speed recorded on BOTH passes (see the JunctionYieldFoeSpeed reset comment).
+            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
         }
 
-        if (!prePass)
-        {
-            v.JunctionYieldArm = (byte)(jyArm | (egoHasSignalPriority ? 0x80 : 0)); // diag (#15)
-        }
+        // T1.8: written on BOTH passes so a ReuseIntent vehicle reports the arm that actually bound this
+        // step rather than one carried over from its last real pass. See the JunctionYieldFoeSpeed reset.
+        v.JunctionYieldArm = (byte)(jyArm | (egoHasSignalPriority ? 0x80 : 0)); // diag (#15)
 
         return constraint;
     }
@@ -7633,7 +7645,14 @@ public sealed partial class Engine : IEngine
     private double SameTargetMergeConstraint(
         VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
         bool egoOnInternal, Lane? approachLane, double egoDistToEntry, int foeLinkIndex, ActiveVehicleQuery allVehicles,
-        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false)
+        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false,
+        // T1.9 (docs/NEED-contturn-stuck-in-junction.md): "ego is physically inside this junction", the
+        // faithful port of SUMO's MSLane::isInternal() -- true on EVERY stage of a cont turn, unlike
+        // `egoOnInternal` which is equality against the LINK-CONTROLLING lane only. Used ONLY for the
+        // PHASE 0 commitment GATE below. `egoOnInternal` is deliberately still used for the lane-relative
+        // `distToMerge` arithmetic, which is expressed in `egoInternalLane`'s frame and would mix lanes if
+        // widened. Defaults to egoOnInternal's old meaning at the single call site when the flag is off.
+        bool egoInsideJunction = false)
     {
         if (approachLane is null && !egoOnInternal)
         {
@@ -7691,7 +7710,14 @@ public sealed partial class Engine : IEngine
         // this arrival-time stop-line yield -- the signal already resolved the merge conflict (the
         // conflicting merger is red). Only PHASE 0 (the stop-line yield) is gated; PHASE 1 below
         // (following a foe already on its merging internal lane) is car-following and stays active.
-        if (!egoOnInternal
+        // T1.9: gated on `!egoInsideJunction`, NOT `!egoOnInternal`. This arm's own comment above says
+        // "Once ego is on its internal lane it is committed and no longer gated" -- that is a statement
+        // about being INSIDE THE JUNCTION (SUMO's myLane->isInternal()), and PHASE 0 is a STOP-LINE yield,
+        // so applying it to a committed ego brakes it toward an entry that is already BEHIND it. On a cont
+        // turn `egoOnInternal` is false while ego sits on the first-stage lane, which is exactly how
+        // __veh127 froze for 95 steps on :d_3_4_5_0 with nothing ahead of it (binder 10 / arm 3
+        // sameTargetMerge, confirmed only after the T1.8 stale-diagnostic fix made the arm visible).
+        if (!egoInsideJunction
             && !egoHasSignalPriority
             && foeMerging is not null
             && foeMerging.LaneId != foeInternalLaneId
@@ -11467,17 +11493,25 @@ public sealed partial class Engine : IEngine
     // mid-junction on the first-stage lane, so the cautious-approach arm brakes it there -- measured as
     // a 95-step freeze with no leader and no blocked exit.
     //
-    // WHY IT IS OFF BY DEFAULT: correct in isolation, but it regresses
-    // RungHDp2g2CoordinatedLaneChangeTests (scenarios/_diag/willpass-saturation): stuck 1 -> 28, against
-    // a ceiling of 5. All 661 goldens stay byte-identical. Diagnosis: the spurious brake was accidentally
-    // standing in for a mechanism we do NOT implement -- SUMO's MSVehicle::checkRewindLinkLanes
-    // (MSVehicle.cpp:5025), "do not enter a junction whose exit you cannot clear". Remove the accidental
-    // brake without that upstream admission control and an over-saturated grid lets too many cars commit
-    // into junction interiors at once.
+    // WHAT IT NOW COVERS (two gates, both mis-gated by the same defect):
+    //   1. JunctionYieldConstraint's cautious-approach arm.
+    //   2. SameTargetMergeConstraint's PHASE 0 stop-line arrival-time yield -- the ACTUAL cause of the
+    //      95-step mid-junction freeze. PHASE 0 is a STOP-LINE yield, so applying it to an ego already
+    //      committed inside the junction brakes it toward an entry that is BEHIND it. Only visible after
+    //      the T1.8 stale-diagnostic fix; the stale value had blamed the cautious-approach arm.
+    // `egoOnInternal` is deliberately still used for lane-relative arithmetic (AdaptToJunctionLeader's
+    // `seen`, the merge arm's `distToMerge`) -- widening it there would mix positions across lanes.
     //
-    // ORDER OF WORK: strengthen keepClear / port checkRewindLinkLanes FIRST (our KeepClearConstraint is
-    // a partial port with four documented simplifications), THEN enable this. The predicate itself needs
-    // no further work -- it is correct and directly tested.
+    // MEASURED with the flag ON: the freeze is GONE (__veh127's 95-step and __veh140's 75-step stalls both
+    // disappear; total vehicle-steps stopped on an internal lane in the demo drop 206 -> 39, -81%), and the
+    // earlier saturated-grid regression is GONE TOO (willpass-saturation stuck 28 -> 0, arrivals 411 -> 411
+    // unchanged) -- that regression was an artefact of gating only ONE of the two arms.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT -- one remaining blocker: with it on,
+    // LowDensityTeleportTests.SyntheticJunction2_TlPriorityVehiclesDoNotSpuriouslyTeleport fires
+    // 5 teleports (jam=0, yield=5) against a ceiling of 2 (vanilla SUMO is 0). ALL 661 goldens remain
+    // byte-identical. That single scenario is the last thing between this and default-on; see
+    // docs/F3-SESSION-LOG.md T1.10.
     public bool ContTurnInsideJunctionGate { get; set; }
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).

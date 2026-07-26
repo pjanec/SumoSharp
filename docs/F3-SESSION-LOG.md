@@ -34,12 +34,13 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **671 passed / 4 skipped / 0 failed** |
+| `dotnet test tests/Sim.ParityTests -c Release` | **672 passed / 4 skipped / 0 failed** |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; not in `Traffic.sln`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 
-671 = the historical 661 goldens + 9 `ContTurnInternalLaneOwnershipTests` + 1 `Scenario44DefectDiagTests`.
+672 = the historical 661 goldens + 9 `ContTurnInternalLaneOwnershipTests` + 2 diagnostics
+(`Scenario44DefectDiagTests`, `ContTurnFlagOnGridlockDiagTests`).
 The 4 skips are pre-existing (`LaneChangeOverlapDiagTests`, `RungC4vii…`, `RungP24…`, `RungP2Core…`).
 
 **The 5 gridlock diagnostics are the load-bearing regression net** — they caught a bad change in one run and
@@ -94,8 +95,9 @@ Centre-corrected (see N1): totals 97, F3 bucket 13 (5 stopped-foe / **8 both-mov
 | Item | State |
 | --- | --- |
 | `NetworkModel.JunctionByInternalLane` + `IsInternalLaneOfJunction(laneId, junction)` | **live, unconditional, parity-safe** |
+| Binder diagnostics written on BOTH passes (T1.8) | **live, unconditional, parity-safe** |
 | `ContTurnInternalLaneOwnershipTests` (9 tests) | **live** — direct, offline, non-vacuous |
-| `Engine.ContTurnInsideJunctionGate` | **default OFF** — correct but blocked (§6 T1.7) |
+| `Engine.ContTurnInsideJunctionGate` | **default OFF** — now covers BOTH mis-gated arms; fixes the freeze; one blocker left (§6 T1.10) |
 | `Engine.JunctionPhysicalOccupancyGate` | **default OFF** — measured counterproductive (§6 note) |
 | `F3JunctionOverlapDiagTests`, `Scenario44DefectDiagTests` | live, always-passing instruments |
 | 6 NEED docs + design/tasks/tracker | live |
@@ -104,33 +106,29 @@ Env-var A/B switches for the demo: `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPAN
 
 ## 6. NEXT ACTIONS, in dependency order
 
-**→ T1.8 FIRST: fix stale binder diagnostics.** `NEED-stale-binder-diagnostics-under-reuseintent.md`.
-`BindingConstraint`/`JunctionYieldArm` are written only `if (!prePass)` (`Engine.cs:5183`), but `ReuseIntent`
-skips the real pass (`Engine.cs:4955`, `:4972`), so they freeze at a stale value indefinitely. **Cheap and
-behaviour-neutral** (fields are never read by the sim → cannot move a golden). **Do this before any further
-attribution work** — it is the tool everything else needs, and it already caused one wrong root-cause.
+**→ T1.10 (THE ONLY BLOCKER LEFT for default-on): `LowDensityTeleportTests` fires 5 yield-teleports.**
+With `ContTurnInsideJunctionGate = true`, `SyntheticJunction2_TlPriorityVehiclesDoNotSpuriouslyTeleport`
+reports **5 teleports (jam=0, yield=5)** against a ceiling of **2** (vanilla SUMO is 0). **All 661 goldens
+stay byte-identical**, and every other gridlock diagnostic is green. `yield=5` means the teleports are
+yield-caused, so look for a car now yielding *longer* somewhere on `scenarios/_diag/synthetic-junction2`.
+This one scenario is all that stands between the cont-turn fix and being enabled by default.
 
-**→ T1.7: finish the `checkRewindLinkLanes` port.** `NEED-checkrewindlinklanes-partial-port.md`. Four ranked
-gaps; **G1 first** — our `foundStopped` is set only by an ALREADY-STOPPED downstream vehicle, but SUMO also
-propagates from `last->myHaveToWaitOnNextLink` (`MSVehicle.cpp:5126-5129`); a saturating grid blocks via a
-*forming* queue, which we miss. **Unblocks `ContTurnInsideJunctionGate`** (enabling it today takes
-`RungHDp2g2` from 1 → 28 stuck, ceiling 5).
+**→ T1.7 (`checkRewindLinkLanes`): NO LONGER BLOCKING — re-scope it.** The 28-stuck regression that
+motivated it is **gone** (`willpass-saturation` stuck 28 → **0**, arrivals 411 → 411) once BOTH mis-gated
+arms are fixed; it was an artefact of a half-applied fix, not a missing mechanism. The four gaps in
+`NEED-checkrewindlinklanes-partial-port.md` are still real divergences from SUMO and worth porting on their
+own merit — but they are **not** a prerequisite for anything now.
 
-**→ T1.9: re-attribute the mid-junction freeze (BLOCKED on T1.8).** `__veh127` stopped 95 steps on
-`:d_3_4_5_0`, `__veh140` 75 on `:d_5_4_12_0`, both `GapAhead`/`NextMouthGap` `= +Inf` throughout.
-`JunctionYieldConstraint` is now **known** to return `+Inf` during it, so the cause is **another constraint
-arm, unidentified**. Payoff: the F3 bucket's worst event (1.987 m) + 60 of 62 events in the largest bucket.
+**→ T1.6: the true-F3 residue, LAST.** Unchanged: 8 both-moving events, worst 1.696 m, 5 of 8 at
+0.497–0.602 m. Needs the occupancy port *with* `isLeader()` entry-time state. **Re-measure first** — the
+freeze fix removed 81% of internal-lane stopping, so the bucket has almost certainly changed. Also check
+whether the three identical-speed pairs are actually N2 (co-located vehicles).
 
-**→ T1.6: the true-F3 residue, LAST.** Only 8 both-moving events, worst 1.696 m, 5 of 8 at 0.497–0.602 m.
-Needs the full occupancy port *with* `isLeader()` entry-time state. **Check first** whether the three
-identical-speed pairs (2.600/2.600, 2.600/2.600, 3.900/3.900) are actually N2 (co-located vehicles).
+**Also open:** N1 anchor fix (re-baselines every overlap threshold — do it *with* re-calibration), N2
+co-located vehicles, N3 net geometry, scenario-44 golden regen.
 
-**Also open:** N1 anchor fix (re-baselines every overlap threshold — do it *with* re-calibration, not
-before), N2 co-located vehicles, N3 net geometry, scenario-44 golden regen.
-
-**⚠ Do NOT re-attempt** the `FoeWith` occupancy widening on its own. Measured **three times**, worse each
-time (F3 bucket 8 → 33, then 8 → 27). Braking without symmetry-breaking strands cars *inside* junctions where
-they become new obstacles. A yield that cannot resolve is worse than no yield.
+**⚠ Do NOT re-attempt** the `FoeWith` occupancy widening on its own (`JunctionPhysicalOccupancyGate`).
+Measured three times, worse each time (F3 bucket 8 → 33, then 8 → 27).
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -195,3 +193,34 @@ they become new obstacles. A yield that cannot resolve is worse than no yield.
 
 **State at end of session 1:** gate green (671/4/0, `D96213B7BB4021A7`, 48/48, 272/272). One genuine engine
 correctness fix shipped (flag-gated) + 9 tests. F3 itself **not fixed**. Freeze **unexplained**. Next: T1.8.
+
+### Session 2 (2026-07-26, continued) — T1.8 + T1.9: the freeze is FIXED
+
+13. **T1.8 done — stale binder diagnostics fixed.** Removed the `!prePass` guard from all four diagnostic
+    writes (`v.BindingConstraint`, `v.JunctionYieldArm`, and both `v.JunctionYieldFoeSpeed` sites). The
+    pre-pass runs first and the real pass overwrites it, so a normal vehicle is unchanged, while a
+    `ReuseIntent` vehicle (whose pre-pass Intent IS its final Intent) now reports its live binder. The
+    genuinely *behavioural* `!prePass` guards (`LastActionTime`, `CoopSpeedAdvice` reset, IDMM state,
+    `LatOffset`, the crossing-yield relax) were left untouched. Parity 671/4/0 and hash unchanged, exactly
+    as predicted — the fields are never read by the sim.
+14. **T1.9 SOLVED, immediately, because of T1.8.** With live diagnostics `__veh127`'s arm is
+    **3 (sameTargetMerge)**, not 2 (cautiousApproach) — 95/95 steps. The real cause is
+    `SameTargetMergeConstraint`'s **PHASE 0** stop-line arrival-time yield, gated on `!egoOnInternal` with
+    the same false precondition ("once ego is on its internal lane it is committed and no longer gated").
+    PHASE 0 is a *stop-line* yield, so on a cont turn it brakes an ego already committed inside the junction
+    toward an entry that is **behind** it. **The cont-turn mis-port WAS the cause after all** — via the merge
+    arm, which the first fix never reached because `egoOnInternal` was passed into it.
+15. **Fixed** by threading a separate `egoInsideJunction` parameter into `SameTargetMergeConstraint`, used
+    **only** for the PHASE 0 gate (`distToMerge` keeps `egoOnInternal`, being lane-relative). Measured with
+    the flag ON: `__veh127`'s 95-step and `__veh140`'s 75-step stalls both **GONE**; total vehicle-steps
+    stopped on an internal lane **206 → 39 (−81%)**.
+16. **The T1.7 blocker dissolved.** `willpass-saturation` with the flag ON: stuck **28 → 0**, arrivals
+    411 → 411. The earlier regression was an artefact of gating only one of the two arms, not a missing
+    `checkRewindLinkLanes`.
+17. **Probed default-on:** all 661 goldens byte-identical, but `LowDensityTeleportTests` fires 5
+    yield-teleports vs a ceiling of 2 → reverted to default OFF and filed as **T1.10**, the last blocker.
+
+**State at end of session 2:** gate green (**672/4/0**, `D96213B7BB4021A7`, 48/48, 272/272). Two genuine
+engine fixes shipped (one unconditional and parity-safe, one flag-gated). **The 95-step mid-junction freeze
+is FIXED** and the biggest overlap contributor is neutralised. F3 proper (the 8 both-moving events) still
+open. One narrow blocker (T1.10) between the cont-turn fix and default-on.
