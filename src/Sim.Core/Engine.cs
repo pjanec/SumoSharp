@@ -5270,7 +5270,7 @@ public sealed partial class Engine : IEngine
         // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
         // header comment for the parity argument and the deliberate omissions.
         dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
-        dc = ColocationSymmetryBreakConstraint(v); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
+        dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
         // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
         // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
         // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
@@ -7632,7 +7632,7 @@ public sealed partial class Engine : IEngine
     //      the lexicographically GREATER id yields, by `string.CompareOrdinal`. NEVER `EntityIndex` or any
     //      array position, which would make the outcome depend on iteration order.
     // Both rules are antisymmetric, so exactly one of a pair yields and the other proceeds.
-    private double ColocationSymmetryBreakConstraint(VehicleRuntime v)
+    private double ColocationSymmetryBreakConstraint(VehicleRuntime v, LaneNeighborQuery neighbors)
     {
         if (!ColocationSymmetryBreak || v.IsParked)
         {
@@ -7642,9 +7642,16 @@ public sealed partial class Engine : IEngine
         var egoFront = v.Kinematics.Pos;
         var egoBack = egoFront - v.VType.Length;
 
-        foreach (var other in ActiveVehicles())
+        // PERF: scan only EGO'S OWN LANE's pos-sorted bucket, never ActiveVehicles(). The first version
+        // iterated every active vehicle for every vehicle every step -- O(N^2) on the hot plan path, which
+        // is fine at the demo's ~160 vehicles (~25k iterations/step) and ruinous at city scale. Only
+        // same-lane vehicles can body-overlap ego, so the bucket is not merely a speed-up but the exact
+        // candidate set. Same source `IsTargetLaneOverlapped` uses.
+        var sameLane = neighbors.OnLane(v.LaneHandle);
+        for (var idx = 0; idx < sameLane.Count; idx++)
         {
-            if (ReferenceEquals(other, v) || other.IsParked || other.LaneHandle != v.LaneHandle)
+            var other = sameLane[idx];
+            if (ReferenceEquals(other, v) || other.IsParked)
             {
                 continue;
             }

@@ -1041,6 +1041,49 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     i.e. O(N²) — fine at the demo's ~160 vehicles, **unmeasured at scale**; (f) all gates remain
     **default OFF** pending an owner decision.
 
+### Session 3 (continued) — the DEFAULTS question, answered gate by gate
+
+88. **Perf fix to the symmetry-break arm.** It scanned `ActiveVehicles()` for every vehicle every step —
+    **O(N²)** on the hot plan path. Replaced with ego's own pos-sorted lane bucket
+    (`neighbors.OnLane`), which is not merely faster but the **exact** candidate set (only same-lane
+    vehicles can body-overlap). Demo results **bit-identical** afterwards (327 / 72 / 2684 / 1408),
+    confirming it is a pure speed-up.
+    **Perf impact is UNMEASURABLE on this machine** — bench throughput OFF 2806 / 1599 steps/s vs ON
+    2440 / 2744, i.e. the ON range sits *inside* the OFF range. An earlier single-pair reading of "−20%"
+    was noise and is retracted. The remaining analytic concern is shape, not a measurement: the arm is
+    O(bucket) per vehicle per step, and on a single-lane highway the bucket is N. Reducible to O(1) by
+    exploiting the bucket's pos-sorted order (only pos-adjacent vehicles can overlap) — not done.
+89. **DEFAULTS RECOMMENDATION — the six gates split cleanly in two.**
+
+    **Four are strictly-more-faithful SUMO ports; I see no reason to keep them OFF:**
+    `ContTurnInsideJunctionGate` (SUMO tests a lane *property*; we tested lane-id equality),
+    `JunctionIsLeaderGate` (`MSVehicle::isLeader`), `InternalJunctionAdmissionGate`
+    (`MSInternalJunction`), `InsertionFollowerGapCheck` (`isInsertionSuccess`'s follower pass, which
+    SUMO runs **by default** — `insertionChecks = ALL`). Each fixes a porting **omission or mis-port**;
+    all 661 goldens are byte-identical and the bench hash is unchanged. **Defaulting these ON *increases*
+    parity fidelity**, which is the repo's stated bar — so the burden of proof is on keeping them off.
+    The original blocker (T1.10's 5 teleports) is resolved.
+
+    **Two are deviations from SUMO and warrant a deliberate decision:**
+    `ColocationSymmetryBreak` — the **only** intentional deviation on this branch; SUMO has no such
+    mechanism because it cannot reach the state. Engine-default-ON means the library does something SUMO
+    does not. `LaneChangeArrivalArbitration` — **more conservative than SUMO**: it defers to a far-lane
+    vehicle that merely *could* claim the slot, without knowing intent.
+
+90. **Three reasons that apply regardless of which gates are chosen:**
+    (a) **Partial enablement is a FOOTGUN, and this is measured.** Three-junction-gates-only is *worse*
+    than baseline (same-lane 492 → 696); arbitration alone is *catastrophic* (13308 events, longest
+    episode **3046** steps, trips 1295 → 402). They must flip **as a package** or not at all.
+    (b) **Unmeasured surfaces:** `Sim.BenchCity` and the other `scenarios/_bench` city nets have **not**
+    been run with the gates on. Coverage so far is 661 goldens + 5 gridlock diagnostics + LiveCity +
+    Pedestrians + the demo hour + `synthetic-junction2`.
+    (c) The **one remaining rung-3 violation is unexplained**, so "done" is not the right word for the
+    same-lane defect even though every metric improved.
+
+    **Recommended:** flip the **four faithful** gates ON in the engine; enable **all six** in the demo
+    config; hold the two deviations at engine-default OFF until the `_bench` city scenarios are measured
+    and the O(bucket) shape is addressed.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
