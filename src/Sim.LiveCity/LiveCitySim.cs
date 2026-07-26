@@ -371,6 +371,10 @@ public sealed class LiveCitySim : IDisposable
         // depart position. SUMO refuses these BY DEFAULT (insertionChecks = InsertionCheck::ALL), so this is a
         // faithfulness increase. OFF by default here only until measured. LIVECITY_INSERTIONFOLLOWERGAP=1.
         _engine.InsertionFollowerGapCheck = Environment.GetEnvironmentVariable("LIVECITY_INSERTIONFOLLOWERGAP") == "1";
+        // Fix 2: co-location symmetry break -- lets an already-overlapping same-lane pair SEPARATE instead of
+        // persisting (measured: longest episode 79 steps). Triggered by measured overlap only, never a timer.
+        // LIVECITY_COLOCATIONSYMMETRYBREAK=1.
+        _engine.ColocationSymmetryBreak = Environment.GetEnvironmentVariable("LIVECITY_COLOCATIONSYMMETRYBREAK") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).

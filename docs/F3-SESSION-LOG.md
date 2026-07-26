@@ -909,7 +909,56 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     **Standing lesson reinforced:** an env-var-configured A/B must set *every* variable it depends on, not
     just the ones it is varying — inheriting one is indistinguishable from measuring it.
 
-**State at end of session 3:** gate green (**735/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+### Session 3 (continued) — FIX 2: co-location symmetry break (and a golden-caught 1-D/2-D bug)
+
+75. **Measured first, then built** — the discipline that keeps paying. After fix 1, episode stats (added to
+    the diagnostic, since **episodes = onsets** and **events = persistence**, and only the former is a
+    prevention metric): onsets 88 → 100, **longest episode 79 steps**, 14 episodes > 10 steps. Onsets per
+    unit of traffic actually *improved* 46% (0.068 → 0.037 per arrival), but a 79-step episode is ~40 s of
+    two cars sitting inside each other. Perfect symmetry means it never resolves ⇒ fix 2 confirmed needed.
+76. **Fix 2: `Engine.ColocationSymmetryBreak` (arm 15, default OFF).** When two same-lane bodies already
+    overlap, the designated yielder holds for the step so the other pulls clear. Yield rule is deterministic
+    and antisymmetric: **the vehicle behind yields; on an exact positional tie the lexicographically GREATER
+    id yields** (`string.CompareOrdinal`, never `EntityIndex`).
+    **This is the ONE deliberate deviation from SUMO on this branch** — SUMO has no such mechanism because
+    it cannot reach the state (it places vehicles sequentially). It recovers from a state SUMO never
+    produces rather than altering behaviour SUMO defines. **Ladder-compliant:** triggered by *measured
+    overlap*, never a timer, so it cannot fire on a rung-5 stuck car and conceal its defect; and it neither
+    teleports (rung 4) nor passes cars through each other (rung 2) — it **separates** them.
+77. **⚠ MY "PARITY-SAFE BY CONSTRUCTION" CLAIM WAS WRONG, AND FIVE GOLDENS CAUGHT IT.** I tested body
+    overlap with **longitudinal intervals only**. Under the sublane model two vehicles legitimately share a
+    lane **side by side** — longitudinally overlapping, laterally clear, never touching. So the arm braked
+    legitimate overtakes and broke `RungP22SublaneSideBySide`, `RungD3CooperativeOvertake`,
+    `RungD2ReturnGap`, `RungOV3OvertakeExecution`, `RungRvoMultiNeighbor` — **every one a lateral-passing
+    scenario**. **Same error class as this branch's OBB axis bug (§4.5b): a 1-D test of a 2-D condition.**
+    Fixed by adding the lateral term (`|ΔLatOffset| < (widthA+widthB)/2`, `Kinematics.LatOffset` +
+    `VType.Width`). With that, **all 661 goldens byte-identical** and bench `D96213B7BB4021A7` par == single.
+    Note the lateral term changed **nothing in the demo** (all cars sit at `LatOffset ≈ 0` there, sublane
+    off) — so the demo measurement was accidentally unaffected while the **goldens** were what caught the
+    bug. Precisely why goldens-plus-diagnostics is the required net, not either alone.
+78. **Fix 2 measured** (all five gates ON vs none):
+
+    | Metric | OFF | 4 gates | **+ fix 2** | |
+    | --- | --- | --- | --- | --- |
+    | same-lane events | 492 | 569 | **365** | ⬇ −36% vs fix 1 |
+    | episodes (onsets) | 88 | 100 | **80** | ⬇ −20% |
+    | episodes > 10 steps | 9 | 14 | **7** | ⬇ **−50%** |
+    | episodes > 3 steps | 17 | 20 | **12** | ⬇ −40% |
+    | longest episode | 98 | 79 | **75** | ⬇ barely moved |
+    | fully co-located (≥1.79 m) | 83015 | 548 | **429** | ⬇ |
+    | total overlap events | 148877 | 1566 | **1530** | ⬇ |
+    | completed trips | 1295 | 2675 | **2668** | ≈ unchanged |
+
+    Onsets fell too (100 → 80) even though the mechanism only shortens episodes — separating a pair early
+    prevents downstream cascades that would have started new ones.
+79. **⚠ RESIDUAL, and its cause is understood: the longest episode is still 75 steps.** The symmetry break
+    cannot help when **both** cars are stopped — the "winner" has no room to pull clear either, so holding
+    the loser changes nothing. Separating them would need reverse (we have none). **Only onset prevention
+    fixes this**, i.e. fix 3. The measured trigger of the long episodes is **H-LC: two vehicles
+    lane-changing into the SAME slot in the same step**, so fix 3 should target lane-change arrival
+    arbitration specifically rather than the whole plan phase.
+
+**State at end of session 3:** gate green (**744/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
 **complete, faithful and safe but insufficient alone**; the load-bearing mechanism was **admission

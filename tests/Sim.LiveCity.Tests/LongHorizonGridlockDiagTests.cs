@@ -70,6 +70,7 @@ public class LongHorizonGridlockDiagTests
         "LIVECITY_ISLEADERFIX",
         "LIVECITY_INTERNALJUNCTIONFIX",
         "LIVECITY_INSERTIONFOLLOWERGAP",
+        "LIVECITY_COLOCATIONSYMMETRYBREAK",
     };
 
     private sealed record OverlapEvent(
@@ -113,6 +114,44 @@ public class LongHorizonGridlockDiagTests
         public int TotalStoppedRuns;
         public int TeleportCount, TeleportJam, TeleportYield, TeleportWrongLane;
         public List<OverlapEvent> SameNormalLaneEvents = new();
+
+        // EPISODE statistics, derived from SameNormalLaneEvents by grouping on the vehicle PAIR and
+        // splitting on a step discontinuity. The distinction matters and is load-bearing:
+        //   * EPISODES  = how many times an overlap STARTED  -> the ONSET rate (a prevention metric)
+        //   * EVENTS    = how many steps cars spent overlapped -> PERSISTENCE (a recovery metric)
+        // Measured: 13 episodes longer than 10 steps produced 60.6% of all 696 events, so a change that
+        // shortens episodes can cut the event count dramatically WITHOUT preventing a single onset. Any
+        // future symmetry-break/recovery mechanism must therefore be judged on EPISODES, or it will appear
+        // to fix the defect while merely hiding it (docs/NEED-same-step-double-placement-colocation.md).
+        public (int Episodes, int Longest, int Over10, int Over3) SameLaneEpisodeStats()
+        {
+            var byPair = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+            foreach (var e in SameNormalLaneEvents)
+            {
+                var key = string.CompareOrdinal(e.NameA, e.NameB) <= 0
+                    ? e.NameA + "|" + e.NameB
+                    : e.NameB + "|" + e.NameA;
+                if (!byPair.TryGetValue(key, out var steps)) { steps = new List<int>(); byPair[key] = steps; }
+                steps.Add(e.Step);
+            }
+
+            int episodes = 0, longest = 0, over10 = 0, over3 = 0;
+            foreach (var steps in byPair.Values)
+            {
+                steps.Sort();
+                var run = 1;
+                for (var i = 1; i <= steps.Count; i++)
+                {
+                    if (i < steps.Count && steps[i] == steps[i - 1] + 1) { run++; continue; }
+                    episodes++;
+                    if (run > longest) longest = run;
+                    if (run > 10) over10++;
+                    if (run > 3) over3++;
+                    run = 1;
+                }
+            }
+            return (episodes, longest, over10, over3);
+        }
         public List<OverlapEvent> SameTargetMergeEvents = new();
         public List<OverlapEvent> FullyCoLocatedEvents = new();
         public int TotalOverlapEventsAll;
@@ -469,7 +508,13 @@ public class LongHorizonGridlockDiagTests
         _out.WriteLine($"Runs > 300 consecutive steps             : {off.StoppedRunsOver300.Count} -> {on.StoppedRunsOver300.Count}");
         _out.WriteLine($"BLOCKED FOREVER (stopped to horizon)     : {off.BlockedForever.Count} -> {on.BlockedForever.Count}");
         _out.WriteLine($"Teleports fired                          : {off.TeleportCount} -> {on.TeleportCount}");
+        var offEp = off.SameLaneEpisodeStats();
+        var onEp = on.SameLaneEpisodeStats();
         _out.WriteLine($"SAME-NORMAL-LANE overlap events           : {off.SameNormalLaneEvents.Count} -> {on.SameNormalLaneEvents.Count}");
+        _out.WriteLine($"SAME-NORMAL-LANE EPISODES (onsets)        : {offEp.Episodes} -> {onEp.Episodes}");
+        _out.WriteLine($"SAME-NORMAL-LANE longest episode (steps)  : {offEp.Longest} -> {onEp.Longest}");
+        _out.WriteLine($"SAME-NORMAL-LANE episodes > 10 steps      : {offEp.Over10} -> {onEp.Over10}");
+        _out.WriteLine($"SAME-NORMAL-LANE episodes > 3 steps       : {offEp.Over3} -> {onEp.Over3}");
         _out.WriteLine($"SAME-NORMAL-LANE worst penetration (m)    : {(off.SameNormalLaneEvents.Count > 0 ? off.SameNormalLaneEvents.Max(e => e.Penetration) : 0):F3} -> {(on.SameNormalLaneEvents.Count > 0 ? on.SameNormalLaneEvents.Max(e => e.Penetration) : 0):F3}");
         _out.WriteLine($"SAME-TARGET-MERGE overlap events           : {off.SameTargetMergeEvents.Count} -> {on.SameTargetMergeEvents.Count}");
         _out.WriteLine($"PEN >= {FullyCoLocatedThreshold:F2} m events                  : {off.FullyCoLocatedEvents.Count} -> {on.FullyCoLocatedEvents.Count}");

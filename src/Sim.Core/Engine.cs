@@ -5270,6 +5270,7 @@ public sealed partial class Engine : IEngine
         // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
         // header comment for the parity argument and the deliberate omissions.
         dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
+        dc = ColocationSymmetryBreakConstraint(v); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
         // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
         // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
         // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
@@ -7619,6 +7620,75 @@ public sealed partial class Engine : IEngine
     // If occupied, ego is held at the END of its own (bay) lane -- the same StopSpeedFor-at-lane-end
     // shape every other stop-line arm uses (KeepClearConstraint immediately above, the crossing-yield
     // arm in JunctionYieldConstraint, etc).
+    // Fix 2's arm. Returns 0 (a full stop for this step) when EGO is the designated yielder of an
+    // already-overlapping same-lane pair, else +infinity (inert under Math.Min).
+    //
+    // WHO YIELDS -- deterministic and order-independent, which is mandatory (CLAUDE.md: results must not
+    // depend on thread order):
+    //   1. the vehicle that is BEHIND yields (smaller Pos) -- the physically sensible choice, and it lets
+    //      the leader pull clear;
+    //   2. on an exact positional tie -- the perfectly-symmetric case this exists for -- the vehicle with
+    //      the lexicographically GREATER id yields, by `string.CompareOrdinal`. NEVER `EntityIndex` or any
+    //      array position, which would make the outcome depend on iteration order.
+    // Both rules are antisymmetric, so exactly one of a pair yields and the other proceeds.
+    private double ColocationSymmetryBreakConstraint(VehicleRuntime v)
+    {
+        if (!ColocationSymmetryBreak || v.IsParked)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var egoFront = v.Kinematics.Pos;
+        var egoBack = egoFront - v.VType.Length;
+
+        foreach (var other in ActiveVehicles())
+        {
+            if (ReferenceEquals(other, v) || other.IsParked || other.LaneHandle != v.LaneHandle)
+            {
+                continue;
+            }
+
+            // Body overlap on the SAME lane, in BOTH dimensions.
+            //
+            // ⚠ THE LONGITUDINAL TEST ALONE IS WRONG, and it broke five goldens when first written that
+            // way (RungP22SublaneSideBySide, RungD3CooperativeOvertake, RungD2ReturnGap,
+            // RungOV3OvertakeExecution, RungRvoMultiNeighbor -- every one a LATERAL PASSING scenario).
+            // Under the sublane/lateral model two vehicles legitimately share a lane side by side: their
+            // longitudinal [back, front] intervals overlap while they are laterally separated and never
+            // touch. Testing only the longitudinal interval flags those as collisions and brakes a
+            // perfectly good overtake. (Same error class as this branch's OBB axis bug: a 1-D test of a
+            // 2-D condition -- docs/F3-SESSION-LOG.md §4.5b.)
+            //
+            // Strict inequalities throughout, so merely TOUCHING is not an overlap -- that is what keeps
+            // this inert during ordinary tight car-following.
+            var otherFront = other.Kinematics.Pos;
+            var otherBack = otherFront - other.VType.Length;
+            if (egoBack >= otherFront || otherBack >= egoFront)
+            {
+                continue;   // longitudinally clear
+            }
+
+            var lateralSeparation = Math.Abs(v.Kinematics.LatOffset - other.Kinematics.LatOffset);
+            var lateralTouchDistance = (v.VType.Width + other.VType.Width) / 2.0;
+            if (lateralSeparation >= lateralTouchDistance)
+            {
+                continue;   // side by side, laterally clear -- a legitimate lateral pass, NOT a collision
+            }
+
+            var egoYields = egoFront < otherFront
+                || (egoFront == otherFront && string.CompareOrdinal(v.Def.Id, other.Def.Id) > 0);
+
+            if (egoYields)
+            {
+                // Hold ego for this step so the other vehicle pulls clear. Once the bodies separate the
+                // predicate goes false and ordinary car-following resumes with no further intervention.
+                return 0.0;
+            }
+        }
+
+        return double.PositiveInfinity;
+    }
+
     private double InternalJunctionAdmissionConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         if (!InternalJunctionAdmissionGate)
@@ -12351,6 +12421,33 @@ public sealed partial class Engine : IEngine
     // is in, per the standing rule that a behavioural change ships flag-gated until measured
     // (docs/F3-SESSION-LOG.md §7 Lesson 1: goldens alone are not sufficient evidence).
     public bool InsertionFollowerGapCheck { get; set; } = false;
+
+    // Fix 2 (docs/NEED-same-step-double-placement-colocation.md): break the SYMMETRY of an
+    // already-overlapping same-lane pair so it can separate instead of persisting.
+    //
+    // WHY IT IS NEEDED. Once two vehicles hold an identical (lane, pos, speed), Krauss applies IDENTICAL
+    // forces to both forever -- nothing in the model can separate them. Measured in the demo: the longest
+    // same-lane overlap episode runs 79 steps (~40 s at dt=0.5) and 14 episodes exceed 10 steps.
+    //
+    // ⚠ DELIBERATE DEVIATION FROM SUMO, and the only one on this branch. SUMO has no such mechanism
+    // because it cannot reach this state -- it places vehicles sequentially, so two can never claim one
+    // slot in a step. We can, because the plan phase is parallel over a frozen snapshot (the "timing of
+    // structural mutations" deviation CLAUDE.md permits). So this recovers from a state SUMO never
+    // produces, rather than changing behaviour SUMO defines.
+    //
+    // WHY IT IS PARITY-SAFE BY CONSTRUCTION: it fires ONLY when two same-lane bodies already physically
+    // overlap (gap < 0), which never happens in a golden -- goldens come from SUMO, which does not
+    // interpenetrate. So it is inert wherever the engine is behaving.
+    //
+    // WHY IT IS LADDER-COMPLIANT (docs/CONSTRAINT-high-realism-artefact-ladder.md): the trigger is
+    // MEASURED PHYSICAL OVERLAP, never a timer -- so it cannot fire on a rung-5 "stuck for no obvious
+    // reason" car and conceal that car's real defect. And it neither teleports (rung 4) nor passes cars
+    // through each other (rung 2): it SEPARATES them, which is strictly better than both.
+    //
+    // ⚠ IT DOES NOT FIX ONSET. It shortens episodes; it prevents none. Judge it on EPISODE count, never on
+    // event count, or a rising onset rate will hide behind a falling event count -- see
+    // LongHorizonGridlockDiagTests.SameLaneEpisodeStats.
+    public bool ColocationSymmetryBreak { get; set; } = false;
 
     public bool JunctionIsLeaderGate { get; set; } = false;
 
