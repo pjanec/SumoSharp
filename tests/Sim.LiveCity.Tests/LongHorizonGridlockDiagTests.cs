@@ -64,7 +64,23 @@ public class LongHorizonGridlockDiagTests
 
     private sealed record OverlapEvent(
         int Step, string NameA, string LaneA, double PosA, double SpdA,
-        string NameB, string LaneB, double PosB, double SpdB, double Penetration);
+        string NameB, string LaneB, double PosB, double SpdB, double Penetration,
+        // World positions of BOTH cars, carried so an event can be classified against the
+        // high-realism pocket (docs/CONSTRAINT-high-realism-artefact-ladder.md). These are the SAME
+        // coordinates VehicleObb.Penetration was given, so the classification cannot drift from the
+        // measurement it classifies.
+        double Ax, double Ay, double Bx, double By)
+    {
+        // Inside the high-realism pocket if EITHER car is within `radius` of the pocket centre --
+        // deliberately the permissive test: an overlap is visible in the zone if any part of it is.
+        public bool InZone(double cx, double cy, double radius)
+        {
+            var da = (Ax - cx) * (Ax - cx) + (Ay - cy) * (Ay - cy);
+            var db = (Bx - cx) * (Bx - cx) + (By - cy) * (By - cy);
+            var r2 = radius * radius;
+            return da <= r2 || db <= r2;
+        }
+    }
 
     private sealed record RunRecord(string Name, string Lane, int Start, int End, bool StillActiveAtEnd);
 
@@ -72,6 +88,11 @@ public class LongHorizonGridlockDiagTests
     {
         public string Label = "";
         public int StepsRun;
+        // High-realism pocket geometry, captured from the run's own sim instance.
+        public double PocketX;
+        public double PocketY;
+        public double PocketPromoteRadius;
+        public double PocketDemoteRadius;
         public double SimSecondsReached;
         public long ArrivedTotal;
         public List<(int BucketStartMin, int Completed)> ArrivalsPerBucket = new();
@@ -231,7 +252,8 @@ public class LongHorizonGridlockDiagTests
                     var laneA = wa.LaneId ?? string.Empty;
                     var laneB = wb.LaneId ?? string.Empty;
 
-                    var ev = new OverlapEvent(st, cars[i].Name, laneA, wa.Pos, wa.Speed, cars[j].Name, laneB, wb.Pos, wb.Speed, pen);
+                    var ev = new OverlapEvent(st, cars[i].Name, laneA, wa.Pos, wa.Speed, cars[j].Name, laneB, wb.Pos, wb.Speed, pen,
+                        cars[i].X, cars[i].Y, cars[j].X, cars[j].Y);
                     log.WriteLine($"[{label}] OVERLAP step={st} A={cars[i].Name} lane={laneA} pos={wa.Pos:F2} spd={wa.Speed:F2} | "
                         + $"B={cars[j].Name} lane={laneB} pos={wb.Pos:F2} spd={wb.Speed:F2} | pen={pen:F3}");
 
@@ -273,6 +295,13 @@ public class LongHorizonGridlockDiagTests
         result.StepsRun = st;
         result.SimSecondsReached = st * cfg.Dt;
         result.ArrivedTotal = sim.ArrivedTotal;
+        // High-realism pocket geometry (docs/CONSTRAINT-high-realism-artefact-ladder.md): the camera-driven
+        // circle inside which the artefact ladder is binding. Captured from the SAME sim instance that
+        // produced the events, so the classification cannot be applied against a stale/default pocket.
+        result.PocketX = sim.HighRealismPocketX;
+        result.PocketY = sim.HighRealismPocketY;
+        result.PocketPromoteRadius = sim.HighRealismPromoteRadius;
+        result.PocketDemoteRadius = sim.HighRealismDemoteRadius;
 
         // Teleport counters: no public accessor on LiveCitySim, so read the private Engine field via
         // reflection purely for this measurement (read-only; nothing is mutated).
@@ -423,6 +452,51 @@ public class LongHorizonGridlockDiagTests
         _out.WriteLine($"PEN >= {FullyCoLocatedThreshold:F2} m events                  : {off.FullyCoLocatedEvents.Count} -> {on.FullyCoLocatedEvents.Count}");
         _out.WriteLine($"Total overlap events (all pairs)          : {off.TotalOverlapEventsAll} -> {on.TotalOverlapEventsAll}");
         _out.WriteLine(new string('=', 100));
+
+        // ------------------------------------------------------------------------------------------
+        // LADDER VIOLATION QUANTIFICATION (docs/CONSTRAINT-high-realism-artefact-ladder.md).
+        // The ladder is binding INSIDE the high-realism pocket, so every overlap class is split
+        // in-zone vs out-of-zone. Rung 2 (pass-through) is permitted ONLY as recovery from an
+        // already-crashed blocking pair; rung 3 (overlap during normal driving) is never permitted.
+        // Since tiers 2 and 3 are the SAME GEOMETRY distinguished only by CAUSE, this report cannot
+        // by itself separate them -- it reports the geometry and flags that limitation explicitly
+        // rather than silently attributing intent.
+        // ------------------------------------------------------------------------------------------
+        void ReportViolations(ConfigResult r)
+        {
+            var cx = r.PocketX; var cy = r.PocketY; var rad = r.PocketPromoteRadius;
+            _out.WriteLine("");
+            _out.WriteLine(new string('-', 100));
+            _out.WriteLine($"LADDER VIOLATIONS [{r.Label}] -- high-realism pocket centre=({cx:F1},{cy:F1}) "
+                + $"promoteRadius={rad:F1} m (demote={r.PocketDemoteRadius:F1} m)");
+            _out.WriteLine(new string('-', 100));
+
+            void Line(string rung, string what, List<OverlapEvent> evs)
+            {
+                var inZone = evs.Count(e => e.InZone(cx, cy, rad));
+                var worstIn = evs.Where(e => e.InZone(cx, cy, rad)).Select(e => e.Penetration).DefaultIfEmpty(0).Max();
+                var worstAll = evs.Select(e => e.Penetration).DefaultIfEmpty(0).Max();
+                _out.WriteLine($"  rung {rung} | {what,-46} total={evs.Count,6}  IN-ZONE={inZone,6}"
+                    + $"  ({(evs.Count == 0 ? 0 : 100.0 * inZone / evs.Count),5:F1}%)"
+                    + $"  worstAll={worstAll,6:F3} m  worstInZone={worstIn,6:F3} m");
+            }
+
+            Line("3", "same-lane overlap (normal driving)", r.SameNormalLaneEvents);
+            Line("3", "same-target merge (2 dirs -> 1 exit lane)", r.SameTargetMergeEvents);
+            Line("2/3", "fully co-located (pen >= vehicle width)", r.FullyCoLocatedEvents);
+            _out.WriteLine($"  rung 4   | teleports                                      total={r.TeleportCount,6}"
+                + "   (ANY non-zero is a violation -- teleport is never permitted in high realism)");
+            _out.WriteLine($"  rung 5   | stopped runs > 300 consecutive steps           total={r.StoppedRunsOver300.Count,6}");
+            _out.WriteLine($"  rung 5   | stopped from some step through to horizon      total={r.BlockedForever.Count,6}");
+            _out.WriteLine("  NOTE: rung 2 vs rung 3 cannot be separated from geometry alone -- both are two cars");
+            _out.WriteLine("        overlapping, distinguished only by WHETHER IT WAS A DELIBERATE UNBLOCK. This engine");
+            _out.WriteLine("        has no unblock-by-overlap mechanism enabled (IgnoreJunctionBlockerSeconds = -1), so");
+            _out.WriteLine("        every overlap counted here is rung 3 by construction: NOT an unblock, therefore");
+            _out.WriteLine("        NOT permitted in the high-realism pocket.");
+        }
+
+        ReportViolations(off);
+        ReportViolations(on);
 
         // ASSERTIONS. This began as a pure measurement probe and was promoted to a guard only after it
         // was shown to DISCRIMINATE: on the first full-hour run, OFF produced 161 stopped runs longer

@@ -748,6 +748,68 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     each other, unchanged. That is owner symptom (b)'s same-lane half and is the documented, still-open
     `NEED-colocated-vehicles.md`. **This is now the top remaining believability defect.**
 
+### Session 3 (continued) — the owner's BELIEVABILITY REQUIREMENTS, and the violations quantified
+
+62. **⭐ REQUIREMENTS (owner-stated, binding) — the high-realism artefact ladder.** Recorded in full at
+    `docs/CONSTRAINT-high-realism-artefact-ladder.md`. This is a **requirement**, not an inference, and it
+    overrides any convenience argument elsewhere in these docs.
+
+    | # | Behaviour | High-realism verdict |
+    | --- | --- | --- |
+    | 1 | **Prevent the blockage** | ✅ the only acceptable *general* solution |
+    | 2 | Cars **pass through each other** | ⚠️ ONLY when **already crashed into each other AND blocking the junction** — a recovery from an already-broken state. Otherwise disallowed. |
+    | 3 | Cars **overlap during normal, non-unblocking manoeuvres** | ❌ NOT allowed |
+    | 4 | **Teleport** | ❌ **NEVER**, no exception — *"the most unrealistic and most visible artefact"* |
+    | 5 | A car **blocked with no obvious reason** (not overlapped) | ❌ must NOT be "solved" by teleport or overlap; requires fixing the **real cause** |
+
+    Consequences that cost me two retractions of my own advice:
+    - **`TimeToTeleportSeconds = 300` withdrawn** — rung 4.
+    - **`IgnoreJunctionBlockerSeconds = 5` withdrawn as a general tool** — its trigger is elapsed
+      **waiting time**, not overlap (`foe.WaitingTime >= IgnoreJunctionBlockerSeconds`), so it fires on
+      merely-stuck cars, i.e. rung 5, where a rescue is *actively harmful* because it conceals the defect.
+      Admissible only if re-gated on **measured overlap**.
+    - **Rung 5 vindicates the earlier "trigger only on physical overlap" principle** (§9.26): `__veh127`
+      froze for 95 steps with **nothing overlapping it**, and an ORCA-style rescue there would have masked
+      the mis-gate that caused it.
+    - Tiers 2 and 3 are the **same geometry**, separated only by *cause* — so an overlap count alone can
+      never establish compliance.
+
+63. **VIOLATIONS QUANTIFIED**, full hour, split by the high-realism pocket
+    (measured centre **(2351.1, 2363.2)**, promote radius **70 m**, demote 100 m), via
+    `LongHorizonGridlockDiagTests`:
+
+    | Rung | Violation class | OFF total | OFF in-zone | ON total | ON in-zone |
+    | --- | --- | --- | --- | --- | --- |
+    | 3 | same-lane overlap (normal driving) | 492 | **28** (5.7%) | **696** | **115** (16.5%) |
+    | 3 | same-target merge (2 dirs → 1 exit lane) | 4374 | **0** (0.0%) | **0** | **0** |
+    | 2/3 | fully co-located (pen ≥ vehicle width) | 83015 | **17015** (20.5%) | **868** | **131** (15.1%) |
+    | 4 | teleports | 0 | 0 | 0 | 0 |
+    | 5 | stopped runs > 300 steps | 161 | — | **0** | — |
+    | 5 | stopped through to horizon | 156 | — | **59** | — |
+
+    worst in-zone penetration (fully-co-located class): **2.685 m → 2.426 m**; worst anywhere
+    **3.137 m → 3.240 m** (slightly **worse**).
+
+    **Reading:**
+    - **In-zone fully-co-located violations collapse 17015 → 131 (−99.2%).** That is the headline: the most
+      egregious visible artefact inside the high-realism pocket is essentially gone.
+    - **Same-lane overlap is 4× WORSE in-zone (28 → 115)** and its in-zone *share* rises 5.7% → 16.5%. So
+      the residual violation is not merely unfixed, it has become **more concentrated where it is least
+      acceptable**. This is the top remaining defect (`NEED-colocated-vehicles.md`).
+    - **Same-target merge was never an in-zone problem** — 0 in-zone in *both* configurations, despite the
+      owner reporting having seen it "also in the high realism area". See the caveat below; do not treat
+      this as contradicting the report.
+    - Every overlap counted is **rung 3 by construction**, because no unblock-by-overlap mechanism is
+      enabled (`IgnoreJunctionBlockerSeconds = -1`). None of them is an excusable rung-2 recovery.
+
+    **⚠ CAVEAT that limits every in-zone percentage above.** The pocket is **camera-driven**
+    (`LiveCitySim.SetLcRealismZone`); in this headless diagnostic it sits at the net's geometric centre with
+    a 70 m radius. A viewer moves the camera, so **any** part of the city can become the high-realism area.
+    Therefore the in-zone columns describe *one particular pocket placement*, not a bound — and
+    **out-of-zone violations still matter**, because the camera can go there. That is also the most likely
+    explanation for the merge discrepancy: 0 in-zone here, yet observed in-zone by the owner at a different
+    camera position. Do not use these percentages to deprioritise an out-of-zone defect.
+
 **State at end of session 3:** gate green (**730/4/0** — +1 `LongHorizonGridlockDiagTests`, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
