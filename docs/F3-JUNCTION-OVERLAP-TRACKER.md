@@ -32,22 +32,36 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
 - [-] **T1.4-old** ~~Port `isLeader()` as *the* remaining blocker~~ — **superseded.** `isLeader`'s first
       clause was tried (`!egoOnInternal`) and still measured worse (F3 bucket 8 → 27). Evidence says
       `isLeader` is needed only for the *residual* 8 BOTH-MOVING events, and only AFTER T1.5. See design §6a.
-- [~] **T1.5** *(HIGHEST VALUE — DIAGNOSED, fix not attempted)* **Stuck-in-junction bug** →
-      **`docs/NEED-contturn-stuck-in-junction.md`**. CONFIRMED from the net: junction `d_3_4`'s `intLanes`
-      lists `:d_3_4_20_0` but **NOT** `:d_3_4_5_0` (a cont turn's first-stage lane), so it is absent from
-      `LinkByInternalLane`, the forward scan skips it, and **`egoOnInternal` is FALSE while the car is
-      physically inside the junction** — firing the cautious-approach arm (binder 10 / arm 2, 95/95 steps)
-      against its own documented precondition. LEADING (unverified) hypothesis for the freeze: `seen`
-      double-counts the current lane when `LaneSeqIndex` lags, giving 7.37 m — permanently above the 4.5 m
-      visibility gate, so the brake re-applies forever. The NEED names the 4-value experiment that settles it.
-- [ ] **T1.5b** *(superseded description, kept for the payoff figures)* ~~Fix the stuck-in-junction bug.~~ `__veh127` sits
-      stopped on `:d_3_4_5_0` for **95 consecutive steps** and `__veh140` on `:d_5_4_12_0` for **75**, both
-      with `GapAhead = +Inf` AND `NextMouthGap = +Inf` throughout — no leader, no blocked exit, nothing in
-      front of them. Some constraint pins them at ~0 indefinitely. Payoff: the 5 deepest F3-bucket events
-      (incl. the bucket's worst, 1.987 m) **and 60 of the 62** `ONE-INTERNAL-ONE-NORMAL` events (the largest
-      bucket). Diagnose by reading the already-recorded `BindingConstraint` / `JunctionYieldArm` (diag #15)
-      for those vehicles across the stuck run — a lookup, not a port.
-- [ ] **T1.6** Re-measure the occupancy gate **after** T1.5, then port `isLeader()` with real junction
+- [x] **T1.5a** *(DONE)* **Cont-turn `egoOnInternal` mis-port — FIXED, flag-gated.**
+      `NetworkModel.IsInternalLaneOfJunction` + `JunctionByInternalLane` (covers every internal lane, not
+      just `intLanes` members) + `Engine.ContTurnInsideJunctionGate` (default OFF) + **9 direct tests**
+      (`ContTurnInternalLaneOwnershipTests`). Confirmed against SUMO source: SUMO's test is a LANE PROPERTY
+      (`MSLane::isInternal()`), ours was equality against the link-controlling lane. Flag is OFF because
+      enabling it regresses `RungHDp2g2` 1 → 28 stuck → **blocked on T1.7**.
+- [-] **T1.5b** ~~The freeze is caused by the cautious-approach arm~~ — **REFUTED.** Live tracing shows
+      `armFired=False` / `jyArmThisCall=0` for all 95 steps; `JunctionYieldConstraint` returns `+Inf`
+      throughout, and the trajectory is **bit-for-bit identical** with the fix on. Both follow-up
+      hypotheses (H-A downstream junction, H-B `seen` double-count: measured `seen=0.1010`, not 7.37) also
+      refuted. **The freeze is UNEXPLAINED.**
+- [ ] **T1.7** *(NEW — blocks T1.5a's flag)* **Finish the `checkRewindLinkLanes` port** →
+      `docs/NEED-checkrewindlinklanes-partial-port.md`. Four gaps ranked; **G1 first** (`foundStopped` is set
+      only by an ALREADY-STOPPED downstream vehicle, but SUMO also propagates from
+      `last->myHaveToWaitOnNextLink`, `MSVehicle.cpp:5126-5129` — a saturating grid blocks via a *forming*
+      queue, which we miss). Success: `RungHDp2g2` under its ceiling **with the cont-turn flag ON**.
+- [ ] **T1.8** *(NEW — blocks re-attributing the freeze)* **Fix stale binder diagnostics** →
+      `docs/NEED-stale-binder-diagnostics-under-reuseintent.md`. `BindingConstraint`/`JunctionYieldArm` are
+      written only `if (!prePass)`, but `ReuseIntent` skips the real pass, so they freeze at a stale value
+      indefinitely. This is what caused T1.5b's wrong attribution. Behaviour-neutral (the fields are
+      never read by the sim), so it cannot move a golden.
+- [ ] **T1.9** **Re-attribute the mid-junction freeze (BLOCKED on T1.8).** `__veh127` sits stopped on
+      `:d_3_4_5_0` for **95 consecutive steps**, `__veh140` on `:d_5_4_12_0` for **75**, both with
+      `GapAhead = +Inf` AND `NextMouthGap = +Inf` throughout — no leader, no blocked exit, nothing ahead.
+      `JunctionYieldConstraint` is now known to return `+Inf` throughout, so the cause is **another
+      constraint arm, not yet identified**. Cannot be attributed until T1.8 lands, because the binder
+      diagnostics are the natural tool and they are the thing that is lying. Payoff if fixed: the 5 deepest
+      F3-bucket events (incl. that bucket's worst, 1.987 m) **and 60 of the 62**
+      `ONE-INTERNAL-ONE-NORMAL` events (the largest bucket).
+- [ ] **T1.6** Re-measure the occupancy gate **after** T1.7/T1.9, then port `isLeader()` with real junction
       entry-time state for whatever BOTH-MOVING residue remains (worst 1.696 m; 5 of 8 are 0.497–0.602 m).
       Check first whether the three identical-speed pairs (2.600/2.600, 2.600/2.600, 3.900/3.900) are
       actually N2 (co-located vehicles) rather than an admission-gate failure.
@@ -64,7 +78,7 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
       (An earlier note in this doc claimed the pip install failed — that was wrong; pip succeeded and the
       error came from a bad verification command.)
 - [~] **T2.3** No-new-deadlock check — **flag OFF: verified no regression** (gate green).
-      **flag ON: FAILS** — 3 gridlock diagnostics. This is precisely why the flag is off; see T1.5/T1.6 for the revised plan.
+      **flag ON: FAILS** — 3 gridlock diagnostics. This is precisely why the flag is off; see T1.6/T1.7 for the revised plan.
 
 ## Stage 3 — F4b and the residual causes
 
@@ -105,6 +119,9 @@ At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
    narrow `inTheWay` predicate, and even with `isLeader`'s first clause — makes both throughput AND the
    overlap it targets WORSE (F3 bucket 8 → 33, then 8 → 27), because a yield that cannot resolve strands
    cars inside the junction. Three hypotheses were tested; all three were refuted. See design §6a.
+11. **TWO instrument-level defects distorted this investigation before any engine bug was reached:** the OBB
+   half-length anchor (N1) and stale `BindingConstraint`/`JunctionYieldArm` under `ReuseIntent`. Both
+   produced confident, wrong attributions. **Verify the instrument before trusting its output.**
 9. **"All goldens byte-identical" does NOT mean parity-inert** in this repo. The demo and the gridlock
    diagnostics are not goldens and must be measured separately. This cost a wrong "inert" call mid-session
    (design §3e).

@@ -1,16 +1,39 @@
 # NEED — cars freeze for ~100 steps INSIDE a junction on a cont-turn's first-stage internal lane
 
 **Found by:** F3 junction-overlap session. Tracker task **T1.5**.
-**Scope:** `src/Sim.Core/Engine.cs` — `JunctionYieldConstraint`'s cautious-approach arm (arm 2).
-**Severity:** HIGH. This is the largest single contributor to the demo's car–car overlap, and a car
-motionless in the middle of a junction with nothing ahead of it is a hard behavioural defect.
+**Scope:** TWO SEPARATE THINGS, now disentangled — see the CORRECTION notice below.
+**Severity:** HIGH. A car motionless in the middle of a junction with nothing ahead of it is a hard
+behavioural defect.
+
+> ## ⚠ CORRECTION (read this first — supersedes the attribution below)
+>
+> This document originally attributed the 95-step freeze to `JunctionYieldConstraint`'s cautious-approach
+> arm, on the strength of `BindingConstraint=10 / JunctionYieldArm=2` reported for 95/95 steps.
+> **That attribution was WRONG, and the evidence for it was a stale diagnostic.**
+>
+> Live instrumentation (printing the values as they are computed, next to the production code) shows
+> **`armFired = False` and `jyArmThisCall = 0` for all 95 steps** — the cautious-approach arm never binds and
+> `JunctionYieldConstraint` returns `+Inf` throughout. The stored `10/2` was captured around step 92 while ego
+> was still *approaching*, and then never refreshed, because the willPass/plan-fusion optimisation
+> (`ReuseIntent`) skips the real pass and those fields are written only `if (!prePass)`. See
+> **`docs/NEED-stale-binder-diagnostics-under-reuseintent.md`**.
+>
+> **What survives, and is independently confirmed:** the cont-turn `egoOnInternal` **mis-port** (§CONFIRMED
+> and §DIFFERENTIAL below). That is a real defect, is now fixed and directly tested, and is described
+> correctly here.
+>
+> **What does NOT survive:** the causal link from that mis-port to this freeze. Both follow-up hypotheses
+> (H-A downstream junction, H-B `seen` double-count) were tested and **REFUTED** — see §EXPERIMENT RESULT.
+>
+> **The freeze is currently UNEXPLAINED.** Re-attribution is blocked on the stale-diagnostics NEED, because
+> the natural tool for it is the broken one.
 
 ## Symptom (measured, live-city demo, 200 steps)
 
 | vehicle | internal lane | consecutive stopped steps | frozen pos | lane length | `GapAhead` | `NextMouthGap` | binder | arm |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `__veh127` | `:d_3_4_5_0` | **95** (steps 98–192) | 7.17 | **7.27** | `+Inf` | `+Inf` | **10 junctionYield** | **2 cautiousApproach** (95/95) |
-| `__veh140` | `:d_5_4_12_0` | **75** (steps 113–187) | 7.17 | — | `+Inf` | `+Inf` | 1 leaderFollow | (arm 2 also recorded, not binding) |
+| `__veh127` | `:d_3_4_5_0` | **95** (steps 98–192) | 7.17 | **7.27** | `+Inf` | `+Inf` | ~~10 junctionYield~~ **STALE** | ~~2 cautiousApproach~~ **STALE — arm never fired** |
+| `__veh140` | `:d_5_4_12_0` | **75** (steps 113–187) | 7.17 | — | `+Inf` | `+Inf` | 1 leaderFollow (also suspect — same staleness) | — |
 
 Both stop **0.10 m from the end** of a first-stage internal lane, with **no leader and no blocked exit
 mouth** for every step of the run. Both eventually recover on their own (`__veh127` at step 193 via
@@ -51,7 +74,7 @@ Consequences, in order:
 confirmed defect. It is a *class* of bug: any arm gated on `!egoOnInternal` is mis-gated for a vehicle on a
 first-stage cont-turn lane.
 
-## LEADING HYPOTHESIS for the 95-step freeze (NOT yet verified — verify before fixing)
+## ~~LEADING HYPOTHESIS~~ — **REFUTED** (kept for the record; see §EXPERIMENT RESULT)
 
 The arm only fires when `brakeDist < seen && seen > visibilityDistance` (`4.5`, `Engine.cs:6836,6867`). At
 `pos = 7.17` on a `7.27 m` lane the honest remaining distance is `0.10 m`, which is **below** 4.5 — so the arm
@@ -78,7 +101,9 @@ cannot advance, because the arm brakes it to a stop line derived from that same 
 pos → same inflated `seen` → same brake → frozen pos.** A closed loop, with no leader and no blocked exit,
 exactly matching the observed `GapAhead = NextMouthGap = +Inf`.
 
-**This is a hypothesis that fits every measured number; it is NOT confirmed.** Do not fix on it blind.
+**REFUTED.** Measured `seen = 0.1010` (not 7.37) and `seen > 4.5` is **false**; `LaneSeqIndex` tracks the
+pool correctly with no lag, so no double-count occurs. Kept because the reasoning was sound given the
+(stale) inputs — the lesson is about the inputs, not the arithmetic.
 
 ### The decisive experiment (do this first, it is 4 values)
 
@@ -241,6 +266,27 @@ reached. That also explains why the corrected predicate changed nothing here.
 `approachLane.Id`, and the computed `seen`. If `junction.Id != "d_3_4"`, the freeze is a lane-sequence /
 scan-target bug, not a predicate bug, and the `seen` double-count arithmetic above becomes the next thing to
 check.
+
+## EXPERIMENT RESULT — both hypotheses refuted; the freeze cause is UNKNOWN
+
+The sharpened experiment (live trace of every relevant local, with and without the fix flag) settles it:
+
+| question | measured | verdict |
+| --- | --- | --- |
+| `junction.Id` during the freeze | **`d_3_4`** — ego's own upcoming junction | **H-A refuted** (not a downstream junction) |
+| `v.LaneSeqIndex` vs `v.LaneId` | tracks in lockstep (idx 1 ↔ `:d_3_4_5_0`, idx 2 ↔ `:d_3_4_20_0`) — **no lag** | — |
+| `egoInternalLaneId` / `egoLinkSeqIndex` | `:d_3_4_20_0` / `2`, constant | — |
+| computed `seen` | **0.1010** (= 7.27 − 7.169), **not** ~7.37; `seen > 4.5` is **false** | **H-B refuted** (no double count) |
+| `approachLane` | `:d_3_4_5_0`, EdgeId `:d_3_4_5` — internal, so the cont-turn branch is correctly taken | — |
+| cautious-approach arm | **`armFired = False`, `jyArmThisCall = 0`, all 95 steps** | the arm never binds |
+| with `LIVECITY_CONTTURNFIX=1` | `egoInsideJunction` correctly flips **True**; trajectory **bit-for-bit identical** | fix is correct but **orthogonal** to this freeze |
+
+So: the cont-turn predicate fix is a genuine correction to a real classification bug, and it is **provably
+unrelated to this freeze** (identical trajectory either way). `JunctionYieldConstraint` returns `+Inf`
+throughout the freeze, so **the cause is some other constraint arm, not yet identified.**
+
+**Blocked on:** `docs/NEED-stale-binder-diagnostics-under-reuseintent.md`. Fix the diagnostics first — the
+obvious tool for re-attributing the freeze is precisely the one that is lying.
 
 ## Why this matters for F3
 
