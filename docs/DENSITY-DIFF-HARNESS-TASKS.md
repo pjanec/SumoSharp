@@ -50,6 +50,25 @@ Emit an `e2` detector per approach lane and per internal lane of every junction 
 
 ---
 
+### A3. ⚠ OPEN-LOOP demand mode — BLOCKS ALL CAPACITY WORK
+**Design:** §1b. **Files:** `src/Sim.DensityDiff/`, and an opt-in inflow mode that does NOT consult occupancy.
+**Depends:** nothing. **Priority: before B2/B3/C — those measure the wrong quantity without it.**
+
+The demo's spawn loop is occupancy-capped, so inflow self-throttles and a discharge deficit is structurally
+invisible. Add a mode that inserts at a **fixed rate** regardless of how many vehicles are resident.
+
+**Success conditions**
+1. At a fixed inflow, resident-vehicle count over time is emitted as a series for both engines.
+2. **Non-vacuity against the known contradiction:** at an inflow where vanilla SUMO reaches steady state,
+   our column must reproduce the calibration workstream's runaway (a monotonically climbing count that never
+   levels off). If it does NOT reproduce it, the two instruments disagree and that must be resolved before
+   any number from either is trusted.
+3. The report states, per column, **steady-state reached: yes/no**, and if yes the plateau level.
+4. Sweeping inflow finds the highest rate at which each column still reaches steady state — that is "max
+   density", and it is the number the calibration workstream cannot currently obtain for us.
+5. Every emitted metric is labelled with its demand model (`closed-loop` / `open-loop`). Design §1b: a
+   capacity claim from closed-loop demand is invalid.
+
 ## Stage B — our side
 
 ### B1. Demand recorder

@@ -77,6 +77,44 @@ and expected outcome, and it must be reported rather than treated as our failure
 
 ---
 
+## 1b. ⚠ OPEN-LOOP vs CLOSED-LOOP DEMAND — the distinction the first version of this design missed
+
+**This section was added after the first measurement produced a confident, wrong conclusion.**
+
+`LiveCitySim`'s demand is **CLOSED-LOOP**: `for (s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)`
+inserts **only while occupancy is below the cap**. Inflow is therefore *throttled by our own drain* — a slow
+junction simply causes fewer insertions, and occupancy can never exceed the cap.
+
+**Consequences, and they are severe for anything capacity-related:**
+
+| Question | Closed-loop can answer it? |
+| --- | --- |
+| "On identical demand, who completes more trips?" | ✅ yes |
+| "Do we interpenetrate / teleport more than SUMO?" | ✅ yes |
+| **"What inflow can the network sustain?"** | ❌ **NO — the cap hides it** |
+| **"Is our junction discharge narrower than SUMO's?"** | ❌ **NO — inflow adapts to the deficit** |
+
+A discharge deficit manifests as **unbounded queue growth at fixed inflow**. A closed-loop model cannot
+produce unbounded growth, so it cannot show the symptom, so a comparison built on it will report "we are
+close to SUMO" *no matter how narrow our drain is*. That is precisely what happened: the closed-loop run
+reported 96% of SUMO's throughput while a parallel open-loop experiment showed SumoSharp climbing
+258 → 2623 cars over an hour and never reaching steady state, against vanilla SUMO plateauing at ~430.
+
+**So capacity work REQUIRES an open-loop mode** (task A3): a fixed insertion rate, independent of occupancy,
+run to a horizon, with occupancy-over-time plotted. Steady state (level holds) vs runaway (level climbs) is
+the measurement; the highest inflow that still reaches steady state is "max density".
+
+**The tell that was present and dismissed:** on the closed-loop run SUMO ended with **259** vehicles in
+flight while we ended with **480** — our cap, i.e. full. Same demand, same horizon. SUMO was nowhere near
+saturated by an inflow *our own drain had chosen*, and we were pinned at the ceiling. By Little's Law that is
+~333 cars at 213.6 s mean duration for SUMO against ~480 at ~321 s for us: **~45% more cars resident to
+deliver 4% fewer trips.** The deficit was in the data; the framing hid it.
+
+**Rule going forward:** every metric this harness reports must be labelled with the demand model that produced
+it. A capacity claim from closed-loop demand is invalid regardless of how carefully the rest was measured.
+
+---
+
 ## 2. Identical demand: record-at-spawn
 
 Both engines must see the same cars. The demo generates demand procedurally from a seeded RNG inside

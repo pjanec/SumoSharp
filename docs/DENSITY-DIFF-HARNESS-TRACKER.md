@@ -10,6 +10,9 @@ conditions first-hand** — never on an implementor's report (`CLAUDE.md` §orch
       otherwise) · SC4 ✅ (fatal, non-zero exit when `sumo` is absent) ·
       **SC3 ⏸ BLOCKED ON B1, and the block is itself a finding — see below.**
 - [ ] **A2** internal-lane + approach-lane detector generation
+- [ ] **A3** ⚠ **OPEN-LOOP demand mode — BLOCKS ALL CAPACITY WORK.** The demo's demand is occupancy-capped,
+      so inflow self-throttles and a discharge deficit is structurally invisible (design §1b). Do B2/B3/C
+      only after this, or they measure the wrong quantity.
 
 ## Stage B — our side
 - [x] **B1** demand recorder → SUMO `.rou.xml`. SC1 ✅ · SC2 ✅ (SUMO loads 5863 vehicles, exit 0, no
@@ -68,11 +71,51 @@ The one thing it does establish: the runner works end to end and the cheat-isola
 
 ---
 
-## ⭐ THE HEADLINE RESULT (480 cars, 7200 steps, identical recorded demand, 5863 vehicles all three columns)
+## ⚠️ RETRACTED AS A CAPACITY CLAIM — the 96% below measures the WRONG QUANTITY (read this first)
 
-**The premise that motivated this harness — "the engine is far from what we need" — is WRONG.
-We are at 96% of honest SUMO's throughput, and SUMO buys its remaining margin with collisions it does
-not even look for.**
+**RETRACTION.** This section originally concluded *"the premise that the engine is far from what we need is
+WRONG — we are at 96% of honest SUMO's throughput"*. **That conclusion does not follow from this experiment,
+and the parallel calibration workstream's contradicting result is the correct one.** The 96% is real but it
+is not a capacity measurement, for a reason that is structural:
+
+> **`LiveCitySim`'s demand is CLOSED-LOOP.** The spawn loop is
+> `for (s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)` — it inserts **only while occupancy
+> is below the cap**. So **inflow is throttled by our own drain.** If our junctions discharge slowly we
+> simply insert fewer cars. Occupancy *cannot* run away; it is clamped at the cap by construction.
+
+Measuring discharge capacity requires **OPEN-LOOP** demand: a fixed inflow, independent of what is already
+on the network, so that a too-narrow drain shows up as unbounded queue growth. That is exactly what the
+calibration workstream did, and it found vanilla SUMO plateauing at ~430 cars while SumoSharp climbed
+258 → 2623 without ever levelling off.
+
+**So this experiment cannot detect a discharge deficit, and its 96% must never be quoted as one.** What it
+does legitimately establish is narrower: *given a demand profile our own engine shaped, we complete 96% of
+what SUMO completes on that same profile.* The demand was pre-limited to what we could already handle.
+
+### ⭐ AND MY OWN DATA AGREES WITH THEM, once read correctly
+
+Two numbers in the table below were reported at the time as an artefact to be ignored. They are the finding:
+
+| | SUMO (s-honest) | Ours |
+| --- | --- | --- |
+| still in flight at horizon | **259** | **480** ← *our cap; we ended FULL* |
+| mean trip duration | **213.6 s** | **~321 s** (Little's Law: 480 / 1.4947 s⁻¹) |
+| mean occupancy | ~333 cars (1.5567 × 213.6) | ~480 |
+
+**We hold ~45% more cars in the network to deliver 4% FEWER trips, and each trip takes ~50% longer.** That
+is a narrower drain, stated in my own measurement. And SUMO finishing with only 259 in flight proves the
+offered inflow (1.63 veh/s — *chosen by our drain*) never came close to saturating SUMO, so this test had no
+power to expose a capacity gap in either direction.
+
+**Method error to learn from:** I used a self-throttling demand model to answer a capacity question. Same
+error class as §9.117's occupancy-vs-causation and §9.100's mislabel — *measuring a different quantity than
+the one named*. The guard that should have caught it existed and I wrote it off: I noted "SUMO 259 vs our 480
+is not a jam signal" and moved on, when it was the whole story.
+
+### What survives unchanged (and is still valuable)
+
+The **cheat findings are unaffected** — they are about SUMO's own behaviour on a fixed input, not about
+capacity:
 
 | Metric | S-default | S-honest | **Ours** | cheat dividend | real gap |
 | --- | --- | --- | --- | --- | --- |
@@ -82,8 +125,6 @@ not even look for.**
 | **junction collisions** | **0** *(not checked!)* | **26** | see B2 | — | — |
 | mean duration (s) | 213.61 | 213.61 | see B2 | 0 | — |
 | mean timeLoss (s) | 117.82 | 117.82 | see B2 | 0 | — |
-
-### Three findings, in order of importance
 
 1. **SUMO'S CHEAT DIVIDEND ON THROUGHPUT IS EXACTLY ZERO AT THIS DENSITY.** S-default and S-honest agree
    on *every* throughput metric to 2 dp, and **teleports are 0 in BOTH**. SUMO is not teleporting here at
@@ -121,12 +162,27 @@ not even look for.**
 - `running` at horizon (SUMO 259 vs our 480) is **not** a jam signal: our demo tops up to a 480 concurrency
   cap by design, so it necessarily ends full.
 
-### Consequence for the workstream
+### Consequence for the workstream — REVISED
 
-The remaining work is **not** "catch up to SUMO on throughput". It is: close a ≤4% gap whose upper bound is
-inflated by an uncontrolled pedestrian variable, while *staying* at zero teleports and beating SUMO's 26
-junction collisions. **Reject outright any port whose mechanism is "let the cars interpenetrate"** — that is
-what SUMO does here, it is ladder rung 3, and copying it would trade our one clear advantage for 4%.
+**A new blocking task, A3, comes before everything else: an OPEN-LOOP demand mode.** Until the harness can
+offer a fixed inflow independent of our own drain, it cannot measure discharge, and every column it produces
+answers a question nobody asked. The closed-loop comparison stays as a *secondary* check ("on identical
+demand, who completes more"), clearly labelled as such.
+
+Then the real target is the one the calibration workstream named: **make the drain wider**, measured as
+saturation-flow (vehicles discharged per green second per lane) against SUMO on the same junction — not as
+completed trips under a demand we throttled ourselves.
+
+**Still binding:** reject any port whose mechanism is "let the cars interpenetrate". SUMO's 26 junction
+collisions are ladder rung 3, and copying them would trade our one clear advantage for throughput.
+
+**Two already-measured candidates now look like DISCHARGE mechanisms, which raises their priority:**
+1. **Cars queueing inside junctions** (§9.118: four stopped on `:d_5_3_10_1`). A car standing in the
+   intersection blocks the conflict area for everyone crossing it — that is a drain restriction by definition.
+2. **Arm 14 holds a bay while a foe is anywhere on a conflicting lane, INCLUDING one still moving at
+   0.89–3.05 m/s that has already passed the conflict point** (§9.118). Every step a bay is held closed while
+   it could be discharging is lost saturation flow. `inTheWay`'s conflict-point geometry is the missing piece,
+   and it is no longer a "bounded conservatism" — it is plausibly a direct discharge cost.
 
 ## Known-answer anchors (an instrument that misses these is wrong, not interesting)
 
