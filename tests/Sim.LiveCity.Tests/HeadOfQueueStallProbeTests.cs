@@ -49,8 +49,15 @@ public class HeadOfQueueStallProbeTests
     private readonly ITestOutputHelper _out;
     public HeadOfQueueStallProbeTests(ITestOutputHelper output) { _out = output; }
 
-    private const string ScratchDir =
-        "/tmp/claude-0/-home-user-SumoSharp/e21d49f3-f27d-5fd7-845f-7d5806744c6e/scratchpad";
+    // Where this diagnostic's log goes. Resolved at RUNTIME, never hardcoded: an earlier version of this
+    // file embedded one authoring session's scratch path (/tmp/claude-0/<session-guid>/scratchpad), which
+    // would have committed a stranger's session id into the repo permanently and had every other machine
+    // write diagnostics into a directory named after it. SUMOSHARP_SCRATCH overrides; otherwise the
+    // platform temp dir, which is correct everywhere and owned by nobody.
+    private static readonly string ScratchDir =
+        Environment.GetEnvironmentVariable("SUMOSHARP_SCRATCH") is { Length: > 0 } s
+            ? s
+            : Path.Combine(Path.GetTempPath(), "sumosharp-diag");
 
     // A stopped run this long is a stall, not a traffic light. 300 steps @ dt=0.5 = 150 s -- longer than
     // any signal cycle in the demo net, which is what makes it a defect signal rather than normal waiting.

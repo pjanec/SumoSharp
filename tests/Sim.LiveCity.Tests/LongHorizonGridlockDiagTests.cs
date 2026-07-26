@@ -27,7 +27,15 @@ public class LongHorizonGridlockDiagTests
     private readonly ITestOutputHelper _out;
     public LongHorizonGridlockDiagTests(ITestOutputHelper output) { _out = output; }
 
-    private const string ScratchDir = "/tmp/claude-0/-home-user-SumoSharp/e21d49f3-f27d-5fd7-845f-7d5806744c6e/scratchpad";
+    // Where this diagnostic's log goes. Resolved at RUNTIME, never hardcoded: an earlier version of this
+    // file embedded one authoring session's scratch path (/tmp/claude-0/<session-guid>/scratchpad), which
+    // would have committed a stranger's session id into the repo permanently and had every other machine
+    // write diagnostics into a directory named after it. SUMOSHARP_SCRATCH overrides; otherwise the
+    // platform temp dir, which is correct everywhere and owned by nobody.
+    private static readonly string ScratchDir =
+        Environment.GetEnvironmentVariable("SUMOSHARP_SCRATCH") is { Length: > 0 } s
+            ? s
+            : Path.Combine(Path.GetTempPath(), "sumosharp-diag");
 
     // ---- copied verbatim from the existing diagnostics ----
     private static string RepoRoot()
