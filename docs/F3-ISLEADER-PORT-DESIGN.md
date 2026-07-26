@@ -169,6 +169,16 @@ of SUMO's `enterLaneAtMove` + the timestamp block. With
 | `J` | null | exit link | `ET = ETN = CET = MAX` |
 | null | null | not a junction hop | nothing |
 
+**One case is absent from that table on purpose:** a hop from junction `A`'s internal lane *directly*
+to a **different** junction `B`'s internal lane. It is unreachable in a netconvert-produced net —
+there is always a normal edge between two junctions, so an exit link is always traversed first — and
+the measured trace confirms it (veh 95 goes `:2336_42_0` → `:444_0_0` inside one step, and ET is
+restamped to that step, i.e. exit-then-entry both fired via the intervening normal lane). Were it ever
+to occur, the current code would silently retain `A`'s timestamps. Flagged rather than handled, because
+adding a branch for a structurally unreachable case would be untestable speculation; the whole-trace
+invariant in `JunctionEntryTimeTests` (normal lane ⇒ all three `MAX`; internal lane ⇒ `ET`/`ETN` set)
+is what would surface a net shape that breaks the assumption.
+
 Cont-ness of the entry hop is read from `Junction.Requests[i].Cont` (`myAmCont`), resolved through a
 new **`LinkIndexByInternalLane`** map that covers **both** stages (§2c). The structural shorthand
 "`new` ∈ `intLanes` ⟺ not a cont entry" happens to be equivalent on this net, but we use the `Cont`

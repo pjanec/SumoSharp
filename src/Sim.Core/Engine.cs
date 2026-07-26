@@ -2228,6 +2228,32 @@ public sealed partial class Engine : IEngine
         return false;
     }
 
+    // F3/isLeader T2.2 DIAGNOSTIC ONLY, for JunctionEntryTimeTests -- NEVER read by any simulation
+    // logic (parity-neutral, same "never consumed" discipline as StrandedOffRouteThisStep above).
+    // Stage 1 (this task) writes VehicleRuntime's three junction timestamps but consumes them
+    // NOWHERE in engine behaviour; this accessor exists solely so an external test can OBSERVE that
+    // write without the engine itself gaining a new read surface (IsLeader, the actual consumer, is
+    // T2.3). Linear scan over ActiveVehicles() by vehicle id -- diagnostic-only, not hot-path.
+    public bool TryGetJunctionEntryTimesForTest(
+        string vehicleId, out string laneId, out long entryTime, out long entryTimeNeverYield, out long conflictEntryTime)
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (v.Def.Id == vehicleId)
+            {
+                laneId = v.LaneId;
+                entryTime = v.JunctionEntryTime;
+                entryTimeNeverYield = v.JunctionEntryTimeNeverYield;
+                conflictEntryTime = v.JunctionConflictEntryTime;
+                return true;
+            }
+        }
+
+        laneId = string.Empty;
+        entryTime = entryTimeNeverYield = conflictEntryTime = long.MaxValue;
+        return false;
+    }
+
     // DR2 (issue #3): the per-vehicle accessor form of the DrModels column -- the shape SUMOSHARP-API §16
     // names ("DrModel Engine.GetDrModel(VehicleHandle) returning FreeKinematic while swerving"). Same
     // regime the DrModels column carries; use the column for bulk (10k) publishing, this for random
@@ -10145,6 +10171,19 @@ public sealed partial class Engine : IEngine
                 // so this is byte-identical to reading _laneSeqPool. D3: direct pool-slice read.
                 v.LaneHandle = _laneSeqArrival[v.LaneSeqStart + v.LaneSeqIndex];
                 v.LaneId = _network.LanesByHandle[v.LaneHandle].Id;
+
+                // F3/isLeader T2.2 (design doc §2, §2b; MSVehicle.cpp:4354-4368): the three per-
+                // vehicle junction timestamps, assigned at this exact hop (SUMO's `enterLaneAtMove`,
+                // called for EVERY lane-boundary crossing, including internal-internal cont hops).
+                // `oldJunction`/`newJunction` are J(l) = the owning Junction of the lane just left /
+                // just entered (null when the lane is not internal to any junction) --
+                // NetworkModel.JunctionByInternalLane, the same lookup ContTurnInternalLaneOwnership
+                // relies on for `IsInternalLaneOfJunction`. The three independent `if`s below mirror
+                // SUMO's own three independent `if`s (MSVehicle.cpp:4354-4368) -- entry and
+                // conflict-entry BOTH fire for a non-cont entry link; only Stage 1 is done here
+                // (nothing reads these fields yet -- IsLeader is T2.3).
+                AssignJunctionEntryTimestamps(v, currentLane.Id, v.LaneId);
+
                 // #15 CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): a lane change is a
                 // lateral move within ONE edge -- the vehicle just crossed a junction onto its exit lane,
                 // so any in-progress continuous maneuver on the edge just left is finalized/moot. Clear it
@@ -10171,6 +10210,86 @@ public sealed partial class Engine : IEngine
             // current lane having no connection to the next route edge (a dead lane), which no golden
             // vehicle is ever on. See TryRerouteStuckDeadLane.
             TryRerouteStuckDeadLane(v, dt);
+    }
+
+    // F3/isLeader T2.2 (docs/F3-ISLEADER-PORT-DESIGN.md §2, §2b). Assigns VehicleRuntime's three
+    // junction timestamps at ONE lane-boundary hop (`oldLaneId` just left, `newLaneId` just entered),
+    // ported from SUMO's three independent `if`s at MSVehicle.cpp:4354-4368 (`enterLaneAtMove`):
+    //
+    //     if (link->isEntryLink())         { ET = ETN = now; }
+    //     if (link->isConflictEntryLink()) { CET = now; ET = ETN; }   // "renew yielded request"
+    //     if (link->isExitLink())          { ET = ETN = CET = SUMOTime_MAX; }
+    //
+    // `isEntryLink`/`isConflictEntryLink`/`isExitLink` are LINK properties in SUMO (MSLink.cpp:
+    // 1283-1305), each purely a function of whether the lane BEFORE / AFTER the hop is internal. We
+    // have no MSLink object, but the SAME hop classification is fully determined by J(old)/J(new) --
+    // the owning Junction of the old/new lane (null when the lane is not internal to any junction),
+    // resolved via `NetworkModel.JunctionByInternalLane` -- per the design doc §2b table:
+    //
+    //   J(old)=null, J(new)=J   -> entry link      (ET=ETN=now; CET=now too, UNLESS the entry is the
+    //                                                first stage of a `cont` turn -- MSLink.cpp:1295's
+    //                                                `!myAmCont` guard)
+    //   J(old)=J,    J(new)=J   -> internal->internal (a cont turn's second stage): CET=now, ET=ETN
+    //   J(old)=J,    J(new)=null -> exit link       (ET=ETN=CET=SUMOTime_MAX)
+    //   J(old)=null, J(new)=null -> not a junction hop: no-op
+    //
+    // Cont-ness of the entry hop is read from `Junction.Requests[i].Cont` (SUMO's `myAmCont`), where
+    // `i` is `newLaneId`'s link index via the new `LinkIndexByInternalLane` map (T2.1) -- BOTH stages
+    // of a cont turn resolve to the SAME link index (design doc §2c fact 1), so this works whether
+    // `newLaneId` is a cont turn's first-stage lane or an ordinary single-stage link's only lane.
+    //
+    // STAGE 1: written here, read by NOTHING yet (IsLeader is T2.3). Called once per lane-boundary
+    // hop from ExecuteMoveVehicle, which writes only `v`'s own fields -- safe under region-parallel
+    // ExecuteMoves (design doc §5c), the same discipline as RouteDistanceTraveled/WaitingTime.
+    private void AssignJunctionEntryTimestamps(VehicleRuntime v, string oldLaneId, string newLaneId)
+    {
+        var byInternalLane = _network!.JunctionByInternalLane;
+        var oldJunction = byInternalLane is not null && byInternalLane.TryGetValue(oldLaneId, out var jOld) ? jOld : null;
+        var newJunction = byInternalLane is not null && byInternalLane.TryGetValue(newLaneId, out var jNew) ? jNew : null;
+
+        if (oldJunction is null && newJunction is not null)
+        {
+            // Entry link (MSLink::isEntryLink: internalLane != null && internalLaneBefore == null).
+            v.JunctionEntryTime = _elapsedSteps;
+            v.JunctionEntryTimeNeverYield = _elapsedSteps;
+
+            // isConflictEntryLink = !myAmCont && (isEntryLink || ...) -- fires here too UNLESS this
+            // entry is a cont turn's first stage (MSLink.cpp:1292-1296).
+            var isCont = false;
+            var linkIndexByInternalLane = _network.LinkIndexByInternalLane;
+            if (linkIndexByInternalLane is not null && linkIndexByInternalLane.TryGetValue(newLaneId, out var li))
+            {
+                foreach (var r in li.Junction.Requests)
+                {
+                    if (r.Index == li.LinkIndex)
+                    {
+                        isCont = r.Cont;
+                        break;
+                    }
+                }
+            }
+
+            if (!isCont)
+            {
+                v.JunctionConflictEntryTime = _elapsedSteps;
+            }
+        }
+        else if (oldJunction is not null && newJunction is not null && ReferenceEquals(oldJunction, newJunction))
+        {
+            // Internal->internal hop within the SAME junction -- a cont turn's second stage
+            // (MSLink.cpp:1295's `internalLaneBefore != null && internalLane != null` disjunct; this
+            // hop's own MSLink is never itself `cont`, so `!myAmCont` is always true here).
+            v.JunctionConflictEntryTime = _elapsedSteps;
+            v.JunctionEntryTime = v.JunctionEntryTimeNeverYield; // "renew yielded request" (:4361).
+        }
+
+        if (oldJunction is not null && newJunction is null)
+        {
+            // Exit link (MSLink::isExitLink: internalLaneBefore != null && internalLane == null).
+            v.JunctionEntryTime = long.MaxValue;
+            v.JunctionEntryTimeNeverYield = long.MaxValue;
+            v.JunctionConflictEntryTime = long.MaxValue;
+        }
     }
 
     // GAP-1: reroute a vehicle that is STALLED on a dead lane (its current lane cannot reach its next
@@ -10359,6 +10478,11 @@ public sealed partial class Engine : IEngine
         v.LaneSeqStart = start;
         v.LaneSeqLen = pool.Length;
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: reset per the task's blanket "every LaneSeqIndex=0 site" rule, so a
+        // recycled VehicleRuntime slot never inherits a stale entry time.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         // The remaining route's lane assignment changed -> the keep-right stayOnBest memo may be
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
@@ -10611,6 +10735,11 @@ public sealed partial class Engine : IEngine
         v.LaneSeqStart = start;
         v.LaneSeqLen = pool.Length;
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: reset per the task's blanket "every LaneSeqIndex=0 site" rule, so a
+        // recycled VehicleRuntime slot never inherits a stale entry time.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         v.KeepRightStayCacheLane = -1;
         MarkStrandReason(1); // rerouteOK -- dead-lane reroute succeeded, NOT stranded
         return true;
@@ -12660,6 +12789,12 @@ public sealed partial class Engine : IEngine
         _laneSeqPool.AddRange(poolSeq);
         _laneSeqArrival.AddRange(arrivalSeq);
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: a teleport physically relocates the vehicle onto a new lane out of thin
+        // air -- reset all three junction timestamps to SUMOTime_MAX so it starts fresh, exactly like
+        // a new insertion (and so a recycled VehicleRuntime slot never inherits a stale entry time).
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         // The vehicle is moving again -> clear the mid-teleport flag and the stale waiting-time
         // (ExecuteMoves would reset it this step anyway since speed>HaltingSpeed, but a junction
         // waiting-time reader must never see the pre-teleport 121s).
