@@ -34,13 +34,14 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **721 passed / 4 skipped / 0 failed** (session 3; was 689) |
+| `dotnet test tests/Sim.ParityTests -c Release` | **729 passed / 4 skipped / 0 failed** (session 3; was 689) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; not in `Traffic.sln`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 
-721 = 689 (the session-2 baseline) + 13 `JunctionLinkLaneMapTests` (T2.1) + 3 `JunctionEntryTimeTests`
-(T2.2) + 12 `JunctionIsLeaderTests` (T2.3) + 4 gap/flag tests (T2.4). The 4 skips are pre-existing
+729 = 689 (the session-2 baseline) + 13 `JunctionLinkLaneMapTests` (T2.1) + 3 `JunctionEntryTimeTests`
+(T2.2) + 12 `JunctionIsLeaderTests` (T2.3) + 4 gap/flag (T2.4) + 4 `InternalJunctionFoeTests` (T3.1)
++ 4 `InternalJunctionAdmission*Tests` (T3.2). The 4 skips are pre-existing
 (`LaneChangeOverlapDiagTests`, `RungC4vii…`, `RungP24…`, `RungP2Core…`).
 
 **The 5 gridlock diagnostics are the load-bearing regression net** — they caught a bad change in one run and
@@ -134,7 +135,15 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
 | 3 `long` timestamps on `VehicleRuntime` + `AssignJunctionEntryTimestamps` (T2.2) | **live**, written at the lane-advance seam, **read by no sim path** (audited) |
 | `Engine.IsLeader` / `IsLeaderByEntryOrder` / `ResponseFor` + gap helper (T2.3) | **live but UNCALLED** — 297 insertions, 0 deletions |
 | `tests/Sim.ParityTests/SumoShimEnvCollection.cs` | **live** — serialises the six `SumoShim.Run` classes (§2's ⚠) |
-| `Engine.JunctionIsLeaderGate` | **T2.4b, in progress** — will be **default OFF** |
+| `Engine.IsLeader`/`ResponseFor`/`GapForIsLeader` + `JunctionIsLeaderGate` (T2.3/T2.4) | **default OFF** — faithful, safe, **but insufficient alone** (§9.48-50) |
+| `NetworkModel.InternalJunction`/`InternalJunctionByBayLane`/`InternalLaneFoes` (T3.1) | **live, unconditional**, no reader in sim |
+| `Engine.InternalJunctionAdmissionConstraint` (arm 14) + `InternalJunctionAdmissionGate` (T3.2) | **default OFF** — ⭐ **this is what FIXES the deadlock** (§9.53) |
+| `LiveCitySim` gates `LIVECITY_ISLEADERFIX` / `LIVECITY_INTERNALJUNCTIONFIX` | live, both default OFF |
+
+**Three gates now form a PACKAGE and must be judged together:** `ContTurnInsideJunctionGate` (lets a car
+commit inside a junction — exposes the wedge), `JunctionIsLeaderGate` (orders cars already inside), and
+`InternalJunctionAdmissionGate` (controls who gets in — the load-bearing one). Shim env gates:
+`SUMOSHARP_CONTTURNFIX` / `SUMOSHARP_ISLEADERFIX` / `SUMOSHARP_INTERNALJUNCTIONFIX`.
 
 A/B switches: demo → `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPANCY=1`; shim → `SUMOSHARP_CONTTURNFIX=1`
 and `--ignore-junction-blocker <TIME>`.
@@ -145,10 +154,11 @@ and `--ignore-junction-blocker <TIME>`.
 section:** `docs/F3-ISLEADER-PORT-DESIGN.md` (HOW, with the proof in §0a and the traps in §3b/§5b),
 `…-TASKS.md` (staged tasks + success conditions), `…-TRACKER.md` (what is ticked).
 
-**Progress:** T2.1, T2.2, T2.3 **done and confirmed** (all parity-inert). **T2.4a/T2.4b** (gap helper,
-then wiring behind a default-OFF `JunctionIsLeaderGate`) and **T2.5** (measurement + owner decision)
-remain. See §9 session 3 for findings — in particular §9.38 (attempt 1, not the response matrix, is the
-operative arm) and §9.43 (a real cross-test race that made two of the five diagnostics unreliable).
+**Progress: the `isLeader` port is COMPLETE (T2.1-T2.5) and it was NOT the fix.** It is faithful, safe and
+default-OFF, but on its own it does not resolve the deadlock (§9.48-50). **The deadlock is fixed by
+`MSInternalJunction` second-stage admission (T3.1/T3.2, §9.51-53)** — veh 95 and 102 both arrive at SUMO's
+own `--ignore-junction-blocker` default. See also §9.38 (attempt 1, not the response matrix, is the
+operative arm) and §9.43 (a cross-test race that made two of the five diagnostics unreliable).
 
 The rest of this section is the original spec. It remains accurate except where §9.38 corrects it: the
 mutual-conflict branch **is** the one that resolves the deadlock, but it is reached via attempt 1's
@@ -605,11 +615,79 @@ source edit per CLAUDE.md). This log stays the running record; the trio holds th
     neither; `isLeader` was merely the visible one. **Keep `isLeader` — it is necessary, faithful, safe,
     and its release demonstrably fires — then port the admission control that is actually load-bearing.**
 
-**State at end of session 3:** gate green (**721/4/0**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
-tree clean, all pushed. Stage 1 + T2.3 are **provably unable to change a trajectory**; T2.4b is
-behavioural but **default OFF** and byte-identical when off. The `isLeader` port is **complete and
-correct but insufficient**: it resolves who goes first among vehicles legitimately inside a junction,
-while the defect is **who is allowed in**. Next: `MSInternalJunction` second-stage admission.
+### Session 3 (continued) — `MSInternalJunction`: **THE DEADLOCK IS FIXED**
+
+Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
+
+51. **Designed the port and CORRECTED MY OWN NEED DOC.** The NEED doc (written an hour earlier) said the
+    foe set is *"every `intLanes` lane whose link index is set in the parent's response row"*. **Wrong,
+    and wrong in the direction that matters** — it makes the load-bearing case depend on a bit never
+    consulted for it. `MSInternalJunction.cpp:78-95` is **two-branch**:
+    - a **plain** internal lane (does not lead to another internal lane) ⇒ **ALWAYS a foe**;
+    - a cont **stage-1 bay** lane ⇒ foe **only if** `response[ownLinkIndex]` responds to it (SUMO's
+      comment: *"only respect vehicles **before** internal junctions if they have priority"*);
+    - a cont candidate's **stage-2** lane ⇒ **ALWAYS a foe** regardless.
+
+    Verified on `:2336_42_0`: **13 unconditional** + `:2336_44_0` (stage 2 of `:2336_25_0`, whose bay is
+    *excluded* since `response[18][25]` is false) = **14 lanes**. **`:2336_3_0` — veh 102's lane — is
+    UNCONDITIONAL**, so the deadlock is prevented without consulting the response matrix at all.
+    T3.1's success condition 2 was written specifically so a test **cannot pass under the wrong rule**
+    (it must pin `:2336_25_0` ABSENT while `:2336_44_0` is PRESENT); checking only the 13 plain lanes
+    would have passed either way.
+52. **T3.1 shipped and confirmed** (`b8e0f19`) — internal junctions parsed at last (they were discarded
+    entirely: `ParseJunction` bails on `requestEls.Count == 0` and **all 251** internal junctions here
+    have zero `<request>` rows). Parity-inert: reader audit found **no consumer outside the ingest
+    layer**, and the only two deletions in the diff are parameter-list terminators being extended. The
+    implementor read the C++ directly and **independently confirmed the two-branch correction**.
+    725/4/0, hash unchanged, 48/48.
+53. **⭐ T3.2 shipped — THE DEADLOCK IS FIXED** (`6e4e299`). New arm 14: a car on a cont **stage-1 bay**
+    lane is held there while any of its internal junction's `InternalLaneFoes` is physically occupied.
+    Flag OFF is byte-identical **by construction** (first statement returns `+∞`, so `Math.Min` is
+    untouched). Verified **first-hand**, `synthetic-junction2` 2000 s via `SumoShim.Run`, all three
+    gates ON, `IgnoreJunctionBlockerSeconds = -1` (**SUMO's own default — no knob**):
+
+    | | Result |
+    | --- | --- |
+    | veh 95 held in bay while 102 occupies `:2336_3_0` | **YES**, and **0** violation steps |
+    | teleports | **2** (jam=0, yield=2) — the ≤ 2 ceiling |
+    | veh 95 | **arrives t=427** (real SUMO 433) |
+    | veh 102 | **arrives t=677** (real SUMO 497) |
+    | five gridlock diagnostics | all green |
+    | goldens | byte-identical |
+
+    The load-bearing test asserts the **trajectory directly** and **guards its own non-vacuity**: it
+    requires veh 95 to have been *observed* on the bay lane while 102 occupied the foe lane (proving the
+    gate engaged) **before** asserting zero steps of the bad state. Without that first assertion it would
+    pass trivially if 95 never approached — the shape of mistake that let `isLeader` look correct while
+    fixing nothing.
+54. **Wired the new gates into `LiveCitySim` and measured the F3 buckets PROPERLY** (`7887786`). T3.2 had
+    reported the buckets *"identical to baseline"* — but that was an **UNMEASURED condition masquerading
+    as a neutral result**: `InternalJunctionAdmissionGate` was never wired into `LiveCitySim`, so the demo
+    could not exercise it whatever was enabled. With all three gates ON:
+
+    | Metric | baseline (off) | all gates ON | |
+    | --- | --- | --- | --- |
+    | `BOTH-INTERNAL-DIFFERENT-LANE` total | 15 | **20** | ⬆ WORSE (count) |
+    | — STOPPED-FOE | 3, worst 2.382 m | 3, worst 2.382 m | unchanged |
+    | — BOTH-MOVING | 12, worst **1.831 m** | **17**, worst **0.639 m** | count ⬆, depth ⬇ **−65%** |
+    | vehicle-steps stopped on a `:` lane | 206 | **94** | ⬇ BETTER, **−54%** |
+
+    **So the SECOND goal of this workstream is NOT met as specified.** The design's criterion was
+    *"expect the 12 both-moving events to drop"*; the **count ROSE to 17**. What improved is *severity*
+    (deepest both-moving −65%) and stopping-inside-junctions (−54%). Plausible reading — admission control
+    keeps traffic **moving** through junctions, so more cars are inside one at once (more shallow events)
+    while none wedges deeply — but that is a **reading, not a measured causal claim**. This is exactly the
+    trade design §6.3 predicted ("may trade deadlock for junction overlap"), so it is reported, not spun.
+    **Unexplained:** a new STOPPED-FOE pair absent from the baseline (`:d_3_4_10_2`/`:d_3_4_13_0`,
+    1.959 m). With all gates ON, LiveCity is still **48/48** — `DemoCarOverlapInvariantTests` holds
+    because 20 events spread across frames stay inside its ≤ 7 pairs/frame and 3.0 m ceiling.
+
+**State at end of session 3:** gate green (**729/4/0**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
+complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
+**complete, faithful and safe but insufficient alone**; the load-bearing mechanism was **admission
+control**. All three gates remain **default OFF**: turning them on changes outward-facing behaviour and is
+an **owner decision**, with a genuine trade to weigh (see §9.54).
 
 ---
 
@@ -622,6 +700,17 @@ while the defect is **who is allowed in**. Next: `MSInternalJunction` second-sta
 > bootstrap, gate numbers, six DISPROVEN handoff claims, what is shipped, the next task fully specified,
 > and the traps that cost time. Do not re-derive anything marked disproven, and do not re-attempt anything
 > in §6's "Parked" table.
+>
+> **⚠ READ THIS FIRST — SESSION 3 OUTCOME. The arm-5 deadlock is FIXED.** veh 95 and 102 now both
+> complete their routes (t=427 / t=677; real SUMO 433 / 497) with **2** teleports, at SUMO's own
+> `--ignore-junction-blocker -1` default. The fix is **`MSInternalJunction` second-stage admission**
+> (`docs/F3-INTERNAL-JUNCTION-DESIGN.md`, T3.1/T3.2, §9.51-53), **not** `isLeader`.
+> **All three gates are default OFF** — `ContTurnInsideJunctionGate`, `JunctionIsLeaderGate`,
+> `InternalJunctionAdmissionGate` — and they are a **package**, to be judged together. The one open item
+> is the **owner's defaults decision**, which has a real trade to weigh: the deadlock resolves and
+> stopping-inside-junctions halves (206 → 94 vehicle-steps), but the F3 overlap event **count rises
+> 15 → 20** even as the deepest both-moving penetration falls **1.831 m → 0.639 m** (§9.54). Baseline is
+> now **729/4/0**. Do NOT re-attempt `isLeader` or the internal-junction port — both are done.
 >
 > **⚠ SESSION 3 RESULT — the `isLeader` port is COMPLETE, and it is NOT SUFFICIENT.** It is shipped
 > behind a default-OFF `JunctionIsLeaderGate` and is measurably safe, but the arm-5 deadlock and the 12
