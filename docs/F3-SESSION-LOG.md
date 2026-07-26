@@ -958,7 +958,35 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     lane-changing into the SAME slot in the same step**, so fix 3 should target lane-change arrival
     arbitration specifically rather than the whole plan phase.
 
-**State at end of session 3:** gate green (**744/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+### Session 3 (continued) — FIX 3: built, golden-safe, and MEASURED INERT (so not recommended)
+
+80. **Fix 3: `Engine.LaneChangeArrivalArbitration` (default OFF).** `IsTargetLaneOverlapped` already blocks a
+    change into a slot an **existing** target-lane occupant holds; it cannot see a vehicle on a **different
+    source lane** entering the same slot in the same step, because neither is a target-lane occupant in the
+    frozen snapshot. Ported as a snapshot-only arbitration (no intent pre-pass, so no new phase ordering):
+    for ego on lane *i* → target *t*, the only other-lane claimant is one on the lane **beyond** *t*;
+    tie-break by **smaller ordinal id wins the slot**, so exactly one defers. SUMO needs none of this —
+    `MSLaneChanger` is sequential.
+81. **⚠ IT IS MEASURED INERT ON THE DEMO — and I am not shipping it as an improvement.** Instrumented over
+    2000 demo steps it fires plenty: **10226 evaluations, 1156 contested slots, 785 deferred lane changes**.
+    Yet every same-lane overlap statistic is **BIT-FOR-BIT IDENTICAL** with it on: 365 events / 80 episodes /
+    longest 75 / 7 over-10. All 661 goldens also unaffected.
+    **This REFUTES my own inference (§9.79) that the residual onsets were the H-LC adjacent-lane same-slot
+    case.** That inference came from the attribution measured **before** fix 1; fix 1 removed the insertion
+    onsets, and the surviving 80 episodes are evidently a **different** mechanism — H-E emergence, or the
+    **21% that were unexplained at onset**. I built the fix on a stale attribution instead of re-attributing
+    after fix 1 changed the population. That is the session's recurring failure mode in miniature: *a
+    correct port of the wrong mechanism*.
+82. **Decision: kept, default OFF, explicitly labelled measured-inert.** It is a correct, golden-safe port of
+    an arbitration SUMO gets free by being sequential, and it may matter on a different lane topology — but
+    it is **not** part of the recommended configuration and must not be enabled without a scenario where it
+    demonstrably helps. Same standard as `JunctionPhysicalOccupancyGate` and the parked ORCA tier.
+83. **What the residual actually needs: RE-ATTRIBUTION AFTER FIX 1**, not another mechanism. The onset
+    population has changed and the pre-fix-1 attribution no longer describes it. Next step is to re-run the
+    cause-attribution instrument (H-E / H-LC / H-CF / H-INS + unexplained) against the **current** 80
+    episodes and target whatever now dominates. Building before re-measuring is what produced §9.81.
+
+**State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
 **complete, faithful and safe but insufficient alone**; the load-bearing mechanism was **admission

@@ -71,6 +71,7 @@ public class LongHorizonGridlockDiagTests
         "LIVECITY_INTERNALJUNCTIONFIX",
         "LIVECITY_INSERTIONFOLLOWERGAP",
         "LIVECITY_COLOCATIONSYMMETRYBREAK",
+        "LIVECITY_LANECHANGEARBITRATION",
     };
 
     private sealed record OverlapEvent(

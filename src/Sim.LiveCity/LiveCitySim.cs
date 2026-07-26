@@ -375,6 +375,9 @@ public sealed class LiveCitySim : IDisposable
         // persisting (measured: longest episode 79 steps). Triggered by measured overlap only, never a timer.
         // LIVECITY_COLOCATIONSYMMETRYBREAK=1.
         _engine.ColocationSymmetryBreak = Environment.GetEnvironmentVariable("LIVECITY_COLOCATIONSYMMETRYBREAK") == "1";
+        // Fix 3: same-step lane-change arrival arbitration -- prevents the ONSET fixes 1/2 could only
+        // mitigate (two cars changing into one slot in one step). LIVECITY_LANECHANGEARBITRATION=1.
+        _engine.LaneChangeArrivalArbitration = Environment.GetEnvironmentVariable("LIVECITY_LANECHANGEARBITRATION") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).

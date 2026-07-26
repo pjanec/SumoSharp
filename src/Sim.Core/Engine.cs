@@ -5773,7 +5773,8 @@ public sealed partial class Engine : IEngine
             var target = _network!.LanesByHandle[targetHandle];
             var neighLead = neighbors.GetNeighborLeader(v, targetHandle);
             var neighFollow = neighbors.GetNeighborFollower(v, targetHandle);
-            if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt))
+            if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt)
+                && !LaneChangeSlotContested(v, targetHandle, neighbors))
             {
                 RecordLaneChangeCommit(0, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (EV give-way vacate)
                 CommitLaneChange(v, targetHandle, target.Id);
@@ -11800,6 +11801,7 @@ public sealed partial class Engine : IEngine
                 // accumulator keeps building and retries once the spot is no longer occupied). Gated on
                 // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
+                    && !LaneChangeSlotContested(v, leftLane.Handle, postMoveNeighbors)
                     && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (speed-gain left)
@@ -12079,6 +12081,7 @@ public sealed partial class Engine : IEngine
             // both off there) -> byte-identical.
             if ((!CooperativeLcFor(v) || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
                 && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
+                && !LaneChangeSlotContested(v, rightLane.Handle, neighbors)
                 // #15 into-occupied: keep-right is discretionary -- don't return to the right lane by cutting
                 // in tight ahead of a STOPPED follower there; ego stays put and keeps flowing. Inert on goldens.
                 // #15 per-area LOD: only in a HIGH-realism area (CooperativeLcFor) -- low realism = cheap swap.
@@ -12448,6 +12451,45 @@ public sealed partial class Engine : IEngine
     // event count, or a rising onset rate will hide behind a falling event count -- see
     // LongHorizonGridlockDiagTests.SameLaneEpisodeStats.
     public bool ColocationSymmetryBreak { get; set; } = false;
+
+    // Fix 3 (docs/NEED-same-step-double-placement-colocation.md): SAME-STEP lane-change arrival
+    // arbitration -- prevent the ONSET that fixes 1 and 2 could only mitigate.
+    //
+    // THE GAP. `IsTargetLaneOverlapped` already blocks a change into a slot an EXISTING occupant of the
+    // target lane holds. It cannot see a vehicle on a DIFFERENT source lane changing into the SAME slot in
+    // the SAME step: neither vehicle is an occupant of the target lane in the frozen start-of-step
+    // snapshot, so both correctly see an empty slot and both take it. Measured onset of the demo's longest
+    // overlap episodes: `…4_1 → …4_2` and `…4_3 → …4_2` both landing at pos 27.83, spd 16.67.
+    //
+    // WHY THIS IS NEEDED ON TOP OF FIX 2. The symmetry break cannot separate a pair that is BOTH stopped --
+    // the winner has no room to pull clear either -- so the residual longest episode stayed at 75 steps.
+    // Only preventing the onset removes it.
+    //
+    // WHY SUMO DOES NOT NEED IT: `MSLaneChanger` processes vehicles SEQUENTIALLY, so the second vehicle
+    // sees the first already committed. Our plan phase is parallel over a frozen snapshot -- the "timing of
+    // structural mutations" deviation CLAUDE.md permits -- so the arbitration has to be explicit.
+    //
+    // THE COMPETITOR SET, chosen to stay snapshot-only (no intent pre-pass, so no new phase ordering):
+    // for ego on lane i changing to target lane t, the only vehicle that can claim ego's slot on t in this
+    // same step from ANOTHER lane is one on the lane BEYOND t (i.e. t's far-side neighbour). A vehicle
+    // already ON t is handled by IsTargetLaneOverlapped; one on ego's OWN lane cannot body-overlap ego
+    // without already overlapping it. Tie-break: the lexicographically smaller ordinal id wins the slot,
+    // so exactly one of the pair changes. Deliberately CONSERVATIVE -- it yields to a far-lane vehicle that
+    // merely COULD claim the slot, without knowing whether it intends to; the cost is at most a one-step
+    // delay for the id-loser, and only while the two are exactly alongside.
+    // ⚠ MEASURED INERT ON THE LIVE-CITY DEMO -- do NOT enable it expecting an overlap improvement.
+    // Instrumented over 2000 demo steps it fires plenty: 10226 evaluations, 1156 contested slots, **785
+    // deferred lane changes**. Yet every same-lane overlap statistic is BIT-FOR-BIT IDENTICAL with it on
+    // (365 events / 80 episodes / longest 75 / 7 over-10 steps). So the changes it defers are not the ones
+    // that produce overlaps, which REFUTES the inference that the residual onsets are this adjacent-lane
+    // same-slot case: fix 1 removed the insertion onsets, and the surviving episodes are evidently a
+    // different mechanism (H-E emergence, or the 21% that were unexplained at onset).
+    //
+    // Kept, default OFF, because it is a correct and golden-safe port of an arbitration SUMO gets for free
+    // by being sequential, and it may matter on a net with different lane topology. But it is NOT part of
+    // the recommended configuration and must not be enabled without a scenario where it demonstrably helps
+    // -- the same standard applied to JunctionPhysicalOccupancyGate and the parked ORCA tier.
+    public bool LaneChangeArrivalArbitration { get; set; } = false;
 
     public bool JunctionIsLeaderGate { get; set; } = false;
 
@@ -13013,6 +13055,62 @@ public sealed partial class Engine : IEngine
     // leader/follower lookup misses. Reads only the frozen snapshot + immutable network; ego's fields
     // otherwise. Inert (returns false) when the target lane carries no body-overlapping occupant -- every
     // committed golden at a change, so byte-identical.
+    // Fix 3's predicate: true when ego must DEFER its change into `targetLaneHandle` this step because a
+    // vehicle on the lane BEYOND the target could claim the same slot and wins the ordinal-id tie-break.
+    // Reads only the frozen snapshot and immutable network; writes nothing. Returns false (inert) when the
+    // flag is off, when the far lane does not exist, or when no far-lane vehicle overlaps ego's slot.
+    private bool LaneChangeSlotContested(VehicleRuntime ego, int targetLaneHandle, LaneNeighborQuery neighbors)
+    {
+        if (!LaneChangeArrivalArbitration)
+        {
+            return false;
+        }
+
+
+        var egoLane = _network!.LanesByHandle[ego.LaneHandle];
+        var targetLane = _network.LanesByHandle[targetLaneHandle];
+
+        // The lane BEYOND the target, i.e. continuing in the same lateral direction ego is moving.
+        // targetLane.Index > egoLane.Index => ego moves left => the far lane is the target's LeftNeighbor.
+        var farHandle = targetLane.Index > egoLane.Index ? targetLane.LeftNeighbor : targetLane.RightNeighbor;
+        if (farHandle < 0)
+        {
+            return false;
+        }
+
+        var egoFront = ego.Kinematics.Pos;
+        var egoBack = egoFront - ego.VType.Length;
+
+        var competitors = neighbors.OnLane(farHandle);
+        for (var i = 0; i < competitors.Count; i++)
+        {
+            var c = competitors[i];
+            if (ReferenceEquals(c, ego) || c.IsParked)
+            {
+                continue;
+            }
+
+            var cFront = c.Kinematics.Pos;
+            var cBack = cFront - c.VType.Length;
+
+            // Would the two bodies occupy the same slot on the target lane? Strict, so a bumper-to-bumper
+            // touch does not contest.
+            if (cBack >= egoFront || egoBack >= cFront)
+            {
+                continue;
+            }
+
+            // Ordinal id tie-break -- NEVER EntityIndex (order-independence, CLAUDE.md). Smaller id wins
+            // the slot, so exactly one of the pair defers.
+            if (string.CompareOrdinal(ego.Def.Id, c.Def.Id) > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool IsTargetLaneOverlapped(VehicleRuntime ego, int targetLaneHandle, LaneNeighborQuery neighbors, double dt)
     {
         var occupants = neighbors.OnLane(targetLaneHandle);

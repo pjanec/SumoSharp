@@ -28,6 +28,29 @@ public class ColocationSymmetryBreakTests
         Assert.False(new Engine().ColocationSymmetryBreak);
     }
 
+    // Fix 3's flag guarded here too, so every behavioural gate on this branch has a default assertion.
+    [Fact]
+    public void LaneChangeArrivalArbitration_DefaultIsOff()
+    {
+        Assert.False(new Engine().LaneChangeArrivalArbitration);
+    }
+
+    // Fix 3's competitor tie-break: the SMALLER ordinal id wins the contested slot, so exactly one of the
+    // pair defers. Antisymmetry is the load-bearing property -- if both deferred, neither would ever change
+    // lane; if neither deferred, both would take the slot and the onset would persist.
+    [Theory]
+    [InlineData("veh56", "veh84", false, "smaller id wins the slot -> does NOT defer")]
+    [InlineData("veh84", "veh56", true, "greater id defers")]
+    [InlineData("a", "B", true, "ORDINAL: 'a' > 'B' byte-wise, so ego defers (culture compare would disagree)")]
+    [InlineData("B", "a", false, "ORDINAL: 'B' < 'a' byte-wise, so ego wins")]
+    public void ArbitrationTieBreak_SmallerOrdinalIdWinsTheSlot(string egoId, string competitorId, bool expectDefer, string why)
+    {
+        var defer = string.CompareOrdinal(egoId, competitorId) > 0;
+        _out.WriteLine($"ego={egoId} competitor={competitorId} => defer={defer} ({why})");
+        Assert.Equal(expectDefer, defer);
+        Assert.NotEqual(defer, string.CompareOrdinal(competitorId, egoId) > 0);
+    }
+
     // The yield rule, stated as the predicate the arm implements. Pins BOTH rungs of the chain and its
     // ANTISYMMETRY -- the property that makes exactly one of a pair yield. Without antisymmetry the pair
     // either both stops (deadlock) or both proceeds (overlap persists), so it is the load-bearing property.
