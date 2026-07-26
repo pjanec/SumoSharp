@@ -314,6 +314,50 @@ deadlock and the both-moving F3 overlaps, and nothing else.
 
 ---
 
+### 3b. Deriving `gap` (needed only by attempt 1, but it changes outcomes)
+
+`gap` reaches `isLeader` from `MSLink::getLeaderInfo`. Its full derivation (`MSLink.cpp:1376-1653`):
+
+```cpp
+distToCrossing    = dist - myConflicts[i].getLengthBehindCrossing(this);
+foeDistToCrossing = foeLane->getLength() - myConflicts[i].getFoeLengthBehindCrossing(foeExitLink);
+leaderBackDist    = foeDistToCrossing - leaderBack;                            // :1431
+sameSource        = myInternalLaneBefore->getLogicalPredecessorLane() == foeLane->getLogicalPredecessorLane();
+foeCrossingWidth  = (sameTarget || sameSource) ? 0 : myConflicts[i].getFoeConflictSize(foeExitLink);
+contLane          = foeExitLink->getViaLaneOrLane()->getEdge().isInternal()
+                    && !(isInternalJunctionLink() || isExitLinkAfterInternalJunction());   // :1384
+
+if ((contLane && !sameSource && !ignoreIndirectBicycleTurn) || isOpposite)
+    gap = -DBL_MAX;                                                            // :1623
+else
+    gap = distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth;     // :1647
+```
+
+Mapping to arm 5, where `sameTarget` is structurally false (a merge never carries a `JunctionConflict`
+— see `FoeIsInTheWay`'s comment) so `leaderBackDist2 == leaderBackDist`:
+
+| SUMO term | Ours |
+| --- | --- |
+| `distToCrossing` | already computed by `FoeIsInTheWay` |
+| `leaderBackDist` | already computed by `FoeIsInTheWay` |
+| `foeCrossingWidth` | `conflict.FoeConflictSize`, or **0 when `sameSource`** |
+| `egoMinGap` | `ego.VType.MinGap` |
+
+⚠ **Two traps here.**
+
+1. **`sameSource` in `getLeaderInfo` uses `getLogicalPredecessorLane()`, but `isLeader`'s same-source
+   test (§3a case (a)) uses `getNormalPredecessorLane()`.** These are *different* predicates
+   (`MSLane.cpp:3077-3109`): logical is one hop back, normal recurses past every internal lane. Do not
+   share one helper between the two sites just because both are called "same source".
+2. **The `contLane` rule is not cosmetic.** With `gap = -DBL_MAX`, attempt 1's sub-branch computes a
+   huge positive `foeGap`, so `foeGap < foeBrakeGap` is false and ego does **not** yield. Under the
+   plain formula the same situation may give `gap > 0`, which fails the sub-branch's `gap < 0`
+   precondition entirely and falls through to `response = foeRed; response2 = egoRed` — **a different
+   answer.** And `contLane` is *live* for us: veh 95 sits on `:2336_42_0`, a cont continuation lane.
+
+`isOpposite` and `ignoreIndirectBicycleTurn` are structurally false here (no opposite-direction driving
+on these nets; no indirect links in any of the 134 committed nets, §3a).
+
 ## 4. The tie-break chain (determinism-critical)
 
 Verbatim from `:7443-7472`:

@@ -141,9 +141,29 @@ that `IsLeader` delegates to. Omissions per §7, each carrying the comment state
 6. `Sim.ParityTests` **705/4/0** + the new tests, 0 failed; `Sim.Bench` hash `D96213B7BB4021A7`
    unchanged (nothing calls `IsLeader` yet, so this task is still parity-inert by construction).
 
-### T2.4 — wire into arm 5 behind `JunctionIsLeaderGate` (default OFF)
+### T2.4a — derive `gap` for arm 5 (parity-inert: no caller)
 
-**Design:** §5a, §6.
+**Design:** §3b — read it in full, including both traps.
+**Files:** `src/Sim.Core/Engine.cs`, `tests/Sim.ParityTests/JunctionIsLeaderTests.cs`.
+
+Add a helper that produces the `gap` `IsLeader` expects, from the quantities `FoeIsInTheWay` already
+derives. Include the `contLane` → `-double.MaxValue` rule (§3b trap 2) — it is live for the measured
+pair, since veh 95 occupies a cont continuation lane.
+
+**Success conditions:**
+1. Plain-case arithmetic asserted against a hand-computed value:
+   `gap == distToCrossing - egoMinGap - leaderBackDist - foeConflictSize`.
+2. `sameSource` ⇒ `foeCrossingWidth` term is **0**, and the `sameSource` test here uses the
+   **logical** predecessor (one hop), NOT the normal predecessor used by §3a case (a). A test that
+   would pass under either definition does not satisfy this condition.
+3. `contLane` ⇒ `gap == -double.MaxValue`, with a companion test showing the plain formula would have
+   returned a **positive** gap for the same inputs — i.e. the rule demonstrably changes the answer.
+4. Nothing calls the helper yet: `Sim.ParityTests` **717/4/0** + new tests, `Sim.Bench`
+   `D96213B7BB4021A7` par == single.
+
+### T2.4b — wire into arm 5 behind `JunctionIsLeaderGate` (default OFF)
+
+**Design:** §5a, §6. Uses T2.4a's gap helper.
 **Files:** `src/Sim.Core/Engine.cs`, `src/Sim.Sumo/SumoShim.cs` (env gate, mirroring
 `SUMOSHARP_CONTTURNFIX`), `tests/Sim.ParityTests/JunctionIsLeaderTests.cs`.
 
