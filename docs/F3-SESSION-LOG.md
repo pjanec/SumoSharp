@@ -105,74 +105,113 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
    committed it reproduces the golden byte-for-byte with `pos=1.300` at t=1; with the flag, `2.600` =
    the engine's Euler. → `NEED-scenario44-golden-ballistic-mismatch.md`.
 
-## 5. What is SHIPPED (all default-OFF or additive; gate is green)
+## 5. What is SHIPPED (gate green; every behavioural change is default-OFF)
 
 | Item | State |
 | --- | --- |
+| `src/Sim.Ingest/VehicleObb.cs` — one correct OBB helper (axis **and** anchor) | **live, unconditional** |
+| `VehicleObbConventionTests` (15) — derives the tangent from `LaneGeometry` over 2153 internal lanes | **live**, non-vacuous by construction |
 | `NetworkModel.JunctionByInternalLane` + `IsInternalLaneOfJunction(laneId, junction)` | **live, unconditional, parity-safe** |
+| `ContTurnInternalLaneOwnershipTests` (9) | **live** — direct, offline, non-vacuous |
 | Binder diagnostics written on BOTH passes (T1.8) | **live, unconditional, parity-safe** |
-| `ContTurnInternalLaneOwnershipTests` (9 tests) | **live** — direct, offline, non-vacuous |
-| `Engine.ContTurnInsideJunctionGate` | **default OFF** — covers BOTH mis-gated arms; fixes the freeze; blocked by a PRE-EXISTING rescue gap (§6 T1.10), not by itself |
-| `Engine.JunctionPhysicalOccupancyGate` | **default OFF** — measured counterproductive (§6 note) |
-| `F3JunctionOverlapDiagTests`, `Scenario44DefectDiagTests` | live, always-passing instruments |
-| 6 NEED docs + design/tasks/tracker | live |
+| `Engine.IgnoreJunctionBlockerSeconds` + `--ignore-junction-blocker` (CLI) + `<processing>` cfg element | **live, default `-1` = SUMO's own default = byte-identical** |
+| `IgnoreJunctionBlockerTests` (2) | **live** — A/B on the SumoShim harness |
+| `Engine.ContTurnInsideJunctionGate` | **default OFF** — fixes the 95-step freeze; **no longer blocked**, see §6 |
+| `Engine.JunctionPhysicalOccupancyGate` | **default OFF** — measured counterproductive three times; do NOT retry alone |
+| `F3JunctionOverlapDiagTests`, `Scenario44DefectDiagTests`, `ContTurnFlagOnGridlockDiagTests` | live, always-passing instruments |
+| 9 NEED/design docs + design/tasks/tracker + this log | live |
 
-Env-var A/B switches for the demo: `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPANCY=1`.
+A/B switches: demo → `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPANCY=1`; shim → `SUMOSHARP_CONTTURNFIX=1`
+and `--ignore-junction-blocker <TIME>`.
 
-## 6. NEXT ACTIONS, in dependency order
+## 6. NEXT ACTION — port `isLeader()` (the faithful fix; owner-chosen)
 
-**→ T1.11 (THE actual T1.10 cause, now identified): mutual arm-5 junction deadlock.** →
-**`docs/NEED-arm5-mutual-junction-deadlock.md`**. Vehicles 95 and 102 sit on crossing internal lanes of
-junction 2336, each car-following the other via `JunctionYieldConstraint` arm **5**
-(`AdaptToJunctionLeader`) — binder 10 / arm 5 for **121/121 steps**, speed exactly 0.000, cross-verified as
-each other's foe. Arm 5 has **no right-of-way notion and no escape hatch by design**
-(`Engine.cs:7252-7256`); `JunctionYieldTimeoutSeconds` only suppresses arm 6. So once mutual, it is
-unbreakable and only the 120 s teleport resolves it.
-  **This closes D3's open question.** SUMO breaks exactly this after **5 seconds** —
-  `JUNCTION_BLOCKAGE_TIME` (`MSVehicle.cpp:119`, used at `:3487` to revoke the request), plus
-  `gIgnoreJunctionBlocker` (`MSLink.cpp:1601`, which skips a long-waiting foe entirely), plus `isLeader()`
-  which stops the symmetric state forming at all. We have none of the three.
-  **Fix order: (1) port the 5 s `JUNCTION_BLOCKAGE_TIME` escape — small, local, faithful, cheapest path to
-  default-on; (2) then `isLeader()`, which is ALSO what T1.6 needs, so one port unblocks both.**
-  ⚠ The escape deliberately releases a car toward a foe on the crossing (what the existing comment avoids).
-  SUMO accepts that trade; measure the overlap buckets as well as the teleport count.
+**Everything else is either done or explicitly parked.** The owner has chosen the faithful fix over the
+pragmatic knob.
 
-**→ T1.10 (superseded framing): the rescue gap is real but SECONDARY.** →
-`docs/NEED-stuck-reroute-blind-inside-junctions.md`. Measured on `scenarios/_repro/synthetic-junction2`:
-OFF **2** teleports, ON **5**, real SUMO 1.20.0 **0** — and **all five** ON-teleporting vehicles complete
-their routes in SUMO. Three defects, in the order they should be attacked:
-  - **D3 — TESTED AND REFUTED.** Four further `!egoOnInternal` commitment gates were found and corrected
-    (cycle-hold, `takesCrossingYield`, external-agent, `foeWillNotPass`), all behind the flag.
-    **Teleports stayed at 5.** Goldens byte-identical and the T1.9 freeze fix intact, so the corrections were
-    KEPT for consistency (partial application is what manufactured the earlier 28-stuck artefact) — but they
-    are NOT progress on T1.10. Fix order is now **D1 → D2**.
-  - **D1 (structural):** `Engine.cs:10169` is a hard `return; // inside a junction interior -- no reroute`,
-    so a vehicle wedged on an internal lane can **never** be rescued. 2 of the 5 (veh 95 on `:2336_42_0`,
-    veh 102 on `:2336_3_0`) are exactly this; `:2336_42_0` is a confirmed cont-turn second-stage lane.
-  - **D2 (scope):** the rescue is one-shot (`MaxDeadLaneReroutes = 2`) and only re-plans the FUTURE route —
-    it never unsticks the vehicle, so `waitingTime` crosses 120 s anyway (veh 14, 317). SUMO instead
-    reroutes CONTINUOUSLY (`device.rerouting`, period 30 s, p=1.0; these vehicles show `rerouteNo` 2–8).
-**⚠ Do NOT raise the `<= 2` ceiling to 5.** That guard protects the DEFAULT (flag-OFF) path, which still
-measures 2; raising it would blind the guard everybody actually runs. An ON-path figure belongs in a
-separate, explicitly-labelled test. (Minor: the test's inline comment says "current is 1"; measured is **2**,
-deterministic — the comment is stale, the guard is fine.)
+### Why this is the single highest-value port
 
-**→ T1.7 (`checkRewindLinkLanes`): NO LONGER BLOCKING — re-scope it.** The 28-stuck regression that
-motivated it is **gone** (`willpass-saturation` stuck 28 → **0**, arrivals 411 → 411) once BOTH mis-gated
-arms are fixed; it was an artefact of a half-applied fix, not a missing mechanism. The four gaps in
-`NEED-checkrewindlinklanes-partial-port.md` are still real divergences from SUMO and worth porting on their
-own merit — but they are **not** a prerequisite for anything now.
+It closes **two** open items with one piece of work:
+- **T1.11 / the arm-5 mutual deadlock.** Two cars on crossing internal lanes of one junction car-follow
+  *each other* via `JunctionYieldConstraint` arm 5 (`AdaptToJunctionLeader`), which by design has no
+  right-of-way notion and no escape (`Engine.cs:7252-7256`; `JunctionYieldTimeoutSeconds` only suppresses
+  arm 6). Measured: veh 95 / 102 at speed **exactly 0.000 for 121 steps**, freed only by the 120 s teleport.
+  **`isLeader()` is the reason SUMO never enters this state** — it is not a timer, SUMO simply orders the pair.
+- **T1.6 / the true-F3 residue.** The remaining `BOTH-INTERNAL-DIFFERENT-LANE` overlaps are **12 of 15
+  BOTH-MOVING** (corrected math) — genuine simultaneous admission, exactly what entry-time ordering fixes.
 
-**→ T1.6: the true-F3 residue, LAST.** Unchanged: 8 both-moving events, worst 1.696 m, 5 of 8 at
-0.497–0.602 m. Needs the occupancy port *with* `isLeader()` entry-time state. **Re-measure first** — the
-freeze fix removed 81% of internal-lane stopping, so the bucket has almost certainly changed. Also check
-whether the three identical-speed pairs are actually N2 (co-located vehicles).
+It also makes `ContTurnInsideJunctionGate` shippable on its own merits rather than propped up by the knob.
 
-**Also open:** N1 anchor fix (re-baselines every overlap threshold — do it *with* re-calibration), N2
-co-located vehicles, N3 net geometry, scenario-44 golden regen.
+### What to port
 
-**⚠ Do NOT re-attempt** the `FoeWith` occupancy widening on its own (`JunctionPhysicalOccupancyGate`).
-Measured three times, worse each time (F3 bucket 8 → 33, then 8 → 27).
+**Source: `sumo/src/microsim/MSVehicle.cpp:7343-7483` (`MSVehicle::isLeader`).** Consumed at
+`MSVehicle.cpp:3429` as the gate `if (isLeader(link, leader, gap) || it->inTheWay())` — i.e. ego adapts to a
+foe when **either** the foe has priority-by-entry-order **or** the foe physically occupies the conflict point.
+Our `FoeIsInTheWay` already ports the second disjunct.
+
+Algorithm, in SUMO's order:
+
+1. `if (!myLane->isInternal() || myLane->getEdge().getToJunction() != link->getJunction()) return true;`
+   — **a vehicle not yet on the junction always treats every foe as a leader** (it yields, stopping *outside*).
+   We already have the right predicate for this: `NetworkModel.IsInternalLaneOfJunction` (do **not** use
+   `egoOnInternal`; that was the T1.5a mis-port).
+2. If the foe is not on an internal lane of this junction → `return true`.
+3. Otherwise compare entry times: `egoET = myJunctionConflictEntryTime`, `foeET = veh->myJunctionEntryTime`,
+   with two adjustments:
+   - **same source lane** (both entered from the same predecessor): use
+     `myJunctionEntryTimeNeverYield` for both.
+   - else compute `response` / `response2` (does ego yield to foe / foe to ego) from TL state, priority, or
+     the response matrix, then: if `!response` (ego has right of way) use
+     `foeET = veh->myJunctionConflictEntryTime, egoET = myJunctionEntryTime`; if `response && response2`
+     (mutual conflict) use `myJunctionConflictEntryTime` for both.
+4. **Tie-break chain — must be reproduced exactly for determinism:**
+   `if (egoET == foeET) { if (speed == foeSpeed) return getID() < veh->getID(); else return getSpeed() < veh->getSpeed(); }`
+   `else return egoET > foeET;`
+   i.e. **entered later ⇒ you yield**; tie → **slower yields**; tie → **lexicographically smaller ID yields**.
+   ⚠ Use the **vehicle id string**, NOT `EntityIndex` — CLAUDE.md requires order-independence, and SUMO's own
+   tie-break is the id.
+
+### New state required
+
+Three per-vehicle timestamps SUMO maintains and we do not: `myJunctionEntryTime`,
+`myJunctionConflictEntryTime`, `myJunctionEntryTimeNeverYield`. Grep SUMO for where each is assigned
+(`MSVehicle.cpp`, around the enter-lane / `enterLaneAtMove` path) and mirror the assignment points, not just
+the fields. Add them to `VehicleRuntime` next to `WaitingTime`. They must be set from the frozen start-of-step
+state so the plan phase stays order-independent.
+
+### Where it plugs in
+
+`JunctionYieldConstraint`'s foe loop, arm 5. Today arm 5 applies whenever a foe is on the foe internal lane
+(plus `FoeIsInTheWay` for the `FoeWith`-only case). It must become
+`if (IsLeader(v, foe, ...) || FoeIsInTheWay(...))` — matching `MSVehicle.cpp:3429`.
+
+### Success conditions
+
+1. Arm-5 mutual deadlock gone **without** the knob: with `ContTurnInsideJunctionGate = true` and
+   `IgnoreJunctionBlockerSeconds = -1`, `synthetic-junction2` yields **≤ 2** teleports and vehicles **95 and
+   102 arrive** (SUMO: 433 s / 497 s; the knob got 647 s / 587 s).
+2. A **direct** unit test of the tie-break chain: equal entry times + equal speeds ⇒ the smaller **id**
+   yields; equal entry times + different speeds ⇒ the **slower** yields; different entry times ⇒ the **later**
+   entrant yields. Must not use entity index.
+3. All 661 goldens byte-identical, or every shift justified by a live-SUMO 1.20.0 diff (§1 for the binary).
+4. `Sim.Bench` hash `D96213B7BB4021A7`, par==single.
+5. All **five** gridlock diagnostics green (§2), and `Sim.LiveCity.Tests` / `Sim.Pedestrians.Tests` green.
+6. Re-measure the F3 buckets (§3) — expect the 12 BOTH-MOVING events to drop.
+7. Determinism unchanged: no `System.Random`; parallel == serial.
+
+### Then, and only then
+
+- Decide whether `ContTurnInsideJunctionGate` goes default-ON (it is currently only OFF pending this).
+- Re-evaluate whether `IgnoreJunctionBlockerSeconds` is still wanted at all, or stays at SUMO's `-1`.
+
+### Parked, with reasons (do not pick these up first)
+
+| Item | Why parked |
+| --- | --- |
+| ORCA/cooperative rescue tier (`DESIGN-NOTE-tiered-junction-blockage-rescue.md`) | **No trigger measured** — the one confirmed deadlock has a 2.99 m clear gap, so nothing to avoid. Also needs a world→lane re-entry projection that `LaneGeometry.cs:7-9` forbids, and a non-holonomic box agent. |
+| `checkRewindLinkLanes` (`NEED-checkrewindlinklanes-partial-port.md`) | The regression that motivated it **dissolved**; four real SUMO gaps remain, but nothing depends on them now. |
+| N2 co-located vehicles, N3 net geometry, scenario-44 golden | Independent; N2 is a genuine engine defect (`__veh56`/`__veh84` identical pose for 9 steps). |
+| `JunctionPhysicalOccupancyGate` widening | Measured **worse three times**. Needs `isLeader()` first — i.e. this task. |
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -381,3 +420,52 @@ then the 5 s `JUNCTION_BLOCKAGE_TIME` escape, then `isLeader()`.
 **State:** gate green (**689/4/0**, `D96213B7BB4021A7`, 48/48, 272/272). **The cont-turn fix is now
 unblocked** — the last obstacle to enabling it is a defaults decision, not a defect. Remaining faithful work:
 **`isLeader()`** (unblocks T1.6 too), plus N2 (co-located vehicles), N3 (net geometry), scenario-44 golden.
+
+---
+
+## 10. RESUME PROMPT (paste this into a fresh session)
+
+> Continue the F3 junction workstream in `/home/user/SumoSharp` on branch
+> **`claude/f3-junction-overlap-handoff-okf5nu`** (already pushed; 22 commits on top of `9ff0655`).
+>
+> **Read `docs/F3-SESSION-LOG.md` first, top to bottom** — it is the resumable record: environment
+> bootstrap, gate numbers, six DISPROVEN handoff claims, what is shipped, the next task fully specified,
+> and the traps that cost time. Do not re-derive anything marked disproven, and do not re-attempt anything
+> in §6's "Parked" table.
+>
+> **Your task: port SUMO's `isLeader()` — §6 of that log has the full spec** (source
+> `sumo/src/microsim/MSVehicle.cpp:7343-7483`, consumed at `:3429` as `isLeader(...) || inTheWay()`; the
+> algorithm in SUMO's order, the three new per-vehicle entry-time fields, where it plugs into
+> `JunctionYieldConstraint` arm 5, and seven success conditions). The owner chose this **faithful** fix over
+> the pragmatic `--ignore-junction-blocker` knob that is already shipped (default `-1`, off).
+>
+> **Before you start:** bootstrap the environment per §1 (the VM is volatile — .NET 8 and SUMO 1.20.0 must
+> be reinstalled; note both traps), then run the §2 gate to confirm a clean baseline:
+> `Sim.ParityTests` **689 passed / 4 skipped / 0 failed**, `Sim.Bench` hash **`D96213B7BB4021A7`** par==single,
+> `Sim.LiveCity.Tests` **48/48**, `Sim.Pedestrians.Tests` **272/272**.
+>
+> **Non-negotiables, learned the hard way this session (§7):**
+> 1. **"All goldens byte-identical" does NOT mean parity-inert.** The live-city demo and the five gridlock
+>    diagnostics are not goldens. Measure both, every time.
+> 2. **Verify the instrument before trusting its output.** THREE instrument-level defects were found this
+>    session (OBB anchor, OBB forward axis, stale binder diagnostics) and each produced confident wrong
+>    numbers before any engine bug was reached.
+> 3. **Never mix harnesses.** `engine.Run()` directly and `SumoShim.Run` give different baselines on the same
+>    scenario (4 vs 2 teleports); comparing across them produced a false negative once already.
+> 4. **Test a hypothesis before implementing it.** Five were refuted by measurement this session; each cost
+>    minutes to check and would have cost days to build.
+> 5. Behavioural changes go behind a **default-off flag** until measured; goldens must stay byte-identical or
+>    every shift must be justified by a live-SUMO 1.20.0 diff.
+> 6. Keep appending to §9 of the log and updating §2–§6 in place, so the next compaction is survivable too.
+
+### 10b. One-paragraph state summary (if you read nothing else)
+
+F3 as briefed ("fix the junction occupancy gate, then assert zero overlap") was **four unrelated defects plus
+three broken instruments**. Zero-overlap is unachievable *in principle* — SUMO does not guarantee it
+(`--collision.check-junctions` defaults off; internal lanes overlap by construction). Two real engine fixes
+shipped: the cont-turn `egoOnInternal` **mis-port** (SUMO tests a lane *property*, we tested lane-id equality —
+this froze cars for 95 steps mid-junction) and the **stale binder diagnostics** (written only on the real pass,
+but `ReuseIntent` skips it). The measuring instruments were also fixed: the OBB helper had a **reflected
+forward axis** *and* a front-bumper-as-centre anchor — correcting both moved every F3 number and revealed the
+axis error had been *hiding* seven real overlaps. What remains is one faithful port, `isLeader()`, which
+resolves both the arm-5 mutual deadlock and the 12 remaining both-moving F3 overlaps.
