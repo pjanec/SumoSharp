@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Sim.Core;
+using Sim.Ingest;
 using Sim.LiveCity;
 using Xunit;
 using Xunit.Abstractions;
@@ -13,28 +14,28 @@ namespace Sim.LiveCity.Tests;
 // docs/F3-JUNCTION-OVERLAP-HANDOFF.md -- DIAGNOSTIC instrument, NOT a regression guard. This test
 // ALWAYS PASSES BY DESIGN: it makes no assertions that can fail.
 //
-// This variant of the diagnostic tests the FRONT-BUMPER-VS-CENTRE hypothesis: the sampled (X,Y) that
-// every OBB overlap computation in this repo treats as the box CENTRE is actually SUMO's front-bumper
-// arc-length position (LiveCitySim.Sample() copies _lastSnapshot.PosX/PosY, filled in Engine.cs from
-// LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, ...), and Kinematics.Pos is the
-// front-bumper offset -- PositionAtOffset never subtracts half a vehicle length). So every OBB drawn
-// from (X,Y) directly is shifted forward by Length/2 along the vehicle's own forward axis.
+// The sampled (X,Y) that every OBB overlap computation in this repo treats as the box anchor is
+// actually SUMO's front-bumper arc-length position (LiveCitySim.Sample() copies
+// _lastSnapshot.PosX/PosY, filled in Engine.cs from LaneGeometry.PositionAtOffset(lane.Shape,
+// v.Kinematics.Pos, ...), and Kinematics.Pos is the front-bumper offset -- PositionAtOffset never
+// subtracts half a vehicle length). VehicleObb (src/Sim.Ingest/VehicleObb.cs) fixes this AND a second,
+// independent bug: the forward axis used to be a REFLECTION of the true naviDegree tangent, correct
+// only on axis-aligned (N/S/E/W) headings and wrong everywhere else -- see
+// docs/NEED-obb-anchor-halflength.md. Both fixes are applied together via VehicleObb.Penetration,
+// which takes front-bumper poses directly and does the centring internally.
 //
-// It runs the SAME 200-step live-city simulation ONCE (single LiveCitySim, single Step() loop, cars
-// sampled once per step) and computes car-car OBB overlaps TWICE per step from that single sampled
-// frame:
-//   - "FRONT-ANCHOR (current, as committed)": (X,Y) passed straight through as the OBB centre, exactly
-//     as DemoCarOverlapInvariantTests and the original single-variant version of this file did.
-//   - "CENTRE-CORRECTED": (X,Y) back-shifted along forward = (-sin th, cos th) by Length/2 before the
-//     same ObbOverlap math is applied.
-// Running both variants from the same sampled frames guarantees byte-identical trajectories between
-// the two -- only the OBB anchor differs.
+// This previously ran the SAME 200-step live-city simulation ONCE and computed car-car OBB overlaps
+// TWICE per step -- a "FRONT-ANCHOR" variant (raw (X,Y) as centre) vs a "CENTRE-CORRECTED" variant
+// (back-shifted (X,Y)) -- to characterise the anchor bug's impact before it was fixed. Now that
+// VehicleObb is the single correct implementation, that A/B distinction is obsolete (and was itself
+// computed with the wrong axis): this test now computes ONE measurement per step via
+// VehicleObb.Penetration.
 //
 // A separate sub-investigation characterises exact same-lane/same-pos co-location events (two cars
 // reporting the identical engine-authoritative lane + pos + speed) without attempting to fix them.
 //
-// Pure diagnosis: does not touch src/Sim.Core/**, src/Sim.Ingest/**, or src/Sim.LiveCity/**. See
-// DemoCarOverlapInvariantTests for the pass/fail bounded-regression guard on the same phenomenon.
+// Pure diagnosis: does not touch src/Sim.Core/**, src/Sim.LiveCity/**. See DemoCarOverlapInvariantTests
+// for the pass/fail bounded-regression guard on the same phenomenon.
 public class F3JunctionOverlapDiagTests
 {
     private readonly ITestOutputHelper _out;
@@ -84,42 +85,6 @@ public class F3JunctionOverlapDiagTests
         }
 
         throw new InvalidOperationException("could not resolve the SumoSharp repo root.");
-    }
-
-    // Oriented-box overlap depth (metres) between two vehicles, each encoded as the 5-tuple
-    // [cx, cy, headingDeg, length, width]. COPIED verbatim (same math) from ObbOverlap in
-    // RunLiveCityDrCheck (src/Sim.Viz/Program.cs). Heading maps to forward = (-sinθ, cosθ) -- the
-    // convention validated in §F4 (NOT (cosθ, sinθ), which rotates every box 90°); right axis is
-    // perpendicular. Separating-axis test over the 4 box axes; returns the minimum penetration across
-    // axes, or 0 if any axis separates (a separating axis => disjoint).
-    private static double ObbOverlap(double[] a, double[] b)
-    {
-        double PenOnAxis(double axX, double axY)
-        {
-            double Half(double[] v, double ax, double ay)
-            {
-                var th = v[2] * Math.PI / 180.0;
-                var fx = -Math.Sin(th); var fy = Math.Cos(th);   // forward (length) axis
-                var rx = -fy; var ry = fx;                       // right (width) axis
-                var hl = v[3] * 0.5; var hw = v[4] * 0.5;
-                return Math.Abs((fx * ax + fy * ay) * hl) + Math.Abs((rx * ax + ry * ay) * hw);
-            }
-            var centerGap = Math.Abs((b[0] - a[0]) * axX + (b[1] - a[1]) * axY);
-            return Half(a, axX, axY) + Half(b, axX, axY) - centerGap; // >0 => overlap on this axis
-        }
-        double minPen = double.PositiveInfinity;
-        foreach (var v in new[] { a, b })
-        {
-            var th = v[2] * Math.PI / 180.0;
-            var fx = Math.Cos(th); var fy = Math.Sin(th);
-            foreach (var (ax, ay) in new[] { (fx, fy), (-fy, fx) })
-            {
-                var p = PenOnAxis(ax, ay);
-                if (p <= 0) return 0; // separating axis found -> disjoint
-                if (p < minPen) minPen = p;
-            }
-        }
-        return minPen;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -250,20 +215,18 @@ public class F3JunctionOverlapDiagTests
         var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
         using var sim = new LiveCitySim(cfg);
 
-        var frontEvents = new List<EventRow>();
-        var centreEvents = new List<EventRow>();
+        var events = new List<EventRow>();
 
-        double frontWorstPen = 0.0, centreWorstPen = 0.0;
-        string frontWorstPair = "(none)", centreWorstPair = "(none)";
-        int frontWorstStep = -1, centreWorstStep = -1;
-        int frontMaxPairsInAnyFrame = 0, centreMaxPairsInAnyFrame = 0;
+        double worstPen = 0.0;
+        string worstPair = "(none)";
+        int worstStep = -1;
+        int maxPairsInAnyFrame = 0;
 
         var coLocated = new List<CoLocatedRow>();
         var distinctLengthWidth = new SortedSet<(double Length, double Width)>();
 
         // Throughput/congestion sub-investigation (question 4 of the F3 A/B handoff): does the flag
-        // visibly reduce throughput or increase stopped cars? Variant-independent (driven by the
-        // engine-authoritative sample, not either OBB anchor) -- computed once per step.
+        // visibly reduce throughput or increase stopped cars? Computed once per step.
         var distinctVehicleNamesEverObserved = new HashSet<string>();
         var stoppedCountByFinalStep = new List<(int Step, int Stopped, int Total)>();
         var stoppedVehicleNamesInFinalWindow = new HashSet<string>();
@@ -314,20 +277,7 @@ public class F3JunctionOverlapDiagTests
                 distinctLengthWidth.Add((c.Length, c.Width));
             }
 
-            // CENTRE-CORRECTED anchor per car this step: back-shift the sampled front-bumper (X,Y) by
-            // Length/2 along forward = (-sin th, cos th) to recover the true OBB centre. Computed from
-            // the SAME sampled frame as the front-anchor variant below -- identical trajectories.
-            var centreXY = new (double X, double Y)[cars.Count];
-            for (var i = 0; i < cars.Count; i++)
-            {
-                var th = cars[i].AngleDeg * Math.PI / 180.0;
-                var fx = -Math.Sin(th); var fy = Math.Cos(th);
-                var halfLen = cars[i].Length / 2.0;
-                centreXY[i] = (cars[i].X - halfLen * fx, cars[i].Y - halfLen * fy);
-            }
-
-            var pairsThisFrameFront = 0;
-            var pairsThisFrameCentre = 0;
+            var pairsThisFrame = 0;
 
             for (var i = 0; i < cars.Count; i++)
             {
@@ -336,58 +286,36 @@ public class F3JunctionOverlapDiagTests
                     byHandle.TryGetValue(cars[i].Handle, out var wa);
                     byHandle.TryGetValue(cars[j].Handle, out var wb);
 
-                    // FRONT-ANCHOR (current, as committed): (X,Y) passed straight through.
-                    var penFront = ObbOverlap(
-                        new[] { cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
-                        new[] { cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
-                    if (penFront > NoiseThreshold)
+                    // VehicleObb.Penetration takes the FRONT-BUMPER poses directly and does the
+                    // centring (and the correct forward-axis basis) internally.
+                    var pen = VehicleObb.Penetration(
+                        cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width,
+                        cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width);
+                    if (pen > NoiseThreshold)
                     {
-                        pairsThisFrameFront++;
-                        frontEvents.Add(new EventRow(
+                        pairsThisFrame++;
+                        events.Add(new EventRow(
                             st,
                             cars[i].Name, wa.LaneId ?? string.Empty, wa.Pos, wa.PosLat, wa.Speed, wa.Tl,
                             cars[j].Name, wb.LaneId ?? string.Empty, wb.Pos, wb.PosLat, wb.Speed, wb.Tl,
-                            penFront));
+                            pen));
 
-                        if (penFront > frontWorstPen)
+                        if (pen > worstPen)
                         {
-                            frontWorstPen = penFront;
+                            worstPen = pen;
                             var a = cars[i].Name; var b = cars[j].Name;
-                            frontWorstPair = string.CompareOrdinal(a, b) < 0 ? a + " / " + b : b + " / " + a;
-                            frontWorstStep = st;
-                        }
-                    }
-
-                    // CENTRE-CORRECTED: back-shifted (X,Y) as the OBB centre; everything else identical.
-                    var penCentre = ObbOverlap(
-                        new[] { centreXY[i].X, centreXY[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
-                        new[] { centreXY[j].X, centreXY[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
-                    if (penCentre > NoiseThreshold)
-                    {
-                        pairsThisFrameCentre++;
-                        centreEvents.Add(new EventRow(
-                            st,
-                            cars[i].Name, wa.LaneId ?? string.Empty, wa.Pos, wa.PosLat, wa.Speed, wa.Tl,
-                            cars[j].Name, wb.LaneId ?? string.Empty, wb.Pos, wb.PosLat, wb.Speed, wb.Tl,
-                            penCentre));
-
-                        if (penCentre > centreWorstPen)
-                        {
-                            centreWorstPen = penCentre;
-                            var a = cars[i].Name; var b = cars[j].Name;
-                            centreWorstPair = string.CompareOrdinal(a, b) < 0 ? a + " / " + b : b + " / " + a;
-                            centreWorstStep = st;
+                            worstPair = string.CompareOrdinal(a, b) < 0 ? a + " / " + b : b + " / " + a;
+                            worstStep = st;
                         }
                     }
                 }
             }
 
-            if (pairsThisFrameFront > frontMaxPairsInAnyFrame) frontMaxPairsInAnyFrame = pairsThisFrameFront;
-            if (pairsThisFrameCentre > centreMaxPairsInAnyFrame) centreMaxPairsInAnyFrame = pairsThisFrameCentre;
+            if (pairsThisFrame > maxPairsInAnyFrame) maxPairsInAnyFrame = pairsThisFrame;
 
             // Co-located-pair sub-investigation: same lane id, |posA - posB| < CoLocationThreshold, at
-            // this step -- driven purely by the engine-authoritative witness (Pos/PosLat/Speed), so it
-            // is identical for both OBB variants. Characterisation only -- not a fix.
+            // this step -- driven purely by the engine-authoritative witness (Pos/PosLat/Speed).
+            // Characterisation only -- not a fix.
             for (var i = 0; i < witnesses.Count; i++)
             {
                 for (var j = i + 1; j < witnesses.Count; j++)
@@ -414,29 +342,10 @@ public class F3JunctionOverlapDiagTests
         }
 
         // ============================================================================================
-        // Per-variant reports.
+        // Report (single correctly-anchored measurement -- the old FRONT-ANCHOR vs CENTRE-CORRECTED
+        // A/B split is obsolete now that VehicleObb.Penetration is the one correct implementation).
         // ============================================================================================
-        var frontStats = PrintVariantReport(
-            "FRONT-ANCHOR (current, as committed)", frontEvents, frontWorstPen, frontWorstPair, frontWorstStep, frontMaxPairsInAnyFrame);
-        var centreStats = PrintVariantReport(
-            "CENTRE-CORRECTED", centreEvents, centreWorstPen, centreWorstPair, centreWorstStep, centreMaxPairsInAnyFrame);
-
-        // ============================================================================================
-        // DELTA section.
-        // ============================================================================================
-        _out.WriteLine(new string('=', 100));
-        _out.WriteLine("§F3 DIAGNOSTIC -- DELTA (FRONT-ANCHOR -> CENTRE-CORRECTED)");
-        _out.WriteLine(new string('=', 100));
-        _out.WriteLine(
-            $"totals: {frontEvents.Count} -> {centreEvents.Count} events; "
-            + $"worst penetration {frontWorstPen:F3} m -> {centreWorstPen:F3} m; "
-            + $"max pairs/frame {frontMaxPairsInAnyFrame} -> {centreMaxPairsInAnyFrame}");
-        foreach (var bucket in Buckets)
-        {
-            var f = frontStats[bucket];
-            var c = centreStats[bucket];
-            _out.WriteLine($"  {bucket}: {f.Count} -> {c.Count} events; worst {f.Worst:F3} m -> {c.Worst:F3} m");
-        }
+        PrintVariantReport("CORRECTED (VehicleObb: fixed axis + front-bumper anchor)", events, worstPen, worstPair, worstStep, maxPairsInAnyFrame);
 
         // ============================================================================================
         // Co-located pair sub-investigation.
@@ -529,10 +438,8 @@ public class F3JunctionOverlapDiagTests
         _out.WriteLine("");
         _out.WriteLine(new string('=', 100));
         _out.WriteLine(
-            $"§F3 DIAGNOSTIC totals -- FRONT-ANCHOR: {frontEvents.Count} events, worst {frontWorstPen:F3} m "
-            + $"on [{frontWorstPair}] @ step {frontWorstStep}, max pairs/frame {frontMaxPairsInAnyFrame}. "
-            + $"CENTRE-CORRECTED: {centreEvents.Count} events, worst {centreWorstPen:F3} m on [{centreWorstPair}] "
-            + $"@ step {centreWorstStep}, max pairs/frame {centreMaxPairsInAnyFrame}. "
+            $"§F3 DIAGNOSTIC totals -- CORRECTED: {events.Count} events, worst {worstPen:F3} m "
+            + $"on [{worstPair}] @ step {worstStep}, max pairs/frame {maxPairsInAnyFrame}. "
             + "This test makes NO assertions -- it always passes by design.");
         _out.WriteLine(new string('=', 100));
 
@@ -590,9 +497,8 @@ public class F3JunctionOverlapDiagTests
         var activeRuns = new Dictionary<VehicleHandle, RunState>();
         var completedRuns = new List<(VehicleHandle Handle, RunState Run)>();
 
-        // ---- B. F3-target bucket, CENTRE-CORRECTED anchor only (the hypothesis's own preferred
-        // anchor, per the F3 handoff) --------------------------------------------------------------
-        var centreEvents = new List<EventRow>();
+        // ---- B. F3-target bucket, via the corrected VehicleObb.Penetration measurement ------------
+        var events = new List<EventRow>();
 
         for (var st = 0; st < steps; st++)
         {
@@ -653,16 +559,8 @@ public class F3JunctionOverlapDiagTests
                 }
             }
 
-            // ---- B: CENTRE-CORRECTED overlap events (identical math to F3_ClassifyAuthoritativeOverlaps) ----
-            var centreXY = new (double X, double Y)[cars.Count];
-            for (var i = 0; i < cars.Count; i++)
-            {
-                var th = cars[i].AngleDeg * Math.PI / 180.0;
-                var fx = -Math.Sin(th); var fy = Math.Cos(th);
-                var halfLen = cars[i].Length / 2.0;
-                centreXY[i] = (cars[i].X - halfLen * fx, cars[i].Y - halfLen * fy);
-            }
-
+            // ---- B: overlap events via VehicleObb.Penetration (identical math to
+            // F3_ClassifyAuthoritativeOverlaps -- front-bumper poses in, correct axis + anchor internally) ----
             for (var i = 0; i < cars.Count; i++)
             {
                 for (var j = i + 1; j < cars.Count; j++)
@@ -670,12 +568,12 @@ public class F3JunctionOverlapDiagTests
                     byHandle.TryGetValue(cars[i].Handle, out var wa);
                     byHandle.TryGetValue(cars[j].Handle, out var wb);
 
-                    var pen = ObbOverlap(
-                        new[] { centreXY[i].X, centreXY[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
-                        new[] { centreXY[j].X, centreXY[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
+                    var pen = VehicleObb.Penetration(
+                        cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width,
+                        cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width);
                     if (pen > NoiseThreshold)
                     {
-                        centreEvents.Add(new EventRow(
+                        events.Add(new EventRow(
                             st,
                             cars[i].Name, wa.LaneId ?? string.Empty, wa.Pos, wa.PosLat, wa.Speed, wa.Tl,
                             cars[j].Name, wb.LaneId ?? string.Empty, wb.Pos, wb.PosLat, wb.Speed, wb.Tl,
@@ -734,12 +632,12 @@ public class F3JunctionOverlapDiagTests
         // ============================================================================================
         _out.WriteLine("");
         _out.WriteLine(new string('=', 100));
-        _out.WriteLine("§F3-STOP DIAGNOSTIC -- B. Attribution of F3 overlaps (CENTRE-CORRECTED anchor)");
+        _out.WriteLine("§F3-STOP DIAGNOSTIC -- B. Attribution of F3 overlaps (VehicleObb.Penetration)");
         _out.WriteLine(new string('=', 100));
 
         void ReportBucketSplit(string bucketName, bool withLanePairTable)
         {
-            var inBucket = centreEvents.Where(e => e.Bucket == bucketName).ToList();
+            var inBucket = events.Where(e => e.Bucket == bucketName).ToList();
             var stoppedFoe = inBucket.Where(e => e.SpdA < stoppedThreshold || e.SpdB < stoppedThreshold).ToList();
             var bothMoving = inBucket.Where(e => e.SpdA >= stoppedThreshold && e.SpdB >= stoppedThreshold).ToList();
 
@@ -835,7 +733,7 @@ public class F3JunctionOverlapDiagTests
         _out.WriteLine("§F3-STOP DIAGNOSTIC -- VERDICT");
         _out.WriteLine(new string('=', 100));
 
-        var f3Bucket = centreEvents.Where(e => e.Bucket == BothInternalDifferentLane).ToList();
+        var f3Bucket = events.Where(e => e.Bucket == BothInternalDifferentLane).ToList();
         var f3StoppedFoe = f3Bucket.Count(e => e.SpdA < stoppedThreshold || e.SpdB < stoppedThreshold);
         var f3BothMoving = f3Bucket.Count - f3StoppedFoe;
         var majorityStoppedFoe = f3Bucket.Count > 0 && f3StoppedFoe > f3BothMoving;

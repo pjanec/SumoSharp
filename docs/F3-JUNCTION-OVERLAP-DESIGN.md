@@ -34,20 +34,50 @@ handoff are recorded here so nobody re-derives them:
   copied `ObbOverlap` inside `DemoCarOverlapInvariantTests`. **The committed test is the repro instrument**
   (better: offline, committed, no SUMO).
 
-## 1. What the 61 overlaps actually are — F3 is 8 of them, not 61
+## 1. What the overlaps actually are — F3 is a MINORITY of them (15 of 45, corrected)
 
 Lane-classifying every overlap event (instrument: `tests/Sim.LiveCity.Tests/F3JunctionOverlapDiagTests.cs`,
 always-passing diagnostic) splits the 61 into **four unrelated causes**:
 
-| Bucket | Events | Worst | Cause |
+> **⚠ THESE FIGURES ARE THE BROKEN-MATH BASELINE — superseded.** They were measured with a reflected
+> forward axis and a front-bumper-as-centre anchor (`NEED-obb-anchor-halflength.md`). Corrected values are
+> in the second table; the *shape* of the conclusion (F3 is a minority of overlaps, four unrelated causes)
+> survives, but every number moved.
+
+| Bucket | Events (BROKEN) | Worst (BROKEN) | Cause |
 | --- | --- | --- | --- |
-| `BOTH-INTERNAL-DIFFERENT-LANE` | **8** | **3.035 m** | **TRUE F3** — two cars on crossing internal lanes of one junction |
+| `BOTH-INTERNAL-DIFFERENT-LANE` | 8 | 3.035 m | **TRUE F3** — two cars on crossing internal lanes of one junction |
 | `ONE-INTERNAL-ONE-NORMAL` | 31 | 1.800 m | almost all `pos≈232.40, spd=0.00, tl=r` — a car stopped at a red stop line |
 | `BOTH-NORMAL-SAME-LANE` | 14 | 1.800 m | not a junction case at all; includes *exactly co-located* cars |
 | `BOTH-NORMAL-DIFFERENT-LANE` | 8 | 1.800 m | `e_d_6_5_d_5_5_2` × `e_d_garage_stub_d_5_5_1` — two **normal** lanes overlapping |
 | `BOTH-INTERNAL-SAME-LANE` | 0 | — | — |
 
-**Only the 8-event bucket is in F3's blast radius.** Consequences, stated up front because they change scope:
+### CORRECTED (axis + anchor fixed, `VehicleObb`) — use these
+
+| Bucket | Events | Worst | Δ vs broken |
+| --- | --- | --- | --- |
+| **`BOTH-INTERNAL-DIFFERENT-LANE`** (TRUE F3) | **15** | **2.382 m** (`__veh109/__veh163`, step 185) | events **8 → 15**, worst **↓0.653 m** |
+| `ONE-INTERNAL-ONE-NORMAL` | **8** | 1.800 m | events **31 → 8** (−74%) |
+| `BOTH-NORMAL-SAME-LANE` | 14 | 1.800 m | unchanged |
+| `BOTH-NORMAL-DIFFERENT-LANE` | 8 | 1.800 m | unchanged |
+| `BOTH-INTERNAL-SAME-LANE` | 0 | — | unchanged |
+| **TOTAL** | **45** | **2.382 m** | 61 → 45 |
+
+**The direction is not uniform, and that is the expected signature.** The two `BOTH-NORMAL` buckets are
+*unchanged* — exactly the cases where the bug is provably inert (identically-posed cars on straight lanes:
+the axis error is a harmless sign flip and the anchor cancels). The F3 bucket nearly doubled in count while
+its worst depth fell, because both cars there sit on *curved diagonal* internal lanes, where a reflected
+axis is maximally wrong — it manufactured one deep false positive and hid seven real overlaps.
+
+**The famous `__veh134/__veh38` pair now peaks at 1.022 m, not 3.035 m** (same step 197). The headline
+number that drove this whole investigation was mostly measurement artefact.
+
+**Revised STOPPED-FOE vs BOTH-MOVING split for the F3 bucket: 3 stopped-foe (worst 2.382 m) vs
+12 BOTH-MOVING (worst 1.831 m)** — 80% both-moving, *strengthening* the earlier finding that the true F3
+residue is genuine simultaneous admission rather than cars parked in junctions.
+
+**Only the `BOTH-INTERNAL-DIFFERENT-LANE` bucket (15 of 45, corrected) is in F3's blast radius.**
+Consequences, stated up front because they change scope:
 
 - The handoff's **Pattern B is misdiagnosed.** It describes veh80/veh120 as "green ego crosses via internal
   lane `:d_5_5_6_1` through a stopped car". The per-step trace shows that for steps **51–57** veh80 is on
@@ -70,11 +100,18 @@ the box **CENTRE**, building `±Length/2` about it. **Every vehicle box is there
 `Length/2` (~2.2 m).** The true centre is
 
 ```
-centre = (X, Y) - (Length/2) * forward,   forward = (-sin θ, cos θ)
+centre = (X, Y) - (Length/2) * forward,   forward = (+sin θ, cos θ)
 ```
 
+⚠ **This section originally wrote `forward = (-sin θ, cos θ)` here — itself wrong.** That is a REFLECTION,
+not a sign flip: correct only on N/S/E/W headings, PERPENDICULAR at 45°, and therefore wrong on precisely the
+curved internal lanes F3 measures. Both bugs are now fixed together in `src/Sim.Ingest/VehicleObb.cs` and
+guarded by `VehicleObbConventionTests`, which derives the tangent from `LaneGeometry` itself across 2153 real
+internal lanes rather than restating the formula. See `NEED-obb-anchor-halflength.md`.
+
 This is the same *class* of bug as the heading-convention error the handoff warns about (§6, "3215→467 when
-fixed") — corrected on the heading axis, missed on the longitudinal anchor.
+fixed") — the handoff fixed a 90° rotation but installed a reflection, and "validated" it at `angle=90`, the
+one degenerate case where both agree.
 
 Direct consequence: a car stopped with its front bumper at the junction boundary gets a box poking ~2.2 m
 *into* the junction, manufacturing overlaps against anything on an internal lane — which is exactly the
@@ -84,8 +121,9 @@ signature of the 31-event `ONE-INTERNAL-ONE-NORMAL` bucket (`pos≈232.40, spd=0
 (`gap = leaderPos - leaderLength - egoPos`), so the anchor error never entered the simulation. It inflates
 the *reported* penetration depth and invents *phantom* events; it does not cause the F3 overlap.
 
-The A/B (front-anchor vs centre-corrected, same trajectories) quantifies exactly how much of each bucket
-survives; §7 records the outcome. **The F3 fix is judged on the centre-corrected numbers.**
+**The F3 fix is judged on the corrected numbers in §1's second table.** The earlier "front-anchor vs
+centre-corrected" A/B is obsolete: it varied the anchor while leaving the axis reflected, so neither of its
+two variants was right.
 
 ## 2. Root cause of the 8 true F3 overlaps — a faithful-port gap
 
