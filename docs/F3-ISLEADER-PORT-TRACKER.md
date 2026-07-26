@@ -63,11 +63,27 @@ report of "done" is not sufficient (CLAUDE.md, the orchestration loop).
       `ContTurnInsideJunctionGate` go default-ON, and does `IgnoreJunctionBlockerSeconds` stay at `-1`?
       Not yet decidable: with the deadlock unresolved, default-ON still costs teleports.
 
+## Stage 4 — the ACTUAL root cause: `MSInternalJunction` second-stage admission
+
+Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md` (§1 corrects the NEED doc's fix sketch).
+
+- [ ] **T3.1** parse internal junctions + build `InternalLaneFoes` by the **two-branch** rule
+      (parity-inert, no reader) — 5 success conditions, incl. pinning the two-branch rule non-vacuously
+      and corpus floors on the all-nets sweep
+- [ ] **T3.2** `InternalJunctionAdmissionConstraint` behind `InternalJunctionAdmissionGate`
+      (default OFF) — load-bearing condition: **veh 95 held in the bay while 102 occupies `:2336_3_0`**,
+      then ≤ 2 teleports with 95 and 102 arriving
+- [ ] **T3.3** measure, then the deferred defaults decision (all three gates together)
+
 ## Carried out of this workstream (not part of it)
 
 - [ ] `NEED-yield-request-reset-unported.md` — the `MSVehicle.cpp:3720-3731` reset. Needs a faithful
       `mySetRequest`; our `WillPass` omits `leavingCurrentIntersection`, so the obvious wiring would
       blank `ET`/`CET` for every stopped in-junction car. Design §5b.
+- [ ] `myInternalLinkFoes` (approaching-foe gating) + `addBlockedLink` mutual registration — omitted
+      from T3.2 on purpose (design §5): occupancy is the measured defect, approach-gating is a second
+      behaviour with a much larger blast radius, and bundling them would make the measurement
+      uninterpretable.
 - [ ] `NEED-linkstatechar-cont-entry-link.md` — `Engine.LinkStateChar` reads a cont link's *second*
       hop, so it returns the static `'m'` instead of the live TL state. Affects the
       `ClassifyTeleportKind` diagnostic label only. Design §2c.
