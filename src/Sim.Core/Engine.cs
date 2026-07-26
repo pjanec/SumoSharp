@@ -7010,9 +7010,52 @@ public sealed partial class Engine : IEngine
                 laneStopOffset = Math.Max(PositionEps, laneStopOffset);
                 var stopDist = Math.Max(0.0, seen - laneStopOffset);
 
-                constraint = Math.Min(
-                    constraint,
-                    StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+                if (MinorApproachArrivalSpeed)
+                {
+                    // SUMO does NOT plan a stop at the stop line here. MSVehicle.cpp:2806-2810, whose own
+                    // comment reads "vehicle decelerates just enough to be able to stop if necessary and
+                    // THEN ACCELERATES":
+                    //
+                    //   maxSpeedAtVisibilityDist = maximumSafeStopSpeed(visibilityDistance, maxDecel, ...)
+                    //   maxArrivalSpeed          = estimateSpeedAfterDistance(visibilityDistance,
+                    //                                  maxSpeedAtVisibilityDist, maxAccel)
+                    //   arrivalSpeed             = MIN2(vLinkPass, maxArrivalSpeed)
+                    //
+                    // The target is a NONZERO arrival speed, and -- the load-bearing difference -- it is a
+                    // CONSTANT, independent of how far away the junction is. Our stop-at-the-line form below
+                    // decays as sqrt(2*decel*seen), i.e. toward ZERO as the car reaches the line:
+                    //
+                    //   seen   20 m   15 m   10 m    7 m    5 m   4.6 m
+                    //   ours  13.42  11.62   9.49   7.94   6.71   6.43   m/s   (decays to 0 at the line)
+                    //   SUMO   7.99   7.99   7.99   7.99   7.99   7.99   m/s   (flat)
+                    //
+                    // So we are *weaker* than SUMO far out and much *stronger* close in -- we crawl through
+                    // every minor link where SUMO rolls through at ~8 m/s. This net has **1091** minor
+                    // connections, and `jyArm 2` (cautiousApproach) accounts for 30.4% of the samples where
+                    // a MOVING car is held under its own lane's limit, against a measured mean moving speed
+                    // of 7.99 m/s for us vs 10.96 m/s for SUMO (docs/DENSITY-DIFF-HARNESS-TRACKER.md).
+                    //
+                    // `estimateSpeedAfterDistance` is MSCFModel.cpp:765-769:
+                    //   MIN2(maxSpeed, sqrt(MAX2(0, 2*dist*accel + v*v)))
+                    var maxSpeedAtVisibilityDist =
+                        KraussModel.MaximumSafeStopSpeed(visibilityDistance, v.VType.Decel, headway: 0.0, dt);
+                    var maxArrivalSpeed = Math.Min(
+                        v.VType.MaxSpeed,
+                        Math.Sqrt(Math.Max(
+                            0.0,
+                            (2.0 * visibilityDistance * v.VType.Accel)
+                                + (maxSpeedAtVisibilityDist * maxSpeedAtVisibilityDist))));
+
+                    // MIN2(vLinkPass, maxArrivalSpeed): `laneVehicleMaxSpeed` is our vLinkPass analogue.
+                    constraint = Math.Min(constraint, Math.Min(laneVehicleMaxSpeed, maxArrivalSpeed));
+                }
+                else
+                {
+                    constraint = Math.Min(
+                        constraint,
+                        StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+                }
+
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 2; } // diag: cautiousApproach
             }
         }
@@ -12575,6 +12618,31 @@ public sealed partial class Engine : IEngine
     // OPEN-LOOP discharge test: at a fixed inflow where SUMO holds equilibrium, does our resident count stop
     // running away? See DENSITY-DIFF-HARNESS-DESIGN.md §1b for why closed-loop numbers cannot answer that.
     public bool KeepClearHeldPropagation { get; set; } = false;
+
+    // ❌ REFUTED AS A FAITHFUL PORT -- KEPT ONLY AS A SIGNPOST. DO NOT ENABLE.
+    //
+    // The idea: replace the minor-link stop-at-the-stop-line plan with SUMO's nonzero ARRIVAL SPEED target
+    // (MSVehicle.cpp:2806-2810, whose comment reads "decelerates just enough to be able to stop if necessary
+    // and then accelerates"). Our cap decays as sqrt(2*decel*seen) toward zero at the line; that formula is a
+    // CONSTANT ~7.99 m/s. With 1091 minor connections in the demo net, and `jyArm 2` accounting for 30.4% of
+    // the samples where a MOVING car is held under its lane limit, it looked like the whole deficit.
+    //
+    // MEASURED CAPACITY EFFECT -- LARGE AND REAL. Open-loop at 1.6 veh/s, the inflow where we collapse and
+    // SUMO stays steady: completed trips **2938 -> 4919 (+67%)**, verdict **RUNAWAY -> STEADY**, halting
+    // fraction 79.9% -> 29.7%. The collapse simply stopped happening.
+    //
+    // AND YET IT IS WRONG. With it on, **14+ goldens fail** -- RungC5WillPass, RungC4i/iii/iv/v/vi,
+    // Rung9b, RungC3OnRampMerge, RungER2, ContTurnSequence, DenseFlowDeadLaneDrain and more. The goldens ARE
+    // SUMO's own output, so they settle it: SUMO's realised behaviour on a minor approach matches our
+    // stop-at-the-line form, not this arrival-speed cap. `arrivalSpeed` in that SUMO branch is metadata
+    // feeding the DriveProcessItem's arrival TIME and junction arbitration -- it is not the vehicle's
+    // step speed, which is what this change wrongly made it.
+    //
+    // WHY IT IS KEPT rather than deleted: the +67% is the single largest capacity signal measured on this
+    // branch, and it localises where the capacity is hiding -- inside this arm's behaviour under load, in
+    // conditions no golden covers. Whatever the real fix is, it lives here. But it must be a change the
+    // goldens accept; this one is not. See docs/DENSITY-DIFF-HARNESS-TRACKER.md.
+    public bool MinorApproachArrivalSpeed { get; set; } = false;
 
     public bool ColocationSymmetryBreak { get; set; } = true;
 

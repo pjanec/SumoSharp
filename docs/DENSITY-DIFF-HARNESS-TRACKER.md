@@ -291,6 +291,65 @@ so on a 30 km/h lane a car driving the limit *correctly* counted as slow, and `f
 following arms took the top slots. **Third mislabel of this kind on the branch** (cf. `downstreamFree`,
 occupancy-vs-causation): the yardstick has to come from the same row as the measurement.
 
+---
+
+## ❌ DRAIN-2 / minor-approach arrival speed: +67% CAPACITY, AND FLATLY UNFAITHFUL
+
+The clearest lesson of the night, in one experiment.
+
+**The change.** `Engine.MinorApproachArrivalSpeed` replaces the minor-link stop-at-the-stop-line plan with
+SUMO's nonzero **arrival-speed** target (`MSVehicle.cpp:2806-2810`, comment: *"decelerates just enough to be
+able to stop if necessary and then accelerates"*). Ours decays as `sqrt(2·decel·seen)` toward **zero** at the
+line; that formula is a **constant 7.99 m/s**:
+
+| distance to junction | 20 m | 15 m | 10 m | 7 m | 5 m | 4.6 m |
+| --- | --- | --- | --- | --- | --- | --- |
+| ours | 13.42 | 11.62 | 9.49 | 7.94 | 6.71 | 6.43 |
+| SUMO formula | 7.99 | 7.99 | 7.99 | 7.99 | 7.99 | 7.99 |
+
+**The capacity effect is large and real.** Open-loop at **1.6 veh/s** — the inflow where we collapse and SUMO
+stays steady:
+
+| 1.6 veh/s | OFF | **ON** |
+| --- | --- | --- |
+| completed trips | 2938 | **4919 (+67%)** |
+| verdict | **RUNAWAY** (+57.8%) | **STEADY @503** |
+| halting fraction | 79.9% | **29.7%** |
+
+At 1.4 it is marginally negative (trips 4448 → 4364, resident 306 → 403), so the benefit is specifically
+*near saturation*: it prevents the crawl-to-stop cascade that triggers collapse.
+
+**AND IT IS WRONG.** With it on, **14+ goldens fail** — `RungC5WillPass`, `RungC4i/iii/iv/v/vi`, `Rung9b`,
+`RungC3OnRampMerge`, `RungER2` (×2), `ContTurnSequence`, `DenseFlowDeadLaneDrain`, `RungC4iiiSuccessiveLaneSpeed`,
+`RungHDgap3ParkedPassable`. **The goldens are SUMO's own output**, so they settle it: SUMO's realised minor
+approach matches our stop-at-the-line form. `arrivalSpeed` in that branch is metadata feeding the
+DriveProcessItem's arrival **time** and junction arbitration — not the vehicle's step speed, which is what
+this change wrongly made it. I had flagged that exact uncertainty while reading and chose to let measurement
+decide; the goldens decided.
+
+### ⚠️ THE LESSON, and it is the mirror of Lesson 1
+
+Lesson 1 says *"all goldens byte-identical ≠ parity-inert — the demo can move while goldens don't."* **This is
+the converse, and it is sharper: a change can transform the demo and be flatly wrong.** A +67% throughput win
+that eliminates gridlock is exactly the result one wants to believe, and it was a parity violation. **Neither
+surface alone can accept a change; both must.**
+
+**Kept, default OFF, labelled REFUTED — not deleted.** The +67% is the largest capacity signal measured on
+this branch and it localises where the capacity hides: **inside this arm's behaviour under load, in conditions
+no golden covers.** Whatever the real fix is, it lives in `jyArm 2`. But it must be one the goldens accept.
+
+### Scoreboard for the night: 0 for 2 on mechanism hypotheses
+
+| hypothesis | source | refuted by |
+| --- | --- | --- |
+| G1 `keepClear` held-propagation | NEED doc's own "highest impact" ranking | open-loop A/B (trips 2938 → **2762**) |
+| minor-approach arrival speed | SUMO source + the binder histogram | **14+ goldens** |
+
+Both were reasoned from source and both died to measurement. That is the third and fourth data points for
+`NEED-junctionyield-impatience-saturation.md`'s closing line — *"a single SUMO-oracle trace found in minutes
+what five reasoned-from-the-code interventions could not."* **The next attempt must start from a per-vehicle
+SUMO-vs-us trace inside `jyArm 2`, not from another reading of the source.**
+
 ## Known-answer anchors (an instrument that misses these is wrong, not interesting)
 
 | Anchor | Expected | Source |

@@ -416,6 +416,9 @@ public sealed class LiveCitySim : IDisposable
         // Default OFF; the measurement that decides it is the OPEN-LOOP discharge test, not the goldens.
         // LIVECITY_KEEPCLEARHELD=1.
         _engine.KeepClearHeldPropagation = EnvGate("LIVECITY_KEEPCLEARHELD", _engine.KeepClearHeldPropagation);
+        // Minor-link approach: SUMO's nonzero arrival-speed target instead of a stop-at-the-line plan.
+        // LIVECITY_MINORARRIVALSPEED=1.
+        _engine.MinorApproachArrivalSpeed = EnvGate("LIVECITY_MINORARRIVALSPEED", _engine.MinorApproachArrivalSpeed);
         // Fix 3: same-step lane-change arrival arbitration -- prevents the ONSET fixes 1/2 could only
         // mitigate (two cars changing into one slot in one step). LIVECITY_LANECHANGEARBITRATION=1.
         _engine.LaneChangeArrivalArbitration = EnvGate("LIVECITY_LANECHANGEARBITRATION", _engine.LaneChangeArrivalArbitration);

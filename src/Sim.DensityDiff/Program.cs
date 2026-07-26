@@ -64,13 +64,15 @@ cfg.CarInflowVehPerSec = inflow; // null => unchanged closed-loop demo behaviour
 // claims to measure -- the failure that once produced a 392-vs-1295 "OFF" baseline.
 var g1 = Environment.GetEnvironmentVariable("LIVECITY_KEEPCLEARHELD") == "1";
 Environment.SetEnvironmentVariable("LIVECITY_KEEPCLEARHELD", g1 ? "1" : "0");
+var minorArr = Environment.GetEnvironmentVariable("LIVECITY_MINORARRIVALSPEED") == "1";
+Environment.SetEnvironmentVariable("LIVECITY_MINORARRIVALSPEED", minorArr ? "1" : "0");
 
 var demandModel = inflow is null ? "closed-loop" : "open-loop";
 Console.WriteLine(
     $"Sim.DensityDiff: dataset='{cfg.DatasetDir}' steps={steps} out='{outPath}'");
 // Design §1b's standing rule: EVERY metric is labelled with the demand model that produced it. A capacity
 // claim from closed-loop demand is invalid however carefully the rest was measured.
-Console.WriteLine($"  G1 keepClear held-propagation = {(g1 ? "ON" : "OFF")}");
+Console.WriteLine($"  G1 keepClear held-propagation = {(g1 ? "ON" : "OFF")}   minor-approach arrival speed = {(minorArr ? "ON" : "OFF")}");
 Console.WriteLine(inflow is null
     ? $"  demand model = CLOSED-LOOP, cap={cars} concurrent  <-- CANNOT measure discharge (inflow self-throttles)"
     : $"  demand model = OPEN-LOOP, inflow={inflow.Value:F3} veh/s, occupancy cap IGNORED");
