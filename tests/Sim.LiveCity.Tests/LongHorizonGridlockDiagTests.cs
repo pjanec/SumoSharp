@@ -62,6 +62,16 @@ public class LongHorizonGridlockDiagTests
     private const double StoppedThreshold = 0.5;
     private const double FullyCoLocatedThreshold = 1.79; // width is 1.8 -> essentially fully co-located
 
+    // Every LIVECITY_* engine gate this diagnostic controls. Both configurations set ALL of them
+    // explicitly ("1"/"0") so no ambient shell value can leak into either column -- see RunConfig.
+    private static readonly string[] AllLiveCityGateVars =
+    {
+        "LIVECITY_CONTTURNFIX",
+        "LIVECITY_ISLEADERFIX",
+        "LIVECITY_INTERNALJUNCTIONFIX",
+        "LIVECITY_INSERTIONFOLLOWERGAP",
+    };
+
     private sealed record OverlapEvent(
         int Step, string NameA, string LaneA, double PosA, double SpdA,
         string NameB, string LaneB, double PosB, double SpdB, double Penetration,
@@ -148,9 +158,21 @@ public class LongHorizonGridlockDiagTests
     {
         // Gates are read directly from the environment INSIDE LiveCitySim's constructor (not routed
         // through LiveCityConfig), so set/clear them before constructing the sim.
-        Environment.SetEnvironmentVariable("LIVECITY_CONTTURNFIX", gatesOn ? "1" : null);
-        Environment.SetEnvironmentVariable("LIVECITY_ISLEADERFIX", gatesOn ? "1" : null);
-        Environment.SetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX", gatesOn ? "1" : null);
+        //
+        // ⚠ EVERY gate must be set EXPLICITLY for BOTH configurations -- never left to the ambient
+        // environment. These variables are PROCESS-GLOBAL, so a value inherited from the caller's shell
+        // silently contaminates the configuration this method claims to be measuring. That is not
+        // hypothetical: an A/B run of this very diagnostic with LIVECITY_INSERTIONFOLLOWERGAP=1 exported in
+        // the shell produced an "OFF" column of 392 arrivals / 6567 same-lane overlaps against the true OFF
+        // baseline of 1295 / 492 -- because the OFF config cleared only the three junction gates and
+        // inherited the fourth. It is the same process-global-env failure already documented for the shim
+        // in tests/Sim.ParityTests/SumoShimEnvCollection.cs.
+        //
+        // CONTRACT: adding a new LIVECITY_* engine gate REQUIRES adding it to this list.
+        foreach (var gate in AllLiveCityGateVars)
+        {
+            Environment.SetEnvironmentVariable(gate, gatesOn ? "1" : "0");
+        }
 
         var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
         using var sim = new LiveCitySim(cfg);
@@ -312,9 +334,10 @@ public class LongHorizonGridlockDiagTests
         result.TeleportYield = engine.TeleportCountYield;
         result.TeleportWrongLane = engine.TeleportCountWrongLane;
 
-        Environment.SetEnvironmentVariable("LIVECITY_CONTTURNFIX", null);
-        Environment.SetEnvironmentVariable("LIVECITY_ISLEADERFIX", null);
-        Environment.SetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX", null);
+        foreach (var gate in AllLiveCityGateVars)
+        {
+            Environment.SetEnvironmentVariable(gate, null);
+        }
 
         return result;
     }

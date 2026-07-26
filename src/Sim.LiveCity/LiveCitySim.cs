@@ -366,6 +366,11 @@ public sealed class LiveCitySim : IDisposable
         // bucket re-measurement would report "unchanged" for the trivial reason that nothing was enabled
         // -- an UNMEASURED condition masquerading as a neutral result. LIVECITY_INTERNALJUNCTIONFIX=1.
         _engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX") == "1";
+        // H-INS insertion follower-gap (pure-overlap) check -- docs/NEED-same-step-double-placement-colocation.md.
+        // Refuses a departure that would bury the new car's REAR inside a car already queued just behind the
+        // depart position. SUMO refuses these BY DEFAULT (insertionChecks = InsertionCheck::ALL), so this is a
+        // faithfulness increase. OFF by default here only until measured. LIVECITY_INSERTIONFOLLOWERGAP=1.
+        _engine.InsertionFollowerGapCheck = Environment.GetEnvironmentVariable("LIVECITY_INSERTIONFOLLOWERGAP") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).

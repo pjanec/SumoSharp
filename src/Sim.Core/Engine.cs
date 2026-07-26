@@ -3664,6 +3664,7 @@ public sealed partial class Engine : IEngine
         // GAP-3 follow-up: skip IsParked -- a parked vehicle is off the lane (MSVehicleTransfer),
         // so it must not act as the insertion leader either (gated, byte-identical elsewhere).
         VehicleRuntime? leader = null;
+        VehicleRuntime? follower = null;   // H-INS: nearest vehicle BEHIND insertPos -- see below.
         foreach (var other in ActiveVehicles())
         {
             if (other.IsParked || other.LaneHandle != laneHandle)
@@ -3674,6 +3675,26 @@ public sealed partial class Engine : IEngine
             if (other.Kinematics.Pos >= insertPos && (leader is null || other.Kinematics.Pos < leader.Kinematics.Pos))
             {
                 leader = other;
+            }
+
+            // H-INS fix (docs/NEED-same-step-double-placement-colocation.md): the loop above only ever
+            // considers a vehicle AT OR AHEAD of `insertPos` (`Pos >= insertPos`), so a vehicle sitting
+            // just BEHIND the insertion point was never examined at all -- and inserting in front of it
+            // buries the new vehicle's REAR inside the existing vehicle's body. Measured in the live-city
+            // demo: a car departing at a fixed offset (~5.65 / 6.95 / 8.90 m) landing on top of a car
+            // already queued near the lane start, which then stays byte-identical to it (identical lane,
+            // pos and speed) for tens of steps because Krauss applies identical forces to a perfectly
+            // symmetric pair.
+            //
+            // SUMO checks this and REFUSES the insertion. MSLane::isInsertionSuccess runs a FOLLOWER pass
+            // after the leader pass (MSLane.cpp, `getFollowersOnConsecutive(aVehicle,
+            // aVehicle->getBackPositionOnLane(), false)`) and bails when `followers[i].second < 0` under
+            // `InsertionCheck::COLLISION` -- and `insertionChecks` defaults to `InsertionCheck::ALL`
+            // (SUMOVehicleParameter.cpp:60), so this is SUMO's DEFAULT behaviour, not an option. Porting
+            // it therefore INCREASES faithfulness rather than deviating.
+            if (other.Kinematics.Pos < insertPos && (follower is null || other.Kinematics.Pos > follower.Kinematics.Pos))
+            {
+                follower = other;
             }
         }
 
@@ -3704,6 +3725,29 @@ public sealed partial class Engine : IEngine
             : isMaxSpeed
                 ? KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType)
                 : v.Def.DepartSpeed.Literal;
+
+        // H-INS (docs/NEED-same-step-double-placement-colocation.md): SUMO's FOLLOWER pass in
+        // MSLane::isInsertionSuccess, restricted to its pure-overlap arm. SUMO bails when
+        // `followers[i].second < 0` under `InsertionCheck::COLLISION`, where that gap is measured
+        // body-to-body -- follower FRONT to ego BACK, with no minGap term (minGap lives in
+        // `backGapNeeded`, the separate FOLLOWER_GAP arm). `insertionChecks` defaults to
+        // `InsertionCheck::ALL` (SUMOVehicleParameter.cpp:60), so refusing here is SUMO's own default.
+        //
+        // DELIBERATELY NOT PORTED: the `followers[i].second < backGapNeeded` (FOLLOWER_GAP) arm, which
+        // additionally refuses an insertion whose rear gap is merely *uncomfortable* rather than
+        // overlapping. That would refuse many more insertions and change throughput well beyond the
+        // measured defect; this arm targets exactly the body interpenetration that violates
+        // docs/CONSTRAINT-high-realism-artefact-ladder.md rung 3. Recorded as a scoped omission.
+        if (InsertionFollowerGapCheck && follower is not null)
+        {
+            var egoBackPos = insertPos - v.VType.Length;
+            var rearGap = egoBackPos - follower.Kinematics.Pos;
+            if (rearGap < 0)
+            {
+                // The new vehicle's rear would be inside the follower's body. SUMO does not insert.
+                return false;
+            }
+        }
 
         if (leader is not null)
         {
@@ -12295,6 +12339,19 @@ public sealed partial class Engine : IEngine
     // (goldens, bench hash, the five gridlock diagnostics, live-city overlap buckets) before any
     // default changes. Flipping this default is an owner decision (design §6.4), not a test
     // outcome.
+    // H-INS fix (docs/NEED-same-step-double-placement-colocation.md): port of the pure-overlap arm of
+    // MSLane::isInsertionSuccess's FOLLOWER pass -- refuse an insertion whose REAR would land inside a
+    // vehicle already sitting just behind the depart position. Our leader scan only ever looked AHEAD
+    // (`Pos >= insertPos`), so this case was unchecked and produced measured body interpenetration in the
+    // live-city demo (a car departing at ~5.65 m on top of a car queued at the lane start, then holding a
+    // byte-identical pose with it for tens of steps).
+    //
+    // SUMO does this BY DEFAULT (`insertionChecks` = `InsertionCheck::ALL`, SUMOVehicleParameter.cpp:60),
+    // so enabling it is a faithfulness INCREASE. Default OFF only until the golden/diagnostic measurement
+    // is in, per the standing rule that a behavioural change ships flag-gated until measured
+    // (docs/F3-SESSION-LOG.md §7 Lesson 1: goldens alone are not sufficient evidence).
+    public bool InsertionFollowerGapCheck { get; set; } = false;
+
     public bool JunctionIsLeaderGate { get; set; } = false;
 
     // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3, §6; docs/

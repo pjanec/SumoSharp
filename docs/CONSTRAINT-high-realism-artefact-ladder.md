@@ -58,19 +58,33 @@ another** — occurring during ordinary driving, not as an unblock. That is cate
 *identical pose* for 9 consecutive steps). It was previously parked as "independent"; under this
 constraint it is **the top remaining believability defect** and the parking decision was wrong.
 
-## ⚠ Open question, not yet measured
+## MEASURED — in-zone violation split (was an open question)
 
-**How many of those 696 same-lane overlaps fall inside the high-realism pocket?** The pocket is a circle
-(`HighRealismPocketX/Y`, `HighRealismPromoteRadius`) and every overlap event carries the two vehicles'
-positions, so this is directly measurable — it just has not been done. It matters for urgency, not for the
-verdict:
+Pocket measured at centre **(2351.1, 2363.2)**, promote radius **70 m** (demote 100 m):
 
-- if they cluster **inside** the pocket, this is the demo's most visible remaining flaw;
-- if they occur almost entirely **outside** it, the violation is real but far less visible, and priority
-  shifts accordingly.
+| Rung | Violation class | OFF total | OFF in-zone | ON total | ON in-zone |
+| --- | --- | --- | --- | --- | --- |
+| 3 | same-lane overlap (normal driving) | 492 | **28** (5.7%) | **696** | **115** (16.5%) |
+| 3 | same-target merge (2 dirs → 1 exit lane) | 4374 | **0** | **0** | **0** |
+| 2/3 | fully co-located (pen ≥ vehicle width) | 83015 | **17015** (20.5%) | **868** | **131** (15.1%) |
 
-Do not assume either answer. `LongHorizonGridlockDiagTests` already collects per-event positions, so adding
-the classification is small.
+- **In-zone fully-co-located violations collapse 17015 → 131 (−99.2%).**
+- **Same-lane overlap is 4× worse IN-ZONE (28 → 115)** and its in-zone share rises 5.7% → 16.5% — the
+  residual violation has become *more concentrated where it is least acceptable*.
+- Every overlap counted is **rung 3 by construction**: no unblock-by-overlap mechanism is enabled
+  (`IgnoreJunctionBlockerSeconds = -1`), so none is an excusable rung-2 recovery.
+
+**⚠ CAVEAT limiting every in-zone percentage above.** The pocket is **camera-driven**
+(`LiveCitySim.SetLcRealismZone`); in the headless diagnostic it sits at the net's geometric centre. A viewer
+moves the camera, so **any** part of the city can become high-realism. These columns describe *one pocket
+placement, not a bound* — **out-of-zone violations still matter.** This is also the likely explanation for
+0 in-zone same-target-merge events measured here despite the owner having observed that failure in the
+high-realism area: a different camera position. Do not use these percentages to deprioritise an
+out-of-zone defect.
+
+**Root cause of the remaining rung-3 violation is now known** — same-step double placement plus perfect
+symmetry: `NEED-same-step-double-placement-colocation.md`. It **supersedes** `NEED-colocated-vehicles.md`
+(symptom only) and **falsifies** `LANE-CHANGE-OVERLAP-DESIGN.md` §3 Stage 3's proposed clamp.
 
 ## Consequences for existing recommendations
 

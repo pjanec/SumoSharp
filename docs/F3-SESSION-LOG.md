@@ -863,7 +863,53 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     overlap and pause one of the cars" belongs**: deferring one of two simultaneous arrivals *is* the
     arbitration. **Recommended order (1) → (3) → (2).**
 
-**State at end of session 3:** gate green (**730/4/0** — +1 `LongHorizonGridlockDiagTests`, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+### Session 3 (continued) — FIX 1 SHIPPED: the insertion follower-gap check
+
+70. **Root cause pinned to a single line of logic.** `Engine.TryInsertOnLane`'s occupancy scan selects a
+    leader with `other.Kinematics.Pos >= insertPos` — so a vehicle sitting **just BEHIND** the depart
+    position was **never examined at all**. Inserting in front of it buries the new vehicle's **rear**
+    inside the existing body: depart at 5.65 m with a car queued at 5.00 m ⇒ **4.35 m of body overlap**.
+71. **SUMO refuses these BY DEFAULT — so this was a porting omission, not a deviation.**
+    `MSLane::isInsertionSuccess` runs a **FOLLOWER** pass after the leader pass
+    (`getFollowersOnConsecutive(aVehicle, getBackPositionOnLane(), false)`) and bails when
+    `followers[i].second < 0` under `InsertionCheck::COLLISION`; **`insertionChecks` defaults to
+    `InsertionCheck::ALL`** (`SUMOVehicleParameter.cpp:60`). Ported as `Engine.InsertionFollowerGapCheck`
+    (+ `LIVECITY_INSERTIONFOLLOWERGAP`). The gap is **body-to-body with NO minGap term** — SUMO keeps minGap
+    in `backGapNeeded`, the separate `FOLLOWER_GAP` arm, **deliberately not ported** (it refuses merely
+    *uncomfortable* rear gaps and would change throughput far beyond the measured defect).
+72. **⭐ ALL 661 GOLDENS BYTE-IDENTICAL WITH THE CHECK ON** — and the bench hash too
+    (`D96213B7BB4021A7`, par == single). Verified by temporarily forcing the default to `true` and running
+    the full suite: the **only** failure was my own `DefaultIsOff` guard, which *must* fail then (the same
+    shape as `IgnoreJunctionBlockerTests.DefaultIsMinusOne`). The reason it is inert is structural: goldens
+    were generated **by** SUMO, which already refuses these insertions, so no golden can contain one.
+73. **Demo effect, isolating the insertion check (junction gates ON in both):**
+
+    | Metric | 3 gates | + insertion check | |
+    | --- | --- | --- | --- |
+    | same-lane overlap events | 696 | **569** | ⬇ −18% |
+    | **same-lane IN-ZONE** | 115 | **35** | ⬇ **−70%** |
+    | fully co-located (≥ 1.79 m) | 868 | **548** | ⬇ −37% |
+    | **fully co-located IN-ZONE** | 131 | **38** | ⬇ **−71%** |
+    | total overlap events | 1823 | **1566** | ⬇ −14% |
+    | stopped to horizon | 59 | **49** | ⬇ better |
+    | completed trips | 2709 | **2675** | ⬆ −1.3% (cost) |
+
+    **The in-zone reduction is the believability-critical result: −70% / −71%.** The 1.3% throughput cost is
+    the expected price of refusing an unsafe departure. Against the original gates-OFF baseline, in-zone
+    same-lane is now **28 → 35** (was 28 → 115): near parity on the violation while throughput is **+107%**
+    and long stalls are eliminated.
+74. **⚠ MY OWN MEASUREMENT WAS CONTAMINATED FIRST — by the exact bug class I had documented hours earlier.**
+    Running the A/B with `LIVECITY_INSERTIONFOLLOWERGAP=1` exported in the shell produced an "OFF" column of
+    **392 arrivals / 6567 same-lane overlaps** against the true OFF baseline of **1295 / 492** — because
+    `RunConfig` cleared only the *three* junction gates and **inherited the fourth** from the ambient
+    environment. Same process-global-env failure as `SumoShimEnvCollection` (§9.43), this time in my own
+    harness. **Fixed structurally:** `AllLiveCityGateVars` now sets **every** gate explicitly to `"1"`/`"0"`
+    for **both** configurations, with a stated contract that a new `LIVECITY_*` gate must be added to that
+    list. Re-run reproduces the OFF baseline exactly, confirming the diagnosis.
+    **Standing lesson reinforced:** an env-var-configured A/B must set *every* variable it depends on, not
+    just the ones it is varying — inheriting one is indistinguishable from measuring it.
+
+**State at end of session 3:** gate green (**735/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
 **complete, faithful and safe but insufficient alone**; the load-bearing mechanism was **admission
