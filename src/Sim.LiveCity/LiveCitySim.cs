@@ -353,6 +353,19 @@ public sealed class LiveCitySim : IDisposable
         // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
         // mid-junction freeze it removes.
         _engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("LIVECITY_CONTTURNFIX") == "1";
+        // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
+        // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
+        // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
+        // other half of SUMO's `isLeader(...) || inTheWay()` disjunction (MSVehicle.cpp:3429) -- stayed
+        // true symmetrically. LIVECITY_ISLEADERFIX=1 for A/B.
+        _engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("LIVECITY_ISLEADERFIX") == "1";
+        // F3/internal-junction SECOND-STAGE admission (docs/F3-INTERNAL-JUNCTION-DESIGN.md) -- the port
+        // that actually fixes the deadlock (veh 95/102 both arrive at SUMO's own --ignore-junction-blocker
+        // default). OFF by default pending the owner's defaults decision. Wired here so the live-city F3
+        // overlap buckets can be A/B'd at all: without this line the demo never exercises the gate, so a
+        // bucket re-measurement would report "unchanged" for the trivial reason that nothing was enabled
+        // -- an UNMEASURED condition masquerading as a neutral result. LIVECITY_INTERNALJUNCTIONFIX=1.
+        _engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX") == "1";
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
