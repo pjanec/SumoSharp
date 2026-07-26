@@ -251,6 +251,56 @@ public sealed class PedLodManager
         return pts;
     }
 
+    // #4b (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §3.1): route from `pos` to `destination` via the nav
+    // graph; if that returns null -- `pos` has drifted OFF the walkable graph, the case that made the old
+    // `?? new[] { pos, destination }` fallback cut a single straight line across off-route -- RECOVER onto
+    // `lastRoute` (the ped's retained on-graph polyline to this SAME destination: its low-power path at a
+    // promotion, its steering route at a demotion). Splice from `pos` to the nearest vertex on that polyline
+    // and follow it to the end, yielding a multi-segment on-graph resume path instead of a beeline. Behaviour
+    // changes ONLY on the null path (rare -- SumoNavMesh usually projects a slightly-off pose back onto the
+    // graph); when FindPath succeeds the result is returned verbatim, so the common path is byte-identical.
+    // Falls back to the original beeline only when `lastRoute` is itself degenerate (e.g. a prior straight-
+    // line fallback), so this is never worse than before.
+    private IReadOnlyList<Vec2> RecoverRoute(Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute)
+    {
+        var routed = _navigation.FindPath(pos, destination);
+        if (routed is not null)
+        {
+            return routed;
+        }
+
+        if (lastRoute.Count >= 2)
+        {
+            var best = 0;
+            var bestD2 = double.PositiveInfinity;
+            for (var k = 0; k < lastRoute.Count; k++)
+            {
+                var d2 = (lastRoute[k] - pos).AbsSq;
+                if (d2 < bestD2)
+                {
+                    bestD2 = d2;
+                    best = k;
+                }
+            }
+
+            var recovered = new List<Vec2>(lastRoute.Count - best + 1) { pos };
+            for (var k = best; k < lastRoute.Count; k++)
+            {
+                if ((lastRoute[k] - recovered[^1]).Abs > 1e-9)
+                {
+                    recovered.Add(lastRoute[k]);
+                }
+            }
+
+            if (recovered.Count >= 2)
+            {
+                return recovered;
+            }
+        }
+
+        return new[] { pos, destination };
+    }
+
     // ADDITIVE (P2-3, docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-NAVMESH-CONTRACT.md): removes a ped
     // entirely -- the "arrived at its OD destination, despawn" case a demand generator needs, distinct
     // from a demotion (which keeps the ped, just switches its DR model). If the ped is currently
@@ -434,7 +484,7 @@ public sealed class PedLodManager
             var velocity = e.Model == PedDrModel.ActivityTimeline
                 ? e.Timeline!.VelocityAt(now)
                 : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
-            var steeringPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+            var steeringPath = RecoverRoute(pos, e.Destination, e.Path);
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
@@ -458,7 +508,7 @@ public sealed class PedLodManager
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var routed = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+            var routed = RecoverRoute(pos, e.Destination, e.Path);
             // Re-anchor the resume leg EXACTLY at the frozen high-power pose, so the low-power pose at the
             // demote instant is the ped's current position to machine precision (no pop across the LOD switch).
             var newPath = ReanchorAt(routed, pos);

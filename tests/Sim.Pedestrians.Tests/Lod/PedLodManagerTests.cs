@@ -641,6 +641,64 @@ public class PedLodManagerTests
         Assert.True(anySamples, "expected FreeKinematic samples in the stream (the two pinned peds)");
     }
 
+    // ---- #4b: off-graph route recovery (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §3.1) ---------
+    // A nav whose FindPath can be switched to return null on demand, to force the "pos is off the
+    // walkable graph" branch RecoverRoute must handle (instead of the old straight-line fallback).
+    private sealed class SwitchableNav : IPedNavigation
+    {
+        public IReadOnlyList<Vec2>? Result;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => Result;
+    }
+
+    [Fact]
+    public void Demote_WhenFindPathReturnsNull_RecoversOntoRetainedRoute_NotStraightLine()
+    {
+        // A real multi-vertex on-graph route to (15,0); the ped promotes on this route, then FindPath is
+        // switched OFF (null) before demotion so RecoverRoute must fall back onto the retained polyline.
+        var route = new List<Vec2> { new(0.0, 0.0), new(5.0, 0.0), new(10.0, 0.0), new(15.0, 0.0) };
+        var nav = new SwitchableNav { Result = route };
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        manager.AddPed(id: 1, route, MaxSpeed, Radius, now: 0.0);
+
+        var field = new InterestField();
+        var srcId = field.Register(new InterestSource(new Vec2(0.0, 0.0), PromoteRadius, DemoteRadius), InterestSourceKind.EntityAttached);
+        var noEntities = Array.Empty<WorldDisc>();
+
+        var now = 0.0;
+        for (var i = 0; i < 60 && manager.ModelOf(1) != PedDrModel.FreeKinematic; i++)
+        {
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+        }
+
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
+
+        // Now the ped is off-graph as far as the nav is concerned: FindPath returns null. Move the source
+        // away so it demotes; RecoverRoute must recover onto the retained steering route.
+        nav.Result = null;
+        field.Move(srcId, new Vec2(-10_000.0, -10_000.0));
+        var pathArcsBefore = publisher.PathArcRecordsSent.GetValueOrDefault(1);
+
+        for (var i = 0; i < 300 && manager.ModelOf(1) == PedDrModel.FreeKinematic; i++)
+        {
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+        }
+
+        Assert.Equal(PedDrModel.PathArc, manager.ModelOf(1));
+        Assert.True(publisher.PathArcRecordsSent[1] > pathArcsBefore, "expected a fresh PathArcRecord on demotion");
+
+        // The demotion route must be the RECOVERED multi-segment on-graph path, NOT the 2-point beeline
+        // [pos, destination] the old `?? new[] { pos, destination }` fallback would have produced.
+        var demotePath = publisher.Events.OfType<PathArcRecord>().Last(r => r.Id == 1).Path;
+        Assert.True(demotePath.Count >= 3,
+            $"off-graph demotion should recover a multi-segment route, got a {demotePath.Count}-point path (straight-line fallback?)");
+        // Its tail must reach the destination (the recovered route follows the retained polyline to its end).
+        Assert.True((demotePath[^1] - new Vec2(15.0, 0.0)).Abs < 1e-6, "recovered route must still end at the destination");
+    }
+
     // ---- P1-2: forced high-power (evac panic pin) -----------------------------------------------
 
     [Fact]

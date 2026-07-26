@@ -26,10 +26,13 @@ first-hand (re-run the gate / read the trace), never on a report.
   0.48 m max** at 1600 peds — the "wandering ORCA that won't switch back" was the #3 wire-fragmentation bug
   showing moving/demoted peds as frozen-then-extrapolating. **#4a leaky-dwell/watchdog is NOT needed** (would
   be machinery for a non-existent server bug). ← owner decision requested before dropping formally.
-- [ ] T3.1 — #4b off-graph route recovery — OPTIONAL cheap hardening only (straight-line fallback is 0.2% /
-  3 peds; genuine but tiny). Keep or skip per owner.
-- [x] ~~T3.2 — #4a leaky dwell + watchdog~~ — DROPPED (evidence: no stuck-ORCA reproduces at 400 or 1600, static
-  or moving zone; demotion is correct). Pending owner ratification.
+- [x] T3.1 — #4b off-graph route recovery — DONE (owner: "do it"). `PedLodManager.RecoverRoute`: when
+  `FindPath` returns null, recover onto the ped's retained on-graph route (nearest vertex + splice) instead of
+  the straight-line beeline; used at both promote and demote. Behaviour changes only on the null path (rare),
+  so the common path is byte-identical. Test `Demote_WhenFindPathReturnsNull_RecoversOntoRetainedRoute_NotStraightLine`.
+  Pedestrians 277/277, LiveCity 43/43.
+- [x] ~~T3.2 — #4a leaky dwell + watchdog~~ — DROPPED (owner ratified). Evidence: no stuck-ORCA reproduces at
+  400 or 1600 peds, static or moving zone, up to 250 s; demotion is correct; the visible wander was #3.
 
 ## Stage 4 — #6 idle clustering  — DONE (crosswalk-wait spread, not dest jitter)
 - [x] T4.1 — per-ped seeded **crosswalk-wait lateral spread** (`PedDemand.SplitWalkAtCrossings`): a waiting ped
@@ -48,9 +51,11 @@ first-hand (re-run the gate / read the trace), never on a report.
   owner ratification of the open items below still pending.)
 
 ## Open items awaiting owner
-- Ratify dropping #4a leaky-dwell/watchdog (evidence: no stuck-ORCA at 400/1600, static/moving, ≤250 s).
-- #4b off-graph route recovery: do the small hardening (0.2% / 3 peds) or skip?
-- #6 crossing style: keep step-back-to-kerb (converge onto crosswalk) or switch to diagonal-from-wait-spot?
+- ~~Drop #4a~~ — RATIFIED (dropped).
+- ~~#4b~~ — RATIFIED (done).
+- #6 crossing style: recommended **B (diagonal)** given crosswalks are wide; owner deciding from the diagram.
+  Current code is A (step-back); switching to B is a ~15-line change that also removes the direction reversal
+  (would make the PedBackstepProbe spread-isolation unnecessary).
 
 ---
 
