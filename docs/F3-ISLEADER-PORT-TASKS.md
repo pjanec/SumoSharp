@@ -178,10 +178,25 @@ Measure, with the flag ON, on **all four** surfaces, and record every number in 
    (`sumo --version` must print 1.20.0).
 3. `Sim.Bench` hash `D96213B7BB4021A7` and **par == single** (the determinism guard for §5c).
 4. All **five** gridlock diagnostics green; LiveCity 48/48; Pedestrians 272/272.
-5. **Re-measure the F3 overlap buckets** (log §3): total, worst penetration, max pairs/frame, and the
-   `BOTH-INTERNAL-DIFFERENT-LANE` stopped/both-moving split. Expect the 12 both-moving events to
-   drop. **Report this even if it worsens** — §6.3 notes the port may trade deadlock for overlap, and
-   the log's standing lesson is that a teleport count alone is not evidence.
+5. **Re-measure the F3 overlap buckets.** Expect the 12 both-moving events to drop. **Report this even
+   if it worsens** — design §6.3 notes the port may trade deadlock for overlap, and the log's standing
+   lesson is that a teleport count alone is not evidence.
+
+   **Baseline RE-CONFIRMED by running it** (not taken from the log), via
+   `dotnet test tests/Sim.LiveCity.Tests --filter "FullyQualifiedName~F3JunctionOverlapDiagTests"
+   --logger "console;verbosity=detailed"`, flag OFF:
+
+   | Metric | Baseline |
+   | --- | --- |
+   | `BOTH-INTERNAL-DIFFERENT-LANE` total | **15** |
+   | — STOPPED-FOE | 3, worst **2.382 m** (`__veh109`/`__veh163`, step 185) |
+   | — BOTH-MOVING | **12**, worst **1.831 m** (`__veh38`/`__veh116`, step 130) |
+   | `ONE-INTERNAL-ONE-NORMAL` total | 8, worst 1.800 m |
+   | vehicle-steps stopped on an internal lane | **206** of 29457 (2.2% of all stopped steps) |
+
+   Note for T2.3: several both-moving events have the two cars at **identical speeds** (2.600/2.600,
+   3.900/3.900), so the tie-break's speed-equal rung — and hence the ordinal-id comparison — is
+   reachable in practice, not merely in principle. That is a reason the §4 chain must be exact.
 
 **Then, and only then**, put to the owner: whether `JunctionIsLeaderGate` and
 `ContTurnInsideJunctionGate` go default-ON, and whether `IgnoreJunctionBlockerSeconds` stays at
