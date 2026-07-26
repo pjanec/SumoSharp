@@ -378,7 +378,7 @@ public sealed class PedDemand
         // durations, so the ped stays a pure ActivityTimeline (server==IG holds -- W1/W3).
         if (crosswalkSignals is { } signals)
         {
-            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals, waitSpreadRadius, ref waitRng);
+            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals, waitSpreadRadius, ref waitRng, halfWidthsAlong);
         }
 
         return new ActivityTimeline(now, segments, seed, globalSeed);
@@ -391,7 +391,8 @@ public sealed class PedDemand
     // clear), split the walk at the kerb and insert a Pause until NextWalkStart. No rng, no promotion.
     private static List<ActivitySegment> InsertCrosswalkWaits(
         List<ActivitySegment> segments, double now, double speed, CrosswalkSignals signals,
-        double waitSpreadRadius, ref VehicleRng waitRng)
+        double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
     {
         if (signals.SignalizedCount == 0 || speed <= 0.0)
         {
@@ -404,7 +405,7 @@ public sealed class PedDemand
         {
             if (seg is WalkSegment w && w.Path.Count >= 2)
             {
-                SplitWalkAtCrossings(w, ref t, speed, signals, result, waitSpreadRadius, ref waitRng);
+                SplitWalkAtCrossings(w, ref t, speed, signals, result, waitSpreadRadius, ref waitRng, halfWidthsAlong);
             }
             else
             {
@@ -424,7 +425,8 @@ public sealed class PedDemand
     // segments keep correct absolute timing.
     private static void SplitWalkAtCrossings(
         WalkSegment w, ref double t, double speed, CrosswalkSignals signals, List<ActivitySegment> result,
-        double waitSpreadRadius, ref VehicleRng waitRng)
+        double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
     {
         var path = w.Path;
         var n = path.Count;
@@ -515,7 +517,16 @@ public sealed class PedDemand
                 result.Add(new PauseSegment(blobWait, CrosswalkWaitTag));
                 t += blobWait;
 
-                result.Add(new WalkSegment(new List<Vec2> { blobPoint, path[i + 1] }, speed)); // diagonal cross
+                // Weave the diagonal cross like a sidewalk leg -- ONLY when this ped is weaving (the split
+                // walk carried per-vertex widths). Sampling the crosswalk half-widths lets LateralWeave put
+                // each crosser on its own travel-direction RIGHT side, so the two opposing streams keep to
+                // opposite halves of the crossing (no head-on centreline pass-through) and wave-shape within
+                // their side -- the sidewalk behaviour extended onto the crossing (docs/Lod/LateralWeave.cs).
+                // Weave off (HalfWidths null) => plain straight cross, byte-identical to before.
+                var crossPts = new List<Vec2> { blobPoint, path[i + 1] };
+                result.Add(w.HalfWidths != null
+                    ? new WalkSegment(crossPts, speed, halfWidthsAlong(crossPts))
+                    : new WalkSegment(crossPts, speed)); // diagonal cross
                 t += (path[i + 1] - blobPoint).Abs / speed;
 
                 segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex
