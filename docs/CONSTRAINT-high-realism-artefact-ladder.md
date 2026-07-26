@@ -35,56 +35,38 @@ Four things follow that are easy to get backwards:
   collision is the worst outcome. Here a car vanishing and reappearing is more damaging to belief than two
   cars briefly clipping.
 
-## Current compliance, measured
+## Current compliance, measured — ALL GATES ON (supersedes earlier intermediate tables)
 
-Full hour (7200 steps @ dt=0.5), demo, gates OFF vs all three junction gates ON
-(`LongHorizonGridlockDiagTests`, `F3-SESSION-LOG.md` §9.58):
+Full hour (7200 steps @ dt=0.5), demo, shipped default (all gates OFF) vs all gates ON. Deterministic:
+two consecutive runs identical. Pocket centre **(2351.1, 2363.2)**, promote radius **70 m**.
+Source: `LongHorizonGridlockDiagTests`, `F3-SESSION-LOG.md` §9.86.
 
-| Ladder item | gates OFF | all gates ON | Verdict |
-| --- | --- | --- | --- |
-| 4 · teleports | 0 | **0** | ✅ compliant (teleporting is disabled in the demo) |
-| 1 · blockages prevented (stopped runs > 300 steps) | 161 | **0** | ✅ **now compliant** |
-| 2 · unblock-by-overlap events needed | — | **0** | ✅ never needed — prevention sufficed |
-| 3 · same-target-merge overlaps (two directions → one exit lane) | 4374 | **0** | ✅ **now compliant** |
-| 3 · **same-lane overlaps during normal driving** | 492 | **696** | ❌ **VIOLATION — and worse** |
-| 5 · cars stopped to horizon with no obvious reason | 156 | **59** | ⚠️ much reduced; the residue looks like ordinary end-of-run queueing, not cleared |
+| Rung | Violation class | OFF | OFF in-zone | ALL ON | ON in-zone | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | blockages (stopped runs > 300 steps) | 161 | — | **0** | — | ✅ **compliant** |
+| 2 | unblock-by-overlap events needed | — | — | **0** | — | ✅ never needed |
+| 3 | same-target merge (2 dirs → 1 exit lane) | 4374 | 0 | **0** | **0** | ✅ **compliant** |
+| 3 | same-lane overlap (normal driving) | 492 | 28 | **327** | **12** | ❌ **still violating** (but better than baseline) |
+| 2/3 | fully co-located (pen ≥ vehicle width) | 83015 | 17015 | **330** | **13** | ⬇ −99.6% / −99.9% in-zone |
+| 4 | teleports | 0 | — | **0** | — | ✅ compliant |
+| 5 | stopped to horizon, no obvious reason | 156 | — | **52** | — | ⚠️ −67%, not cleared |
 
-**The gates satisfy four of the five rungs**, and by rung 1 — *prevention* — rather than by any rescue:
-with them on the city needed **zero teleports and zero pass-through events** over the hour. The single outstanding violation is rung 3's same-lane case:
-**696 events, worst penetration 1.800 m — exactly the vehicle width, i.e. two cars fully inside one
-another** — occurring during ordinary driving, not as an unblock. That is categorically disallowed here.
+Worst penetration: **3.137 → 2.951 m** overall, **2.685 → 2.123 m** in-zone — both better.
+Completed trips **1295 → 2684 (+107%)**.
 
-→ The defect is the documented, still-open `NEED-colocated-vehicles.md` (two vehicles holding an
-*identical pose* for 9 consecutive steps). It was previously parked as "independent"; under this
-constraint it is **the top remaining believability defect** and the parking decision was wrong.
+**Four of five rungs compliant, achieved by rung 1 (prevention)** — zero teleports, zero pass-through.
+**Nothing in the measured set is worse.** Earlier tables in this document showed same-lane 492 → 696 and
+in-zone 28 → 115 as a regression; those were **intermediate states with only the three junction gates on**,
+and fixes 1–3 reversed them. In-zone same-lane is now **better than the shipped baseline**.
 
-## MEASURED — in-zone violation split (was an open question)
+**The one remaining violation** is rung 3's same-lane case: 327 events, 72 onsets, longest episode 64 steps
+(~32 s), worst 1.800 m = exactly vehicle width. Its **cause is currently unknown** — the pre-fix-1
+attribution no longer describes the surviving population, so the next step is re-attribution, not another
+mechanism (`NEED-same-step-double-placement-colocation.md`, `F3-SESSION-LOG.md` §9.83/§9.87).
 
-Pocket measured at centre **(2351.1, 2363.2)**, promote radius **70 m** (demote 100 m):
-
-| Rung | Violation class | OFF total | OFF in-zone | ON total | ON in-zone |
-| --- | --- | --- | --- | --- | --- |
-| 3 | same-lane overlap (normal driving) | 492 | **28** (5.7%) | **696** | **115** (16.5%) |
-| 3 | same-target merge (2 dirs → 1 exit lane) | 4374 | **0** | **0** | **0** |
-| 2/3 | fully co-located (pen ≥ vehicle width) | 83015 | **17015** (20.5%) | **868** | **131** (15.1%) |
-
-- **In-zone fully-co-located violations collapse 17015 → 131 (−99.2%).**
-- **Same-lane overlap is 4× worse IN-ZONE (28 → 115)** and its in-zone share rises 5.7% → 16.5% — the
-  residual violation has become *more concentrated where it is least acceptable*.
-- Every overlap counted is **rung 3 by construction**: no unblock-by-overlap mechanism is enabled
-  (`IgnoreJunctionBlockerSeconds = -1`), so none is an excusable rung-2 recovery.
-
-**⚠ CAVEAT limiting every in-zone percentage above.** The pocket is **camera-driven**
-(`LiveCitySim.SetLcRealismZone`); in the headless diagnostic it sits at the net's geometric centre. A viewer
-moves the camera, so **any** part of the city can become high-realism. These columns describe *one pocket
-placement, not a bound* — **out-of-zone violations still matter.** This is also the likely explanation for
-0 in-zone same-target-merge events measured here despite the owner having observed that failure in the
-high-realism area: a different camera position. Do not use these percentages to deprioritise an
-out-of-zone defect.
-
-**Root cause of the remaining rung-3 violation is now known** — same-step double placement plus perfect
-symmetry: `NEED-same-step-double-placement-colocation.md`. It **supersedes** `NEED-colocated-vehicles.md`
-(symptom only) and **falsifies** `LANE-CHANGE-OVERLAP-DESIGN.md` §3 Stage 3's proposed clamp.
+**⚠ CAVEAT on every in-zone figure:** the pocket is **camera-driven**; the headless diagnostic places it at
+the net centre. A viewer moves the camera, so any part of the city can become high-realism — these columns
+describe *one placement, not a bound*, and out-of-zone violations still matter.
 
 ## Consequences for existing recommendations
 

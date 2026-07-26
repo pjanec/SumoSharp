@@ -12477,18 +12477,17 @@ public sealed partial class Engine : IEngine
     // so exactly one of the pair changes. Deliberately CONSERVATIVE -- it yields to a far-lane vehicle that
     // merely COULD claim the slot, without knowing whether it intends to; the cost is at most a one-step
     // delay for the id-loser, and only while the two are exactly alongside.
-    // ⚠ MEASURED INERT ON THE LIVE-CITY DEMO -- do NOT enable it expecting an overlap improvement.
-    // Instrumented over 2000 demo steps it fires plenty: 10226 evaluations, 1156 contested slots, **785
-    // deferred lane changes**. Yet every same-lane overlap statistic is BIT-FOR-BIT IDENTICAL with it on
-    // (365 events / 80 episodes / longest 75 / 7 over-10 steps). So the changes it defers are not the ones
-    // that produce overlaps, which REFUTES the inference that the residual onsets are this adjacent-lane
-    // same-slot case: fix 1 removed the insertion onsets, and the surviving episodes are evidently a
-    // different mechanism (H-E emergence, or the 21% that were unexplained at onset).
+    // MEASURED BENEFICIAL -- but ONLY as part of the full gate package. Correcting an earlier verdict on
+    // this very flag that said "measured inert": that measurement ran against a STALE BUILD
+    // (`dotnet build -c Release` builds Traffic.sln, which does NOT contain Sim.LiveCity.Tests, so the
+    // demo ran without this code compiled in). With a correct build, over the demo hour:
+    //     arbitration OFF -> ON :  same-lane events 386 -> 327,  episodes 84 -> 72,
+    //                              longest episode 75 -> 64 steps,  total overlaps 1546 -> 1408
     //
-    // Kept, default OFF, because it is a correct and golden-safe port of an arbitration SUMO gets for free
-    // by being sequential, and it may matter on a net with different lane topology. But it is NOT part of
-    // the recommended configuration and must not be enabled without a scenario where it demonstrably helps
-    // -- the same standard applied to JunctionPhysicalOccupancyGate and the parked ORCA tier.
+    // ⚠ DO NOT ENABLE IT ALONE. With the junction gates OFF and only this on, the demo is far WORSE than
+    // baseline (13308 same-lane events, longest episode 3046 steps, 402 completed trips vs 1295): deferring
+    // lane changes in a city that is already gridlocking starves it further. It is beneficial only in
+    // combination with the junction + insertion + symmetry-break gates.
     public bool LaneChangeArrivalArbitration { get; set; } = false;
 
     public bool JunctionIsLeaderGate { get; set; } = false;

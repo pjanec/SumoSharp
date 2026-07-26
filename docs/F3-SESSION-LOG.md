@@ -986,6 +986,61 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     cause-attribution instrument (H-E / H-LC / H-CF / H-INS + unexplained) against the **current** 80
     episodes and target whatever now dominates. Building before re-measuring is what produced §9.81.
 
+### Session 3 (continued) — ⚠ CORRECTION: fix 3 is NOT inert, and the FINAL measured state
+
+84. **⚠ §9.81's "measured inert" verdict on fix 3 was WRONG — it ran against a STALE BUILD.**
+    `dotnet build -c Release` builds `Traffic.sln`, which **does not contain `Sim.LiveCity.Tests`**, so the
+    demo measurement ran with a `Sim.Core` that had no fix 3 compiled in and reproduced the fix-2-only
+    numbers. Caught because two consecutive runs of the "same" configuration gave 365 then 327 while the OFF
+    column reproduced exactly — a same-config discrepancy is a **build/harness** smell, not a result.
+    With a correct build (`dotnet build tests/Sim.LiveCity.Tests -c Release`), arbitration OFF → ON:
+
+    | Metric | arb OFF | arb ON |
+    | --- | --- | --- |
+    | same-lane events | 386 | **327** (−15%) |
+    | episodes (onsets) | 84 | **72** (−14%) |
+    | longest episode | 75 | **64** steps |
+    | total overlap events | 1546 | **1408** |
+    | completed trips | 2672 | **2684** |
+
+    **Third time this session a harness/build issue produced a confident wrong conclusion** (after the
+    `SumoShim` env race §9.43 and my own gate-leak §9.74). Standing rule now: **`dotnet build -c Release`
+    does NOT rebuild `Sim.LiveCity.Tests` — build that project explicitly before any demo measurement.**
+85. **⚠ ARBITRATION MUST NOT BE ENABLED ALONE.** With the junction gates OFF and only arbitration on, the
+    demo is far **worse** than baseline: **13308** same-lane events, longest episode **3046 steps**, and only
+    **402** completed trips (vs 1295). Deferring lane changes in a city that is already gridlocking starves
+    it further. The gates are a **package**; this one is beneficial only in combination.
+86. **⭐ FINAL MEASURED STATE — all gates ON vs shipped default OFF, full hour, deterministic (two
+    consecutive runs identical):**
+
+    | Metric | OFF | ALL ON | |
+    | --- | --- | --- | --- |
+    | completed trips | 1295 | **2684** | ⬆ **+107%** |
+    | stopped runs > 300 steps | 161 | **0** | ⬇ eliminated |
+    | stopped to horizon | 156 | **52** | ⬇ −67% |
+    | same-target-merge overlaps | 4374 | **0** | ⬇ eliminated |
+    | total overlap events | 148877 | **1408** | ⬇ **−99.1%** |
+    | fully co-located (≥1.79 m) | 83015 | **330** | ⬇ **−99.6%** |
+    | — of those, IN-ZONE | 17015 | **13** | ⬇ **−99.9%** |
+    | same-lane overlap events | 492 | **327** | ⬇ −34% |
+    | — IN-ZONE | 28 | **12** | ⬇ **−57%** |
+    | same-lane episodes (onsets) | 88 | **72** | ⬇ −18% |
+    | longest episode | 98 | **64** steps | ⬇ −35% |
+    | worst penetration overall | 3.137 m | **2.951 m** | ⬇ better |
+    | worst penetration in-zone | 2.685 m | **2.123 m** | ⬇ better |
+    | teleports | 0 | **0** | never needed |
+
+    **NOTHING IN THE MEASURED SET IS WORSE.** Earlier "worse" readings (same-lane 492 → 696, in-zone
+    28 → 115) were **intermediate states with only the three junction gates on**; fixes 1–3 reversed them.
+    In-zone same-lane is now **better than the shipped baseline**, not merely recovered.
+87. **Remaining honest gaps:** (a) 327 same-lane events / 72 onsets / longest 64 steps still violate ladder
+    rung 3 — **cause unknown**, needs re-attribution after fix 1 changed the onset population (§9.83);
+    (b) 52 cars stopped at the horizon, look benign but not cleared; (c) the one-lane-queue symptom is
+    **inferred** gone (it was a consequence of permanent blockage) but **never directly measured**;
+    (d) in-zone figures are for **one** camera position; (e) the new arms are O(N) per vehicle per step,
+    i.e. O(N²) — fine at the demo's ~160 vehicles, **unmeasured at scale**; (f) all gates remain
+    **default OFF** pending an owner decision.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
