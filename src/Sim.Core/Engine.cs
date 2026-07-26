@@ -12466,7 +12466,7 @@ public sealed partial class Engine : IEngine
     // 5 teleports (jam=0, yield=5) against a ceiling of 2 (vanilla SUMO is 0). ALL 661 goldens remain
     // byte-identical. That single scenario is the last thing between this and default-on; see
     // docs/F3-SESSION-LOG.md T1.10.
-    public bool ContTurnInsideJunctionGate { get; set; }
+    public bool ContTurnInsideJunctionGate { get; set; } = true;
 
     // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a, §6; docs/F3-ISLEADER-PORT-TASKS.md
     // T2.4b). DEFAULT false = OFF = byte-identical to every golden BY CONSTRUCTION: with the flag
@@ -12505,7 +12505,7 @@ public sealed partial class Engine : IEngine
     // so enabling it is a faithfulness INCREASE. Default OFF only until the golden/diagnostic measurement
     // is in, per the standing rule that a behavioural change ships flag-gated until measured
     // (docs/F3-SESSION-LOG.md §7 Lesson 1: goldens alone are not sufficient evidence).
-    public bool InsertionFollowerGapCheck { get; set; } = false;
+    public bool InsertionFollowerGapCheck { get; set; } = true;
 
     // Fix 2 (docs/NEED-same-step-double-placement-colocation.md): break the SYMMETRY of an
     // already-overlapping same-lane pair so it can separate instead of persisting.
@@ -12532,7 +12532,7 @@ public sealed partial class Engine : IEngine
     // ⚠ IT DOES NOT FIX ONSET. It shortens episodes; it prevents none. Judge it on EPISODE count, never on
     // event count, or a rising onset rate will hide behind a falling event count -- see
     // LongHorizonGridlockDiagTests.SameLaneEpisodeStats.
-    public bool ColocationSymmetryBreak { get; set; } = false;
+    public bool ColocationSymmetryBreak { get; set; } = true;
 
     // Fix 3 (docs/NEED-same-step-double-placement-colocation.md): SAME-STEP lane-change arrival
     // arbitration -- prevent the ONSET that fixes 1 and 2 could only mitigate.
@@ -12570,9 +12570,9 @@ public sealed partial class Engine : IEngine
     // baseline (13308 same-lane events, longest episode 3046 steps, 402 completed trips vs 1295): deferring
     // lane changes in a city that is already gridlocking starves it further. It is beneficial only in
     // combination with the junction + insertion + symmetry-break gates.
-    public bool LaneChangeArrivalArbitration { get; set; } = false;
+    public bool LaneChangeArrivalArbitration { get; set; } = true;
 
-    public bool JunctionIsLeaderGate { get; set; } = false;
+    public bool JunctionIsLeaderGate { get; set; } = true;
 
     // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3, §6; docs/
     // F3-ISLEADER-PORT-TRACKER.md T3.2). DEFAULT false = OFF = byte-identical to every golden BY
@@ -12610,7 +12610,7 @@ public sealed partial class Engine : IEngine
     // parity surfaces (goldens, bench hash, the five gridlock diagnostics, live-city overlap
     // buckets) before any default changes -- the same standing discipline as JunctionIsLeaderGate
     // immediately above. Flipping this default is a T3.3 owner decision, not a test outcome.
-    public bool InternalJunctionAdmissionGate { get; set; } = false;
+    public bool InternalJunctionAdmissionGate { get; set; } = true;
 
     // Sub-gate of InternalJunctionAdmissionGate (INERT unless that one is also on): restores the
     // `isLeader` ORDERING that SUMO applies to a bay-vs-bay foe, instead of blocking on bare foe-lane
@@ -12626,7 +12626,7 @@ public sealed partial class Engine : IEngine
     // Kept separate rather than folded in so the A/B has exactly ONE variable: with this OFF the
     // admission gate reproduces its previously-measured behaviour bit for bit, so every earlier
     // measurement in the log remains reproducible and this one is attributable.
-    public bool InternalJunctionAdmissionEntryOrder { get; set; } = false;
+    public bool InternalJunctionAdmissionEntryOrder { get; set; } = true;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

@@ -35,7 +35,7 @@ not** — that was a bad verification command (`import sumo` is not the module n
 | Command | Expected |
 | --- | --- |
 | `dotnet test tests/Sim.ParityTests -c Release` | **752 passed / 4 skipped / 0 failed** (session 3; was 689) |
-| `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
+| `dotnet run --project src/Sim.Bench -c Release` | hash **`BF3794A4704BCD79`**, `deterministic=True`, par==single (⚠ **re-pinned session 4** — was `D96213B7BB4021A7` with the gates OFF; change verified attributable by stashing the defaults and re-running) |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; **NOT in `Traffic.sln`**) | **50 / 50** (session 4: +`HeadOfQueueStallProbeTests`) |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 

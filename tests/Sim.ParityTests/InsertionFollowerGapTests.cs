@@ -28,11 +28,17 @@ public class InsertionFollowerGapTests
 
     public InsertionFollowerGapTests(ITestOutputHelper output) => _out = output;
 
-    // THE DEFAULT MUST BE INERT, so every committed golden is untouched until the measurement is in.
     [Fact]
-    public void DefaultIsOff()
+    // ⚠ THE DEFAULT MOVED (session 4). It was false so that every committed golden stayed untouched until
+    // the flag-ON behaviour was measured. That measurement is now in and the answer was unambiguous: with
+    // all seven gates ON, **all 661 goldens are byte-identical** and `Sim.Bench` still hashes
+    // `D96213B7BB4021A7` with par == single. The only tests that changed were these default assertions --
+    // i.e. nothing observable moved, so keeping the gate off was costing believability for no parity gain.
+    // Gate-OFF behaviour remains reachable (and is still exercised by the flag-OFF tests below and by the
+    // LIVECITY_* / SUMOSHARP_* env overrides), so this is a default change, not a removal.
+    public void DefaultIsOn()
     {
-        Assert.False(new Engine().InsertionFollowerGapCheck);
+        Assert.True(new Engine().InsertionFollowerGapCheck);
     }
 
     // The refusal predicate, stated as the arithmetic SUMO uses, so the test pins the FORMULA rather than

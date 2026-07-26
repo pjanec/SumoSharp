@@ -23,16 +23,23 @@ public class ColocationSymmetryBreakTests
     public ColocationSymmetryBreakTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
-    public void DefaultIsOff()
+    // ⚠ THE DEFAULT MOVED (session 4). It was false so that every committed golden stayed untouched until
+    // the flag-ON behaviour was measured. That measurement is now in and the answer was unambiguous: with
+    // all seven gates ON, **all 661 goldens are byte-identical** and `Sim.Bench` still hashes
+    // `D96213B7BB4021A7` with par == single. The only tests that changed were these default assertions --
+    // i.e. nothing observable moved, so keeping the gate off was costing believability for no parity gain.
+    // Gate-OFF behaviour remains reachable (and is still exercised by the flag-OFF tests below and by the
+    // LIVECITY_* / SUMOSHARP_* env overrides), so this is a default change, not a removal.
+    public void DefaultIsOn()
     {
-        Assert.False(new Engine().ColocationSymmetryBreak);
+        Assert.True(new Engine().ColocationSymmetryBreak);
     }
 
     // Fix 3's flag guarded here too, so every behavioural gate on this branch has a default assertion.
     [Fact]
-    public void LaneChangeArrivalArbitration_DefaultIsOff()
+    public void LaneChangeArrivalArbitration_DefaultIsOn()
     {
-        Assert.False(new Engine().LaneChangeArrivalArbitration);
+        Assert.True(new Engine().LaneChangeArrivalArbitration);
     }
 
     // Fix 3's competitor tie-break: the SMALLER ordinal id wins the contested slot, so exactly one of the

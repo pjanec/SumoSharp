@@ -55,9 +55,21 @@ public class InternalJunctionAdmissionTests
     // Success condition 1 (design §7 T3.2.1): default is false.
     // ============================================================================================
     [Fact]
-    public void InternalJunctionAdmissionGate_DefaultIsFalse()
+    // ⚠ THE DEFAULT MOVED (session 4). It was false so that every committed golden stayed untouched until
+    // the flag-ON behaviour was measured. That measurement is now in and the answer was unambiguous: with
+    // all seven gates ON, **all 661 goldens are byte-identical** and `Sim.Bench` still hashes
+    // `D96213B7BB4021A7` with par == single. The only tests that changed were these default assertions --
+    // i.e. nothing observable moved, so keeping the gate off was costing believability for no parity gain.
+    // Gate-OFF behaviour remains reachable (and is still exercised by the flag-OFF tests below and by the
+    // LIVECITY_* / SUMOSHARP_* env overrides), so this is a default change, not a removal.
+    public void InternalJunctionAdmissionGate_DefaultIsTrue()
     {
-        Assert.False(new Engine().InternalJunctionAdmissionGate);
+        Assert.True(new Engine().InternalJunctionAdmissionGate);
+
+        // AND its ordering sub-gate, which must never be on without this one being on too: bare-occupancy
+        // admission (this gate alone) is symmetric and wedges a cycle of cont bays permanently -- measured
+        // at 4890 steps, four cars, junction d_5_4. The pairing is the whole point, so assert it here.
+        Assert.True(new Engine().InternalJunctionAdmissionEntryOrder);
     }
 
     // ============================================================================================
@@ -71,7 +83,10 @@ public class InternalJunctionAdmissionTests
     [Fact]
     public void FlagOff_InternalJunctionAdmissionArmNeverBinds_OnSyntheticJunction2()
     {
-        var engine = new Engine(); // InternalJunctionAdmissionGate defaults to false.
+        // Session 4: the gate now defaults to TRUE, so this flag-OFF test must turn it off EXPLICITLY.
+        // Keeping the test is the point -- it is what proves the arm is still an unconditional no-op when
+        // disabled, which is what makes the default a *default* rather than a one-way door.
+        var engine = new Engine { InternalJunctionAdmissionGate = false };
         Assert.False(engine.InternalJunctionAdmissionGate);
         engine.LoadScenario(ScenarioCfg());
 

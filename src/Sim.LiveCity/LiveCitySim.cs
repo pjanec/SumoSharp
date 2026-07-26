@@ -352,38 +352,38 @@ public sealed class LiveCitySim : IDisposable
         // in isolation but it regresses a saturated-grid diagnostic until checkRewindLinkLanes is ported
         // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
         // mid-junction freeze it removes.
-        _engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("LIVECITY_CONTTURNFIX") == "1";
+        _engine.ContTurnInsideJunctionGate = EnvGate("LIVECITY_CONTTURNFIX", _engine.ContTurnInsideJunctionGate);
         // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
         // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
         // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
         // other half of SUMO's `isLeader(...) || inTheWay()` disjunction (MSVehicle.cpp:3429) -- stayed
         // true symmetrically. LIVECITY_ISLEADERFIX=1 for A/B.
-        _engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("LIVECITY_ISLEADERFIX") == "1";
+        _engine.JunctionIsLeaderGate = EnvGate("LIVECITY_ISLEADERFIX", _engine.JunctionIsLeaderGate);
         // F3/internal-junction SECOND-STAGE admission (docs/F3-INTERNAL-JUNCTION-DESIGN.md) -- the port
         // that actually fixes the deadlock (veh 95/102 both arrive at SUMO's own --ignore-junction-blocker
         // default). OFF by default pending the owner's defaults decision. Wired here so the live-city F3
         // overlap buckets can be A/B'd at all: without this line the demo never exercises the gate, so a
         // bucket re-measurement would report "unchanged" for the trivial reason that nothing was enabled
         // -- an UNMEASURED condition masquerading as a neutral result. LIVECITY_INTERNALJUNCTIONFIX=1.
-        _engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX") == "1";
+        _engine.InternalJunctionAdmissionGate = EnvGate("LIVECITY_INTERNALJUNCTIONFIX", _engine.InternalJunctionAdmissionGate);
         // Sub-gate of the line above (inert without it): applies `isLeader`'s entry-time ORDERING to a
         // bay-vs-bay foe instead of blocking on bare occupancy, which is symmetric and therefore wedges a
         // cycle of bays permanently (measured: 4 cars, junction d_5_4, 857+ steps, 48.1% of stall heads at
         // 3x). Separate flag so the A/B has one variable. LIVECITY_INTERNALJUNCTIONENTRYORDER=1.
         _engine.InternalJunctionAdmissionEntryOrder =
-            Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONENTRYORDER") == "1";
+            EnvGate("LIVECITY_INTERNALJUNCTIONENTRYORDER", _engine.InternalJunctionAdmissionEntryOrder);
         // H-INS insertion follower-gap (pure-overlap) check -- docs/NEED-same-step-double-placement-colocation.md.
         // Refuses a departure that would bury the new car's REAR inside a car already queued just behind the
         // depart position. SUMO refuses these BY DEFAULT (insertionChecks = InsertionCheck::ALL), so this is a
         // faithfulness increase. OFF by default here only until measured. LIVECITY_INSERTIONFOLLOWERGAP=1.
-        _engine.InsertionFollowerGapCheck = Environment.GetEnvironmentVariable("LIVECITY_INSERTIONFOLLOWERGAP") == "1";
+        _engine.InsertionFollowerGapCheck = EnvGate("LIVECITY_INSERTIONFOLLOWERGAP", _engine.InsertionFollowerGapCheck);
         // Fix 2: co-location symmetry break -- lets an already-overlapping same-lane pair SEPARATE instead of
         // persisting (measured: longest episode 79 steps). Triggered by measured overlap only, never a timer.
         // LIVECITY_COLOCATIONSYMMETRYBREAK=1.
-        _engine.ColocationSymmetryBreak = Environment.GetEnvironmentVariable("LIVECITY_COLOCATIONSYMMETRYBREAK") == "1";
+        _engine.ColocationSymmetryBreak = EnvGate("LIVECITY_COLOCATIONSYMMETRYBREAK", _engine.ColocationSymmetryBreak);
         // Fix 3: same-step lane-change arrival arbitration -- prevents the ONSET fixes 1/2 could only
         // mitigate (two cars changing into one slot in one step). LIVECITY_LANECHANGEARBITRATION=1.
-        _engine.LaneChangeArrivalArbitration = Environment.GetEnvironmentVariable("LIVECITY_LANECHANGEARBITRATION") == "1";
+        _engine.LaneChangeArrivalArbitration = EnvGate("LIVECITY_LANECHANGEARBITRATION", _engine.LaneChangeArrivalArbitration);
         // #15 into-occupied: active only under cooperative (high-realism) LC; low realism keeps the cheap
         // tight merge. The engine helper is also caller-gated on CooperativeInformFollower, so this is
         // belt-and-suspenders (0 => the veto is fully inert).
@@ -946,6 +946,22 @@ public sealed class LiveCitySim : IDisposable
     // pedestrian) of the WHOLE net, since road-net mode has no crop to centre on instead. Falls back
     // to the origin only for a pathological net with no lane geometry at all (never happens for a
     // real net.xml; defensive, not exercised by the committed fixture).
+    // TRI-STATE env override for an engine gate: unset => keep the engine's OWN default; "1" => on;
+    // anything else (in practice "0") => off.
+    //
+    // WHY NOT `GetEnvironmentVariable(name) == "1"`, which is what every one of these lines used to be:
+    // that form is a two-state override that silently FORCES OFF whenever the variable is absent. It was
+    // harmless while every gate defaulted to false and became a live bug the moment the defaults flipped to
+    // true -- the demo would have run with all seven gates disabled while the engine, the goldens and every
+    // other host had them enabled, and the resulting "the demo still gridlocks" report would have looked
+    // like a failed fix rather than a wiring mistake. The A/B diagnostics are unaffected because they set
+    // every gate EXPLICITLY to "1"/"0" (see AllLiveCityGateVars), which both forms honour identically.
+    private static bool EnvGate(string name, bool engineDefault)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
     private static Vec2 ComputeNetAabbCentre(NetworkModel model)
     {
         var minX = double.PositiveInfinity;
