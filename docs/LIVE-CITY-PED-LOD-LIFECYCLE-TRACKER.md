@@ -43,7 +43,14 @@ first-hand (re-run the gate / read the trace), never on a report.
   spread's legitimate reversals are tested separately).
 
 ## Stage 5 — gate + close
-- [ ] T5.1 — full gate re-run + docs synced (design/tasks/tracker, COORDINATION, TASKS-TODO)
+- [x] T5.1 — full gate re-run GREEN: parity **661/4-skip (657 pass)**, bench **D96213B7BB4021A7** (par==single),
+  LiveCity **43/43**, Pedestrians **276/276**. Design/tasks/tracker synced. (COORDINATION/TASKS-TODO sync +
+  owner ratification of the open items below still pending.)
+
+## Open items awaiting owner
+- Ratify dropping #4a leaky-dwell/watchdog (evidence: no stuck-ORCA at 400/1600, static/moving, ≤250 s).
+- #4b off-graph route recovery: do the small hardening (0.2% / 3 peds) or skip?
+- #6 crossing style: keep step-back-to-kerb (converge onto crosswalk) or switch to diagonal-from-wait-spot?
 
 ---
 
