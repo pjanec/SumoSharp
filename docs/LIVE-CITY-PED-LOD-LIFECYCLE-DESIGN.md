@@ -194,8 +194,22 @@ overlap — a visual cluster. Idle (Paused) beats are inserted at seeded along-r
 (`PedDemand.cs:290–300`), which already varies per ped, so the cluster is most likely a **destination/route
 funnel**, not the pause position.
 
-**Diagnosis-gated (Stage 0 trace).** The trace measures the idle-position distribution and whether clusters
-coincide with shared destination points or shared route junctions. The fix is chosen from what it shows:
+**RE-DIAGNOSED from the Stage-0 trace (root cause corrected).** The cluster is NOT a destination/route funnel and
+NOT the liveliness "sip" pauses (only 158 idle rows). It is **crosswalk-wait clustering**: 12041 of 12199 idle
+(yellow) rows carry `animTag="wait"` — peds waiting for a walk signal. `PedDemand.InsertCrosswalkWaits` /
+`SplitWalkAtCrossings` insert the kerb `PauseSegment` so the ped holds at the **exact crossing-entry vertex**
+`path[i]`, identical for every ped using that crossing, so all waiters stack on one point (busiest 5 m cell at
+world (2856.5, 2840.8): 23 distinct peds, 2312 rows). This is exactly the owner's "randomize **where they
+wait**." **Primary #6 fix: spread the wait position along the kerb** — offset each ped's hold point by a per-ped
+seeded lateral vector (perpendicular to the crossing direction `path[i+1]−path[i]`, bounded by the sidewalk
+half-width / a config radius), so the pre-wait walk ends at the offset spot, the ped waits there, and the resume
+walk steps from the offset spot back onto the crossing. Deterministic (new `WaitJitterSalt`, per-ped), opt-in via
+`PedDemandConfig.CrosswalkWaitSpreadRadius` (0 = off = byte-identical; only the demo sets it), parity-inert (only
+reached on the `CrosswalkSignals` path, which no golden wires). Destination jitter (below) is a minor secondary —
+the trace shows destinations are not the dominant cluster.
+
+**(secondary, low value) destination-side spread.** Superseded framing kept for reference: the fix is chosen from
+what the trace shows:
 
 **Primary fix — per-ped seeded destination jitter (deterministic).** In `PedDemand.TrySpawnOne`, after drawing
 `destination` from the set, apply a small seeded positional offset within a bounded radius using a **new dedicated
