@@ -15,6 +15,23 @@ namespace Sim.ParityTests;
 //   2. the vanilla flag CONTRACT holds: -c, --end (time, not step count), --summary-output,
 //      --statistic-output, --tripinfo-output (accepted), --no-step-log (accepted+ignored), and an
 //      UNKNOWN flag is tolerated (exit 0, warning) rather than aborting.
+// PROCESS-GLOBAL ENV HAZARD -- this class drives Sim.Sumo.SumoShim.Run, and SumoShim reads the
+// PROCESS-WIDE environment variable SUMOSHARP_CONTTURNFIX to set Engine.ContTurnInsideJunctionGate
+// (SumoShim.cs:250). IgnoreJunctionBlockerTests SETS that variable around its own shim runs, so with
+// xUnit's DEFAULT cross-class parallelism a concurrently-running shim test can observe the other
+// class's value and silently simulate with a DIFFERENT engine configuration than it intended.
+//
+// This was not hypothetical: LowDensityTeleportTests failed 1 of 3 full-suite runs with exactly
+// 5 teleports (vs its <= 2 ceiling) while passing every standalone run, and the leak was then
+// reproduced deterministically -- `SUMOSHARP_CONTTURNFIX=1 dotnet test --filter LowDensityTeleportTests`
+// fails with that identical message. Since LowDensityTeleportTests and DenseFlowDeadLaneDrainTests are
+// two of the five load-bearing gridlock diagnostics, an unreliable one is worse than no diagnostic at
+// all -- a false RED sends the next session chasing a regression that does not exist.
+//
+// Every class that calls SumoShim.Run therefore shares this collection, which xUnit runs SEQUENTIALLY.
+// A NEW test that drives SumoShim.Run MUST join it. The robust fix (removing the process-global read
+// entirely) is docs/NEED-sumoshim-process-global-contturn-env.md.
+[Collection(SumoShimEnvCollection.Name)]
 public class RungHDgap1SumoCliTests
 {
     private static readonly string ScenarioDir = Path.Combine(RepoRoot(), "scenarios", "41-multifile-cfg");
