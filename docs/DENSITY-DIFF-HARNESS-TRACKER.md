@@ -10,7 +10,12 @@ conditions first-hand** — never on an implementor's report (`CLAUDE.md` §orch
       otherwise) · SC4 ✅ (fatal, non-zero exit when `sumo` is absent) ·
       **SC3 ⏸ BLOCKED ON B1, and the block is itself a finding — see below.**
 - [ ] **A2** internal-lane + approach-lane detector generation
-- [ ] **A3** ⚠ **OPEN-LOOP demand mode — BLOCKS ALL CAPACITY WORK.** The demo's demand is occupancy-capped,
+- [x] **A3** ✅ **DONE — open-loop mode, and it CONFIRMS the deficit.** `LiveCityConfig.CarInflowVehPerSec`
+      (null = unchanged), `--inflow`/`--series`, two-window steady-state test, `scripts/sweep-inflow.sh`.
+      **SC2 met decisively:** at 1.7 veh/s on identical demand SUMO is STEADY (311→306) and we are RUNAWAY
+      (420→464). The two workstreams' instruments AGREE. Full sweep in
+      `docs/reports/density-inflow-sweep.txt`.
+- [ ] ~~**A3**~~ ⚠ **(superseded by the line above) OPEN-LOOP demand mode — BLOCKS ALL CAPACITY WORK.** The demo's demand is occupancy-capped,
       so inflow self-throttles and a discharge deficit is structurally invisible (design §1b). Do B2/B3/C
       only after this, or they measure the wrong quantity.
 
@@ -183,6 +188,61 @@ collisions are ladder rung 3, and copying them would trade our one clear advanta
    0.89–3.05 m/s that has already passed the conflict point** (§9.118). Every step a bay is held closed while
    it could be discharging is lost saturation flow. `inTheWay`'s conflict-point geometry is the missing piece,
    and it is no longer a "bounded conservatism" — it is plausibly a direct discharge cost.
+
+---
+
+## ⭐⭐ THE CAPACITY ANSWER (A3 open-loop sweep, 7200 steps, identical demand per row)
+
+| open-loop inflow | **OURS** | SUMO s-honest | SUMO s-default |
+| --- | --- | --- | --- |
+| 0.8 veh/s | STEADY @162 (arr 2573) | STEADY @130 | STEADY @130 |
+| 1.0 | STEADY @201 (arr 3198) | STEADY @165 | STEADY @165 |
+| 1.2 | STEADY @254 (arr 3817) | STEADY @203 | STEADY @203 |
+| **1.4** | **STEADY @306 (arr 4448) ← OUR CEILING** | STEADY @240 | STEADY @240 |
+| **1.6** | **RUNAWAY → 2242 resident, arr 2938** | **STEADY @280** | STEADY @280 |
+| 2.0 | RUNAWAY → 3528, arr 1681 | RUNAWAY @940 (+61.6%) | RUNAWAY @988 |
+
+**Max sustainable inflow: ours ≈ 1.4 veh/s, SUMO's between 1.6 and 2.0.** A deficit of **at least 14%**,
+probably nearer 30%.
+
+Two things matter more than the ceiling itself:
+
+1. **At EVERY sustainable inflow we hold ~25% more resident cars for the same flow** (162/130, 201/165,
+   254/203, 306/240). Our vehicles spend consistently longer in the network even when perfectly stable.
+   That is not junction *blocking* — blocking would show as collapse — it is **uniformly slower progress**.
+2. **We do not degrade gracefully, we COLLAPSE.** Crossing the ceiling takes completed trips
+   **4448 → 2938 → 1681** while resident climbs 306 → 2242 → 3528. SUMO's own runaway at 2.0 is far gentler
+   (940 resident). Whatever our failure mode is, it is self-amplifying.
+
+## ❌ DRAIN-1 / G1 REFUTED AS A DISCHARGE FIX (measured, not argued)
+
+`Engine.KeepClearHeldPropagation` ports G1 of `NEED-checkrewindlinklanes-partial-port.md` — propagate
+blockage backward from a car that merely *cannot proceed*, SUMO's
+`last->myHaveToWaitOnNextLink || last->isStopped()`, of which we had only the second disjunct. The NEED doc
+ranked it "highest impact" of its four gaps. A/B at inflow 1.6:
+
+| | arrived | resident at horizon | last-two-quarter growth |
+| --- | --- | --- | --- |
+| G1 OFF | **2938** | 2242 | +57.8% |
+| G1 ON | **2762** | 2498 | +58.6% |
+
+**Slightly WORSE on both.** Which is coherent in hindsight: G1 makes admission *more* conservative, so it
+holds cars back at junction entries — the opposite of widening a drain. It is a **faithfulness** improvement
+(it is what SUMO does) but **not** the capacity fix. Kept, default **OFF**, and not to be retried for
+discharge.
+
+**Note the shape of this failure:** it was a mechanism hypothesis reasoned from source, and it took one
+measurement to refute. `NEED-junctionyield-impatience-saturation.md` records the same pattern ending the same
+way — **five** reasoned-from-the-code interventions were inert, and the real cause (a cont-turn U-turn
+distance bug) was found by **a single SUMO-oracle FCD trace of one gridlocked vehicle**. Its closing line is
+the instruction for what comes next here: *"a single SUMO-oracle trace found in minutes what five
+reasoned-from-the-code interventions could not."*
+
+### ⇒ NEXT: trace, do not hypothesise
+
+At **1.4 veh/s** (both engines steady, so the comparison is apples-to-apples and not confounded by collapse),
+diff one vehicle's trajectory between ours and SUMO on identical demand and find **where the extra ~25% of
+time in system is spent** — which edge, which junction, approach vs interior. Only then pick a mechanism.
 
 ## Known-answer anchors (an instrument that misses these is wrong, not interesting)
 

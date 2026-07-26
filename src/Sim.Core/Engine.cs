@@ -7921,7 +7921,28 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
-            if (last.Kinematics.Speed < KraussModel.HaltingSpeed)
+            // G1 (docs/NEED-checkrewindlinklanes-partial-port.md): SUMO's forward pass sets
+            // `foundStopped` from `last->myHaveToWaitOnNextLink || last->isStopped()`
+            // (MSVehicle.cpp:5126) -- a car that merely CANNOT PROCEED propagates blockage backward,
+            // not only one that has already halted. We ported the `isStopped()` half only.
+            //
+            // WHY THAT MATTERS FOR DISCHARGE: in a saturating grid the blockage is a FORMING queue, not
+            // an already-halted one. Missing the first half means we admit cars into a junction interior
+            // that SUMO would hold at the entry -- and a car that then stops inside the intersection
+            // blocks the conflict area for every stream crossing it, which narrows the drain for
+            // everyone. Measured: four cars stopped on `:d_5_3_10_1`, and at a fixed inflow SUMO holds
+            // ~306 resident cars in equilibrium where we climb past 528 (F3-SESSION-LOG.md §9.121-124).
+            //
+            // ⚠ DELIBERATE ONE-STEP LAG. SUMO reads `myHaveToWaitOnNextLink` in the SAME step, because
+            // its planMove is sequential. Our plan phase is parallel over a frozen start-of-step
+            // snapshot, so reading another vehicle's THIS-step decision would be order-dependent and
+            // therefore non-deterministic -- exactly the class of bug the parity discipline exists to
+            // prevent. `HeldAtLinkLastStep` is written in the COMMIT phase, after all planning, so every
+            // reader in the plan phase sees the same previous-step value regardless of thread order.
+            // This is the "timing of structural mutations" deviation CLAUDE.md permits, and it is the
+            // only deviation here: the predicate itself is SUMO's.
+            var cannotProceed = KeepClearHeldPropagation && last.HeldAtLinkLastStep;
+            if (last.Kinematics.Speed < KraussModel.HaltingSpeed || cannotProceed)
             {
                 foundStopped = true;
                 var lastBrakeGap = KraussModel.BrakeGap(last.Kinematics.Speed, last.VType.Decel, headwayTime: 0.0, dt);
@@ -10638,6 +10659,18 @@ public sealed partial class Engine : IEngine
             // FOLLOWING step's Plan phase (see VehicleRuntime.Acceleration's own header comment).
             // Written for every vehicle, unconditionally -- read by nothing except CACC.
             v.Acceleration = (v.Intent.NewSpeed - oldSpeed) / dt;
+
+            // G1 (docs/NEED-checkrewindlinklanes-partial-port.md): our stand-in for
+            // `MSVehicle::myHaveToWaitOnNextLink` -- "chose the WAIT branch at the next link". Written HERE,
+            // in the commit phase, for exactly the reason `v.Acceleration` immediately above is: a reader in
+            // the Plan phase must see a stable PREVIOUS-step value, because the plan phase runs in parallel
+            // over a frozen snapshot and reading a this-step decision would be thread-order dependent.
+            //
+            // The binder set is the link-WAIT arms only. Excluded on purpose: 1/2 (car-following -- SUMO's
+            // `adaptToLeader` does not set the flag), 3/4 (speed limits), 5 (dead-lane merge brake), 12/13
+            // (obstacle/crowd), 15 (colocation break). None of those is a vehicle holding at a link.
+            v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14;
+
             v.Kinematics.Speed = v.Intent.NewSpeed;
 
             // C4-ii: waiting-time accumulation (MSVehicle::updateWaitingTime, MSVehicle.cpp:4081-4088).
@@ -12532,6 +12565,17 @@ public sealed partial class Engine : IEngine
     // ⚠ IT DOES NOT FIX ONSET. It shortens episodes; it prevents none. Judge it on EPISODE count, never on
     // event count, or a rising onset rate will hide behind a falling event count -- see
     // LongHorizonGridlockDiagTests.SameLaneEpisodeStats.
+    // G1 of the checkRewindLinkLanes port (docs/NEED-checkrewindlinklanes-partial-port.md): also propagate
+    // junction blockage backward from a vehicle that merely CANNOT PROCEED, not only one already halted --
+    // SUMO's `last->myHaveToWaitOnNextLink || last->isStopped()` (MSVehicle.cpp:5126); we had the second
+    // disjunct only. The NEED doc ranks this G1 as "highest impact" of its four gaps.
+    //
+    // DEFAULT OFF until measured, per the standing discipline -- and here the measurement that matters is
+    // NOT the goldens (they cannot contain a saturated junction at all, F3-SESSION-LOG.md §9.119) but the
+    // OPEN-LOOP discharge test: at a fixed inflow where SUMO holds equilibrium, does our resident count stop
+    // running away? See DENSITY-DIFF-HARNESS-DESIGN.md §1b for why closed-loop numbers cannot answer that.
+    public bool KeepClearHeldPropagation { get; set; } = false;
+
     public bool ColocationSymmetryBreak { get; set; } = true;
 
     // Fix 3 (docs/NEED-same-step-double-placement-colocation.md): SAME-STEP lane-change arrival

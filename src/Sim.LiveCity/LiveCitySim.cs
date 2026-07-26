@@ -411,6 +411,11 @@ public sealed class LiveCitySim : IDisposable
         // persisting (measured: longest episode 79 steps). Triggered by measured overlap only, never a timer.
         // LIVECITY_COLOCATIONSYMMETRYBREAK=1.
         _engine.ColocationSymmetryBreak = EnvGate("LIVECITY_COLOCATIONSYMMETRYBREAK", _engine.ColocationSymmetryBreak);
+        // G1 of the checkRewindLinkLanes port (docs/NEED-checkrewindlinklanes-partial-port.md): propagate
+        // junction blockage backward from a car that merely CANNOT PROCEED, not only one already halted.
+        // Default OFF; the measurement that decides it is the OPEN-LOOP discharge test, not the goldens.
+        // LIVECITY_KEEPCLEARHELD=1.
+        _engine.KeepClearHeldPropagation = EnvGate("LIVECITY_KEEPCLEARHELD", _engine.KeepClearHeldPropagation);
         // Fix 3: same-step lane-change arrival arbitration -- prevents the ONSET fixes 1/2 could only
         // mitigate (two cars changing into one slot in one step). LIVECITY_LANECHANGEARBITRATION=1.
         _engine.LaneChangeArrivalArbitration = EnvGate("LIVECITY_LANECHANGEARBITRATION", _engine.LaneChangeArrivalArbitration);

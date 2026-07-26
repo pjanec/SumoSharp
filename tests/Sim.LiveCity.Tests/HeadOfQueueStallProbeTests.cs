@@ -85,6 +85,7 @@ public class HeadOfQueueStallProbeTests
         "LIVECITY_INSERTIONFOLLOWERGAP",
         "LIVECITY_COLOCATIONSYMMETRYBREAK",
         "LIVECITY_LANECHANGEARBITRATION",
+        "LIVECITY_KEEPCLEARHELD",
     };
 
     private static readonly Dictionary<byte, string> BinderNames = new()

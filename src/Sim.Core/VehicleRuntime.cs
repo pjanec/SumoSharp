@@ -375,6 +375,18 @@ internal sealed class VehicleRuntime
     // of recomputing it -- byte-identical, and it halves the per-junction-vehicle plan cost. Reset
     // to false before each pre-pass ComputeMoveIntent; only ever written by that vehicle's own
     // pre-pass (parallel-safe, per-ego field).
+    // G1 (docs/NEED-checkrewindlinklanes-partial-port.md): our stand-in for SUMO's
+    // `MSVehicle::myHaveToWaitOnNextLink` -- "this vehicle chose the WAIT branch at its next link", i.e. it
+    // is holding at a junction entry rather than proceeding through. `checkRewindLinkLanes`' forward pass
+    // propagates blockage backward from such a vehicle (MSVehicle.cpp:5126), which is what stops cars being
+    // admitted into a junction interior they cannot clear.
+    //
+    // ⚠ WRITTEN IN THE COMMIT PHASE, READ IN THE PLAN PHASE -- so it always carries the PREVIOUS step's
+    // decision. SUMO reads it same-step because its planMove is sequential; our plan phase runs in parallel
+    // over a frozen snapshot, where reading a this-step decision would be order-dependent. One step of lag
+    // is the price of order-independence, and it is the only deviation in the G1 port.
+    public bool HeldAtLinkLastStep;
+
     public bool CrossingYieldTaken;
 
     // Perf (willPass/plan fusion): the pre-pass tells PlanMovements to REUSE this vehicle's already-
