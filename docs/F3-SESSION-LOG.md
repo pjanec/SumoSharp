@@ -34,19 +34,28 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **672 passed / 4 skipped / 0 failed** |
+| `dotnet test tests/Sim.ParityTests -c Release` | **717 passed / 4 skipped / 0 failed** (session 3; was 689) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; not in `Traffic.sln`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 
-672 = the historical 661 goldens + 9 `ContTurnInternalLaneOwnershipTests` + 2 diagnostics
-(`Scenario44DefectDiagTests`, `ContTurnFlagOnGridlockDiagTests`).
-The 4 skips are pre-existing (`LaneChangeOverlapDiagTests`, `RungC4vii…`, `RungP24…`, `RungP2Core…`).
+717 = 689 (the session-2 baseline) + 13 `JunctionLinkLaneMapTests` (T2.1) + 3 `JunctionEntryTimeTests`
+(T2.2) + 12 `JunctionIsLeaderTests` (T2.3). The 4 skips are pre-existing
+(`LaneChangeOverlapDiagTests`, `RungC4vii…`, `RungP24…`, `RungP2Core…`).
 
 **The 5 gridlock diagnostics are the load-bearing regression net** — they caught a bad change in one run and
 quantified it. Never judge a junction change on goldens alone (§7, Lesson 1):
 `WillPassSaturationDiagTests`, `DenseFlowDeadLaneDrainTests`, `RungHDp2g2CoordinatedLaneChangeTests`,
 `RblLeftTurnsDiagTests`, `LowDensityTeleportTests`.
+
+**⚠ SESSION 3: two of those five were UNRELIABLE and are now fixed.** `SumoShim` reads the
+**process-global** env var `SUMOSHARP_CONTTURNFIX` (`SumoShim.cs:250`), `IgnoreJunctionBlockerTests`
+*sets* it, and xUnit runs separate collections in **parallel** — so a concurrent shim test could
+silently simulate with the cont-turn gate ON. `LowDensityTeleportTests` failed **1 in 3** full-suite
+runs with exactly **5** teleports (the flag-ON count) while passing standalone. Fixed by serialising all
+six `SumoShim.Run` classes into `SumoShimEnvCollection`. **Contract: a new test calling `SumoShim.Run`
+MUST carry `[Collection(SumoShimEnvCollection.Name)]`.** See §9.43 and
+`NEED-sumoshim-process-global-contturn-env.md`.
 
 ## 3. What the task actually is (vs how it was briefed)
 
@@ -120,11 +129,30 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
 | `Engine.JunctionPhysicalOccupancyGate` | **default OFF** — measured counterproductive three times; do NOT retry alone |
 | `F3JunctionOverlapDiagTests`, `Scenario44DefectDiagTests`, `ContTurnFlagOnGridlockDiagTests` | live, always-passing instruments |
 | 9 NEED/design docs + design/tasks/tracker + this log | live |
+| **Session 3 — `isLeader` port, Stage 1 + T2.3 (all parity-inert):** | |
+| `NetworkModel.LinkIndexByInternalLane` (both cont stages) + `EntryConnectionByLink` (T2.1) | **live, unconditional**, nothing reads them in sim |
+| 3 `long` timestamps on `VehicleRuntime` + `AssignJunctionEntryTimestamps` (T2.2) | **live**, written at the lane-advance seam, **read by no sim path** (audited) |
+| `Engine.IsLeader` / `IsLeaderByEntryOrder` / `ResponseFor` + gap helper (T2.3) | **live but UNCALLED** — 297 insertions, 0 deletions |
+| `tests/Sim.ParityTests/SumoShimEnvCollection.cs` | **live** — serialises the six `SumoShim.Run` classes (§2's ⚠) |
+| `Engine.JunctionIsLeaderGate` | **T2.4b, in progress** — will be **default OFF** |
 
 A/B switches: demo → `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPANCY=1`; shim → `SUMOSHARP_CONTTURNFIX=1`
 and `--ignore-junction-blocker <TIME>`.
 
-## 6. NEXT ACTION — port `isLeader()` (the faithful fix; owner-chosen)
+## 6. IN PROGRESS — port `isLeader()` (the faithful fix; owner-chosen)
+
+**⚠ SESSION 3: this task is UNDERWAY and now has its own design trio — read those, not just this
+section:** `docs/F3-ISLEADER-PORT-DESIGN.md` (HOW, with the proof in §0a and the traps in §3b/§5b),
+`…-TASKS.md` (staged tasks + success conditions), `…-TRACKER.md` (what is ticked).
+
+**Progress:** T2.1, T2.2, T2.3 **done and confirmed** (all parity-inert). **T2.4a/T2.4b** (gap helper,
+then wiring behind a default-OFF `JunctionIsLeaderGate`) and **T2.5** (measurement + owner decision)
+remain. See §9 session 3 for findings — in particular §9.38 (attempt 1, not the response matrix, is the
+operative arm) and §9.43 (a real cross-test race that made two of the five diagnostics unreliable).
+
+The rest of this section is the original spec. It remains accurate except where §9.38 corrects it: the
+mutual-conflict branch **is** the one that resolves the deadlock, but it is reached via attempt 1's
+both-red arm, **not** via the response matrix.
 
 **Everything else is either done or explicitly parked.** The owner has chosen the faithful fix over the
 pragmatic knob.
@@ -231,6 +259,19 @@ state so the plan phase stays order-independent.
    not conflate them — flipping the flag naively mixes positions measured on different lanes.
 6. `Console.Error` from a test host is swallowed by VSTest — temporary instrumentation must write to a **file**.
 7. Backticks in a `git commit -m` string get shell-expanded. Use `git commit -F <file>`.
+8. **The measuring apparatus includes the TEST HARNESS, not just the engine.** Lesson 2 said "verify the
+   instrument"; three instrument defects were engine/analysis code. The fourth was **process-global
+   state in the tests**: `SumoShim` reads env vars to set engine flags, one test sets them, and xUnit
+   runs classes in **parallel** — so a test can silently simulate a configuration it did not ask for
+   (§9.43). Symptom: a diagnostic failing ~1 run in 3 while passing standalone. Two consequences worth
+   internalising: **(a)** "deterministic engine" does **not** imply "deterministic test suite" —
+   `Sim.Bench`'s `par == single` stayed green throughout; **(b)** when a test is intermittent, reproduce
+   the mechanism **deterministically** (here: set the env var by hand) instead of re-running and hoping
+   — the reproduction is what identifies the cause, and re-running only ever gives you a probability.
+9. **An intermittent guard is worse than no guard.** A false RED costs a session chasing a regression
+   that does not exist, and — worse — it trains the reader to discount the guard exactly when a real
+   failure needs to be believed. Fix flakiness in the regression net *before* measuring a behavioural
+   change against it, not after.
 
 ## 8. Key code locations
 
@@ -421,6 +462,108 @@ then the 5 s `JUNCTION_BLOCKAGE_TIME` escape, then `isLeader()`.
 unblocked** — the last obstacle to enabling it is a defaults decision, not a defect. Remaining faithful work:
 **`isLeader()`** (unblocks T1.6 too), plus N2 (co-located vehicles), N3 (net geometry), scenario-44 golden.
 
+### Session 3 (2026-07-26, continued) — the `isLeader` port: design, Stage 1, T2.3
+
+Working docs: **`docs/F3-ISLEADER-PORT-{DESIGN,TASKS,TRACKER}.md`** (the design trio, written before any
+source edit per CLAUDE.md). This log stays the running record; the trio holds the detail.
+
+35. **Baseline re-confirmed first-hand** before starting: 689/4/0, `D96213B7BB4021A7` par==single,
+    48/48, 272/272. Environment was already provisioned (dotnet 8.0.129, SUMO 1.20.0 on `PATH`).
+36. **The deadlock pair is a TWO-STAGE CONT turn**, established from the real net rather than assumed:
+    link 18 is `2417 → :2336_18_0 → [internal junction :2336_42_0] → :2336_42_0 → -2337`, and
+    **`intLanes[18]` is the STAGE-2 lane** while stage-1 `:2336_18_0` is absent from `intLanes`.
+    Consequently `JunctionLink.Connection` (resolved by `Via == intLanes[i]`) is the **second hop**,
+    carrying **no `tl`/`linkIndex`** (static `'m'`), while the entry hop carries `tl=2336, linkIndex=18,
+    state='o'`. This is exactly why SUMO has `getCorrespondingEntryLink()`.
+37. **CORRECTED an assumption:** `isLeader`'s To/From junction asymmetry is **stylistic, not
+    functional** — `NLHandler.cpp:431-445` sets *both* endpoints of an internal edge to the same
+    junction, for both cont stages. So **one** predicate (`IsInternalLaneOfJunction`) is right for ego
+    and foe, and no cont special case is needed.
+38. **PROOF that this port resolves the measured deadlock — and a correction of my own framing.** I first
+    justified the port via the mutual-response *matrix* bits. Measuring which arm actually runs showed
+    junction `2336` **never** shows links 3 and 18 non-red simultaneously (0 of 12 phases), so
+    **attempt 1 (`haveRed`) fires in 121 of 121** deadlock steps and the matrix is **never reached**.
+    The matrix bits are real but inoperative here. Working attempt 1's stuck-foe arm across the cycle:
+    both-red 75 steps (→ mutual branch, both use `CET`), link-3-red-only 26, link-18-red-only 20,
+    neither-red **0**. In every class the pair compares **the same two numbers in opposite senses**, so
+    the result is **antisymmetric — exactly one yields, never both**; on a tie it falls to the id, and
+    `CompareOrdinal("102","95") < 0`. **The symmetric state is structurally unreachable.**
+    ⇒ **Attempt 1 is MANDATORY, not stageable.** T2.3's success condition had to be rewritten: as first
+    drafted it asserted the matrix bits and **would have passed while testing the wrong branch.**
+39. **The yield-request reset (`MSVehicle.cpp:3720-3731`) is deliberately NOT ported, with the trap
+    recorded.** `mySetRequest` includes `leavingCurrentIntersection`, so an in-junction car keeps its
+    request even at speed 0 and the reset fires only on *spillback*. Our `WillPass` explicitly
+    **excludes** that disjunct, so wiring the reset to `!WillPass` would blank `ET`/`CET` for **every**
+    stopped in-junction car and **destroy the ordering the port establishes**. It is also not what the
+    measured deadlock needs (2.99 m clear gap; both cars stopped short of the crossing).
+    → `NEED-yield-request-reset-unported.md`.
+40. **Blast radius quantified over all 134 committed nets** instead of guessed: mutual-response pairs
+    **2599 / 93961 (2.8%)**, confined to **12** nets; **26** nets contain cont links (8623 cont request
+    rows, so the two-stage logic is broadly load-bearing); **0** nets contain an indirect link
+    (validating that omission). And since clause 1 makes a not-yet-on-junction vehicle always yield —
+    today's arm-5 behaviour — **the behavioural delta is confined to ego already INSIDE the junction.**
+41. **T2.1 + T2.2 shipped and confirmed** (parity-inert). T2.2's inertness was confirmed
+    **structurally**, not just numerically: a field-read audit showed every read of the three
+    timestamps is either in a test-only accessor (sole caller: the test file) or a self-contained
+    read-then-write. Measured cont trace matches the design exactly — `CET` holds `MAX` for 119 steps in
+    the stage-1 bay, then stage 2 stamps `CET=439` while `ET` renews from `ETN=320`.
+    Review caught a weakness worth noting: the all-nets sweep wrapped each parse in a `catch` and
+    asserted only `checkedLinks > 0`, so a parser regression would have **skipped every in-loop
+    assertion while still passing**. Floors re-derived from the corpus (134 nets, 2927 RoW junctions,
+    37426 `intLanes` entries).
+42. **T2.3 shipped** — `IsLeader` / `IsLeaderByEntryOrder` / `ResponseFor`, **297 insertions, 0
+    deletions**, so arm 5 is byte-for-byte unchanged and nothing calls it. Predicates verified against
+    source rather than names: `haveRed = 'r'|'u'`, `haveYellow = 'y'|'Y'`, `havePriority = 'A'..'Z'`
+    (`MSLink.h:437-454`, `SUMOXMLDefinitions.h:1695-1701`); `HaltingSpeed 0.1` = `SUMO_const_haltingSpeed`.
+    Note `'Y'` ∈ `'A'..'Z'`, so a `Y`-vs-`y` pair resolves at attempt 2 before attempt 3 — SUMO's own
+    ordering, so faithfulness falls out. `VehicleRuntime` is `internal`, so a public
+    `JunctionLeaderCandidate` projection exists to make the helpers testable; `IsLeader` takes
+    `NetworkModel` **explicitly** (not `_network`) for `ReferenceEquals` consistency — **T2.4b must pass
+    `this._network`.**
+43. **⚠ A REAL CROSS-TEST RACE, found and fixed — the most consequential finding of this session.**
+    `LowDensityTeleportTests` failed **1 of 3** full-suite runs ("fired 5 teleports … should hold it at
+    <= 2") while passing every standalone run. **Not** engine non-determinism — `Sim.Bench`'s
+    `par == single` was green throughout. Cause: `SumoShim.cs:250` reads the **process-global** env var
+    `SUMOSHARP_CONTTURNFIX`; `IgnoreJunctionBlockerTests` **sets** it; xUnit runs separate collections in
+    **parallel** and a class with no `[Collection]` forms its own — so five reader classes could run
+    concurrently with the one writer. Pinned **deterministically**, not by re-rolling:
+    `SUMOSHARP_CONTTURNFIX=1 … --filter LowDensityTeleportTests` **fails with that identical message**;
+    unset, it passes. **5 is exactly the cont-turn-gate-ON count** for that scenario, which identified
+    the cause rather than merely correlating with it.
+    **Why it mattered:** that test and `DenseFlowDeadLaneDrainTests` are two of the five gridlock
+    diagnostics — this repo's regression net for junction changes — and T2.4b, the first behavioural
+    change of this port, is judged against them. A false RED costs a session chasing a phantom
+    regression and teaches the reader to discount the diagnostic exactly when a real failure needs
+    believing. It is also the test blocking `ContTurnInsideJunctionGate` from default-ON.
+    **The race was introduced earlier in this same session by my own `IgnoreJunctionBlockerTests`.**
+    Fixed by serialising all six `SumoShim.Run` classes into `SumoShimEnvCollection`. The
+    process-global read itself remains a latent hazard →
+    `NEED-sumoshim-process-global-contturn-env.md` (which also says the `[Collection]` serialisation
+    should be **removed** when the seam is fixed properly, so the coupling is proven gone, not contained).
+44. **Two more traps found in the `gap` derivation** (`MSLink.cpp:1376-1647`), both recorded in design
+    §3b before delegating: (a) `getLeaderInfo`'s `sameSource` uses **`getLogicalPredecessorLane()`**
+    (one hop) while `isLeader`'s same-source test uses **`getNormalPredecessorLane()`** (recursing past
+    internal lanes) — same-sounding names, different predicates, must not share a helper; (b) the
+    `contLane ⇒ gap = -DBL_MAX` rule is **not cosmetic and is live for veh 95** (it sits on a cont
+    continuation lane), and omitting it flips attempt 1's answer.
+45. **Two net-shape findings from the implementation:** `:2336_42_0`'s downstream edge `-2337` is
+    **0.20 m**, so a car crosses two junction boundaries in one step and stamps both entry times — SUMO
+    does the same (`enterLaneAtMove` twice, one `getCurrentTimeStep()`); and an **internal junction can
+    carry a vestigial `intLanes`** naming a lane owned by a *different* real junction (`:J_2_0`,
+    scenario 41), so corpus sweeps must scope to `junction.Links`, not raw `IntLanes`.
+46. **F3 overlap baseline re-measured** (not recalled) for T2.5's A/B: `BOTH-INTERNAL-DIFFERENT-LANE`
+    **15** (3 stopped-foe worst 2.382 m / **12 both-moving** worst 1.831 m), `ONE-INTERNAL-ONE-NORMAL`
+    8, **206** stopped vehicle-steps on internal lanes. Several both-moving pairs have **identical
+    speeds** (2.600/2.600, 3.900/3.900), so the tie-break's speed-equal rung — and the ordinal-id
+    compare beneath it — is reachable in practice.
+
+**State at end of session 3 (so far):** gate green (**717/4/0**, `D96213B7BB4021A7` par==single, 48/48,
+272/272), tree clean, all pushed. Everything shipped so far is **provably unable to change a
+trajectory** (Stage 1 written-not-read + T2.3 additive-with-no-caller). **T2.4b is the first change that
+can**, and whether the 661 goldens survive flag-ON is an **open measurement** — design §6.3 notes the
+port may trade deadlock for junction overlap, so T2.5 re-measures the F3 buckets and reports them either
+way, not just the teleport count.
+
 ---
 
 ## 10. RESUME PROMPT (paste this into a fresh session)
@@ -433,7 +576,18 @@ unblocked** — the last obstacle to enabling it is a defaults decision, not a d
 > and the traps that cost time. Do not re-derive anything marked disproven, and do not re-attempt anything
 > in §6's "Parked" table.
 >
-> **Your task: port SUMO's `isLeader()` — §6 of that log has the full spec** (source
+> **⚠ SESSION 3 UPDATE — the `isLeader` port is UNDERWAY, not unstarted.** It has its own design trio:
+> `docs/F3-ISLEADER-PORT-{DESIGN,TASKS,TRACKER}.md`. Read the **DESIGN** (especially §0a's proof, §3b's
+> two gap traps, §5b's `!WillPass` trap) and the **TRACKER** to see what is ticked. **T2.1/T2.2/T2.3 are
+> done and confirmed; T2.4a/T2.4b (wiring behind a default-OFF `JunctionIsLeaderGate`) and T2.5
+> (measurement + owner decision) remain.** Baseline is now **717/4/0**, not 689. Two extra
+> non-negotiables learned in session 3: **(7) a new test calling `SumoShim.Run` MUST carry
+> `[Collection(SumoShimEnvCollection.Name)]`** — a process-global env var made two of the five gridlock
+> diagnostics unreliable (§9.43); and **(8) attempt 1 (`haveRed`), not the response matrix, is the arm
+> that decides the measured deadlock** (§9.38) — a matrix-only reading of the problem tests the wrong
+> branch and passes.
+>
+> **Original task framing: port SUMO's `isLeader()` — §6 of that log has the full spec** (source
 > `sumo/src/microsim/MSVehicle.cpp:7343-7483`, consumed at `:3429` as `isLeader(...) || inTheWay()`; the
 > algorithm in SUMO's order, the three new per-vehicle entry-time fields, where it plugs into
 > `JunctionYieldConstraint` arm 5, and seven success conditions). The owner chose this **faithful** fix over
@@ -469,3 +623,12 @@ but `ReuseIntent` skips it). The measuring instruments were also fixed: the OBB 
 forward axis** *and* a front-bumper-as-centre anchor — correcting both moved every F3 number and revealed the
 axis error had been *hiding* seven real overlaps. What remains is one faithful port, `isLeader()`, which
 resolves both the arm-5 mutual deadlock and the 12 remaining both-moving F3 overlaps.
+
+**Session 3 added, in one line each:** that port is now **underway** behind its own design trio, with
+Stage 1 and the `isLeader` helpers **shipped and provably parity-inert** (written-not-read; 297
+insertions / 0 deletions) and only the flag-gated wiring and the measurement left; the deadlock is now
+backed by a **proof** rather than a plausible mechanism — attempt 1 (`haveRed`), *not* the response
+matrix, is the operative arm, and it makes the symmetric state **structurally unreachable**; and a
+**fourth instrument defect** turned up, this time in the test harness rather than the engine — a
+process-global env var let one test's configuration leak into another, making two of the five gridlock
+diagnostics fail about one run in three for reasons unrelated to any change under test.
