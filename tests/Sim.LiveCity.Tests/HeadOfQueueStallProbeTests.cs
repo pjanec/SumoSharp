@@ -462,7 +462,18 @@ public class HeadOfQueueStallProbeTests
                 _out.WriteLine($"      [{cls}] {f.Lane,-18} occupant={f.Vehicle,-8} pos={f.Pos,6:F2} speed={f.Speed,5:F2}{stoppedTag} occupantBinder={f.Binder}({occBinderName})");
             }
         }
-        _out.WriteLine($"HEADLINE: {heldByAtLeastOneBay} of {on3x.WedgeSnapshots.Count} wedges held by >=1 BAY foe (A); {heldOnlyByPlain} held ONLY by plain foes (B).");
+        // ⚠ THIS SNAPSHOT MEASURES OCCUPANCY, NOT CAUSATION. It records every occupied foe lane, not the one
+        // that actually made the constraint bind, and arm 14 stops at the FIRST blocking foe it finds. So
+        // "held by >=1 bay foe" is an UPPER BOUND on bay involvement and reads high: measured 5 of 9, while
+        // per-row inspection showed all 9 also had an occupied PLAIN foe, which alone suffices because the
+        // plain arm is unconditional. The decisive figure is therefore the last line, not the first.
+        var withPlain = on3x.WedgeSnapshots.Count(w => w.Foes.Any(f => !f.IsBay));
+        var bayOnly = on3x.WedgeSnapshots.Count(w => w.Foes.Count > 0 && w.Foes.All(f => f.IsBay));
+        var movingPlain = on3x.WedgeSnapshots.Count(w => w.Foes.Any(f => !f.IsBay && f.Speed >= StoppedThreshold));
+        _out.WriteLine($"OCCUPANCY (upper bound, NOT causation): {heldByAtLeastOneBay} of {on3x.WedgeSnapshots.Count} wedges had >=1 BAY foe present; {heldOnlyByPlain} had only plain foes.");
+        _out.WriteLine($"DECISIVE: {withPlain} of {on3x.WedgeSnapshots.Count} wedges had >=1 occupied PLAIN foe lane (sufficient on its own -- the plain arm is unconditional).");
+        _out.WriteLine($"BAY-ONLY (the only shape that would prove the ordering incomplete): {bayOnly}.");
+        _out.WriteLine($"OF THOSE, {movingPlain} were blocked by a MOVING plain-lane foe -- pure conservatism from unported inTheWay conflict geometry.");
 
         // ---- SC1: the entry-time ordering must break the circular wait ----
         // Asserted as a comparison against the bare-occupancy column, not against a remembered number:

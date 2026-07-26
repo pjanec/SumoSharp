@@ -165,7 +165,7 @@ the arm-14 wedge. **Session 4 fixed that** with gate 7: at 3x, trips **1583 → 
 stalls **469 → 17**, stall heads **57 → 7**, and the permanent 4890-step bay lock becomes a bounded 637-step
 delay (§9.114). A residual **9** bay stalls remain and are §6's open item.
 
-## 6. NEXT ACTION — attribute and clear the RESIDUAL 9 bay stalls (conflict-point geometry)
+## 6. NEXT ACTION — stop cars QUEUEING INSIDE the intersection (keepClear), then port `inTheWay` geometry
 
 **§6's previous occupant is DONE.** The arm-14 four-way circular wait is broken by
 `InternalJunctionAdmissionEntryOrder` (§9.110-114). Its former "primary hypothesis" — porting
@@ -186,34 +186,28 @@ Gate green throughout: **752/4/0**, bench **`D96213B7BB4021A7`** par == single, 
 all 661 goldens byte-identical. 1x is unregressed (`LongHorizonGridlockDiagTests` passes with the new
 sub-gate included in `AllLiveCityGateVars`).
 
-### The open item
+### The open item — MEASURED, and the target moved one level upstream
 
-**9 deep stalls (longest 637 steps) still stand on cont bays held by arm 14.** §9.115 argues from the net
-and from `isLeader` that these are held by foes on **plain internal lanes**, where the code keeps an
-unconditional block, and that the missing piece is `inTheWay`'s **conflict-point geometry**
-(`MSLink.cpp:1437`, `myConflicts[i].getLengthBehindCrossing`) — SUMO ignores a foe that has already passed
-ego's conflict point; we do not. That makes the residual a **conservatism**, not a circular wait, which is
-consistent with 637 vs 4890 steps.
+The §6 measurement is **done** (§9.117). Result: **9 of 9** residual wedges had at least one occupied
+**plain** foe lane, and the plain arm is unconditional, so that alone explains all of them.
+**Bay-only wedges — the one shape that would mean the ordering is still incomplete — number 0.**
+The entry-time ordering is therefore **complete**; do not add to it.
 
-**That argument is STRUCTURAL, NOT MEASURED.** The next step is the measurement, already specified:
-for each of the 9, dump which foe lane is occupied, by whom, classified bay vs plain, plus the occupant's
-own binder (so it is visible whether the true cause is downstream congestion). Then decide:
+Two causes remain, and **neither is in arm 14**:
 
-1. If the residual is dominated by **plain-lane** foes ⇒ the fix is porting internal-junction conflict
-   offsets, a bounded new piece of work with its own design doc. Weigh it against the alternative
-   conclusion that 9 bounded stalls per simulated hour at **3x** design density is acceptable.
-2. If **any** of the 9 is held by another **bay** ⇒ the ordering is still incomplete and that is the
-   priority. Check `response2` first: it is computed from the raw response matrix
-   (`foeRequest.RespondsTo(egoLinkIndex)`), whereas SUMO derives `response`/`response2` from `isLeader`'s
-   four attempts (tlLinkState → priority → yellow → matrix). On a **traffic-light** junction — and
-   `d_5_3`/`d_5_4` are both `type=traffic_light` — attempt 1 can pick a different pairing than the matrix.
+1. **Unported `inTheWay` conflict geometry** (`MSLink.cpp:1437`, `myConflicts[i].getLengthBehindCrossing`).
+   SUMO ignores a foe that has **passed ego's conflict point**; we block while the foe is anywhere on the
+   lane. Measured directly: bays held by foes **still moving at 0.89–3.05 m/s**. This is a bounded
+   conservatism and a self-contained port with its own design doc.
 
-### Do NOT re-attempt (each disproven, not merely untried)
+2. **⚠ Cars are QUEUEING INSIDE the intersection — a new rung-5 defect, and the more important one.**
+   `:d_5_3_10_1` carries **four** stopped cars at pos 4.67 / 12.17 / 19.67 / 27.17 (binders `leaderFollow`
+   ×3, `junctionYield` ×1); others are held by `crossJxnLeader`. Cars standing on an internal lane because
+   their exit is congested is what `keepClear` / `checkRewindLinkLanes` exists to prevent. **Start here** —
+   it is a believability defect independent of arm 14, and the bay stalls are its symptom.
 
-- **`addBlockedLink` / `myBlockedFoeLinks`** — dead code in 1.20.0 (§9.110).
-- **Extending the entry-time ordering to non-bay foes** — provably inert: for bay-vs-plain-internal every
-  `isLeader` branch already yields, because a cont entry leaves `ConflictEntryTime` at `MAX` (§9.115).
-- **Defaulting `InternalJunctionAdmissionGate` ON without gate 7** — that is the 4890-step wedge.
+**⚠ DO NOT "fix" this by relaxing arm 14.** Letting a bay car proceed into an occupied conflict area would
+conceal the rung-5 defect *and* recreate the overlaps arm 14 was added to prevent. Both failures at once.
 
 ### Then: the defaults decision (owner's, not a test outcome)
 
@@ -282,6 +276,18 @@ gates 1/2/4 now.
     validating the old number) and it revealed that the historical "857 steps" was a mid-run snapshot of
     a **4890-step** lock. A conclusion whose instrument is deleted is unfalsifiable — and cross-instrument
     number comparisons are invalid, so a deleted instrument also silently poisons every later comparison.
+14. **Never hand-decode a `response`/`foes` bit mask — the RIGHTMOST character is index 0.**
+    `NetworkModel.Bit` is `mask[mask.Length - 1 - link]`. A confident left-to-right hand-decode produced a
+    documented conclusion that was the exact **opposite** of the truth (§9.116), and it is the second
+    backwards-bit-mask error in this workstream. Call `RespondsTo`, or reverse the string first. The
+    aggravating factor: the error flattered the fix being defended, so nothing about the result looked
+    wrong.
+15. **An occupancy metric is not a causation metric.** The wedge probe recorded *every* occupied foe lane,
+    but arm 14 stops at the **first** blocking foe — so "had a bay foe present" read **5 of 9** where the
+    causal answer was **0 of 9**. It would have sent the next session to re-open a completed fix. When a
+    constraint short-circuits, any "what was present" tally is an **upper bound**; label it as one, and put
+    the decisive figure on the last line, not the first. (Same error class as the `downstreamFree` mislabel
+    in §9.100 — measuring a different population than the one you name.)
 
 ## 8. Key code locations
 
@@ -1322,6 +1328,55 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
      lengths (637 vs 4890). Confirming which foe actually holds each of the 9 is the next measurement; it
      has NOT been done, so this is a structural argument, not a measurement.
 
+116. **⚠ MY §9.115 ARGUMENT WAS BUILT ON A BIT-ORDER ERROR. I read every `response` mask BACKWARDS.**
+     `NetworkModel.Bit` is `mask[mask.Length - 1 - link]` (`NetworkModel.cs:144`) — **the RIGHTMOST
+     character is index 0**, as SUMO writes it. §9.115 hand-decoded `d_5_4` bay idx 7's row left-to-right
+     and concluded "only 8 of its foes is `cont`". Decoded correctly, idx 7 responds to
+     {1,2,3,9,10,11,13,14,17,18} and idx 3 responds to {7,9,10,15,16,17} — so **bays 3 and 7 respond to each
+     other**, i.e. that pair IS a mutual conflict, the exact opposite of what I wrote.
+
+     **The CODE was never wrong** — it calls `RespondsTo`, which applies the reversal internally. Only my
+     prose reasoning was invalid. But it was invalid in the direction that flattered my own fix, and it is
+     the second time in this workstream that a confident hand-decode of a bit mask has been backwards. **Do
+     not hand-decode a `response`/`foes` mask; call `RespondsTo` or reverse the string first.**
+
+117. **THE MEASUREMENT (§6's task), AND WHY ITS HEADLINE METRIC MISLEADS.** 9 of 9 residual wedges resolved
+     a foe set. The instrument's first-cut headline said **5 of 9 held by ≥1 BAY foe**, which would mean the
+     ordering is still incomplete. **That reading is wrong, and the metric is the reason:** the snapshot
+     records **every occupied foe lane**, while arm 14 stops at the **first** blocking foe — so
+     "had a bay foe present" is an **upper bound on occupancy, not a statement of causation**.
+
+     Per-row inspection settles it: **all 9 wedges had at least one occupied PLAIN foe lane**, and the plain
+     arm is **unconditional**, so that alone suffices to explain every one of them. **Bay-only wedges — the
+     one shape that would prove the ordering incomplete — number 0.** The clearest illustration is the
+     apparent 2-cycle `__veh2936` (`:d_5_4_3_0`) ↔ `__veh2629` (`:d_5_4_7_0`), both at pos 4.91, both
+     binder 14, each listing the other. It looks exactly like the old wedge. It is not: `2936` also has
+     `:d_5_4_23_0` (**plain**, occupied by a stopped car) in its foe set, and the ordering correctly gives
+     `2936` the right of way over `2629` anyway — `CompareOrdinal("__veh2936","__veh2629") > 0` ⇒ `2936`
+     does not yield. **The ordering works; the plain arm holds them.** The probe's reporting has been
+     rewritten to lead with the decisive figure and to label the occupancy figure as an upper bound.
+
+     **So §9.115's CONCLUSION survives — a conservatism, not a circular wait — while its supporting
+     argument (§9.116) did not.** Being right for a wrong reason is not being right; the measurement is
+     what carries this, not the reasoning that preceded it.
+
+118. **THE ACTUAL UPSTREAM CAUSE, and it is a NEW rung-5 finding: cars are QUEUEING INSIDE the
+     intersection.** Two distinct sub-shapes in the foe detail:
+     - **Moving foes still block.** `__veh4008`'s plain foes on `:d_5_3_10_1` are at **speed 0.89 / 1.07 /
+       1.20 m/s** and `__veh1475`'s at **1.42 / 3.05**. They are *crossing*, not stuck — yet they hold the
+       bay for as long as they are anywhere on that lane. This is precisely the unported `inTheWay`
+       geometry (`MSLink.cpp:1437`): SUMO ignores a foe that has **passed ego's conflict point**.
+     - **Standing queues on internal lanes.** `:d_5_3_10_1` carries **four** stopped cars at pos
+       **4.67 / 12.17 / 19.67 / 27.17**, binders `leaderFollow` ×3 and `junctionYield` ×1. Others are held
+       by `crossJxnLeader`. **These are cars stopped inside the junction because their exit is congested**
+       — which `keepClear`/`checkRewindLinkLanes` exists to prevent, and which is a believability defect in
+       its own right regardless of arm 14.
+
+     **The bay stalls are therefore a SYMPTOM, and the cause is one level upstream.** Per the ladder's
+     rung 5 this must be fixed at the cause. Relaxing arm 14 to let a bay car proceed into an occupied
+     conflict area would be the wrong fix twice over: it would conceal this, and it would create exactly
+     the overlaps arm 14 was added to prevent.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
@@ -1346,17 +1401,19 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > byte-identical throughout**; `Sim.Bench` **`D96213B7BB4021A7`** par == single; `Sim.ParityTests`
 > **752/4/0**; `Sim.LiveCity.Tests` **50/50**.
 >
-> ### YOUR TASK — §6: attribute and clear the RESIDUAL 9 bay stalls
-> The arm-14 four-way circular wait is **FIXED** (`InternalJunctionAdmissionEntryOrder`, §9.110-114): it was
-> blocking on **bare foe-lane occupancy**, which is symmetric, and SUMO never does that on the driving path —
-> it filters foe-lane candidates through `isLeader(...) || inTheWay()`. Restoring the entry-time ordering took
-> the longest bay lock from **4890 steps to 637** and trips **+57%** from that one variable.
+> ### YOUR TASK — §6: stop cars QUEUEING INSIDE the intersection
+> The arm-14 circular wait is **FIXED and the residual is ATTRIBUTED**. It was blocking on **bare foe-lane
+> occupancy**, which is symmetric; SUMO never does that on the driving path (it filters foe-lane candidates
+> through `isLeader(...) || inTheWay()`). Restoring the entry-time ordering took the longest bay lock from
+> **4890 steps to 637** and trips **+57%** from that one variable. The residual **9** bay stalls were then
+> measured: **9 of 9** had an occupied **plain** foe lane, which alone explains them; **bay-only wedges = 0**.
+> **The ordering is complete — do not add to it, and do not relax arm 14.**
 >
-> What remains: **9** cars per simulated hour still stop on a cont bay for up to 637 steps at 3x. §9.115
-> argues structurally that these are held by foes on **plain internal lanes** which SUMO would ignore once
-> they pass the conflict point — i.e. missing internal-junction **conflict-point geometry**, a conservatism
-> rather than a deadlock. **That is an argument, not a measurement.** §6 specifies the measurement, the
-> decision it feeds, and what NOT to try.
+> The cause is one level upstream and it is a **rung-5 defect**: cars **queue inside the intersection**.
+> `:d_5_3_10_1` carries **four** stopped cars (binders `leaderFollow` ×3, `junctionYield`), i.e. cars
+> standing on an internal lane because their exit is congested — what `keepClear` /
+> `checkRewindLinkLanes` exists to prevent. Second, smaller cause: unported **`inTheWay` conflict geometry**,
+> so a foe still moving at 0.89–3.05 m/s keeps holding a bay it has already passed. §6 has both, in order.
 >
 > ### NON-NEGOTIABLES — every one of these cost real time here
 > 1. **Measure before building.** Five hypotheses were refuted by measurement this session, and **two
@@ -1403,6 +1460,7 @@ admission gate blocked on **bare foe-lane occupancy**, which is symmetric, so a 
 four cars motionless for **4890 steps**. SUMO never uses bare occupancy on the driving path — it filters
 foe-lane candidates through `isLeader(...) || inTheWay()`, whose tie-break chain is total precisely to avoid
 this. Restoring that ordering took the longest lock to **637 steps**. The branch's own carried hypothesis
-(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is a residual
-**9** bounded bay stalls per hour at 3x, argued — not yet measured — to be missing conflict-point geometry
-rather than a deadlock, plus the owner's decision on which gates to default ON.
+(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is one level upstream and newly identified: cars **queue inside the
+intersection** (four stopped on one internal lane, exit congested) — a rung-5 defect that `keepClear`
+should prevent, and of which the 9 remaining bounded bay stalls are a *symptom*. Plus the owner's decision
+on which gates to default ON.

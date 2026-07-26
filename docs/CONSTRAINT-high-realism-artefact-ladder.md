@@ -88,11 +88,22 @@ mutually-conflicting bays had no way to resolve. Restoring SUMO's entry-time ord
 acceptable general solution per the ladder. Nothing was concealed: no timer-triggered rescue, no overlap
 permission, no teleport.
 
-**Still open, and it is a rung-5 case:** **9** cars per simulated hour still stop on a cont bay for up to
-637 steps. Per rung 5 these must be fixed at the cause and must **not** be rescued. The structural argument
-(`F3-SESSION-LOG.md` §9.115) is that they are blocked by a foe standing on a plain internal lane which SUMO
-would ignore once it has passed the conflict point — i.e. missing conflict-point geometry, a conservatism
-rather than a deadlock. **That is an argument, not a measurement**, and the measurement is §6's next step.
+**Still open, and now MEASURED (`F3-SESSION-LOG.md` §9.117-118):** **9** cars per simulated hour still stop
+on a cont bay for up to 637 steps. All **9 of 9** are held by an occupied **plain** internal lane, not by
+another bay — so the admission ordering is complete and these are **not** a deadlock. Two causes:
+
+- **A foe still MOVING (0.89–3.05 m/s) keeps holding the bay** it has already passed, because `inTheWay`'s
+  conflict-point geometry is unported. A bounded conservatism.
+- **⚠ Cars are QUEUEING INSIDE the intersection — a NEW rung-5 violation, and the more serious one.**
+  `:d_5_3_10_1` carries **four** stopped cars at pos 4.67 / 12.17 / 19.67 / 27.17. Cars standing on an
+  internal lane because their exit is congested is exactly what `keepClear` exists to prevent, and it is a
+  believability defect in its own right — a viewer sees cars parked in the middle of a junction.
+
+Per rung 5 both must be fixed **at the cause**. **The bay stalls are a symptom of the second one.**
+
+**⚠ Explicitly NOT permitted as a fix here:** relaxing the admission arm so a bay car may proceed into an
+occupied conflict area. That would violate the ladder **twice** — it conceals the rung-5 defect (rung 5's
+whole point) and it manufactures rung-3 overlaps during a normal, non-unblocking manoeuvre.
 
 **⚠ CAVEAT on every in-zone figure:** the pocket is **camera-driven**; the headless diagnostic places it at
 the net centre. A viewer moves the camera, so any part of the city can become high-realism — these columns
