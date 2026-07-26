@@ -1159,6 +1159,55 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
      never holds a car on an unresolvable lookup — that message came from the *classifier's* own downstream
      resolution. Where arm 14 does bind, it is correctly holding a cont-bay car whose foe lane is occupied.
 
+### Session 3 (continued) — ⚠⚠ HEAD-OF-QUEUE: MY OWN FIX CREATES A 4-WAY DEADLOCK AT 3x
+
+103. **The owner was right that only the head matters.** Probed heads vs followers directly (a stalled
+     vehicle is a FOLLOWER iff another deeply-stalled vehicle sits ≤ 15 m ahead on the same lane).
+     Default density: **HEADS = 0, FOLLOWERS = 0** — no deep stalls at all, so 1x is genuinely clean.
+     3x: **HEADS = 618, FOLLOWERS = 2327 (79% followers)**, which confirms §9.99's mislabel: followers are
+     97.2% `leaderFollow`, i.e. pure queue noise.
+104. **⚠⚠ WHAT HOLDS THE HEADS — 48.1% is MY OWN ARM 14.**
+
+     | Binder | Share of heads |
+     | --- | --- |
+     | **14 `internalJxnAdmission`** (T3.2, mine) | **48.1%** (297) |
+     | 2 `crossJxnLeader` | 46.0% (284) |
+     | 10 `junctionYield` arm 5 | 3.1% (19) |
+     | 1 `leaderFollow` | 1.6% |
+     | 11 `keepClear` | 1.0% |
+
+     Followers, for contrast: **97.2% `leaderFollow`** — exactly as predicted, so the head/follower split is
+     doing its job.
+105. **THE MECHANISM: a FOUR-WAY CIRCULAR WAIT inside junction `d_5_4`, created by my admission gate.**
+     Four vehicles sit on four cont **bays** of the same junction — `:d_5_4_3_0`, `:d_5_4_7_0`,
+     `:d_5_4_11_0`, `:d_5_4_15_0` — **each at pos 4.91**, each held by **binder 14**, with run lengths
+     climbing 457 → 657 → **857** steps: they *never* move. Simultaneously the four approach lanes
+     (`e_d_5_5_d_5_4_2`, `e_d_5_3_d_5_4_2`, `e_d_6_4_d_5_4_2`, `e_d_4_4_d_5_4_2`) each report
+     `nextMouthGap = 4.91` — blocked by precisely those four cars, and held by `crossJxnLeader` (the 46%).
+     **So the two dominant head binders are the two halves of ONE defect**: my gate wedges four cars in the
+     bays, and `crossJxnLeader` then correctly refuses to admit anyone else. Together **94.1% of heads.**
+106. **This is the SAME FAILURE SHAPE I set out to fix, now caused by my own fix.** The original arm-5
+     deadlock was two cars each yielding to the other with no escape. Arm 14 reproduces it with **four**
+     cars, and `isLeader` cannot help because they are held by **arm 14, not arm 5** — the ordering never
+     runs. Each bay car yields to a foe lane occupied by another bay car ⇒ circular wait, and arm 14 has
+     **no escape hatch and no ordering**.
+107. **The likely missing piece is exactly what I DELIBERATELY OMITTED** (design §5): SUMO's
+     `myInternalLinkFoes` + **`addBlockedLink` mutual registration** between the bay link and each foe link.
+     I omitted it to keep the measurement interpretable — a defensible call at the time — but it is
+     plausibly the very thing that prevents four bays from mutually blocking. **Unverified.** Also
+     unverified: whether the stage-2 lane being added to the foe set **unconditionally** (correct per
+     `postloadInit`) is what closes the cycle.
+108. **CONSEQUENCE FOR THE DEFAULTS RECOMMENDATION (§9.89) — it must be amended.**
+     `InternalJunctionAdmissionGate` was listed among the four "strictly-more-faithful, no reason to keep
+     OFF" gates. That is no longer supportable as stated: it is faithful and it fixes the 2-car deadlock at
+     design density, but **it introduces a 4-way deadlock under load**. It is invisible at 1x (0 deep
+     stalls) and dominant at 3x. **Do not default it ON until the circular wait is resolved.** The other
+     three faithful gates are untouched by this finding.
+109. **Also revised: §9.100's verdict that the 3x gridlock is "predominantly legitimate saturation" is
+     WRONG.** Only ~3% of heads are ordinary queueing; **94% are the arm-14/crossJxnLeader wedge.** The
+     gridlock at 3x is a **defect**, not oversaturation. My earlier reading was an artefact of sampling
+     followers alongside heads — precisely the error the owner pointed at.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
