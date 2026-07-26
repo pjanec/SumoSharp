@@ -16,6 +16,7 @@ Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **661/4**
 | realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A DONE (redo)** | Task A (stopped-car lateral wobble): first blanket-freeze fix caused car–car overlaps (reverted); targeted redo shipped — `Engine.SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression), guarded by F4a. Parity 661/4, bench `D96213B7BB4021A7`, LiveCity 27/27 |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped **coupling** only: B + #5 (car→ped disc feed) · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`. (#4 moved to ped-LOD-lifecycle — its root is demotion, not coupling.) |
 | ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle` *(to be started — SAFE to run in parallel now)* | to be started | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored — wandering ORCA) + #6 (idle clustering / randomize destinations). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side session's surface** (Engine lateral/longitudinal, OrcaCrowd external-disc, ExternalObstacle API, net import). Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`**. See "Parallel-safe" note below. |
+| F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **in flight** | junction overlap + gridlock + **junction DISCHARGE**. Seven gates now default **ON**; arm-14 4-way circular wait fixed. Log: `F3-SESSION-LOG.md` (§6 = next action) · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` · ⚠ **changes the iron law when it lands — see note below** |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — PR to main** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` (+ Engine gate fix) · fixture + tests — all DONE; **C5 seam BLOCKED** (ped–vehicle session) · W4 handed off. Detail: `TASKS-DONE.md` → "Arbitrary road-net import"; `LIVE-CITY-ARBITRARY-NET-{DESIGN,TASKS,TRACKER}.md` |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
@@ -33,6 +34,17 @@ session — coordinate by editing your **own** method/region: `LiveCitySim.cs` (
 `OrcaCrowd.cs` (LOD uses Add/Remove agent lifecycle; ped–vehicle uses `SetExternalObstacles` — different
 methods). Parity is untouched either way (the whole ped/LOD path is gated on `CrowdSource != null`, which no
 golden attaches → still **661/4** byte-identical).
+
+> **⚠ THE IRON-LAW LINE ABOVE CHANGES WHEN `claude/f3-junction-overlap-handoff-okf5nu` LANDS.** Deliberately
+> **not** edited in place, because every other session is working against `main`, where the current numbers
+> still hold. On that branch: `Sim.ParityTests` **752/4** (was 661/4 — new tests only; **all 661 goldens
+> remain byte-identical**), `Sim.LiveCity.Tests` **50/50**, and `Sim.Bench` **`BF3794A4704BCD79`**
+> (was `D96213B7BB4021A7`). The bench hash moved because the seven junction/overlap gates now default ON;
+> attribution was verified by stashing only the `Engine` defaults and reproducing the old hash. `Sim.Bench`
+> runs `_bench/highway-dense`, which has **no SUMO reference**, so the new hash is a re-pinned tripwire, not a
+> verified-correct value — the goldens are the parity statement and they did not move. Whoever merges that
+> branch must update the line above in the same commit.
+
 
 ---
 
@@ -127,6 +139,51 @@ core junction work**; F4b deferred until F3 fixed.
   `DemoCarOverlapInvariantTests` stays as an F3 characterization + gross-regression tripwire meanwhile.
   **Bundled with F3 in `docs/F3-JUNCTION-OVERLAP-HANDOFF.md` §6** (the `--live-city-drcheck` DR pass is the
   ready-made infra). §F4.
+
+## Junction DISCHARGE / max-density (session: F3 junction / density) — active
+
+**The problem, measured twice by two independent workstreams:** our junctions **drain more slowly than
+SUMO's**. At fixed inflow vanilla SUMO reaches steady state at ~430 resident cars while SumoSharp climbs
+**258 → 2623** over a simulated hour and never levels off, so "max sustainable density" has no plateau to
+report. Corroborated on this branch by different means: we hold **~45% more cars resident to deliver 4% fewer
+trips**, at **~321 s** mean trip time against SUMO's **213.6 s**.
+
+Detail: `F3-SESSION-LOG.md` §6 (next action), §9.119-124 (how we got here);
+`DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md`; `CONSTRAINT-high-realism-artefact-ladder.md` (binding).
+
+- [ ] **A3 — open-loop demand mode. BLOCKS everything below.** `LiveCitySim` inserts only while
+      `live < CarTargetConcurrent`, so **inflow is throttled by our own drain** and a discharge deficit
+      *cannot* manifest. Needs a fixed-inflow mode + resident-count-over-time + steady-state detection.
+      **Non-vacuity: our column must REPRODUCE the runaway** — if it does not, the two workstreams' instruments
+      disagree and neither's numbers may be trusted until that is resolved.
+- [ ] **A2** — per-lane `e2` detectors for SUMO, so per-junction discharge is comparable.
+- [ ] **B2/B3** — our global metrics + per-junction discharge (crossings per 60 s, queue, internal occupancy)
+      in SUMO's schema. **Blocked on A3** — without it they measure the wrong quantity.
+- [ ] **C1/C2/C3** — gap decomposition (cheat dividend vs real gap), inflow sweep, ranked work list.
+- [ ] **DRAIN-1 — cars queueing INSIDE junctions** (`keepClear` / `checkRewindLinkLanes`). Measured: four cars
+      stopped on `:d_5_3_10_1`. A car standing in the intersection blocks the conflict area for everyone
+      crossing it. Rung-5 case: fix the cause, do not rescue.
+- [ ] **DRAIN-2 — `inTheWay` conflict-point geometry** (`MSLink.cpp:1437`,
+      `myConflicts[i].getLengthBehindCrossing`). We hold a cont bay closed while a foe is anywhere on a
+      conflicting lane, **including one still moving at 0.89–3.05 m/s that has already passed the conflict
+      point**. Every such step is lost saturation flow.
+- [ ] **Equalise pedestrians in the diff** — SUMO got **no** peds while our runs had 160 blocking crossings,
+      an uncontrolled variable favouring SUMO.
+- [ ] **Reroute + insertion-refusal counters** — both currently **NOT MEASURED** (no cumulative counter
+      exists), so demand fidelity between the two engines is unquantified.
+
+**⚠ HARD CONSTRAINT ON EVERY ITEM ABOVE.** SUMO's drain is partly wider because it **lets cars overlap inside
+junctions** — **26** junction collisions that SUMO's *own defaults do not even check for*
+(`collision.check-junctions=false`), clustered on the exact lanes we wedge on (`:d_5_3_10_1` ×4,
+`:d_5_4_9_1` ×4). That is ladder **rung 3**, and teleporting (its `time-to-teleport=300`,
+`collision.action=teleport`) is **rung 4**. **Target SUMO's FLOW, never SUMO's METHOD** — reject any port
+whose mechanism amounts to permitting interpenetration.
+
+**⚠ AND A METHOD RULE, earned the hard way:** label every metric with the **demand model** that produced it.
+A capacity claim from **closed-loop** demand is invalid however carefully the rest was measured — that is how
+a confident "96% of SUMO" survived alongside a runaway queue. It is retracted; do not requote it.
+
+---
 
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)

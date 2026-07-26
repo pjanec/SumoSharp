@@ -114,7 +114,7 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
    committed it reproduces the golden byte-for-byte with `pos=1.300` at t=1; with the flag, `2.600` =
    the engine's Euler. → `NEED-scenario44-golden-ballistic-mismatch.md`.
 
-## 5. What is SHIPPED (gate green; every behavioural change is default-OFF)
+## 5. What is SHIPPED (gate green; the seven junction/overlap gates now default **ON** — §9.119)
 
 | Item | State |
 | --- | --- |
@@ -165,55 +165,52 @@ the arm-14 wedge. **Session 4 fixed that** with gate 7: at 3x, trips **1583 → 
 stalls **469 → 17**, stall heads **57 → 7**, and the permanent 4890-step bay lock becomes a bounded 637-step
 delay (§9.114). A residual **9** bay stalls remain and are §6's open item.
 
-## 6. NEXT ACTION — stop cars QUEUEING INSIDE the intersection (keepClear), then port `inTheWay` geometry
+## 6. NEXT ACTION — A3 (open-loop demand), then widen the junction DRAIN
 
-**§6's previous occupant is DONE.** The arm-14 four-way circular wait is broken by
-`InternalJunctionAdmissionEntryOrder` (§9.110-114). Its former "primary hypothesis" — porting
-`addBlockedLink` — was **falsified**: that set has one reader and both of its call sites are commented out
-in SUMO 1.20.0. Do not re-attempt it.
+### What is DONE (do not re-open)
 
-### Where things stand at 3x (one-variable A/B, all other gates ON, committed probe)
+- The **arm-14 four-way circular wait** is fixed (§9.110-114): bare occupancy is symmetric, SUMO uses
+  `isLeader`'s entry-time ordering, longest bay lock **4890 → 637 steps**, trips **+57%** at 3x.
+- Its **residual 9 stalls are attributed** (§9.117): 9 of 9 held by a *plain* internal lane; **bay-only = 0**,
+  so the ordering is complete.
+- **All seven gates default ON** (§9.119), all 661 goldens byte-identical.
+- The **density diff harness** exists: design trio, A1 (three-column SUMO runner), B1 (demand recorder).
 
-| 3x, 480 cars | gates OFF | ON, entry-order OFF | **ON, entry-order ON** |
-| --- | --- | --- | --- |
-| completed trips | 1583 | 3426 | **5381** |
-| peak concurrent deep stalls | 469 | 220 | **17** |
-| stall HEADS | 57 | 39 | **7** |
-| arm-14 bay-wedge stalls | 0 (arm off) | 24 | **9** |
-| longest wedge run | — | 4890 steps | **637 steps** |
+### ⚠ THE OPEN PROBLEM IS DISCHARGE, AND IT IS NOT YET MEASURED BY US
 
-Gate green throughout: **752/4/0**, bench **`D96213B7BB4021A7`** par == single, LiveCity **50/50**,
-all 661 goldens byte-identical. 1x is unregressed (`LongHorizonGridlockDiagTests` passes with the new
-sub-gate included in `AllLiveCityGateVars`).
+Our junctions **drain more slowly than SUMO's**. Evidence (§9.121-122): the calibration workstream finds
+vanilla SUMO reaching steady state at ~430 resident cars while SumoSharp climbs **258 → 2623** and never
+levels off; and this branch's own closed-loop run shows us holding **~45% more cars resident to deliver 4%
+fewer trips**, at **~321 s** mean trip time against SUMO's **213.6 s**.
 
-### The open item — MEASURED, and the target moved one level upstream
+**The 96%-of-SUMO figure from §9.117 is RETRACTED as a capacity claim** — closed-loop demand self-throttles,
+so it structurally cannot detect a drain deficit (§9.121). Do not quote it.
 
-The §6 measurement is **done** (§9.117). Result: **9 of 9** residual wedges had at least one occupied
-**plain** foe lane, and the plain arm is unconditional, so that alone explains all of them.
-**Bay-only wedges — the one shape that would mean the ordering is still incomplete — number 0.**
-The entry-time ordering is therefore **complete**; do not add to it.
+### A3 first — it BLOCKS everything downstream
 
-Two causes remain, and **neither is in arm 14**:
+`DENSITY-DIFF-HARNESS-TASKS.md` A3: a fixed-inflow mode that does **not** consult occupancy, plus
+resident-count-over-time per column and steady-state detection. **Non-vacuity: our column must REPRODUCE the
+runaway.** If it does not, the two instruments disagree and neither is trustworthy.
 
-1. **Unported `inTheWay` conflict geometry** (`MSLink.cpp:1437`, `myConflicts[i].getLengthBehindCrossing`).
-   SUMO ignores a foe that has **passed ego's conflict point**; we block while the foe is anywhere on the
-   lane. Measured directly: bays held by foes **still moving at 0.89–3.05 m/s**. This is a bounded
-   conservatism and a self-contained port with its own design doc.
+### Then widen the drain — two MEASURED candidates, ranked by A3, not by taste
 
-2. **⚠ Cars are QUEUEING INSIDE the intersection — a new rung-5 defect, and the more important one.**
-   `:d_5_3_10_1` carries **four** stopped cars at pos 4.67 / 12.17 / 19.67 / 27.17 (binders `leaderFollow`
-   ×3, `junctionYield` ×1); others are held by `crossJxnLeader`. Cars standing on an internal lane because
-   their exit is congested is what `keepClear` / `checkRewindLinkLanes` exists to prevent. **Start here** —
-   it is a believability defect independent of arm 14, and the bay stalls are its symptom.
+1. **Cars queueing inside the junction** (§9.118/§9.123). `keepClear` / `checkRewindLinkLanes`.
+2. **`inTheWay` conflict-point geometry** (`MSLink.cpp:1437`). We hold a bay closed against a foe that has
+   already passed the conflict point — measured, foes still moving at 0.89–3.05 m/s.
 
-**⚠ DO NOT "fix" this by relaxing arm 14.** Letting a bay car proceed into an occupied conflict area would
-conceal the rung-5 defect *and* recreate the overlaps arm 14 was added to prevent. Both failures at once.
+### Hard constraint on any discharge fix
 
-### Then: the defaults decision (owner's, not a test outcome)
+**SUMO's drain is partly wider because it lets cars overlap inside junctions — 26 junction collisions its own
+defaults do not even check for, on the exact lanes we wedge on** (§9.122). That is ladder rung 3.
+**Reject any port whose mechanism amounts to permitting interpenetration.** The target is SUMO's *flow*, not
+SUMO's *method*.
 
-Gates 1, 2, 4 are faithful and safe to default ON. Gate 3 **must** be paired with gate 7. Gates 5 and 6 are
-a deviation and a package-only helper respectively. This has been pending since §9.89 and is unblocked for
-gates 1/2/4 now.
+### Do NOT re-attempt (each disproven, not merely untried)
+
+- `addBlockedLink` / `myBlockedFoeLinks` — **dead code** in 1.20.0 (§9.110).
+- Extending the entry-time ordering to **non-bay** foes — **provably inert** (§9.115).
+- `InternalJunctionAdmissionGate` without its entry-order sub-gate — that pairing is the 4890-step wedge.
+- Any **capacity** conclusion from closed-loop demand (§9.121).
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -288,6 +285,13 @@ gates 1/2/4 now.
     constraint short-circuits, any "what was present" tally is an **upper bound**; label it as one, and put
     the decisive figure on the last line, not the first. (Same error class as the `downstreamFree` mislabel
     in §9.100 — measuring a different population than the one you name.)
+16. **⭐ LABEL EVERY MEASUREMENT WITH ITS DEMAND MODEL — a capacity claim from CLOSED-LOOP demand is
+    invalid.** `LiveCitySim` inserts only while `live < CarTargetConcurrent`, so **inflow is throttled by our
+    own drain**. Under that model resident count cannot run away, so a discharge deficit *cannot manifest*,
+    so the comparison reports "close to SUMO" no matter how narrow the drain is. It produced a confident
+    "96% of SUMO" against a parallel open-loop experiment showing us climbing 258 → 2623 and never reaching
+    steady state. **Ask what the demand model can physically express before believing what it reports.** The
+    generalisation: a closed-loop control system hides the very deficit it compensates for.
 
 ## 8. Key code locations
 
@@ -1377,6 +1381,109 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
      conflict area would be the wrong fix twice over: it would conceal this, and it would create exactly
      the overlaps arm 14 was added to prevent.
 
+119. **ALL SEVEN GATES TURNED ON BY DEFAULT — and the flip is itself the strongest parity evidence on this
+     branch.** Owner decision: the shipped demo should be the fixed demo. Result of flipping:
+     **all 661 goldens BYTE-IDENTICAL.** The only failures were the **six `DefaultIsOff` assertions** —
+     tests asserting the defaults themselves, not trajectories. Nothing observable moved on any scenario that
+     has a SUMO reference, so keeping the gates off was costing believability for zero parity gain.
+     Those six now guard the new default and each carries the evidence; the flag-OFF behavioural test
+     disables the gate *explicitly* so the default stays a default rather than a one-way door.
+
+     **Bench hash RE-PINNED `D96213B7BB4021A7` → `BF3794A4704BCD79`.** Verified attributable by stashing only
+     the Engine defaults and re-running, which reproduced the old hash exactly. Determinism unaffected
+     (par == single). ⚠ Note what this does and does not mean: `Sim.Bench` runs `_bench/highway-dense`, which
+     has **no SUMO reference**, so the new hash is a **re-pinned tripwire, not a verified-correct value**.
+     The goldens are the parity statement and they did not move.
+
+     **A wiring bug caught before it could bite:** every `LiveCitySim` gate line was
+     `GetEnvironmentVariable(name) == "1"` — a two-state override that silently forces **OFF** when the var is
+     unset. Harmless while defaults were false; a live bug the instant they became true (the demo would have
+     run with all seven gates disabled while everything else had them on, and "the demo still gridlocks"
+     would have read as a failed fix rather than a wiring mistake). Replaced with a tri-state `EnvGate`.
+
+120. **BUILT THE DENSITY DIFFERENTIAL HARNESS (design trio + A1 + B1).** Premise, stated as measured fact:
+     §9.119 proves the goldens cannot see density work at all. The load-bearing design decision is that
+     **SUMO's shipped defaults ARE the cheating** — read from `sumo --save-template` on the pinned 1.20.0:
+
+     | Option | SUMO default | Ladder |
+     | --- | --- | --- |
+     | `time-to-teleport` | **300** | rung 4 |
+     | `collision.action` | **teleport** | rung 4 |
+     | `collision.check-junctions` | **false** | **rung 3 made invisible** |
+
+     Hence three columns: **S-default** (upper bound, not a target), **S-honest** (cheats off — the target),
+     **Ours**. `scripts/run-density-diff.sh` **asserts its own validity**: the two generated configs must
+     differ in exactly the four cheat elements or the run aborts, because the dividend subtraction is only
+     sound if the margin is attributable to the cheats alone.
+
+     **A1/SC3 fired correctly and saved a wrong reading:** on the committed demo route file S-default
+     teleports **0** — because every route ends `<stop parkingArea=… duration="100000"/>`, i.e. the cars
+     **park permanently**. 861 inserted, only 96 trips completed, 765 parked-but-"running". A *parking*
+     scenario, not a throughput one. Without the guard I would have reported "SUMO copes fine at this
+     density". **B1's recorder was therefore mandatory, not convenient.**
+
+     B1 review notes (reviewed, not trusted): route fidelity is **exact by construction** —
+     `Engine.SpawnVehicle` routes via `Router().Route(from,to)` and the recorder calls the *same* overload on
+     a `NetworkRouter` whose fields are all readonly (pure Dijkstra, fixed `EdgeCost`). Inertness confirmed
+     **empirically**: the recorded run's `ArrivedTotal` is **5381**, identical to the recorder-off probe.
+     SC3's "independent log" was overstated in the agent's report (both logs are written at the same call
+     site) but is non-vacuous, since the recorder carries an extra route-resolved guard.
+
+121. **⚠⚠ THE 96%-OF-SUMO CLAIM IS RETRACTED. CLOSED-LOOP DEMAND CANNOT MEASURE DISCHARGE.**
+     The parallel high-density calibration workstream reported a **discharge deficit**: at fixed inflow
+     vanilla SUMO plateaus at ~430 resident cars while SumoSharp climbs **258 → 2623** over an hour and never
+     reaches steady state. That looked like a contradiction of this branch's 96%. **It is not a
+     contradiction — their measurement is right and mine answered a different question.**
+
+     `LiveCitySim`'s spawn loop is `for (s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)` —
+     it inserts **only while occupancy is below the cap**. **Inflow is throttled by our own drain.** A slow
+     junction simply causes fewer insertions and resident count *cannot* run away. A discharge deficit
+     manifests as **unbounded queue growth at FIXED inflow**; a closed-loop model cannot produce unbounded
+     growth, therefore cannot show the symptom, therefore reports "close to SUMO" **however narrow the drain
+     is**. Worse: I recorded *our* demand and fed it to SUMO, so SUMO received a departure profile our own
+     engine had already pre-limited to what it could handle.
+
+122. **MY OWN DATA CORROBORATES THEM, once read correctly — and the tell was one I explicitly dismissed.**
+
+     | | SUMO (s-honest) | Ours |
+     | --- | --- | --- |
+     | in flight at horizon | **259** | **480** ← our cap; we ended FULL |
+     | mean trip duration | **213.6 s** | **~321 s** (Little: 480 / 1.4947 s⁻¹) |
+     | mean occupancy | ~333 (1.5567 × 213.6) | ~480 |
+
+     **We hold ~45% more cars resident to deliver 4% FEWER trips, each trip taking ~50% longer.** That is a
+     narrower drain in my own measurement. And SUMO ending with only 259 in flight proves the offered inflow
+     (**1.63 veh/s — chosen by our drain**) never came close to saturating SUMO, so the test had **no power**
+     to expose a capacity gap in either direction. I wrote in §9.117's own caveat list that "SUMO 259 vs our
+     480 is not a jam signal" and moved on. **It was the whole story.** Third instance on this branch of the
+     same error class: *measuring a different quantity than the one named* (cf. §9.100's `downstreamFree`
+     mislabel, §9.117's occupancy-vs-causation).
+
+     **What survives untouched:** the cheat findings, because they concern SUMO's behaviour on a *fixed
+     input*, not capacity — zero cheat dividend on throughput at that inflow, **26 junction collisions SUMO's
+     own defaults do not detect**, and their clustering on the exact lanes where our bays wedge
+     (`:d_5_3_10_1` ×4, `:d_5_4_9_1` ×4, `:d_5_4_3_0` ×2, `:d_5_3_17_0` ×2). That last point now reads more
+     usefully: **SUMO keeps those junctions draining by letting cars overlap inside them** — one concrete way
+     its drain is wider than ours, and one we may not copy.
+
+123. **TWO ALREADY-MEASURED FINDINGS PROMOTED FROM "CONSERVATISM" TO "DISCHARGE MECHANISM".** I had been
+     calling both bounded conservatisms. Under a discharge framing they are drain restrictions:
+     1. **Cars queueing inside junctions** (§9.118: four stopped on `:d_5_3_10_1`). A car standing in the
+        intersection blocks the conflict area for *everyone* crossing it — a drain restriction by definition,
+        and precisely what `keepClear` / `checkRewindLinkLanes` exists to prevent.
+     2. **Arm 14 holds a bay closed while a foe is anywhere on a conflicting lane — including one still
+        moving at 0.89–3.05 m/s that has ALREADY PASSED the conflict point** (§9.118). Every step a bay is
+        held shut while it could be discharging is **lost saturation flow**. `inTheWay`'s conflict-point
+        geometry (`MSLink.cpp:1437`) is the missing piece.
+
+124. **NEW BLOCKING TASK A3 — OPEN-LOOP DEMAND MODE.** Until the harness can offer a fixed inflow independent
+     of our own drain it cannot measure discharge, so **A3 blocks B2/B3/C**. Its non-vacuity condition is the
+     important one: **our column must REPRODUCE the calibration workstream's runaway.** If it does not, the
+     two instruments disagree and neither's numbers may be trusted until that is resolved.
+     Design gains §1b, whose rule is now standing: **every metric must be labelled with the demand model that
+     produced it, and a capacity claim from closed-loop demand is invalid** however carefully the rest was
+     measured.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
@@ -1395,25 +1502,28 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > Then `docs/CONSTRAINT-high-realism-artefact-ladder.md` — the owner's binding believability requirement.
 >
 > ### Where things stand
-> The demo used to gridlock terminally within an hour. With **seven default-OFF gates** enabled it runs a
-> full hour at design density with **0 long stalls, +107% throughput, −99% overlaps, 0 teleports** — and at
-> **3x** density with **17** peak concurrent deep stalls (was 469) and **+240%** trips. **All 661 goldens
-> byte-identical throughout**; `Sim.Bench` **`D96213B7BB4021A7`** par == single; `Sim.ParityTests`
-> **752/4/0**; `Sim.LiveCity.Tests` **50/50**.
+> The demo used to gridlock terminally within an hour. **Seven gates now default ON** and it runs a full hour
+> at design density with **0 long stalls, +107% trips, −99% overlaps, 0 teleports**; at **3x** density peak
+> concurrent deep stalls are **469 → 17** and the arm-14 four-way circular wait is **fixed**.
+> `Sim.ParityTests` **752/4/0**, all 661 goldens byte-identical, `Sim.LiveCity.Tests` **50/50**,
+> `Sim.Pedestrians.Tests` **272/272**, `Sim.Bench` **`BF3794A4704BCD79`** par == single (⚠ re-pinned — was
+> `D96213B7BB4021A7` before the defaults flip; attribution verified).
 >
-> ### YOUR TASK — §6: stop cars QUEUEING INSIDE the intersection
-> The arm-14 circular wait is **FIXED and the residual is ATTRIBUTED**. It was blocking on **bare foe-lane
-> occupancy**, which is symmetric; SUMO never does that on the driving path (it filters foe-lane candidates
-> through `isLeader(...) || inTheWay()`). Restoring the entry-time ordering took the longest bay lock from
-> **4890 steps to 637** and trips **+57%** from that one variable. The residual **9** bay stalls were then
-> measured: **9 of 9** had an occupied **plain** foe lane, which alone explains them; **bay-only wedges = 0**.
-> **The ordering is complete — do not add to it, and do not relax arm 14.**
+> ### YOUR TASK — §6: A3 (open-loop demand), then widen the junction DRAIN
+> **The open problem is DISCHARGE: our junctions drain more slowly than SUMO's.** The calibration workstream
+> finds vanilla SUMO steady at ~430 resident cars while SumoSharp climbs **258 → 2623** and never levels off.
+> This branch's own data agrees once read correctly: we hold **~45% more cars resident to deliver 4% fewer
+> trips**, at **~321 s** mean trip time vs SUMO's **213.6 s**.
 >
-> The cause is one level upstream and it is a **rung-5 defect**: cars **queue inside the intersection**.
-> `:d_5_3_10_1` carries **four** stopped cars (binders `leaderFollow` ×3, `junctionYield`), i.e. cars
-> standing on an internal lane because their exit is congested — what `keepClear` /
-> `checkRewindLinkLanes` exists to prevent. Second, smaller cause: unported **`inTheWay` conflict geometry**,
-> so a foe still moving at 0.89–3.05 m/s keeps holding a bay it has already passed. §6 has both, in order.
+> **⚠ The "96% of SUMO" figure is RETRACTED as a capacity claim** — `LiveCitySim`'s demand is CLOSED-LOOP
+> (`live < CarTargetConcurrent`), so inflow self-throttles and a drain deficit *cannot* manifest (§9.121).
+> Do not quote it. **A3 builds the open-loop mode and BLOCKS B2/B3/C**; its non-vacuity condition is that our
+> column must **reproduce the runaway**. Then port whichever drain mechanism A3 ranks higher: cars queueing
+> inside junctions (`keepClear`) or `inTheWay` conflict-point geometry — both already measured (§9.123).
+>
+> **Hard constraint:** SUMO's drain is partly wider because it lets cars **overlap inside junctions** — 26
+> junction collisions its own defaults do not check for, on the exact lanes we wedge on. That is ladder
+> rung 3. **Target SUMO's flow, never SUMO's method.**
 >
 > ### NON-NEGOTIABLES — every one of these cost real time here
 > 1. **Measure before building.** Five hypotheses were refuted by measurement this session, and **two
@@ -1436,6 +1546,7 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 >    quotes in `-m` get shell-mangled — hit twice).
 >
 > ### Do NOT re-attempt
+> **any CAPACITY conclusion from closed-loop demand** (§9.121 — the retracted 96%) ·
 > `addBlockedLink` / `myBlockedFoeLinks` (**dead code in SUMO 1.20.0** — its only reader
 > `willHaveBlockedFoe` is commented out at both call sites, §9.110) · extending the entry-time ordering to
 > **non-bay** foes (**provably inert**: a cont entry leaves `ConflictEntryTime` at `MAX`, so every `isLeader`
@@ -1460,7 +1571,9 @@ admission gate blocked on **bare foe-lane occupancy**, which is symmetric, so a 
 four cars motionless for **4890 steps**. SUMO never uses bare occupancy on the driving path — it filters
 foe-lane candidates through `isLeader(...) || inTheWay()`, whose tie-break chain is total precisely to avoid
 this. Restoring that ordering took the longest lock to **637 steps**. The branch's own carried hypothesis
-(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is one level upstream and newly identified: cars **queue inside the
-intersection** (four stopped on one internal lane, exit congested) — a rung-5 defect that `keepClear`
-should prevent, and of which the 9 remaining bounded bay stalls are a *symptom*. Plus the owner's decision
-on which gates to default ON.
+(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open is DISCHARGE.** Our junctions drain more slowly than SUMO's: the
+calibration workstream sees vanilla SUMO steady at ~430 resident cars while we climb 258 → 2623 without
+levelling off, and this branch's own numbers agree once read right — ~45% more cars resident for 4% fewer
+trips. The "96% of SUMO" figure is **retracted**: closed-loop demand self-throttles and cannot express a drain
+deficit at all. Next is A3 (open-loop demand), then widening the drain via `keepClear` or `inTheWay` geometry
+— **without** copying the mechanism SUMO actually uses there, which is letting cars overlap inside junctions.
