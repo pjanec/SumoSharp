@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/DENSITY-DIFF-HARNESS-DESIGN.md §5, -TASKS.md B1: the console DRIVER that runs the demo (via
+    Sim.LiveCity.LiveCitySim) for N steps at a given car density with the B1 demand recorder on, and
+    writes the resulting SUMO .rou.xml. Deliberately minimal: it is a driver, not an analysis tool
+    (B2/B3/C1-C3 are separate, later tasks). NOT referenced by Traffic.sln's test path and NEVER
+    invoked by `dotnet test`: it is a console app the offline loop never runs (design §5's
+    "harness must never be a dotnet test dependency" invariant).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.LiveCity\Sim.LiveCity.csproj" />
+  </ItemGroup>
+
+</Project>

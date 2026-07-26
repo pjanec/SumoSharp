@@ -80,6 +80,22 @@ public sealed class LiveCitySim : IDisposable
     private readonly ReplicationPublisher? _recordPublisher;
     private bool _recordGeometryPublished;
 
+    // docs/DENSITY-DIFF-HARNESS-DESIGN.md §2, -TASKS.md B1: OPTIONAL demand-recorder tee -- mirrors
+    // `_recordVehSink`'s shape exactly (nullable, caller-owned sink; LiveCitySim knows nothing about
+    // files). `_demandRouter` is a SEPARATE Sim.Ingest.NetworkRouter instance, built once over the
+    // SAME NetworkModel Engine's own internal router uses, only when a sink is supplied -- Engine's
+    // `SpawnVehicle(type, fromEdge, toEdge, ...)` overload already resolves the identical Dijkstra
+    // shortest path internally but does not expose it, so this purely-additive duplicate call is the
+    // only way to recover the vehicle's actual edge route for recording without touching Engine.cs.
+    // It cannot diverge from what Engine inserted: same algorithm, same graph, same (fromId, toId).
+    private readonly IDemandRecordSink? _recordDemandSink;
+    private readonly Sim.Ingest.NetworkRouter? _demandRouter;
+    private long _recordVehCounter;
+    // The recorded file's own vType id -- independent of Engine's internal `__vtype0` id (never
+    // exposed back to the caller), since the emitted .rou.xml only needs its `type=` attribute to
+    // match the `<vType id=...>` it also emits, not Engine's internal bookkeeping.
+    private const string RecordVTypeId = "car";
+
     // The ped publish wire (mirrors CityLib/PedSimSource.cs).
     private readonly PedReplicationPublisher _pedWirePublisher;
     private readonly InMemoryPedReplicationBus _pedBus = new();
@@ -101,12 +117,17 @@ public sealed class LiveCitySim : IDisposable
     private double _now;
     private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
 
-    public LiveCitySim(LiveCityConfig cfg, IReplicationSink? recordVehSink = null, IPedReplicationSink? recordPedSink = null)
+    public LiveCitySim(
+        LiveCityConfig cfg,
+        IReplicationSink? recordVehSink = null,
+        IPedReplicationSink? recordPedSink = null,
+        IDemandRecordSink? recordDemandSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
         _recordVehSink = recordVehSink;
         _recordPublisher = recordVehSink is not null ? new ReplicationPublisher() : null;
         _recordPedSink = recordPedSink;
+        _recordDemandSink = recordDemandSink;
         _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
 
         // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": load the static world-overlay scene
@@ -121,6 +142,10 @@ public sealed class LiveCitySim : IDisposable
         var model = NetworkParser.Parse(netPath);
         Network = model;
         LocalLanes = new NetworkLaneSource(model);
+
+        // B1: built only when a demand sink was supplied -- zero cost (no allocation, no adjacency
+        // build) on the "recorder off" path this task's SC1 requires to stay byte-identical.
+        _demandRouter = recordDemandSink is not null ? new Sim.Ingest.NetworkRouter(model) : null;
 
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6 (capability probe + graceful degrade): a malformed
         // ped-net (e.g. a crossing/walkingarea edge with no pedestrian lane, or an internal edge id
@@ -399,6 +424,9 @@ public sealed class LiveCitySim : IDisposable
         _engine.DiagSeqDesync = Environment.GetEnvironmentVariable("LIVECITY_SEQDESYNC") == "1"; // #15 prong-1
         _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+        // B1: report the vType once, before any RecordVehicle call, so the emitted file is
+        // self-contained. No-op when `_recordDemandSink` is null.
+        _recordDemandSink?.RecordVType(RecordVTypeId, vClass: "passenger", sigma: 0.0);
 
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: vehicle-only (CrowdSource left null, "leave
         // CrowdSource vehicle-only") when peds are disabled; footprints-only (walk-only, no crossing
@@ -498,6 +526,14 @@ public sealed class LiveCitySim : IDisposable
     // junction-discharge deadlock it flatlines near zero even while cars are still on the road (cars have
     // destinations but never reach them). Host-side read-only metric only -- never feeds the engine.
     public long ArrivedTotal { get; private set; }
+
+    // B1 (docs/DENSITY-DIFF-HARNESS-TASKS.md, SC4): read-only passthroughs of Engine's own already-
+    // computed counts, for a caller (Sim.DensityDiff) to derive "vehicles spawned but neither active
+    // nor arrived" (a still-Pending/refused-insertion proxy) without Engine exposing a dedicated
+    // refusal counter. Zero cost beyond the property read; never used by any golden/parity path.
+    public int CurrentCars => _engine.VehicleHandles.Length;
+
+    public int CurrentPeds => _demand?.LiveCount ?? 0;
 
     // DIAGNOSTIC (#15 residual): how many vehicles hit the wrong-lane dead-end clamp in the engine's
     // last step (a turner that could not merge into its turn lane and stranded at the stop line with no
@@ -640,6 +676,30 @@ public sealed class LiveCitySim : IDisposable
                     _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
                     SpawnLog?.Add((_now, fromId, toId));
                     live++;
+
+                    // B1 (docs/DENSITY-DIFF-HARNESS-DESIGN.md §2, -TASKS.md): record-at-spawn -- fires
+                    // only when a sink was supplied. Recomputes the SAME from/to route via the
+                    // dedicated `_demandRouter` (see its field remark) so the recorded edges are
+                    // exactly what Engine just inserted. Recorded HERE (spawn-call success), not at
+                    // actual physical/lane insertion -- design §2 caveat 2: a vehicle Engine later
+                    // refuses to admit onto the road (InsertionFollowerGapCheck) still appears here,
+                    // which is the intended "record-at-spawn" contract, not a bug.
+                    if (_recordDemandSink is not null && _demandRouter is not null)
+                    {
+                        var routeEdges = _demandRouter.Route(fromId, toId);
+                        if (routeEdges is not null && routeEdges.Count > 0)
+                        {
+                            _recordVehCounter++;
+                            _recordDemandSink.RecordVehicle(
+                                "rec" + _recordVehCounter.ToString(CultureInfo.InvariantCulture),
+                                _now,
+                                "best", // departBestLane: true above -- SUMO's departLane="best".
+                                departPos: 5.0,
+                                departSpeed: 0.0,
+                                RecordVTypeId,
+                                routeEdges);
+                        }
+                    }
                 }
                 catch (InvalidOperationException)
                 {
