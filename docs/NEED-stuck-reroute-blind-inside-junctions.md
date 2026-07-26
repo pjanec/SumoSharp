@@ -130,6 +130,29 @@ for consistency, but the teleport count did not move.
 2. **Defect 2** — consider periodic re-evaluation rather than a 2-shot last resort, closer to SUMO's
    `device.rerouting` posture. Larger and behavioural — needs its own parity argument.
 
+### The `Yield` label is NOT evidence of a yield — verified
+
+`ClassifyTeleportKind` (`Engine.cs:~12359`) decides the label like this:
+
+```csharp
+if (_network.LinkByInternalLane.TryGetValue(seqLaneId, out var jl))
+{
+    var state = LinkStateChar(jl.Link);
+    return (state >= 'A' && state <= 'Z') ? TeleportKind.Jam : TeleportKind.Yield;
+}
+```
+
+It scans forward for ego's next junction link and returns `Yield` **iff that link's TL state char is
+lowercase (minor)**, `Jam` if uppercase (major). **It never inspects why the vehicle waited.** This is
+faithful to SUMO (`MSVehicleControl::registerTeleportYield` is classified the same way), so it is not a
+defect — but it means:
+
+> **"yield=5" only says "these 5 vehicles' next junction link is minor". It is a LABEL, not a cause.**
+
+So the D3 framing — *"why is a **yield** wait > 120 s?"* — rested on an unfounded premise. The vehicles may
+have been held by anything: a leader, a red light, a downstream jam. Any future reading of this counter must
+not infer a mechanism from the bucket name.
+
 ### The open question D3 was supposed to answer, and did not
 
 Real SUMO's vehicle 102 stalls ~10 s at the same place and recovers; ours waits > 120 s. That is **still
