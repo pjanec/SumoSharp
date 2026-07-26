@@ -8186,6 +8186,303 @@ public sealed partial class Engine : IEngine
         return !pastTheCrossingPoint && distToCrossing > 0 && enteredTheCrossingPoint;
     }
 
+    // F3/isLeader T2.3 (docs/F3-ISLEADER-PORT-DESIGN.md, docs/F3-ISLEADER-PORT-TASKS.md T2.3): the
+    // per-side inputs `IsLeader` needs from EITHER "this" (ego) or `veh` (foe) in
+    // MSVehicle::isLeader (MSVehicle.cpp:7343-7483). Deliberately NOT `VehicleRuntime` -- that type
+    // is `internal` to Sim.Core (an ECS runtime record), so it cannot appear in any test-callable
+    // public surface in a different assembly (Sim.ParityTests). This is a public, minimal
+    // projection instead: id (tie-break, design §4), current lane (the two "not fully on this
+    // junction" guard clauses, design §1), speed, the three entry-time stamps (design §2), and --
+    // read only off the FOE argument, for attempt 1's brakeGap sub-branch (MSVehicle.cpp:7383-7388)
+    // -- its own car-following/geometry quantities. Ego's role never reads MaxAccel/MaxDecel/
+    // HeadwayTime/Length (SUMO reads `getVehicleType().getMinGap()` -- EGO's OWN minGap -- via
+    // `MinGap` instead, separately from the foe's four); a caller may leave them at 0 for the ego
+    // argument. T2.4's caller constructs one of these per side straight from a `VehicleRuntime v`:
+    // `new JunctionLeaderCandidate(v.LaneId, v.Def.Id, v.Kinematics.Speed, v.JunctionEntryTime,
+    // v.JunctionEntryTimeNeverYield, v.JunctionConflictEntryTime, v.VType.MinGap, v.VType.Accel,
+    // v.VType.Decel, v.VType.Tau, v.VType.Length)`.
+    public readonly record struct JunctionLeaderCandidate(
+        string LaneId,
+        string Id,
+        double Speed,
+        long EntryTime,
+        long EntryTimeNeverYield,
+        long ConflictEntryTime,
+        double MinGap = 0.0,
+        double MaxAccel = 0.0,
+        double MaxDecel = 0.0,
+        double HeadwayTime = 0.0,
+        double Length = 0.0);
+
+    // F3/isLeader T2.3: port of MSVehicle::isLeader(link, veh, gap) (MSVehicle.cpp:7343-7483) --
+    // decides whether EGO must treat FOE as a leader (brake for it), consumed by SUMO as
+    // `isLeader(...) || inTheWay()` (MSVehicle.cpp:3429; our `FoeIsInTheWay` above already ports
+    // the second disjunct). NOT WIRED IN (T2.4 wires arm 5): nothing in Step() calls this, so this
+    // method is parity-inert by construction -- it exists to be directly unit-tested
+    // (JunctionIsLeaderTests) without building a running scenario.
+    //
+    // `network` is an EXPLICIT parameter (not `this._network`) so a caller can supply a `Junction`/
+    // `JunctionLink` obtained from its OWN `NetworkParser.Parse(...)` call and have every topology
+    // lookup below (`IsInternalLaneOfJunction`, `LinkIndexByInternalLane`, `EntryConnectionByLink`)
+    // resolve consistently against THAT SAME parsed instance -- `IsInternalLaneOfJunction` compares
+    // by REFERENCE, so mixing a `junction` from one parse with a `network` from another would
+    // silently break every lookup. Only the LIVE traffic-light char (`TlLinkStateChar`, for the
+    // actuated-program fallback) still reads `this._network`/`this._actuatedLogics` -- that lookup
+    // is by TL id (a string), not by object identity, so it is correct as long as THIS Engine has
+    // separately loaded (LoadScenario/LoadNetwork) a network parsed from the SAME net file `network`
+    // came from; the TWO NetworkModel instances need not be reference-identical, only value-identical
+    // for the tlLogic programs they carry.
+    //
+    // `gap` is the SAME already-minGap-reduced quantity `MSLink::getLeaderInfo` computes at the real
+    // call site (MSLink.cpp:1647: `distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth`)
+    // -- T2.4's caller must pass that, not a raw distance. `evalTime` is the instant the entry
+    // connections' live state chars are sampled at.
+    public bool IsLeader(
+        NetworkModel network, Junction junction, JunctionLink egoLink,
+        JunctionLeaderCandidate ego, JunctionLeaderCandidate foe,
+        double gap, double dt, double evalTime)
+    {
+        // MSVehicle.cpp:7348-7351: ego not yet on THIS junction (or on a different junction's
+        // internal lane) -> every foe is a leader. The conservative default that makes the whole
+        // mechanism safe (a car that hasn't entered yet always stops OUTSIDE).
+        if (!network.IsInternalLaneOfJunction(ego.LaneId, junction))
+        {
+            return true;
+        }
+
+        // MSVehicle.cpp:7352-7355 (blueLight): SKIPPED -- no blue-light device exists in this engine
+        // (design doc §7), structurally unreachable.
+
+        // MSVehicle.cpp:7357-7358 and the two trailing `else` arms at :7475/:7479: foe must be on an
+        // internal lane of the SAME junction, or it is only PARTIALLY on the junction and is
+        // unconditionally a leader. Design doc §1's verified To/From-asymmetry note: one predicate,
+        // `IsInternalLaneOfJunction`, is correct for BOTH ego and foe (netconvert sets an internal
+        // edge's From/To junction to the SAME real junction for every stage of a cont turn), so both
+        // trailing `else` arms collapse to this single check.
+        if (!network.IsInternalLaneOfJunction(foe.LaneId, junction))
+        {
+            return true;
+        }
+
+        // Default pair (MSVehicle.cpp:7359-7360).
+        var egoEntryTime = ego.ConflictEntryTime;
+        var foeEntryTime = foe.EntryTime;
+
+        if (network.LinkIndexByInternalLane is not { } linkIndexByInternalLane
+            || !linkIndexByInternalLane.TryGetValue(foe.LaneId, out var foeLinkEntry)
+            || network.EntryConnectionByLink is not { } entryConnectionByLink
+            || !entryConnectionByLink.TryGetValue((junction.Id, egoLink.Index), out var entryConn)
+            || !entryConnectionByLink.TryGetValue((junction.Id, foeLinkEntry.LinkIndex), out var foeEntryConn))
+        {
+            // Cannot happen for a real net (both maps are built by the SAME back-walk that just
+            // proved `foe.LaneId` is an internal lane of `junction`, design doc §2c) -- defensive
+            // only, conservative fallback.
+            return true;
+        }
+
+        var foeLinkIndex = foeLinkEntry.LinkIndex;
+
+        // MSVehicle.cpp:7362-7368: same source lane -> ego and foe are queueing behind one another
+        // on the SAME incoming lane, not conflicting -- design doc §3(a): the "normal predecessor
+        // lane" of a junction link is its EntryConnectionByLink entry's (From, FromLane).
+        if (entryConn.From == foeEntryConn.From && entryConn.FromLane == foeEntryConn.FromLane)
+        {
+            // MSVehicle.cpp:7364-7365. The nested `isExitLinkAfterInternalJunction() &&
+            // ...isIndirect()` sub-case (:7366-7367) applies only to INDIRECT (bicycle-style
+            // two-stage) left turns and is OMITTED (design doc §7) -- no committed net contains one
+            // (IndirectLinkGuardTests below).
+            egoEntryTime = ego.EntryTimeNeverYield;
+            foeEntryTime = foe.EntryTimeNeverYield;
+        }
+        else
+        {
+            var egoRequest = FindJunctionRequest(junction, egoLink.Index);
+            var foeRequest = FindJunctionRequest(junction, foeLinkIndex);
+            if (egoRequest is null || foeRequest is null)
+            {
+                return true; // defensive: no <request> row for this link -> conservative leader.
+            }
+
+            var entryState = EntryLinkStateChar(entryConn, evalTime);
+            var foeEntryState = EntryLinkStateChar(foeEntryConn, evalTime);
+
+            var (response, response2) = ResponseFor(
+                entryState, foeEntryState, ego.Speed, foe.Speed, gap,
+                foe.MaxAccel, foe.MaxDecel, foe.HeadwayTime, foe.Length, ego.MinGap,
+                egoRequest, egoLink.Index, foeRequest, foeLinkIndex, dt);
+
+            if (!response)
+            {
+                // MSVehicle.cpp:7433-7436: ego has right of way -> entry time doesn't matter.
+                foeEntryTime = foe.ConflictEntryTime;
+                egoEntryTime = ego.EntryTime;
+            }
+            else if (response2)
+            {
+                // MSVehicle.cpp:7437-7440 (`response && response2`, `response` already true in this
+                // `else if`): mutual conflict -> use CONFLICT entry time for BOTH, to avoid deadlock.
+                // Design doc §0a: this is the branch that resolves the one measured deadlock.
+                foeEntryTime = foe.ConflictEntryTime;
+                egoEntryTime = ego.ConflictEntryTime;
+            }
+            // else (response && !response2): neither adjustment applies; the default pair stands.
+        }
+
+        return IsLeaderByEntryOrder(egoEntryTime, foeEntryTime, ego.Speed, foe.Speed, ego.Id, foe.Id);
+    }
+
+    // F3/isLeader T2.3 (design doc §4): SUMO's tie-break chain, VERBATIM from MSVehicle.cpp:
+    // 7443-7472. Deliberately STATIC and free of any Engine/network state so it is directly
+    // unit-testable in complete isolation (JunctionIsLeaderTests) -- exactly the "separately
+    // callable" shape docs/F3-ISLEADER-PORT-TASKS.md T2.3 calls for. CLAUDE.md rule 5 / design doc
+    // §4: the id compare is `string.CompareOrdinal` (byte-wise, locale-independent) -- NEVER
+    // `string.Compare` (culture-sensitive) and NEVER `EntityIndex`/any array position (order-
+    // independence).
+    public static bool IsLeaderByEntryOrder(
+        long egoEntryTime, long foeEntryTime, double egoSpeed, double foeSpeed, string egoId, string foeId)
+    {
+        if (egoEntryTime == foeEntryTime)
+        {
+            // MSVehicle.cpp:7444-7464: try speed as a tie-breaker first, then id.
+            return egoSpeed == foeSpeed
+                ? string.CompareOrdinal(egoId, foeId) < 0
+                : egoSpeed < foeSpeed;
+        }
+
+        // MSVehicle.cpp:7465-7473: entered later -> yield (`egoET > foeET`).
+        return egoEntryTime > foeEntryTime;
+    }
+
+    // F3/isLeader T2.3 (design doc §3a): the four right-of-way "response" attempts SUMO tries in
+    // order (MSVehicle.cpp:7370-7418), each producing BOTH ego's response to foe AND foe's response
+    // to ego. `entryState`/`foeEntryState` are the LIVE state chars of the two links' CORRESPONDING
+    // ENTRY connections (SUMO's `getCorrespondingEntryLink()`, MSLink.cpp:1331-1339) -- i.e.
+    // `NetworkModel.EntryConnectionByLink`, NEVER `JunctionLink.Connection` (which for a `cont` link
+    // is the WRONG, second, hop -- design doc §2a facts 2/3; docs/NEED-linkstatechar-cont-entry-link.md).
+    //
+    // `gap` is ego's already-minGap-reduced gap to the foe (MSLink::getLeaderInfo, MSLink.cpp:1647).
+    // The `foe*` parameters are the FOE's own car-following/vType quantities
+    // (`getMaxAccel`/`getMaxDecel`/`getHeadwayTime`/`getLength`) and `egoMinGap` is EGO's OWN minGap
+    // (`this->getVehicleType().getMinGap()`, called from inside EGO's own `isLeader`) -- attempt 1's
+    // brakeGap sub-branch re-derives a positive `foeGap` from the minGap-reduced `gap`, VERBATIM
+    // (MSVehicle.cpp:7386-7388's `-2 * minGap`, not "simplified").
+    //
+    // Deliberately STATIC and state-char-driven (not reading any TL/engine state itself) so it is
+    // directly unit-testable: the case-selection tests resolve REAL state chars (via
+    // `TrafficLightState.GetLinkState` for a static program, or `Engine.TryGetTlLinkState` for an
+    // actuated one) at the exact simulation second each phase class is active, then call this.
+    //
+    // Attempt 1 (the `haveRed` branch) is MANDATORY, not stageable: design doc §0a proves it is the
+    // ONLY arm that ever executes for the one confirmed deadlock (junction 2336 never shows both of
+    // its conflicting links non-red at once, `JunctionIsLeaderTests` pins this with 0-of-12 phases).
+    public static (bool Response, bool Response2) ResponseFor(
+        char entryState, char foeEntryState,
+        double egoSpeed, double foeSpeed, double gap,
+        double foeMaxAccel, double foeMaxDecel, double foeHeadwayTime, double foeLength, double egoMinGap,
+        JunctionRequest egoRequest, int egoLinkIndex, JunctionRequest foeRequest, int foeLinkIndex,
+        double dt)
+    {
+        bool response;
+        bool response2;
+
+        if (HaveRed(entryState) || HaveRed(foeEntryState))
+        {
+            // Attempt 1 (MSVehicle.cpp:7379-7406): either link red -- ensures a vehicle stuck on the
+            // intersection may exit.
+            if (!HaveRed(foeEntryState) && foeSpeed > KraussModel.HaltingSpeed && gap < 0)
+            {
+                // MSVehicle.cpp:7381-7401: foe might be oncoming and moving -- don't drive unless
+                // the foe can still brake safely before the conflict.
+                var foeNextSpeed = foeSpeed + KraussModel.Accel2Speed(foeMaxAccel, dt);
+                var foeBrakeGap = KraussModel.BrakeGap(foeNextSpeed, foeMaxDecel, foeHeadwayTime, dt);
+                // MSVehicle.cpp:7386-7388: `gap` was already reduced by EGO's minGap in
+                // MSLink::getLeaderInfo (enlarging the negative gap), so `-2 *` points the
+                // reconstruction back the right direction -- reproduced VERBATIM.
+                var foeGap = -gap - foeLength - (2.0 * egoMinGap);
+                if (foeGap < foeBrakeGap)
+                {
+                    response = true;
+                    response2 = false;
+                }
+                else
+                {
+                    response = false;
+                    response2 = true;
+                }
+            }
+            else
+            {
+                // MSVehicle.cpp:7402-7406: brake for the stuck foe (the branch taken whenever the
+                // foe is stopped/near-stopped -- design doc §0a's measured deadlock case).
+                response = HaveRed(foeEntryState);
+                response2 = HaveRed(entryState);
+            }
+        }
+        else if (HavePriority(entryState) != HavePriority(foeEntryState))
+        {
+            // Attempt 2 (MSVehicle.cpp:7407-7409): priorities differ.
+            response = !HavePriority(entryState);
+            response2 = !HavePriority(foeEntryState);
+        }
+        else if (HaveYellow(entryState) && HaveYellow(foeEntryState))
+        {
+            // Attempt 3 (MSVehicle.cpp:7410-7413): both yellow -- the faster vehicle keeps moving.
+            response = foeSpeed >= egoSpeed;
+            response2 = egoSpeed >= foeSpeed;
+        }
+        else
+        {
+            // Attempt 4 (MSVehicle.cpp:7414-7417): fallback -- the netconvert response matrix
+            // (reached for pedestrian crossings and any case the first three attempts don't resolve).
+            response = egoRequest.RespondsTo(foeLinkIndex);
+            response2 = foeRequest.RespondsTo(egoLinkIndex);
+        }
+
+        return (response, response2);
+    }
+
+    // SUMO MSLink::haveRed()/havePriority()/haveYellow() state-char classification (MSLink.h:
+    // 437-454) -- ported once here since ResponseFor's first three attempts all test these three
+    // predicates on the two links' entry connections. 'u' (LINKSTATE_TL_REDYELLOW) counts as red,
+    // matching MSLink::haveRed() exactly (SUMOXMLDefinitions.h:1695-1701).
+    private static bool HaveRed(char state) => state is 'r' or 'u';
+    private static bool HavePriority(char state) => state is >= 'A' and <= 'Z';
+    private static bool HaveYellow(char state) => state is 'y' or 'Y';
+
+    // F3/isLeader T2.3: the live right-of-way state char of an ENTRY connection -- like the
+    // pre-existing `LinkStateChar` (used by `ClassifyTeleportKind`) but taking the `Connection`
+    // directly rather than a `JunctionLink`, so it can be handed `EntryConnectionByLink`'s result,
+    // which for a `cont` link is the FIRST hop (the only one carrying a live tl/linkIndex -- design
+    // doc §2a fact 3). `LinkStateChar` itself reads `link.Connection`, which is the WRONG (second)
+    // hop for a cont link -- a pre-existing, separately-filed defect
+    // (docs/NEED-linkstatechar-cont-entry-link.md) this sidesteps by construction rather than fixes.
+    private char EntryLinkStateChar(Connection entryConn, double evalTime)
+    {
+        if (entryConn.Tl is { } tl && entryConn.LinkIndex is { } li && _network!.TlLogicsById.ContainsKey(tl))
+        {
+            return TlLinkStateChar(tl, li, evalTime);
+        }
+
+        return entryConn.State is { Length: > 0 } s ? s[0] : 'M';
+    }
+
+    // F3/isLeader T2.3: find the <request> row for a given link index -- manual loop (D4 style,
+    // matching JunctionYieldConstraint's own `JunctionRequest? request = null; foreach (...)`)
+    // rather than a LINQ `.FirstOrDefault` closure, since `junction.Requests` carries no index-keyed
+    // dictionary of its own.
+    private static JunctionRequest? FindJunctionRequest(Junction junction, int linkIndex)
+    {
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == linkIndex)
+            {
+                return r;
+            }
+        }
+
+        return null;
+    }
+
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
         Lane egoLane,
