@@ -34,13 +34,13 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **717 passed / 4 skipped / 0 failed** (session 3; was 689) |
+| `dotnet test tests/Sim.ParityTests -c Release` | **721 passed / 4 skipped / 0 failed** (session 3; was 689) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; not in `Traffic.sln`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 
-717 = 689 (the session-2 baseline) + 13 `JunctionLinkLaneMapTests` (T2.1) + 3 `JunctionEntryTimeTests`
-(T2.2) + 12 `JunctionIsLeaderTests` (T2.3). The 4 skips are pre-existing
+721 = 689 (the session-2 baseline) + 13 `JunctionLinkLaneMapTests` (T2.1) + 3 `JunctionEntryTimeTests`
+(T2.2) + 12 `JunctionIsLeaderTests` (T2.3) + 4 gap/flag tests (T2.4). The 4 skips are pre-existing
 (`LaneChangeOverlapDiagTests`, `RungC4vii…`, `RungP24…`, `RungP2Core…`).
 
 **The 5 gridlock diagnostics are the load-bearing regression net** — they caught a bad change in one run and
