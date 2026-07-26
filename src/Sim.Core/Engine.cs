@@ -7056,6 +7056,14 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            // Port of MSLink.cpp:1601 -- `if (leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker)`.
+            // A foe standing at least IgnoreJunctionBlockerSeconds is skipped entirely, so it constrains
+            // nobody (SUMO emits no LinkLeader for it). Inert at the default -1, exactly as in SUMO.
+            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds)
+            {
+                continue;
+            }
+
             var foeInternalSeqIndex = IndexOfLaneHandle(foe, foeInternalLaneHandle);
 
             double thisConstraint;
@@ -11526,6 +11534,28 @@ public sealed partial class Engine : IEngine
     // byte-identical. That single scenario is the last thing between this and default-on; see
     // docs/F3-SESSION-LOG.md T1.10.
     public bool ContTurnInsideJunctionGate { get; set; }
+
+    // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
+    // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never
+    // ignore)". SUMO maps -1 to SUMOTime::max() (MSFrame.cpp:1043-1044) so the consuming check
+    // `leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker` (MSLink.cpp:1601) is always true and the
+    // foe is NEVER skipped. So the mechanism is OFF by default in SUMO too, and -1 here is byte-identical.
+    //
+    // What it does when enabled: a foe that has been standing at least this long stops constraining anyone --
+    // in SUMO the foe simply produces no LinkLeader entry, so ego is free to proceed through it.
+    //
+    // WHY THIS EXISTS HERE (docs/NEED-arm5-mutual-junction-deadlock.md): two cars on crossing internal lanes
+    // of one junction can end up car-following EACH OTHER via arm 5 (AdaptToJunctionLeader), which has no
+    // right-of-way notion and no escape -- measured at 121/121 steps, speed exactly 0.000, resolved only by
+    // the 120 s teleport. Setting this to e.g. 5 breaks that stalemate.
+    //
+    // IMPORTANT, and previously mis-stated in the NEED doc: SUMO does NOT release such a pair by default.
+    // It avoids the state forming at all via isLeader() entry-time ordering (MSVehicle.cpp:7348-7483), which
+    // we have not ported. The hardcoded JUNCTION_BLOCKAGE_TIME (5 s, MSVehicle.cpp:119/:3487) is a DIFFERENT
+    // mechanism -- it revokes a request to ENTER behind a long-waiting leader, it does not free a car already
+    // inside. So enabling this knob is a deliberate, SUMO-OPTIONAL deviation from SUMO's DEFAULT behaviour,
+    // not a substitute for isLeader(). It is the pragmatic floor; isLeader() remains the faithful fix.
+    public double IgnoreJunctionBlockerSeconds { get; set; } = -1.0;
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a
