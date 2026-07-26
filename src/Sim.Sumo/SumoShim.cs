@@ -62,6 +62,10 @@ namespace Sim.Sumo;
 //                              Engine property's own header comment); mirrors LiveCitySim.cs's
 //                              identical LIVECITY_CONTTURNFIX env var. Unset/anything-but-"1" => false,
 //                              the Engine default, so this is inert for every existing invocation.
+//   SUMOSHARP_ISLEADERFIX=1 (env var, NOT a --flag)
+//                              sets Engine.JunctionIsLeaderGate (docs/F3-ISLEADER-PORT-DESIGN.md
+//                              §5a). Not a SUMO option; unset/anything-but-"1" => false, the Engine
+//                              default, so this is inert for every existing invocation.
 // Any OTHER flag is TOLERATED (a warning to stderr, not an abort) so minor extra flags SumoData
 // passes never break the run. Both `--flag value` and `--flag=value` forms are accepted.
 public static class SumoShim
@@ -248,6 +252,14 @@ public static class SumoShim
         // false, the Engine default, so every existing shim invocation that never sets this env var is
         // byte-identical to before. See docs/NEED-arm5-mutual-junction-deadlock.md.
         engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("SUMOSHARP_CONTTURNFIX") == "1";
+        // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a/§6; docs/F3-ISLEADER-PORT-TASKS.md
+        // T2.4b): env-var test/measurement gate for Engine.JunctionIsLeaderGate -- NOT a SUMO option,
+        // so (mirroring SUMOSHARP_CONTTURNFIX immediately above) it is deliberately NOT a `--flag` in
+        // the parsed-args table. Kept permanently so an A/B can drive it through this SAME shim path
+        // (never mixed with a direct `engine.Run()` baseline -- log §7/§9.33's own standing lesson).
+        // Unset/non-"1" => false, the Engine default, so every existing shim invocation that never
+        // sets this env var is byte-identical to before.
+        engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("SUMOSHARP_ISLEADERFIX") == "1";
         try
         {
             engine.LoadScenario(cfgPath);

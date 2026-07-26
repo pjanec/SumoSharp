@@ -7145,7 +7145,61 @@ public sealed partial class Engine : IEngine
                 // speed-then-id tie-break) is still NOT ported; it is only needed to let a first-entrant
                 // yield-free case be distinguished from a second-entrant one for cars already on the
                 // junction, and this gate sidesteps that by never braking them at all.
-                if (!respondsTo
+                //
+                // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a): behind `JunctionIsLeaderGate`
+                // (default OFF), the paragraph above is superseded -- entry-time ordering IS now
+                // available (T2.3/T2.4a), so this becomes SUMO's OWN `isLeader(...) || inTheWay()`
+                // disjunction (MSVehicle.cpp:3429), applied UNIFORMLY to both the RespondsTo and the
+                // FoeWith-only foe (neither short-circuits on `respondsTo` at all -- unlike the flag-off
+                // `else` below, which keeps the pre-existing expression CHARACTER-FOR-CHARACTER so
+                // byte-identical-with-the-flag-off is a property of the code shape, not a measurement).
+                if (JunctionIsLeaderGate)
+                {
+                    var foeLaneForGap = _network!.LanesByHandle[foe.LaneHandle];
+
+                    // Same seen/distToCrossing/leaderBackDist derivation FoeIsInTheWay/
+                    // AdaptToJunctionLeader each already compute inline (MSVehicle.cpp:3428/3473) --
+                    // duplicated here rather than shared, since T2.4a's `GapForIsLeader` takes the
+                    // already-derived scalars (design §3b), not the vehicle/lane inputs, and those two
+                    // methods deliberately keep their own independent derivations (see their headers).
+                    var seenForGap = egoOnInternal
+                        ? egoLane.Length - v.Kinematics.Pos
+                        : (approachLane!.Length - v.Kinematics.Pos) + egoLane.Length;
+                    var distToCrossingForGap = seenForGap - conflict.EgoLengthBehindCrossing;
+                    var foeDistToCrossingForGap = foeLaneForGap.Length - conflict.FoeLengthBehindCrossing;
+                    var leaderBackForGap = foe.Kinematics.Pos - foe.VType.Length;
+                    var leaderBackDistForGap = foeDistToCrossingForGap - leaderBackForGap;
+
+                    var gapForIsLeader = GapForIsLeader(
+                        _network, egoLane, foeLaneForGap,
+                        distToCrossingForGap, leaderBackDistForGap, conflict.FoeConflictSize, v.VType.MinGap);
+
+                    // `ego.LaneId`/`foe.LaneId` are each vehicle's OWN ACTUAL current lane (`v.LaneId`/
+                    // `foe.LaneId`, NOT `egoLane`/`foeLaneForGap`) -- IsLeader's clause 1 needs the
+                    // REAL current lane to answer "has this vehicle even entered THIS junction yet"
+                    // (design §1); `egoLane` is the LINK's own crossing lane, which may still be only
+                    // APPROACHED, not yet occupied.
+                    var egoCandidate = new JunctionLeaderCandidate(
+                        v.LaneId, v.Def.Id, v.Kinematics.Speed,
+                        v.JunctionEntryTime, v.JunctionEntryTimeNeverYield, v.JunctionConflictEntryTime,
+                        v.VType.MinGap, v.VType.Accel, v.VType.Decel, v.VType.Tau, v.VType.Length);
+                    var foeCandidate = new JunctionLeaderCandidate(
+                        foe.LaneId, foe.Def.Id, foe.Kinematics.Speed,
+                        foe.JunctionEntryTime, foe.JunctionEntryTimeNeverYield, foe.JunctionConflictEntryTime,
+                        foe.VType.MinGap, foe.VType.Accel, foe.VType.Decel, foe.VType.Tau, foe.VType.Length);
+
+                    // `this._network` (NOT the T2.4a call's `_network!` local usage above only for the
+                    // gap helper) -- IsLeader needs the SAME parsed `NetworkModel`/`Junction` instance
+                    // `junction`/`egoLink` already came from, since `IsInternalLaneOfJunction` compares
+                    // by REFERENCE (T2.3's own doc comment).
+                    var isLeader = IsLeader(_network!, junction, egoLink, egoCandidate, foeCandidate, gapForIsLeader, dt, time);
+
+                    if (!(isLeader || FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
+                    {
+                        continue;
+                    }
+                }
+                else if (!respondsTo
                     && (egoOnInternal
                         || !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
                 {
@@ -8482,6 +8536,130 @@ public sealed partial class Engine : IEngine
 
         return null;
     }
+
+    // F3/isLeader T2.4a (docs/F3-ISLEADER-PORT-DESIGN.md §3b -- read it in full, including BOTH
+    // traps, before touching this): the `gap` `IsLeader`'s attempt-1 `brakeGap` sub-branch needs
+    // (MSVehicle.cpp:3429 passes `MSLink::getLeaderInfo`'s `gap` straight through). Ported verbatim
+    // from `MSLink::getLeaderInfo` (MSLink.cpp:1376-1653), specialised to arm 5's shape exactly as
+    // the design doc's mapping table lays out: `distToCrossing`/`leaderBackDist` are the SAME
+    // quantities `FoeIsInTheWay`/`AdaptToJunctionLeader` already derive (passed in, not
+    // recomputed); `sameTarget` is structurally false here (a merge never carries a
+    // `JunctionConflict` record -- `AdaptToJunctionLeader`'s own comment), so `leaderBackDist2 ==
+    // leaderBackDist` and the `sameTarget` disjuncts of `crossingWidth`/`contLane`'s `!isOpposite`
+    // guard collapse away; `isOpposite` and `ignoreIndirectBicycleTurn` are likewise structurally
+    // false (no opposite-direction driving on these nets; no indirect links in any of the 134
+    // committed nets -- `JunctionIsLeaderTests.NoCommittedNet_ContainsAnIndirectConnection`).
+    //
+    // NOT WIRED IN YET (T2.4b wires arm 5): nothing calls this, so this method is parity-inert by
+    // construction, exactly like T2.3's `IsLeader`.
+    //
+    // ⚠ TRAP 1 (design §3b, point 1): `sameSource` HERE uses `getLogicalPredecessorLane()` -- ONE
+    // hop back (MSLane.cpp:3077-3099: the immediate incoming lane, via whichever <connection>'s
+    // `via` lands on this lane) -- NOT `getNormalPredecessorLane()` (MSLane.cpp:3102-3109, which
+    // RECURSES through every internal stage to the first NORMAL lane). `IsLeader`'s OWN
+    // same-source test (design §3(a), case (a)) uses the NORMAL predecessor
+    // (`EntryConnectionByLink`'s fully-recursed `(From, FromLane)`). These are DIFFERENT predicates
+    // that happen to share the English phrase "same source" -- do NOT collapse them into one
+    // helper. For a cont link's stage-2 (controlling) lane the two disagree BY CONSTRUCTION: its
+    // logical predecessor is the stage-1 (bay) internal lane, while its normal predecessor is the
+    // true incoming NORMAL lane two-plus hops back -- `GapForIsLeaderTests` exercises exactly this
+    // disagreement on real net data (junction 2336, links 17/18's stage-2 lanes: same normal
+    // source `2417` lane 1, but DIFFERENT stage-1 bays, so logical says NOT-same-source while the
+    // normal-predecessor test `IsLeader` itself uses would say same-source).
+    //
+    // ⚠ TRAP 2 (design §3b, point 2): `contLane` is NOT cosmetic. It fires when the FOE currently
+    // occupies a lane whose own onward <connection> still leads through ANOTHER internal lane
+    // (i.e. the foe is on the STAGE-1 bay of a still-unfinished cont turn, not yet through the
+    // internal junction) -- MSLink.cpp:1384-1385's `foeExitLink->getViaLaneOrLane()->getEdge().
+    // isInternal()`, gated by `!(isInternalJunctionLink() || isExitLinkAfterInternalJunction())`
+    // applied to EGO's OWN link. In this engine's abstraction (ego/foe are always examined from
+    // their CURRENT/controlling lane, never mid-multi-stage as a live MSLink instance) `this` is
+    // always ego's own exit link, for which `isInternalJunctionLink()` is structurally false (an
+    // exit link's target is never internal) and `isExitLinkAfterInternalJunction()` reduces to
+    // "is EGO's own lane itself a stage-2+ continuation" -- i.e. its OWN logical predecessor is
+    // internal. With `gap = -DBL_MAX` when `contLane && !sameSource`, attempt 1's `brakeGap`
+    // sub-branch computes a huge positive `foeGap`, so the foe is NEVER judged able to brake safely
+    // -- ego yields unconditionally. The plain formula could instead return a POSITIVE gap for the
+    // very same geometric inputs (nothing about `distToCrossing`/`leaderBackDist`/`foeConflictSize`
+    // forces it negative), which is a DIFFERENT answer at attempt 1's `gap < 0` precondition.
+    //
+    // `egoLane`/`foeLane` are the vehicles' own CURRENT lanes (matching `FoeIsInTheWay`'s
+    // `egoLane`/`_network.LanesByHandle[foe.LaneHandle]`); `foeConflictSize` is the RAW
+    // `conflict.FoeConflictSize` (pre-`sameSource` zeroing -- this method applies that zeroing
+    // itself, per the mapping table).
+    public static double GapForIsLeader(
+        NetworkModel network,
+        Lane egoLane,
+        Lane foeLane,
+        double distToCrossing,
+        double leaderBackDist,
+        double foeConflictSize,
+        double egoMinGap)
+    {
+        var sameSource =
+            LogicalPredecessorKey(network, egoLane.Id) is { } egoPred
+            && LogicalPredecessorKey(network, foeLane.Id) is { } foePred
+            && egoPred.EdgeId == foePred.EdgeId
+            && egoPred.LaneIndex == foePred.LaneIndex;
+
+        // MSLink.cpp:1382: foeCrossingWidth = (sameTarget || sameSource) ? 0 : foeConflictSize.
+        // `sameTarget` structurally false here (see header comment).
+        var foeCrossingWidth = sameSource ? 0.0 : foeConflictSize;
+
+        // MSLink.cpp:1384-1385: contLane = foeExitLink->getViaLaneOrLane()->getEdge().isInternal()
+        // && !(isInternalJunctionLink() || isExitLinkAfterInternalJunction()) -- see TRAP 2 above
+        // for why the second clause reduces to "is ego's OWN lane a stage-2+ continuation" in this
+        // engine's abstraction.
+        var egoIsContSuccessor =
+            LogicalPredecessorKey(network, egoLane.Id) is { } egoOwnPred && IsInternalEdgeId(egoOwnPred.EdgeId);
+
+        var foeExitTargetIsInternal = false;
+        if (network.ConnectionsByFromEdgeLane.TryGetValue((foeLane.EdgeId, foeLane.Index), out var foeExitCandidates)
+            && foeExitCandidates.Count > 0)
+        {
+            var foeExit = foeExitCandidates[0];
+            var viaOrToEdge = foeExit.Via is { } via && network.LanesById.TryGetValue(via, out var viaLane)
+                ? viaLane.EdgeId
+                : foeExit.To;
+            foeExitTargetIsInternal = IsInternalEdgeId(viaOrToEdge);
+        }
+
+        var contLane = foeExitTargetIsInternal && !egoIsContSuccessor;
+
+        // MSLink.cpp:1622-1623/1647 (isOpposite/ignoreIndirectBicycleTurn structurally false here,
+        // see header comment):
+        //   if (contLane && !sameSource) gap = -DBL_MAX;
+        //   else gap = distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth;
+        if (contLane && !sameSource)
+        {
+            return -double.MaxValue;
+        }
+
+        return distToCrossing - egoMinGap - leaderBackDist - foeCrossingWidth;
+    }
+
+    // F3/isLeader T2.4a: `MSLane::getLogicalPredecessorLane()` (MSLane.cpp:3077-3099) -- the ONE
+    // incoming lane immediately before `laneId`, found as the (unique, per the
+    // `getIncomingLanes().size() != 1` invariant MSLink::setRequestInformation asserts,
+    // MSLink.cpp:247-249) top-level <connection> whose `via` lands on `laneId`. Returns the
+    // predecessor's (edge id, lane index) -- NOT a resolved `Lane`, since every caller here only
+    // needs equality/edge-internal-ness, never the lane's own geometry. `null` when no connection's
+    // `via` equals `laneId` (laneId is not an internal lane, or is one with no recorded entry --
+    // defensive only; every internal lane in a real net has exactly one).
+    private static (string EdgeId, int LaneIndex)? LogicalPredecessorKey(NetworkModel network, string laneId)
+    {
+        foreach (var c in network.Connections)
+        {
+            if (c.Via == laneId)
+            {
+                return (c.From, c.FromLane);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsInternalEdgeId(string edgeId) => edgeId.Length > 0 && edgeId[0] == ':';
 
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
@@ -11966,6 +12144,34 @@ public sealed partial class Engine : IEngine
     // byte-identical. That single scenario is the last thing between this and default-on; see
     // docs/F3-SESSION-LOG.md T1.10.
     public bool ContTurnInsideJunctionGate { get; set; }
+
+    // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a, §6; docs/F3-ISLEADER-PORT-TASKS.md
+    // T2.4b). DEFAULT false = OFF = byte-identical to every golden BY CONSTRUCTION: with the flag
+    // off, arm 5's gate expression is the pre-existing one, unchanged character-for-character (see
+    // JunctionYieldConstraint's foe loop).
+    //
+    // WHAT IT DOES when on: replaces arm 5's presence-only test for a RespondsTo foe, and the
+    // narrow `FoeIsInTheWay` test for a FoeWith-only foe, with SUMO's OWN disjunction
+    // (`isLeader(...) || inTheWay()`, MSVehicle.cpp:3429) applied UNIFORMLY to both -- i.e. ego
+    // brakes for this on-junction occupant iff EITHER `IsLeader` (T2.3: entry-time ordering, then
+    // speed, then id) says the foe has priority-by-entry-order, OR `FoeIsInTheWay` (the physical-
+    // occupancy predicate) says the foe's footprint is on ego's own crossing point right now.
+    //
+    // WHY THIS EXISTS (docs/NEED-arm5-mutual-junction-deadlock.md; design doc §0): two cars on
+    // mutually-responding crossing internal lanes of one junction can end up car-following EACH
+    // OTHER via arm 5, which (until now) had no right-of-way notion and no escape -- measured at
+    // 121/121 steps, speed exactly 0.000, resolved only by the 120 s teleport.
+    // `IsLeaderByEntryOrder`'s tie-break chain makes the symmetric (mutual-yield) state
+    // STRUCTURALLY UNREACHABLE for the measured pair (design §0a): both vehicles always compare the
+    // SAME two numbers in OPPOSITE senses, so exactly one yields, never both.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT: this is the first time `IsLeader`/`GapForIsLeader` are
+    // actually CALLED (T2.3/T2.4a were parity-inert by construction, nothing read their output) --
+    // per design §6, flag-ON behaviour is measured, not assumed, against all four parity surfaces
+    // (goldens, bench hash, the five gridlock diagnostics, live-city overlap buckets) before any
+    // default changes. Flipping this default is an owner decision (design §6.4), not a test
+    // outcome.
+    public bool JunctionIsLeaderGate { get; set; } = false;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

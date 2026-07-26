@@ -380,4 +380,131 @@ public class JunctionIsLeaderTests
 
         throw new InvalidOperationException($"junction '{junction.Id}' has no <request> row for link {linkIndex}.");
     }
+
+    // ================================================================================================
+    // T2.4a -- docs/F3-ISLEADER-PORT-DESIGN.md §3b (read it in full, including BOTH traps);
+    // docs/F3-ISLEADER-PORT-TASKS.md T2.4a. `Engine.GapForIsLeader` is the `gap` helper -- NOT WIRED
+    // IN (T2.4b wires arm 5): nothing calls it yet, so this task is parity-inert by construction
+    // (verified separately: the goldens/bench/LiveCity/Pedestrians surfaces are unchanged).
+    //
+    // All three tests use REAL lane ids from junction 2336 (grid.net.xml) rather than synthetic
+    // topology, so the sameSource/contLane derivations are exercised against actual net shape, not a
+    // hand-waved fixture.
+    // ================================================================================================
+
+    // Success condition 1: plain-case arithmetic, no sameSource, no contLane.
+    //   egoLane=:2336_3_0 (non-cont link 3, logical predecessor -2437 lane 1)
+    //   foeLane=:2336_2_0 (non-cont link 2, logical predecessor -2437 lane 0 -- DIFFERENT fromLane,
+    //     so not same-source) whose own exit connection (:2336_2 -> -2337, no `via`) leads straight
+    //     to a NORMAL edge, so contLane is false regardless of ego's own lane.
+    [Fact]
+    public void GapForIsLeader_PlainCase_MatchesHandComputedFormula()
+    {
+        var net = NetworkParser.Parse(SyntheticJunction2NetPath());
+        var egoLane = net.LanesById[":2336_3_0"];
+        var foeLane = net.LanesById[":2336_2_0"];
+
+        const double distToCrossing = 50.0;
+        const double leaderBackDist = 5.0;
+        const double foeConflictSize = 2.0;
+        const double egoMinGap = 2.5;
+
+        var gap = Engine.GapForIsLeader(net, egoLane, foeLane, distToCrossing, leaderBackDist, foeConflictSize, egoMinGap);
+
+        Assert.Equal(distToCrossing - egoMinGap - leaderBackDist - foeConflictSize, gap, precision: 9);
+    }
+
+    // Success condition 2: sameSource uses the LOGICAL predecessor (one hop), NOT the normal
+    // predecessor `IsLeader`'s own case-(a) test uses (design §3b trap 1).
+    //
+    //   egoLane=:2336_41_0 (link 17's STAGE-2 lane); its logical predecessor is the stage-1 bay
+    //     `:2336_17_0` (the connection `:2336_17 -> 2441 via=":2336_41_0"`).
+    //   foeLane=:2336_42_0 (link 18's STAGE-2 lane, veh 95's real lane); its logical predecessor is
+    //     the DIFFERENT stage-1 bay `:2336_18_0` (`:2336_18 -> -2337 via=":2336_42_0"`).
+    //   => logical predecessors differ -> sameSource is FALSE here -> foeCrossingWidth is NOT
+    //      zeroed -> `foeConflictSize` must appear, unmodified, in the returned gap.
+    //
+    // Yet BOTH links' fully-recursed NORMAL predecessor -- `NetworkModel.EntryConnectionByLink`,
+    // exactly what `IsLeader`'s own case (a) test reads -- resolves to the SAME normal lane
+    // (`2417` lane 1) for both: a test that used the normal-predecessor definition here would
+    // wrongly report sameSource=true and would pass even with the wrong predicate wired in. This
+    // test pins BOTH facts, so it is not vacuous under either definition.
+    [Fact]
+    public void GapForIsLeader_SameSource_UsesLogicalPredecessor_NotNormalPredecessor()
+    {
+        var net = NetworkParser.Parse(SyntheticJunction2NetPath());
+        var egoLane = net.LanesById[":2336_41_0"]; // link 17 stage-2
+        var foeLane = net.LanesById[":2336_42_0"]; // link 18 stage-2 (veh 95's real lane)
+
+        // Pin the NORMAL-predecessor fact this test's non-vacuity depends on: both links' entry
+        // connections (IsLeader's own case-(a) source) trace back to the SAME normal lane.
+        var entry17 = net.EntryConnectionByLink![("2336", 17)];
+        var entry18 = net.EntryConnectionByLink![("2336", 18)];
+        Assert.Equal("2417", entry17.From);
+        Assert.Equal("2417", entry18.From);
+        Assert.Equal(entry17.FromLane, entry18.FromLane);
+        Assert.Equal(1, entry17.FromLane);
+
+        const double distToCrossing = 50.0;
+        const double leaderBackDist = 5.0;
+        const double foeConflictSize = 8.0;
+        const double egoMinGap = 2.5;
+
+        var gap = Engine.GapForIsLeader(net, egoLane, foeLane, distToCrossing, leaderBackDist, foeConflictSize, egoMinGap);
+
+        // If sameSource were (wrongly) derived from the normal predecessor, foeCrossingWidth would
+        // be zeroed and the gap would be distToCrossing - egoMinGap - leaderBackDist (42.5), not
+        // this. The LOGICAL-predecessor-correct answer keeps foeConflictSize in the subtraction.
+        var wrongAnswerIfNormalPredecessorUsed = distToCrossing - egoMinGap - leaderBackDist;
+        var correctAnswer = distToCrossing - egoMinGap - leaderBackDist - foeConflictSize;
+
+        Assert.Equal(correctAnswer, gap, precision: 9);
+        Assert.NotEqual(wrongAnswerIfNormalPredecessorUsed, gap, 9);
+    }
+
+    // Success condition 3: `contLane` forces `gap == -double.MaxValue`, and demonstrably changes
+    // the answer versus the plain formula for the SAME inputs (design §3b trap 2).
+    //
+    //   foeLane=:2336_18_0 -- link 18's STAGE-1 bay. Its own onward connection
+    //   (`:2336_18 -> -2337 via=":2336_42_0"`) still has a `via` landing on an INTERNAL edge
+    //   (`:2336_42`) -- i.e. the foe has not yet cleared the internal junction -- so contLane's
+    //   first clause is true.
+    //   egoLane=:2336_3_0 -- its own logical predecessor (`-2437` lane 1) is a NORMAL edge, so ego
+    //   is not itself a stage-2+ continuation -> contLane's second clause holds too.
+    [Fact]
+    public void GapForIsLeader_ContLane_ForcesNegativeMaxGap_PlainFormulaWouldHaveBeenPositive()
+    {
+        var net = NetworkParser.Parse(SyntheticJunction2NetPath());
+        var egoLane = net.LanesById[":2336_3_0"];
+        var foeLane = net.LanesById[":2336_18_0"]; // stage-1 bay, NOT yet through the internal junction
+
+        const double distToCrossing = 50.0;
+        const double leaderBackDist = 5.0;
+        const double foeConflictSize = 2.0;
+        const double egoMinGap = 2.5;
+
+        var gap = Engine.GapForIsLeader(net, egoLane, foeLane, distToCrossing, leaderBackDist, foeConflictSize, egoMinGap);
+
+        Assert.Equal(-double.MaxValue, gap);
+
+        // Companion: the plain formula, for the SAME inputs, is demonstrably POSITIVE -- the
+        // contLane rule is not cosmetic, it flips the sign that attempt 1's `gap < 0` precondition
+        // depends on.
+        var plainFormula = distToCrossing - egoMinGap - leaderBackDist - foeConflictSize;
+        Assert.True(plainFormula > 0, $"fixture assumption stale: plain formula ({plainFormula}) is no longer positive.");
+    }
+
+    // ================================================================================================
+    // T2.4b success condition 1 -- docs/F3-ISLEADER-PORT-TASKS.md T2.4b: the default MUST be false,
+    // mirroring `IgnoreJunctionBlockerTests.DefaultIsMinusOne_AndIsNeverIgnore`. `JunctionIsLeaderGate`
+    // wires `IsLeader`/`GapForIsLeader` into arm 5 (design §5a); with it false (the default) arm 5's
+    // gate expression is the pre-existing one, CHARACTER-FOR-CHARACTER unchanged, so every committed
+    // golden stays byte-identical by construction, not by measurement.
+    // ================================================================================================
+
+    [Fact]
+    public void JunctionIsLeaderGate_DefaultIsFalse()
+    {
+        Assert.False(new Engine().JunctionIsLeaderGate);
+    }
 }
