@@ -7753,30 +7753,72 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        var occupied = false;
-        foreach (var other in ActiveVehicles())
+        // ==> WHY THIS IS NOT A BARE OCCUPANCY TEST (see docs/F3-SESSION-LOG.md §9.111-113).
+        // `myInternalLaneFoes` becomes `MSLink::myFoeLanes`, and on the DRIVING path SUMO reads that set
+        // only through `MSLink::getLeaderInfo`, whose candidates are then filtered at
+        // `MSVehicle.cpp:3429` by `isLeader(link, leader, gap) || it->inTheWay()`. The one bare-occupancy
+        // reader of `myFoeLanes` -- `hasApproachingFoe` (`MSLink.cpp:1070`) -- is reachable ONLY from
+        // insertion (`MSLane.cpp:1077`), lane-change abort (`unsafeLinkAhead`, which skips internal
+        // edges) and TraCI. So bare occupancy is NOT an admission rule, and using it as one is symmetric,
+        // which deadlocks: it wedged four cars in four cont bays of one junction for 857+ steps.
+        var blocked = false;
+
+        for (var i = 0; i < foeLaneHandles.Count && !blocked; i++)
         {
-            if (ReferenceEquals(other, v) || other.IsParked)
+            var foeLaneHandle = foeLaneHandles[i];
+            var onFoeLane = _neighborQuery!.OnLane(foeLaneHandle);
+            if (onFoeLane.Count == 0)
             {
                 continue;
             }
 
-            for (var i = 0; i < foeLaneHandles.Count; i++)
+            // Is this foe lane itself a cont BAY? `InternalJunctionByBayLane` IS the set of internal-
+            // junction checker lanes, so membership is exactly that question.
+            //
+            // It matters because `inTheWay` (`MSLink.cpp:1437-1441`) requires
+            // `(!foeExitLink->isInternalJunctionLink() || foeIsBicycleTurn)`, and a bay's exit link IS
+            // the internal-junction link. So for a BAY foe `inTheWay` is STRUCTURALLY FALSE and the
+            // disjunction at :3429 collapses to `isLeader` alone -- entry-time ordering with a total
+            // tie-break. For a foe on a plain stage-2 / internal lane `inTheWay` CAN fire, so that case
+            // keeps the unconditional block: it is the genuinely-occupied one and must not be relaxed.
+            JunctionRequest? foeRequest = null;
+            var foeLaneIsBay = false;
+            if (InternalJunctionAdmissionEntryOrder
+                && _network.InternalJunctionByBayLane.ContainsKey(_network.LanesByHandle[foeLaneHandle].Id)
+                && _network.LinkIndexByInternalLane.TryGetValue(_network.LanesByHandle[foeLaneHandle].Id, out var foeOwn)
+                && ReferenceEquals(foeOwn.Junction, junction))
             {
-                if (other.LaneHandle == foeLaneHandles[i])
+                foeLaneIsBay = true;
+                foreach (var r in junction.Requests)
                 {
-                    occupied = true;
-                    break;
+                    if (r.Index == foeOwn.LinkIndex)
+                    {
+                        foeRequest = r;
+                        break;
+                    }
                 }
             }
 
-            if (occupied)
+            for (var j = 0; j < onFoeLane.Count; j++)
             {
+                var other = onFoeLane[j];
+                if (ReferenceEquals(other, v) || other.IsParked)
+                {
+                    continue;
+                }
+
+                if (foeLaneIsBay && !EgoYieldsToBayFoe(v, other, linkIndex, foeRequest))
+                {
+                    // Ego is the LEADER of this bay-vs-bay pair, so SUMO would not adapt to it.
+                    continue;
+                }
+
+                blocked = true;
                 break;
             }
         }
 
-        if (!occupied)
+        if (!blocked)
         {
             return double.PositiveInfinity;
         }
@@ -7786,6 +7828,39 @@ public sealed partial class Engine : IEngine
         var bayLane = _network.LanesByHandle[v.LaneHandle];
         var stopDist = bayLane.Length - v.Kinematics.Pos - PositionEps;
         return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // Arm 14's ordering, ported from `MSVehicle::isLeader`'s foe-on-internal-lane branch
+    // (`MSVehicle.cpp:7356-7473`) for the ONE configuration arm 14 can be in: ego standing on a cont bay
+    // of `junction`, foe standing on another cont bay of the SAME junction. `true` == ego must yield
+    // (SUMO's `isLeader` returns "the foe IS a leader for me").
+    //
+    // THE LOAD-BEARING DETAIL: a vehicle that entered on a *cont* link never got a
+    // `JunctionConflictEntryTime` -- `AssignJunctionEntryTimestamps` skips it when `r.Cont`, mirroring
+    // `isConflictEntryLink`'s `!myAmCont` (`MSLink.cpp:1295`). So a bay car's conflict time is
+    // `long.MaxValue` while its plain `JunctionEntryTime` is finite. That asymmetry is what makes each
+    // branch below come out differently, and it is why the DEFAULT pairing deadlocks:
+    //
+    //   defaults (:7357)          egoET = ego.Conflict (MAX), foeET = foe.Entry (finite)
+    //                             => MAX > finite => ego yields ... and so does the foe, symmetrically.
+    //   response && response2     BOTH switch to Conflict (MAX == MAX) => tie => speed, then ID.
+    //     (:7437, comment reads "in a mutual conflict scenario, use entry time to avoid deadlock")
+    //                             => strictly ONE of any pair yields. THE CYCLE BREAKER.
+    //   !response                 not reachable here: a BAY lane only enters the foe set through
+    //                             NetworkParser's response-gated branch, so `response` is true by
+    //                             construction (the unconditional branch contributes STAGE-2 lanes).
+    //
+    // So the only distinction to make is whether the foe responds to us as well.
+    private static bool EgoYieldsToBayFoe(
+        VehicleRuntime ego, VehicleRuntime foe, int egoLinkIndex, JunctionRequest? foeRequest)
+    {
+        var response2 = foeRequest is not null && foeRequest.RespondsTo(egoLinkIndex);
+
+        var egoEt = ego.JunctionConflictEntryTime;
+        var foeEt = response2 ? foe.JunctionConflictEntryTime : foe.JunctionEntryTime;
+
+        return IsLeaderByEntryOrder(
+            egoEt, foeEt, ego.Kinematics.Speed, foe.Kinematics.Speed, ego.Def.Id, foe.Def.Id);
     }
 
     // C5 follow-on (willPass): is `foe` keepClear-BLOCKED at its upcoming junction entry -- i.e. its
@@ -12536,6 +12611,22 @@ public sealed partial class Engine : IEngine
     // buckets) before any default changes -- the same standing discipline as JunctionIsLeaderGate
     // immediately above. Flipping this default is a T3.3 owner decision, not a test outcome.
     public bool InternalJunctionAdmissionGate { get; set; } = false;
+
+    // Sub-gate of InternalJunctionAdmissionGate (INERT unless that one is also on): restores the
+    // `isLeader` ORDERING that SUMO applies to a bay-vs-bay foe, instead of blocking on bare foe-lane
+    // occupancy. See `EgoYieldsToBayFoe` for the port and docs/F3-SESSION-LOG.md §9.110-113 for why.
+    //
+    // WHY IT EXISTS AS A SEPARATE FLAG: the admission gate as first shipped uses bare occupancy, which
+    // is SYMMETRIC -- and a symmetric yield predicate over a cycle of mutually-responding streams has no
+    // fixed point but "everyone waits forever". Measured: four vehicles wedged in the four cont bays of
+    // junction `d_5_4` at pos 4.91 for 857+ steps, 48.1% of all stall HEADS at 3x demo density. SUMO
+    // itself names this failure mode in the branch this restores ("in a mutual conflict scenario, use
+    // entry time to avoid deadlock", MSVehicle.cpp:7437).
+    //
+    // Kept separate rather than folded in so the A/B has exactly ONE variable: with this OFF the
+    // admission gate reproduces its previously-measured behaviour bit for bit, so every earlier
+    // measurement in the log remains reproducible and this one is attributable.
+    public bool InternalJunctionAdmissionEntryOrder { get; set; } = false;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

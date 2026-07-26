@@ -366,6 +366,12 @@ public sealed class LiveCitySim : IDisposable
         // bucket re-measurement would report "unchanged" for the trivial reason that nothing was enabled
         // -- an UNMEASURED condition masquerading as a neutral result. LIVECITY_INTERNALJUNCTIONFIX=1.
         _engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONFIX") == "1";
+        // Sub-gate of the line above (inert without it): applies `isLeader`'s entry-time ORDERING to a
+        // bay-vs-bay foe instead of blocking on bare occupancy, which is symmetric and therefore wedges a
+        // cycle of bays permanently (measured: 4 cars, junction d_5_4, 857+ steps, 48.1% of stall heads at
+        // 3x). Separate flag so the A/B has one variable. LIVECITY_INTERNALJUNCTIONENTRYORDER=1.
+        _engine.InternalJunctionAdmissionEntryOrder =
+            Environment.GetEnvironmentVariable("LIVECITY_INTERNALJUNCTIONENTRYORDER") == "1";
         // H-INS insertion follower-gap (pure-overlap) check -- docs/NEED-same-step-double-placement-colocation.md.
         // Refuses a departure that would bury the new car's REAR inside a car already queued just behind the
         // depart position. SUMO refuses these BY DEFAULT (insertionChecks = InsertionCheck::ALL), so this is a

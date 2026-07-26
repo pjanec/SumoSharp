@@ -64,6 +64,36 @@ and fixes 1–3 reversed them. In-zone same-lane is now **better than the shippe
 attribution no longer describes the surviving population, so the next step is re-attribution, not another
 mechanism (`NEED-same-step-double-placement-colocation.md`, `F3-SESSION-LOG.md` §9.83/§9.87).
 
+## Compliance at 3x DESIGN DENSITY (480 cars) — added session 4
+
+The table above is the **design density** (160 cars). At **3x** the ladder was being violated at rung 1 in a
+way the 1x measurement could not see, and it has now largely been fixed. One-variable A/B, all other gates
+ON, 7200 steps, from `HeadOfQueueStallProbeTests`:
+
+| Rung | Violation class | gates OFF | ON, entry-order OFF | **ON, entry-order ON** |
+| --- | --- | --- | --- | --- |
+| 1 | peak concurrent blockages (stopped > 300 steps) | 469 | 220 | **17** |
+| 1 | stall **HEADS** (the cars actually stuck) | 57 | 39 | **7** |
+| 1 | longest single blockage | — | **4890 steps** (≈ never moves) | **637 steps** |
+| — | completed trips | 1583 | 3426 | **5381** |
+| 4 | teleports | 0 | 0 | **0** |
+
+**The 4890-step case was the worst rung-1 violation this project has measured** — four cars motionless in
+four cont bays of junction `d_5_4` for essentially the entire simulated hour. It was **self-inflicted**: the
+internal-junction admission gate blocked on bare foe-lane occupancy, which is symmetric, so a cycle of
+mutually-conflicting bays had no way to resolve. Restoring SUMO's entry-time ordering fixed it
+(`F3-SESSION-LOG.md` §9.110-114).
+
+**It was fixed at rung 1 — prevention — with zero teleports and zero pass-through**, which is the only
+acceptable general solution per the ladder. Nothing was concealed: no timer-triggered rescue, no overlap
+permission, no teleport.
+
+**Still open, and it is a rung-5 case:** **9** cars per simulated hour still stop on a cont bay for up to
+637 steps. Per rung 5 these must be fixed at the cause and must **not** be rescued. The structural argument
+(`F3-SESSION-LOG.md` §9.115) is that they are blocked by a foe standing on a plain internal lane which SUMO
+would ignore once it has passed the conflict point — i.e. missing conflict-point geometry, a conservatism
+rather than a deadlock. **That is an argument, not a measurement**, and the measurement is §6's next step.
+
 **⚠ CAVEAT on every in-zone figure:** the pocket is **camera-driven**; the headless diagnostic places it at
 the net centre. A viewer moves the camera, so any part of the city can become high-realism — these columns
 describe *one placement, not a bound*, and out-of-zone violations still matter.

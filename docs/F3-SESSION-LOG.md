@@ -34,9 +34,9 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **729 passed / 4 skipped / 0 failed** (session 3; was 689) |
+| `dotnet test tests/Sim.ParityTests -c Release` | **752 passed / 4 skipped / 0 failed** (session 3; was 689) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, `deterministic=True`, par==single |
-| `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; **NOT in `Traffic.sln`**) | **49 / 49** |
+| `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; **NOT in `Traffic.sln`**) | **50 / 50** (session 4: +`HeadOfQueueStallProbeTests`) |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
 
 752 = 689 (session-2 baseline) + T2.1 13 + T2.2 3 + T2.3 12 + T2.4 4 + T3.1 4 + T3.2 4 + fix-1 6 +
@@ -136,7 +136,8 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
 | `NetworkModel.InternalJunction` / `InternalJunctionByBayLane` / `InternalLaneFoes` (T3.1) | live, unconditional, no sim reader |
 | **1** `ContTurnInsideJunctionGate` | **OFF** — faithful bug fix (SUMO tests a lane *property*) ✅ safe to default ON |
 | **2** `JunctionIsLeaderGate` (arm 5 disjunction) | **OFF** — faithful `MSVehicle::isLeader` ✅ safe to default ON |
-| **3** `InternalJunctionAdmissionGate` (arm 14) | **OFF** — faithful `MSInternalJunction`; **⚠ DO NOT DEFAULT ON: creates a 4-way circular wait at 3x (§6, §9.103-109)** |
+| **3** `InternalJunctionAdmissionGate` (arm 14) | **OFF** — faithful `MSInternalJunction`. **⚠ ONLY safe together with gate 7 below**; alone it creates a 4-way circular wait at 3x (§9.103-109) |
+| **7** `InternalJunctionAdmissionEntryOrder` (sub-gate of 3) | **OFF** — restores `isLeader`'s entry-time ordering for a bay-vs-bay foe. **Breaks the circular wait**: longest wedge 4890 → **637** steps, trips **+57%** at 3x from this one variable (§9.114). Residual 9 stalls remain (§9.115) |
 | **4** `InsertionFollowerGapCheck` | **OFF** — faithful `isInsertionSuccess` follower pass (SUMO default) ✅ safe to default ON |
 | **5** `ColocationSymmetryBreak` (arm 15) | **OFF** — the **one deliberate deviation**; recovers a state SUMO cannot reach |
 | **6** `LaneChangeArrivalArbitration` | **OFF** — beneficial only *with* the others; **harmful alone** (3046-step episodes) |
@@ -159,65 +160,66 @@ the F3 bucket went **8 → 15** with worst **down** 0.653 m, and `ONE-INTERNAL-O
 | same-lane overlaps, **in-zone** | 28 | **12** (−57%) |
 | teleports | 0 | **0** |
 
-**At 3x density this does NOT hold** — see §6. Trips still +116% and overlaps −92%, but 539 stalls > 300
-steps remain, 94% of whose heads are the arm-14 wedge.
+**At 3x density this table used to NOT hold** — 539 stalls > 300 steps remained, 94% of whose heads were
+the arm-14 wedge. **Session 4 fixed that** with gate 7: at 3x, trips **1583 → 5381**, peak concurrent deep
+stalls **469 → 17**, stall heads **57 → 7**, and the permanent 4890-step bay lock becomes a bounded 637-step
+delay (§9.114). A residual **9** bay stalls remain and are §6's open item.
 
-## 6. NEXT ACTION — break the ARM-14 FOUR-WAY CIRCULAR WAIT (port `addBlockedLink`)
+## 6. NEXT ACTION — attribute and clear the RESIDUAL 9 bay stalls (conflict-point geometry)
 
-**Everything else on this branch is done or explicitly parked.** The one open defect is one I introduced.
+**§6's previous occupant is DONE.** The arm-14 four-way circular wait is broken by
+`InternalJunctionAdmissionEntryOrder` (§9.110-114). Its former "primary hypothesis" — porting
+`addBlockedLink` — was **falsified**: that set has one reader and both of its call sites are commented out
+in SUMO 1.20.0. Do not re-attempt it.
 
-### The defect, measured (§9.103-109)
+### Where things stand at 3x (one-variable A/B, all other gates ON, committed probe)
 
-At **3x** demo density (`LIVECITY_CARS=480`), head-of-queue analysis shows **48.1% of the 618 stall heads
-are held by `binder 14` = `InternalJunctionAdmissionConstraint`** (my T3.2 fix), and a further **46.0% by
-`binder 2 crossJxnLeader`** which is the *consequence* — together **94%**.
+| 3x, 480 cars | gates OFF | ON, entry-order OFF | **ON, entry-order ON** |
+| --- | --- | --- | --- |
+| completed trips | 1583 | 3426 | **5381** |
+| peak concurrent deep stalls | 469 | 220 | **17** |
+| stall HEADS | 57 | 39 | **7** |
+| arm-14 bay-wedge stalls | 0 (arm off) | 24 | **9** |
+| longest wedge run | — | 4890 steps | **637 steps** |
 
-Four vehicles sit on four cont **bays** of junction `d_5_4` — `:d_5_4_3_0`, `:d_5_4_7_0`, `:d_5_4_11_0`,
-`:d_5_4_15_0` — **each at pos 4.91**, each held by arm 14, run lengths climbing 457 → 657 → **857** steps.
-They never move. The four approach lanes each report `nextMouthGap = 4.91`, blocked by exactly those cars.
+Gate green throughout: **752/4/0**, bench **`D96213B7BB4021A7`** par == single, LiveCity **50/50**,
+all 661 goldens byte-identical. 1x is unregressed (`LongHorizonGridlockDiagTests` passes with the new
+sub-gate included in `AllLiveCityGateVars`).
 
-**Each bay car yields to a foe lane occupied by another bay car ⇒ circular wait.** Arm 14 has **no escape
-hatch and no ordering**, and `isLeader` cannot help because these are held by **arm 14, not arm 5**.
-Invisible at 1x (**0** deep stalls); dominant at 3x.
+### The open item
 
-### The hypothesis to test
+**9 deep stalls (longest 637 steps) still stand on cont bays held by arm 14.** §9.115 argues from the net
+and from `isLeader` that these are held by foes on **plain internal lanes**, where the code keeps an
+unconditional block, and that the missing piece is `inTheWay`'s **conflict-point geometry**
+(`MSLink.cpp:1437`, `myConflicts[i].getLengthBehindCrossing`) — SUMO ignores a foe that has already passed
+ego's conflict point; we do not. That makes the residual a **conservatism**, not a circular wait, which is
+consistent with 637 vs 4890 steps.
 
-**Port what design §5 deliberately omitted:** SUMO's `myInternalLinkFoes` and, specifically, the
-**`addBlockedLink` mutual registration** between the bay link and each foe link
-(`sumo/src/microsim/MSInternalJunction.cpp`, end of `postloadInit`):
+**That argument is STRUCTURAL, NOT MEASURED.** The next step is the measurement, already specified:
+for each of the 9, dump which foe lane is occupied, by whom, classified bay vs plain, plus the occupant's
+own binder (so it is visible whether the true cause is downstream congestion). Then decide:
 
-```cpp
-thisLink->setRequestInformation(ownLinkIndex, true, false, myInternalLinkFoes, myInternalLaneFoes, ...);
-for (MSLink* const link : myInternalLinkFoes) {
-    thisLink->addBlockedLink(link);
-    link->addBlockedLink(thisLink);
-}
-```
+1. If the residual is dominated by **plain-lane** foes ⇒ the fix is porting internal-junction conflict
+   offsets, a bounded new piece of work with its own design doc. Weigh it against the alternative
+   conclusion that 9 bounded stalls per simulated hour at **3x** design density is acceptable.
+2. If **any** of the 9 is held by another **bay** ⇒ the ordering is still incomplete and that is the
+   priority. Check `response2` first: it is computed from the raw response matrix
+   (`foeRequest.RespondsTo(egoLinkIndex)`), whereas SUMO derives `response`/`response2` from `isLeader`'s
+   four attempts (tlLinkState → priority → yellow → matrix). On a **traffic-light** junction — and
+   `d_5_3`/`d_5_4` are both `type=traffic_light` — attempt 1 can pick a different pairing than the matrix.
 
-Read `MSLink::addBlockedLink` / `myBlockedFoeLinks` and find **where SUMO consumes it** — that consumer is
-the candidate escape mechanism. Also check `MSLink::opened()`'s handling of a *cont* link
-(`myAmCont`): SUMO explicitly allows a vehicle to **wait inside** the intersection, so there must be
-something that stops four such waiters from mutually blocking.
+### Do NOT re-attempt (each disproven, not merely untried)
 
-**Second candidate, if `addBlockedLink` is not it:** arm 14 may need the same **entry-time ordering**
-`isLeader` provides for arm 5 — i.e. exactly one of a mutually-blocking bay set proceeds. The three
-timestamps and `IsLeaderByEntryOrder` are already ported and available.
+- **`addBlockedLink` / `myBlockedFoeLinks`** — dead code in 1.20.0 (§9.110).
+- **Extending the entry-time ordering to non-bay foes** — provably inert: for bay-vs-plain-internal every
+  `isLeader` branch already yields, because a cont entry leaves `ConflictEntryTime` at `MAX` (§9.115).
+- **Defaulting `InternalJunctionAdmissionGate` ON without gate 7** — that is the 4890-step wedge.
 
-### Success conditions
+### Then: the defaults decision (owner's, not a test outcome)
 
-1. At **3x**, head-of-queue `binder 14` share drops from **48.1%** toward 0, and the four-bay wedge at
-   `d_5_4` does not form (assert directly: no vehicle stopped > 300 steps on a cont bay lane).
-2. At **3x**, `stopped runs > 300 steps` improves materially on **539**, and `stopped to horizon` on **394**.
-3. At **1x**, no regression: `stopped runs > 300` stays **0**, trips ≥ **2684**, same-lane events ≤ **327**.
-4. All **661 goldens byte-identical**; `Sim.Bench` hash **`D96213B7BB4021A7`** par == single;
-   `Sim.ParityTests` **752/4/0** (+ new tests); `Sim.LiveCity.Tests` **49/49**.
-5. The head-of-queue probe is **re-run**, not inferred — followers are 79% of stalls and 97% `leaderFollow`,
-   so any population-level metric hides the head.
-
-### ⚠ Do NOT default `InternalJunctionAdmissionGate` ON until this is fixed
-
-§9.108 amends the §9.89 recommendation. The other **three** faithful gates
-(`ContTurnInsideJunctionGate`, `JunctionIsLeaderGate`, `InsertionFollowerGapCheck`) are unaffected.
+Gates 1, 2, 4 are faithful and safe to default ON. Gate 3 **must** be paired with gate 7. Gates 5 and 6 are
+a deviation and a package-only helper respectively. This has been pending since §9.89 and is unblocked for
+gates 1/2/4 now.
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -1175,6 +1177,120 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
      WRONG.** Only ~3% of heads are ordinary queueing; **94% are the arm-14/crossJxnLeader wedge.** The
      gridlock at 3x is a **defect**, not oversaturation. My earlier reading was an artefact of sampling
      followers alongside heads — precisely the error the owner pointed at.
+
+### Session 4 (2026-07-26) — the §6 hypothesis is FALSIFIED; the real defect is arm 14's *predicate*
+
+110. **PRIMARY HYPOTHESIS FALSIFIED IN ONE GREP — `addBlockedLink` IS DEAD CODE IN SUMO 1.20.0.**
+     `myBlockedFoeLinks` (`MSLink.h:730`) has exactly one reader, `MSLink::willHaveBlockedFoe()`
+     (`MSLink.cpp:696`). That function is called from **two** places and **both are commented out**:
+     ```
+     MSVehicle.cpp:5221:  if (leftSpace < 0/* && item.myLink->willHaveBlockedFoe()*/) {
+     MSVehicle.cpp:7255:  if (link->hasFoes() && link->keepClear() /* && item.myLink->willHaveBlockedFoe()*/) {
+     ```
+     So the `addBlockedLink` mutual registration at the end of `MSInternalJunction::postloadInit`
+     (`MSInternalJunction.cpp:125-126`) writes a set **nothing ever reads**. Porting it would have been
+     provably inert. §6's "primary hypothesis" was wrong, and §9.107's "likely missing piece" with it.
+     **Cost of finding out: one grep.** Cost had I built it first: a day, and a null measurement I would
+     have had to explain. This is the "measure/verify before building" rule paying for itself.
+
+111. **WHAT SUMO ACTUALLY DOES — and the exact line where my port diverges.**
+     `myInternalLaneFoes` is passed as `setRequestInformation`'s `foeLanes` argument and lands in
+     `MSLink::myFoeLanes` (`MSLink.cpp:213`). I traced **every** consumer of `myFoeLanes`:
+
+     | Consumer | Predicate | On the driving path? |
+     | --- | --- | --- |
+     | `MSLink::getLeaderInfo` (`:1373`) | collects candidate leaders, then a long ignore-cascade | **yes** |
+     | `MSLink::hasApproachingFoe` (`:1070`) | **bare occupancy** — `lane->getVehicleNumberWithPartials() > 0` | **NO** |
+     | `setRequestInformation` bookkeeping (`:253/419/437/528/1255`) | conflict-geometry setup | n/a |
+
+     `hasApproachingFoe` — the *only* bare-occupancy test — has exactly three callers:
+     `MSLane.cpp:1077` (**insertion**), `MSVehicle.cpp:6901` (`unsafeLinkAhead`, **lane-change abort**, and it
+     explicitly skips internal edges), and libsumo/TraCI. **SUMO never uses bare foe-lane occupancy as a
+     driving-path admission rule.** My arm 14 does exactly that (`Engine.cs:7757-7776`: scan vehicles, set
+     `occupied = true` on any foe-lane match, brake to the end of the bay). **That single line is the defect.**
+
+112. **BARE OCCUPANCY IS SYMMETRIC — WHICH IS *WHY* IT DEADLOCKS, AND SUMO SAYS SO IN A COMMENT.**
+     Both real mechanisms are **asymmetric by construction**:
+     - `opened()` → `blockedAtTime` (`:880`) → `blockedByFoe` — compares **arrival/leave time intervals**
+       and requires `avi.willPass`.
+     - `getLeaderInfo` → `checkLinkLeader` → the consumption site `MSVehicle.cpp:3429`
+       `isLeader(link, leader, gap) || it->inTheWay()`.
+
+     And `isLeader`'s mutual branch carries SUMO's own comment naming this failure mode verbatim
+     (`MSVehicle.cpp:7437`):
+     ```cpp
+     } else if (response && response2) {
+         // in a mutual conflict scenario, use entry time to avoid deadlock
+     ```
+     A symmetric predicate over a 4-cycle of mutually-responding streams has no fixed point other than
+     "everyone waits forever". That is precisely the observed wedge. **The cycle is not a missing foe set —
+     it is a missing tie-break.**
+
+113. **STRUCTURAL RESULT THAT MAKES THE FIX EXACT: for a bay-vs-bay foe, `inTheWay` CANNOT fire.**
+     `inTheWay` (`MSLink.cpp:1437-1441`) requires
+     `(!foeExitLink->isInternalJunctionLink() || foeIsBicycleTurn)`. When the foe is itself standing on a
+     cont **bay**, its exit link *is* the internal-junction link, and it is not a bicycle turn — so the
+     whole conjunct is **false**. Therefore in the exact configuration that wedges (four cars, four bays,
+     one junction) the disjunction at `:3429` reduces to **`isLeader` alone**: admission is decided purely
+     by entry-time ordering with a total tie-break (ET → speed → id). Non-bay foes — cars physically
+     standing on a plain stage-2/internal lane — keep the unconditional block, because for them `inTheWay`
+     *can* fire and that is the genuinely-occupied case.
+
+     **So the fix is not "add a mechanism", it is "restore the predicate SUMO uses":** gate arm 14's
+     occupancy on `IsLeaderByEntryOrder` when the occupying foe is on a bay lane. Everything needed is
+     already ported — the three timestamps (`VehicleRuntime.cs:295+`), `IsLeaderByEntryOrder`
+     (`Engine.cs:8641`), and the bay predicate (`InternalJunctionByBayLane`, which is *by definition* the
+     set of internal-junction checker lanes).
+
+114. **THE FIX, AND THE ONE-VARIABLE A/B THAT ATTRIBUTES IT.** New sub-gate
+     `Engine.InternalJunctionAdmissionEntryOrder` (default OFF, env `LIVECITY_INTERNALJUNCTIONENTRYORDER`),
+     `EgoYieldsToBayFoe` in `Engine.cs`. When the occupying foe stands on a cont **bay**, admission is
+     decided by `IsLeaderByEntryOrder` instead of by bare occupancy; a foe on a plain internal lane keeps
+     the unconditional block. Timestamp pairing copies `isLeader` exactly: mutual response ⇒ both sides use
+     `ConflictEntryTime`, otherwise the `:7357` defaults (ego `Conflict`, foe `Entry`).
+
+     Measured with the **committed** probe `HeadOfQueueStallProbeTests` (3 columns, 7200 steps @ 480 cars,
+     all other gates ON in both ON columns, so ON-vs-noOrd differs in **exactly one variable**):
+
+     | 3x, 480 cars | gates OFF (shipped) | ON, entry-order OFF | **ON, entry-order ON** |
+     | --- | --- | --- | --- |
+     | completed trips | 1583 | 3426 | **5381** |
+     | deep stalls (>300 steps) | 625 | 651 | **103** |
+     | peak concurrent deep stalls | 469 | 220 | **17** |
+     | stall HEADS | 57 | 39 | **7** |
+     | of which binder 14 | 0 (arm off) | 19 (48.7%) | **4** |
+     | arm-14 bay-wedge stalls | 0 (arm off) | 24 | **9** |
+     | **longest wedge run** | — | **4890 steps** | **637 steps** |
+
+     **+57% trips and −92% peak deep stalls from the single variable**; **+240% trips** against the shipped
+     default. The `noOrd` column **independently reproduces §9.105's wedge**: the same four bays
+     `:d_5_4_{3,7,11,15}_0` at the same pos **4.91**, and 48.7% of heads on binder 14 against the
+     historically-reported 48.1%. Its true run length is **4890 steps** — the historical "857" was a
+     mid-run snapshot, so those cars genuinely never moved for the whole hour. **With the ordering on the
+     longest is 637 steps: a permanent lock becomes a bounded delay.** Determinism confirmed: the ON column
+     came out identical (5381 / 103 / 17 / 7 / 9) on two independent runs.
+
+115. **⚠ THE RESIDUAL IS REAL AND IS *NOT* THE SAME DEFECT — 9 stalls, longest 637 steps.** Read the net
+     rather than guessing (`scenarios/_ped/demo_city/box/net.xml`). All seven residual lanes are genuine
+     cont bays. Taking `d_5_4` bay idx **7**, whose response row is `01100110111000001110` ⇒ it responds to
+     {1,2,5,6,8,9,10,16,17,18}, and only **8** of those is itself `cont=1`. So its foe set is dominated by
+     **plain internal lanes** — the through movements `:d_5_4_1_*`, `:d_5_4_5_*`, `:d_5_4_9_*` and the
+     pedestrian crossings `c1..c3` — and for those the new code deliberately keeps the **unconditional**
+     block.
+
+     Is keeping it right? Working `isLeader` through for bay-vs-plain-internal: ego (cont entry) has
+     `Conflict = MAX`; the foe entered on a NON-cont link so **both** its timestamps are finite. Mutual ⇒
+     `MAX > finite` ⇒ ego yields. `response && !response2` ⇒ defaults ⇒ ego yields. Only `!response` lets
+     ego go, and then it is not a foe worth blocking on anyway. **So the ordering would change nothing for
+     this shape** — option "extend the ordering to all foes" is provably inert here, and must not be
+     attempted (it is on the do-not-re-attempt list below).
+
+     What SUMO has that we do not is **`inTheWay`'s geometry**: a foe that has already passed ego's
+     conflict point is ignored (`MSLink.cpp:1437`, via `myConflicts[i].getLengthBehindCrossing`). We block
+     while the foe is anywhere on the lane. **The residual is therefore a CONSERVATISM from unported
+     internal-junction conflict geometry, not a circular wait** — which is consistent with its bounded run
+     lengths (637 vs 4890). Confirming which foe actually holds each of the 9 is the next measurement; it
+     has NOT been done, so this is a structural argument, not a measurement.
 
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles

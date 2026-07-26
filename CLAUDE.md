@@ -12,6 +12,13 @@ work queue. This file is the rules of the road.
   decision or clarification, write the options out in the message and let the user reply inline.
   Do not use the question/choice picker UI.
 
+- **Delegate token-heavy work that does not need Opus-level judgment to a Sonnet subagent.** This is
+  a standing instruction, not a per-task suggestion: if a task is large, mechanical, or mostly
+  reading/running rather than deciding, hand it to a subagent instead of burning the expensive
+  model's context on it. Opus keeps decomposition, ambiguity resolution, and the accept/reject gate.
+  The full routing rules, the agent definitions to use, and the mandatory contents of a delegation
+  prompt are in **§Subagents** below — read that section before delegating.
+
 ## Prime directives
 
 1. **Work from the repo root.** Resolve it with `git rev-parse --show-toplevel`. Never
