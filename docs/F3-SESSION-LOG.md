@@ -1122,6 +1122,43 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     traffic is wanted, the honest options are to raise capacity rather than demand (more lanes / a bigger
     crop), or to find the density ceiling first via the sweep in §9.94.
 
+### Session 3 (continued) — WHY it gridlocks at 3x: classified, with one bucket MISLABELLED
+
+96. **Classified the 539 long stalls at 3x** into the owner's four hypotheses (A crashed / B red light /
+    C no-free-exit-spillback / D stopped-on-green-no-reason). Concentration is sharp: the top ~10 lanes hold
+    most stalls, feeding junctions **`d_5_4`, `d_3_4`, `d_5_3`** — e.g. `e_d_5_3_d_5_4_2` alone has **79**.
+    So this is a few bottleneck junctions, not a city-wide failure.
+97. **A — CRASHED IN THE JUNCTION: essentially absent.** Only isolated instances appear in the per-lane
+    breakdown (1 on `e_d_4_4_d_3_4_2`, 1 on `e_d_4_4_d_5_4_2`). **Not the cause of the gridlock.**
+98. **B — RED LIGHT: a large, legitimate share** (e.g. 29 of 38 on `e_d_5_2_d_5_3_2`, 16 of 16 on
+    `e_d_4_4_d_5_4_1`). Ordinary signal waiting.
+99. **⚠ D — "STOPPED ON GREEN, NO VISIBLE REASON" = 110, but the bucket is MISLABELLED — my classifier
+    measured the wrong gap.** Every bucket-D example carries **`binder = 1`**, which is
+    `LeaderFollowSpeedConstraint` (`Engine.cs:5171`) — **ordinary car-following**. So these cars are stopped
+    because *their leader is stopped*: they are **queue members**, not independently stuck.
+    The tell is that `downstreamFree` is a near-constant **23.80 m / 30.20 m** across unrelated junctions —
+    because it measured free space on the **next (internal) lane**, not the gap to the car immediately
+    ahead on the **current** lane. Positions confirm queues, e.g. `e_d_3_5_d_3_4_3` at pos **209.44,
+    201.94, 186.93, 149.43** — four cars nose-to-tail.
+    **So "green light + room downstream + still stopped" is not evidence of a broken predicate here**; the
+    room was on a lane the car cannot reach because the car in front of it has not moved.
+100. **Answering the owner's question directly:** the 3x gridlock is **not** cars crashed in junction
+     centres (A ≈ 0), and **not** cars frozen on green for no reason (D is a measurement artefact). It is
+     **queueing — B (red) plus C (spillback), i.e. genuine oversaturation** of a few junctions. That
+     supports reading (b) of §9.94: 3x is beyond the crop's capacity and the jamming is largely physical.
+101. **⚠ What is still NOT established, and needs one more targeted run:** what holds the **HEAD** of each
+     queue. Every measurement so far samples vehicles independently, so a queue of 40 cars reports 40
+     car-following stalls and hides the one vehicle at the front whose binder is the real cause. The correct
+     next instrument classifies **only head-of-queue vehicles** (no stopped leader on their own lane) and
+     reports *their* binder. Until that exists, "predominantly legitimate saturation" is the best-supported
+     reading but **not proven** — a single mis-gated head-of-queue vehicle can stall 40 followers and would
+     look exactly like this.
+102. **Arm 14 cleared of suspicion.** Two UNEXPLAINED entries showed `binder=14` (my internal-junction
+     admission arm) on internal lanes with "could not resolve a controlling connection". Checked: **every**
+     failure path in `InternalJunctionAdmissionConstraint` returns `double.PositiveInfinity`, so the arm
+     never holds a car on an unresolvable lookup — that message came from the *classifier's* own downstream
+     resolution. Where arm 14 does bind, it is correctly holding a cont-bay car whose foe lane is occupied.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
