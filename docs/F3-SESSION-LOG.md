@@ -106,7 +106,23 @@ Env-var A/B switches for the demo: `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPAN
 
 ## 6. NEXT ACTIONS, in dependency order
 
-**→ T1.10 DIAGNOSED (not fixed): the blocker is a PRE-EXISTING rescue gap, not the flag.** →
+**→ T1.11 (THE actual T1.10 cause, now identified): mutual arm-5 junction deadlock.** →
+**`docs/NEED-arm5-mutual-junction-deadlock.md`**. Vehicles 95 and 102 sit on crossing internal lanes of
+junction 2336, each car-following the other via `JunctionYieldConstraint` arm **5**
+(`AdaptToJunctionLeader`) — binder 10 / arm 5 for **121/121 steps**, speed exactly 0.000, cross-verified as
+each other's foe. Arm 5 has **no right-of-way notion and no escape hatch by design**
+(`Engine.cs:7252-7256`); `JunctionYieldTimeoutSeconds` only suppresses arm 6. So once mutual, it is
+unbreakable and only the 120 s teleport resolves it.
+  **This closes D3's open question.** SUMO breaks exactly this after **5 seconds** —
+  `JUNCTION_BLOCKAGE_TIME` (`MSVehicle.cpp:119`, used at `:3487` to revoke the request), plus
+  `gIgnoreJunctionBlocker` (`MSLink.cpp:1601`, which skips a long-waiting foe entirely), plus `isLeader()`
+  which stops the symmetric state forming at all. We have none of the three.
+  **Fix order: (1) port the 5 s `JUNCTION_BLOCKAGE_TIME` escape — small, local, faithful, cheapest path to
+  default-on; (2) then `isLeader()`, which is ALSO what T1.6 needs, so one port unblocks both.**
+  ⚠ The escape deliberately releases a car toward a foe on the crossing (what the existing comment avoids).
+  SUMO accepts that trade; measure the overlap buckets as well as the teleport count.
+
+**→ T1.10 (superseded framing): the rescue gap is real but SECONDARY.** →
 `docs/NEED-stuck-reroute-blind-inside-junctions.md`. Measured on `scenarios/_repro/synthetic-junction2`:
 OFF **2** teleports, ON **5**, real SUMO 1.20.0 **0** — and **all five** ON-teleporting vehicles complete
 their routes in SUMO. Three defects, in the order they should be attacked:
@@ -272,3 +288,25 @@ correct; what blocks default-on is a separate, now precisely-characterised rescu
 **State:** gate green (**672/4/0**, `D96213B7BB4021A7`). Three hypotheses refuted by measurement this
 session (H3, H-A/H-B, D3) and two real fixes shipped. Next: **D1** — let the stuck rescue act on an
 internal-lane wedge.
+
+### Session 2 (continued) — T1.10 root cause NAMED
+
+22. **The `Yield` teleport label is not a cause.** `ClassifyTeleportKind` (`Engine.cs:~12359`) returns
+    `Yield` iff the next junction link's TL state char is lowercase (minor), `Jam` if uppercase. It never
+    inspects why the vehicle waited — faithful to SUMO, but it means "yield=5" says only "these 5 vehicles'
+    next link is minor". D3's framing ("why is a *yield* wait > 120 s") rested on a premise the counter never
+    attested, which retro-explains why fixing four yield-path gates could not move it.
+23. **Instrumented the real binder** (trustworthy only because of T1.8) and the cause split cleanly in two:
+    - **95 + 102: mutual arm-5 deadlock** at junction 2336 — binder 10 / arm 5, 121/121 steps, speed exactly
+      0.000, each verified as the other's foe. → `NEED-arm5-mutual-junction-deadlock.md`.
+    - **14 + 317: `redLight` 77.5%** — and both **wasted a real green window** (9–11 steps at `tl=G`) held at
+      0 speed by `deadLaneMerge`/`crossJxnLeader` before the next red timed them out. Separate defect.
+24. **D3's open question closed:** SUMO breaks this deadlock in **5 s** via `JUNCTION_BLOCKAGE_TIME`
+    (`MSVehicle.cpp:119`/`:3487`) and can skip a long-waiting foe outright (`MSLink.cpp:1601`). We have
+    neither, so we wait 120 s for the teleport. That is the whole of the ">120 s vs ~10 s" gap.
+25. **Convergence worth noting:** `isLeader()` is now the single highest-value outstanding port — it is what
+    T1.6 (true-F3 residue) needs AND what prevents this deadlock forming. One piece of work, two blockers.
+
+**State:** gate green (**672/4/0**, `D96213B7BB4021A7`, 48/48, 272/272), tree clean. Four hypotheses refuted
+by measurement this session (H3, H-A/H-B, D3, and the D1/D2-primary framing), two fixes shipped, one 95-step
+freeze eliminated, and T1.10's cause now identified with citations rather than inferred.
