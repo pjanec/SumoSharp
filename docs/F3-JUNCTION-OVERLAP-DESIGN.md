@@ -3,6 +3,8 @@
 **Status:** design, pending owner sign-off before any `Engine.cs` edit (per `CLAUDE.md` design-first).
 **Requirements/WHAT:** `docs/F3-JUNCTION-OVERLAP-HANDOFF.md`. This document does not restate the WHAT.
 **Branch:** `claude/f3-junction-overlap-handoff-okf5nu`.
+**▶ RESUMING? READ `docs/F3-SESSION-LOG.md` FIRST** — env bootstrap, gate numbers, disproven handoff
+claims, shipped state, next actions in dependency order, and the traps that cost time.
 
 This is **CORE engine / SUMO-parity work**. The parity iron law is in full force: every behavioural change
 here is a port from `sumo/`, and any golden that shifts must be proven (by a live-SUMO trajectory diff) to

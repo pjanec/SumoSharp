@@ -3,6 +3,8 @@
 At-a-glance status for `docs/F3-JUNCTION-OVERLAP-TASKS.md` (task IDs) against
 `docs/F3-JUNCTION-OVERLAP-DESIGN.md` (design sections).
 
+**▶ RESUMING FROM ZERO CONTEXT? READ `docs/F3-SESSION-LOG.md` FIRST.**
+
 **Legend:** `[x]` done & verified first-hand · `[~]` partially done, blocked · `[ ]` not started
 · `[-]` deliberately not done (reason given)
 
