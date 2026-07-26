@@ -75,18 +75,24 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
   unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,
   `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`.
-- [ ] **Realism #3 — low-power peds DISAPPEAR on promotion** into the pocket (re-appear as ORCA later);
-  one-sided `PedLodManager` promote handoff. *(ped-LOD-lifecycle session — parallel-safe, see table note)* (task #25)
-- [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /
-  doesn't restore the sidewalk route. *(ped-LOD-lifecycle session — its root is the `PedLodManager` demote
-  trigger + route restore, NOT car coupling; fixing demotion also removes the "wandering ORCA near cars"
-  symptom the ped–vehicle session cared about. Moved out of the ped–vehicle bucket.)* (task #25)
+- [x] **Realism #3 — low-power peds DISAPPEAR on promotion** — FIXED (ped-LOD-lifecycle). Root: the promoted
+  ped had `Model=FreeKinematic` on the wire but no pose sample yet (origin-snap → culled), and the crowd frame
+  was fragmented by heartbeats interleaved among the samples (receiver kept only the last fragment → frozen
+  peds). Fix: seed-on-switch in `HeadlessIg` + emit samples contiguously in `PedLodManager.Step`. Trace: wire
+  mismatches 3627→0, ped fidelity ≤0.28 m. (task #25)
+- [x] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** — RESOLVED (ped-LOD-lifecycle). Trace
+  evidence (400/1600 peds, static & moving zone, ≤250 s): NO server-side stuck-ORCA — demotion fires correctly
+  and demoted peds rejoin on-graph routes; the visible wander was the #3 wire bug. So #4a (leaky-dwell/watchdog)
+  was **dropped** as unnecessary; #4b off-graph route recovery (`PedLodManager.RecoverRoute`) was added as cheap
+  hardening for the rare (0.2%) null-`FindPath` case. (task #25)
 - [ ] **Realism #5 (= arbitrary-net task "C5"; distinct from Group-C C5 `keepClear` below) — ORCA peds
   don't dodge a car standing on the crosswalk**; needs a car→ped obstacle feed (mirror of the ped→car
   `CrowdSource`). *(ped–vehicle avoidance session)* (task #26)
-- [ ] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle there
-  (occasionally recolour ORCA); randomize ped destinations / idle spots. *(ped-LOD-lifecycle session —
-  parallel-safe; ped demand/destination assignment, no car-side surface)*
+- [x] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle — FIXED
+  (ped-LOD-lifecycle). Root (trace): 12041/12199 idle rows were `animTag=wait` — signalized-crossing kerb waits,
+  every ped held at the exact crossing-entry vertex. Fix: a per-ped seeded 2-D waiting BLOB at the kerb +
+  diagonal cross (`PedDemand`, opt-in `CrosswalkWaitSpreadRadius`, demo-only). The 23-peds-on-one-point stack
+  becomes a dense blob (busiest 0.5 m cell 2.5%). *(ped demand; no car-side surface)*
 - [ ] **W4 — multiple / large / overlapping camera realism zones** *(handed off; unallocated — ped–vehicle
   avoidance or a later dedicated session)*. N ped `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones` API, re-point
   the C5 disc-feed bound at the zone union, optional bit-identical `OrcaCrowd` disc index (the one `Sim.Core`
