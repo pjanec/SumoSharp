@@ -18,8 +18,19 @@ report of "done" is not sufficient (CLAUDE.md, the orchestration loop).
       asserted only `checkedLinks > 0`, so a parser regression would have skipped every in-loop
       assertion while still passing. Floors re-derived from the measured corpus (134 nets parse, 2927
       RoW junctions, 37426 `intLanes` entries) and set to 120 nets / 30000 links.
-- [ ] **T2.2** three `long` timestamps on `VehicleRuntime`, assigned at the lane-advance seam,
-      **written but never read** — 3 success conditions, incl. `CET == MAX` in the cont bay
+- [x] **T2.2** three `long` timestamps on `VehicleRuntime`, assigned at the lane-advance seam,
+      **written but never read** — 3 success conditions, incl. `CET == MAX` in the cont bay.
+      **Confirmed** (`c4e659b`): `Sim.ParityTests` **705/4/0**, `Sim.Bench` **`D96213B7BB4021A7`**
+      identical serial and parallel, LiveCity **48/48**, Pedestrians **272/272**, five diagnostics green.
+      Parity-inertness confirmed **structurally**, not just numerically: a field-read audit over `src/`
+      shows every read is either inside the test-only accessor `TryGetJunctionEntryTimesForTest`
+      (whose sole caller in the repo is the new test file) or a self-contained read-then-write inside
+      `AssignJunctionEntryTimestamps`. No planning, yield, lane-change or execution path reads them.
+      The measured cont trace matches design §2b exactly: `CET` holds `MAX` for 119 steps in the
+      stage-1 bay, then stage 2 stamps `CET=439` while `ET` renews from `ETN=320`.
+      Two initially-failing assertions were the **test's** over-strong assumptions, not the port
+      (a vehicle can cross two junction boundaries in one step; and veh 102 traverses earlier
+      junctions before 2336). Both replaced with a stronger, true whole-trace invariant.
 
 ## Stage 2 — the decision (flag-gated, default OFF)
 

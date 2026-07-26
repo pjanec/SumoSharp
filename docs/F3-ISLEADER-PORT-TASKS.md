@@ -8,7 +8,7 @@ the **661 goldens, the bench hash, LiveCity and Pedestrians must never move**:
 
 | Surface | Baseline |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **702 passed / 4 skipped / 0 failed** after T2.1 (was 689 before it added 13 tests) |
+| `dotnet test tests/Sim.ParityTests -c Release` | **705 passed / 4 skipped / 0 failed** after T2.2 (689 before Stage 1 added 16 tests) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`D96213B7BB4021A7`**, par == single |
 | `dotnet test tests/Sim.LiveCity.Tests` (no `--no-build`) | **48 / 48** |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
@@ -138,7 +138,8 @@ that `IsLeader` delegates to. Omissions per §7, each carrying the comment state
 5. **Attempt 1 must be implemented** — it is not stageable. §0a shows it is the only arm that executes
    for the confirmed deadlock. Include the `brakeGap` sub-branch with `:7386-7388`'s `-2 * minGap`
    arithmetic verbatim.
-6. `Sim.ParityTests` green + the new tests; hash unchanged (nothing calls `IsLeader` yet).
+6. `Sim.ParityTests` **705/4/0** + the new tests, 0 failed; `Sim.Bench` hash `D96213B7BB4021A7`
+   unchanged (nothing calls `IsLeader` yet, so this task is still parity-inert by construction).
 
 ### T2.4 — wire into arm 5 behind `JunctionIsLeaderGate` (default OFF)
 
@@ -153,7 +154,7 @@ byte-identical-with-flag-off is a property of the code shape, not a measurement.
 
 **Success conditions:**
 1. A test asserting the default is `false` (mirroring `IgnoreJunctionBlockerTests.DefaultIsMinusOne`).
-2. Flag **off**: `Sim.ParityTests` 702/4/0 (+new), hash `D96213B7BB4021A7`, LiveCity 48/48,
+2. Flag **off**: `Sim.ParityTests` 705/4/0 (+new), hash `D96213B7BB4021A7`, LiveCity 48/48,
    Pedestrians 272/272 — all byte-identical.
 3. Flag **on**: the full gate runs and its results are **reported**, not asserted, in this task.
 
