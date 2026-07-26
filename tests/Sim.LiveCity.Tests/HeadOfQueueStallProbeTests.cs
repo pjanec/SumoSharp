@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Sim.Core;
+using Sim.Ingest;
 using Sim.LiveCity;
 using Xunit;
 using Xunit.Abstractions;
@@ -113,6 +114,57 @@ public class HeadOfQueueStallProbeTests
 
     private sealed record Stall(string Vehicle, string Lane, double Pos, int Length, byte Binder);
 
+    // §9.115 follow-up: for each residual arm-14 bay wedge, WHICH foe lane was occupied and WHOM by, and
+    // whether that foe lane is itself a cont BAY (A) or a plain/stage-2 internal lane, a through movement
+    // or a pedestrian crossing (B). Snapshotted once per wedge run, at the step it first crosses
+    // DeepStallSteps -- see the class comment above `WedgeSnapshotTaken` for why that instant.
+    private sealed record FoeOccupant(string Vehicle, string Lane, bool IsBay, double Pos, double Speed, byte Binder);
+
+    // Mutable (not a record) so `Length` can be back-filled once the run this snapshot belongs to actually
+    // closes (or is flushed at the horizon) and its true length is known -- the snapshot itself is taken
+    // mid-run, before the length is known.
+    private sealed class WedgeSnapshot
+    {
+        public string Vehicle = string.Empty;
+        public string BayLane = string.Empty;
+        public double Pos;
+        public byte Binder;
+        public int Length = -1;
+        public List<FoeOccupant> Foes = new();
+    }
+
+    // Bay classification, reused verbatim from NetworkParser.cs's own test (~line 395): a lane is a BAY
+    // iff `LinkIndexByInternalLane` resolves it to (J, i) AND `J.IntLanes[i]` is NOT that lane id (i.e. it
+    // is a cont turn's stage-1 lane, superseded at its own link index by its stage-2 lane). Anything else
+    // -- a plain internal lane, a through movement, a pedestrian crossing -- is not a bay.
+    private static bool IsBayLane(NetworkModel model, string laneId)
+    {
+        if (model.LinkIndexByInternalLane is not null
+            && model.LinkIndexByInternalLane.TryGetValue(laneId, out var li)
+            && li.LinkIndex >= 0 && li.LinkIndex < li.Junction.IntLanes.Count)
+        {
+            return li.Junction.IntLanes[li.LinkIndex] != laneId;
+        }
+        return false;
+    }
+
+    // bay lane id -> its internal junction's foe lane ids (NetworkModel.InternalLaneFoes, resolved from
+    // dense handles back to lane ids via LanesByHandle). Built once and shared across all three Probe()
+    // columns -- this is pure network topology, independent of gates/density.
+    private static Dictionary<string, List<string>> BuildFoeLanesByBayLane(NetworkModel model)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        if (model.InternalJunctionByBayLane is null || model.InternalLaneFoes is null) return result;
+        foreach (var kv in model.InternalJunctionByBayLane)
+        {
+            if (model.InternalLaneFoes.TryGetValue(kv.Value.Id, out var foeHandles))
+            {
+                result[kv.Key] = foeHandles.Select(h => model.LanesByHandle[h].Id).ToList();
+            }
+        }
+        return result;
+    }
+
     private sealed class ProbeResult
     {
         public string Label = string.Empty;
@@ -125,6 +177,9 @@ public class HeadOfQueueStallProbeTests
         // bay wedge itself. Tracked separately from the binder histogram so the wedge can be asserted on
         // without reasoning about percentages.
         public List<Stall> BayWedge = new();
+        // §9.115 follow-up: one entry per BayWedge run, carrying the foe-lane occupancy at the moment the
+        // run first became deep. Populated only when the wedge lane resolves in `foeLanesByBayLane`.
+        public List<WedgeSnapshot> WedgeSnapshots = new();
     }
 
     // `overrides` sets individual gates AFTER the blanket on/off, so a single variable can be isolated
@@ -133,6 +188,7 @@ public class HeadOfQueueStallProbeTests
     // comparing all-OFF against all-ON conflates seven gates and cannot attribute anything.
     private ProbeResult Probe(
         string label, bool gatesOn, int cars, int maxSteps, string repoRoot, StreamWriter log,
+        NetworkModel? model = null, Dictionary<string, List<string>>? foeLanesByBayLane = null,
         Dictionary<string, string>? overrides = null)
     {
         foreach (var gate in AllLiveCityGateVars) Environment.SetEnvironmentVariable(gate, gatesOn ? "1" : "0");
@@ -156,6 +212,41 @@ public class HeadOfQueueStallProbeTests
         // Completed deep stalls, keyed by the step at which they ended, so heads/followers can be
         // classified against the state of the lane WHILE the stall was happening (below).
         var deep = new List<Stall>();
+
+        // §9.115 follow-up: which foe lane holds each arm-14 bay wedge, and whether that foe is itself a
+        // bay (A) or plain (B). `pendingWedge` holds ONE in-flight snapshot per handle, taken the step its
+        // run first crosses DeepStallSteps; `Length` is back-filled once the run actually closes (or is
+        // flushed at the horizon), because the true run length isn't known at snapshot time.
+        var pendingWedge = new Dictionary<VehicleHandle, WedgeSnapshot>();
+
+        void TryTakeWedgeSnapshot(VehicleHandle h, string lane, double curPos, byte curBinder,
+            Dictionary<VehicleHandle, (string Lane, double Speed, double Pos, byte Binder)> presentNow)
+        {
+            if (model is null || foeLanesByBayLane is null) return;
+            if (curBinder != 14 || !lane.StartsWith(":", StringComparison.Ordinal)) return;
+            if (pendingWedge.ContainsKey(h)) return; // already snapshotted this run
+            if (!foeLanesByBayLane.TryGetValue(lane, out var foeLaneIds)) return; // not a recognised bay lane
+
+            var foes = new List<FoeOccupant>();
+            foreach (var flid in foeLaneIds)
+            {
+                foreach (var kv2 in presentNow)
+                {
+                    if (kv2.Value.Lane != flid) continue;
+                    var occName = nameByHandle.TryGetValue(kv2.Key, out var onm) ? onm : kv2.Key.ToString();
+                    foes.Add(new FoeOccupant(occName, flid, IsBayLane(model, flid), kv2.Value.Pos, kv2.Value.Speed, kv2.Value.Binder));
+                }
+            }
+
+            pendingWedge[h] = new WedgeSnapshot
+            {
+                Vehicle = nameByHandle.TryGetValue(h, out var nm) ? nm : h.ToString(),
+                BayLane = lane,
+                Pos = curPos,
+                Binder = curBinder,
+                Foes = foes,
+            };
+        }
 
         // Snapshot of every deeply-stalled vehicle at the moment of the deepest congestion, used for the
         // head/follower split. Taken at the step where the count of currently-open deep runs peaks --
@@ -183,6 +274,10 @@ public class HeadOfQueueStallProbeTests
                 if (stillStopped)
                 {
                     open[h] = (run.Lane, run.Start, p.Pos, p.Binder);
+                    if (st - run.Start > DeepStallSteps)
+                    {
+                        TryTakeWedgeSnapshot(h, run.Lane, p.Pos, p.Binder, present);
+                    }
                     continue;
                 }
 
@@ -192,7 +287,13 @@ public class HeadOfQueueStallProbeTests
                     deep.Add(new Stall(
                         nameByHandle.TryGetValue(h, out var nm) ? nm : h.ToString(),
                         run.Lane, run.Pos, len, run.Binder));
+                    if (pendingWedge.TryGetValue(h, out var ws) && ws.BayLane == run.Lane)
+                    {
+                        ws.Length = len;
+                        res.WedgeSnapshots.Add(ws);
+                    }
                 }
+                pendingWedge.Remove(h);
                 open.Remove(h);
             }
 
@@ -224,6 +325,11 @@ public class HeadOfQueueStallProbeTests
                 deep.Add(new Stall(
                     nameByHandle.TryGetValue(kv.Key, out var nm) ? nm : kv.Key.ToString(),
                     kv.Value.Lane, kv.Value.Pos, len, kv.Value.Binder));
+                if (pendingWedge.TryGetValue(kv.Key, out var ws) && ws.BayLane == kv.Value.Lane)
+                {
+                    ws.Length = len;
+                    res.WedgeSnapshots.Add(ws);
+                }
             }
         }
 
@@ -264,6 +370,19 @@ public class HeadOfQueueStallProbeTests
         {
             log.WriteLine($"      {g.Key,-24} n={g.Count(),3} longest={g.Max(s => s.Length),5} steps  pos={g.First().Pos:F2}");
         }
+
+        // §9.115 follow-up: for each wedge, WHICH foe lane(s) were occupied and by whom, classified bay(A)/plain(B).
+        log.WriteLine($"    WEDGE FOE DETAIL ({res.WedgeSnapshots.Count} of {res.BayWedge.Count} wedges resolved a foe set)");
+        foreach (var ws in res.WedgeSnapshots.OrderByDescending(w => w.Length))
+        {
+            log.WriteLine($"      {ws.Vehicle,-8} on {ws.BayLane,-18} pos={ws.Pos,6:F2} len={ws.Length,5}  foes={ws.Foes.Count}");
+            foreach (var f in ws.Foes)
+            {
+                var cls = f.IsBay ? "A:bay  " : "B:plain";
+                var stoppedTag = f.Speed < StoppedThreshold ? $" STOPPED(binder={f.Binder} {BinderNames.GetValueOrDefault(f.Binder, "?")})" : "";
+                log.WriteLine($"          [{cls}] {f.Lane,-18} occupant={f.Vehicle,-8} pos={f.Pos,6:F2} speed={f.Speed,5:F2}{stoppedTag}");
+            }
+        }
         log.Flush();
         return res;
     }
@@ -286,15 +405,28 @@ public class HeadOfQueueStallProbeTests
         const int steps = 7200;   // one simulated hour @ dt=0.5
         const int cars3x = 480;   // 3x the demo's 160 -- the density at which the wedge is dominant
 
+        // §9.115 follow-up: parse the demo net ONCE (independent of, and outside, the sim's own internal
+        // parse) purely to answer "which foe lane is occupied, and is it a bay?" for each residual wedge.
+        // This is read-only topology lookup -- it does not touch the engine and cannot change behaviour.
+        var netPath = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box", "net.xml");
+        var networkModel = NetworkParser.Parse(netPath);
+        var foeLanesByBayLane = BuildFoeLanesByBayLane(networkModel);
+
         // THREE columns, because two cannot attribute anything:
         //   OFF        the shipped default -- the regression reference.
         //   ON, noOrd  every gate on EXCEPT the entry-order sub-gate: the bare-occupancy admission rule
         //              as originally shipped. This is the column the fix must beat.
         //   ON         every gate on. Differs from `ON, noOrd` in EXACTLY ONE variable.
-        var off3x = Probe("3x gates OFF", gatesOn: false, cars3x, steps, repoRoot, log);
+        // NAMED arguments deliberately for `model`/`foeLanesByBayLane`/`overrides`: `Probe` gained the first
+        // two as optional parameters BEFORE `overrides`, so a positional third argument would silently bind
+        // to the wrong parameter for any future compatible-typed addition. Keep every optional argument named.
+        var off3x = Probe("3x gates OFF", gatesOn: false, cars3x, steps, repoRoot, log,
+            model: networkModel, foeLanesByBayLane: foeLanesByBayLane);
         var noOrd3x = Probe("3x gates ON, entry-order OFF", gatesOn: true, cars3x, steps, repoRoot, log,
-            new Dictionary<string, string> { ["LIVECITY_INTERNALJUNCTIONENTRYORDER"] = "0" });
-        var on3x = Probe("3x ALL GATES ON", gatesOn: true, cars3x, steps, repoRoot, log);
+            model: networkModel, foeLanesByBayLane: foeLanesByBayLane,
+            overrides: new Dictionary<string, string> { ["LIVECITY_INTERNALJUNCTIONENTRYORDER"] = "0" });
+        var on3x = Probe("3x ALL GATES ON", gatesOn: true, cars3x, steps, repoRoot, log,
+            model: networkModel, foeLanesByBayLane: foeLanesByBayLane);
 
         foreach (var r in new[] { off3x, noOrd3x, on3x })
         {
@@ -302,6 +434,31 @@ public class HeadOfQueueStallProbeTests
         }
         foreach (var kv in on3x.HeadBinders.OrderByDescending(k => k.Value))
             _out.WriteLine($"  ON head binder {kv.Key} {BinderNames.GetValueOrDefault(kv.Key, "?")} = {kv.Value}");
+
+        // ---- §9.115 follow-up: WHICH foe holds each of the 9 residual wedges, bay(A) vs plain(B) ----
+        _out.WriteLine("");
+        _out.WriteLine($"=== WEDGE FOE ATTRIBUTION (on3x, {on3x.WedgeSnapshots.Count} of {on3x.BayWedge.Count} wedges resolved) ===");
+        var heldOnlyByPlain = 0;
+        var heldByAtLeastOneBay = 0;
+        foreach (var ws in on3x.WedgeSnapshots.OrderByDescending(w => w.Length))
+        {
+            var anyBay = ws.Foes.Any(f => f.IsBay);
+            if (ws.Foes.Count > 0)
+            {
+                if (anyBay) heldByAtLeastOneBay++; else heldOnlyByPlain++;
+            }
+
+            var verdict = ws.Foes.Count == 0 ? "NO FOE RESOLVED" : anyBay ? "(A) has a BAY foe" : "(B) plain foes only";
+            _out.WriteLine($"  {ws.Vehicle,-8} bay={ws.BayLane,-18} pos={ws.Pos,6:F2} len={ws.Length,5}  -> {verdict}");
+            foreach (var f in ws.Foes)
+            {
+                var cls = f.IsBay ? "A:bay  " : "B:plain";
+                var occBinderName = BinderNames.GetValueOrDefault(f.Binder, "?");
+                var stoppedTag = f.Speed < StoppedThreshold ? " STOPPED" : "";
+                _out.WriteLine($"      [{cls}] {f.Lane,-18} occupant={f.Vehicle,-8} pos={f.Pos,6:F2} speed={f.Speed,5:F2}{stoppedTag} occupantBinder={f.Binder}({occBinderName})");
+            }
+        }
+        _out.WriteLine($"HEADLINE: {heldByAtLeastOneBay} of {on3x.WedgeSnapshots.Count} wedges held by >=1 BAY foe (A); {heldOnlyByPlain} held ONLY by plain foes (B).");
 
         // ---- SC1: the entry-time ordering must break the circular wait ----
         // Asserted as a comparison against the bare-occupancy column, not against a remembered number:
