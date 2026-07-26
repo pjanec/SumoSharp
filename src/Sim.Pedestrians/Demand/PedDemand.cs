@@ -475,42 +475,51 @@ public sealed class PedDemand
 
             // Bug #6 (crosswalk-wait kerb clustering): OFF (waitSpreadRadius<=0) keeps exactly the
             // original single-pause path -- byte-identical, and `waitRng` is never touched (the ITERON
-            // RULE). ON: sidestep to a per-ped seeded lateral spot along the kerb, wait there, then step
-            // back onto the crossing at path[i] so the ped still enters the crossing from the same point
-            // at ~the same green instant.
+            // RULE). ON: the ped steps into a per-ped seeded 2-D spot in the waiting BLOB at the kerb --
+            // spread laterally along the kerb AND back into the sidewalk (a dense cluster at the crossing
+            // mouth, "a circle at the end of the rod", not a single line along the road) -- waits there,
+            // then crosses DIAGONALLY straight from its spot to the crossing exit path[i+1]. No step-back:
+            // the diagonal consumes the crossing sub-segment path[i]->path[i+1], so segStart advances to
+            // i+1. The far side needs no spread -- nobody waits there; peds disperse via their onward
+            // routes (and cross while MOVING, so the exit vertex forms no stationary cluster).
             var kerbDir = path[i + 1] - path[i];
-            if (waitSpreadRadius <= 0.0 || kerbDir.Abs < 1e-9)
+            var blobPoint = Vec2.Zero;
+            var useBlob = false;
+            if (waitSpreadRadius > 0.0 && kerbDir.Abs >= 1e-9)
+            {
+                var d = kerbDir / kerbDir.Abs;                  // crossing direction (rod axis), unit
+                var perp = new Vec2(-d.Y, d.X);                 // along the near kerb, unit
+                var u = (waitRng.NextDouble() * 2.0 - 1.0) * waitSpreadRadius; // lateral, both sides
+                var v = waitRng.NextDouble() * waitSpreadRadius;              // back into the sidewalk (never onto the road)
+                var candidate = path[i] + (perp * u) - (d * v);
+                if ((candidate - path[i]).Abs >= 1e-6)
+                {
+                    blobPoint = candidate;
+                    useBlob = true;
+                }
+            }
+
+            if (!useBlob)
             {
                 result.Add(new PauseSegment(wait, CrosswalkWaitTag));
                 t += wait;
+                segStart = i; // crossing sub-segment still lives in the tail / next pre-walk
             }
             else
             {
-                var u = (waitRng.NextDouble() * 2.0 - 1.0) * waitSpreadRadius;
-                if (Math.Abs(u) < 1e-6)
-                {
-                    result.Add(new PauseSegment(wait, CrosswalkWaitTag));
-                    t += wait;
-                }
-                else
-                {
-                    var perp = new Vec2(-kerbDir.Y, kerbDir.X) / kerbDir.Abs;
-                    var waitPoint = path[i] + perp * u;
-                    var sidestepDur = Math.Abs(u) / speed;
+                var enterDur = (blobPoint - path[i]).Abs / speed;
+                result.Add(new WalkSegment(new List<Vec2> { path[i], blobPoint }, speed)); // step into the blob
+                t += enterDur;
 
-                    result.Add(new WalkSegment(new List<Vec2> { path[i], waitPoint }, speed));
-                    t += sidestepDur;
+                var blobWait = Math.Max(0.0, wait - enterDur); // leave the blob at ~the same green instant
+                result.Add(new PauseSegment(blobWait, CrosswalkWaitTag));
+                t += blobWait;
 
-                    var midWait = Math.Max(0.0, wait - 2.0 * sidestepDur);
-                    result.Add(new PauseSegment(midWait, CrosswalkWaitTag));
-                    t += midWait;
+                result.Add(new WalkSegment(new List<Vec2> { blobPoint, path[i + 1] }, speed)); // diagonal cross
+                t += (path[i + 1] - blobPoint).Abs / speed;
 
-                    result.Add(new WalkSegment(new List<Vec2> { waitPoint, path[i] }, speed));
-                    t += sidestepDur;
-                }
+                segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex
             }
-
-            segStart = i;
         }
 
         if (segStart == 0)
@@ -518,12 +527,14 @@ public sealed class PedDemand
             result.Add(w); // an entry was found but every arrival was already on green -> untouched
             t += w.Duration;
         }
-        else
+        else if (segStart < n - 1)
         {
             var tail = SubWalk(w, segStart, n - 1);
             result.Add(tail);
             t += tail.Duration;
         }
+        // else segStart == n-1: a #6 diagonal crossing already ended at the walk's final vertex, so the
+        // route is fully covered -- adding SubWalk(w, n-1, n-1) would be a degenerate 1-point leg.
     }
 
     // Arc length of path[from..to] (inclusive vertices), i.e. the walk distance from vertex `from` to `to`.
@@ -706,9 +717,11 @@ public sealed class PedDemandConfig
     /// Bug #6 (crosswalk-wait kerb clustering): ADDITIVE, opt-in. 0.0 (the default) => off => the
     /// crosswalk kerb wait is the single point `path[i]` exactly as before -- byte-identical to
     /// pre-change `PedDemand` (no rng stream is even drawn on the dedicated wait-jitter salt). >0.0 =>
-    /// each ped waiting at a signalized crossing's kerb is sidestepped to a per-ped seeded lateral spot
-    /// along the kerb (up to this many metres either side), waits there, then steps back onto the
-    /// crossing -- so waiting peds spread out along the kerb instead of stacking on one visual point.
+    /// each ped waiting at a signalized crossing steps into a per-ped seeded 2-D spot in the waiting BLOB
+    /// at the kerb -- offset up to this many metres laterally along the kerb AND back into the sidewalk (a
+    /// dense cluster at the crossing mouth, not a single line) -- waits there, then crosses DIAGONALLY
+    /// straight to the crossing exit. So waiting peds form a realistic blob instead of stacking on one
+    /// point, and each crosses from where it stood.
     /// Only meaningful together with `Liveliness` and `CrosswalkSignals`.
     public double CrosswalkWaitSpreadRadius { get; init; } = 0.0;
 }

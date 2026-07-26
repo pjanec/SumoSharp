@@ -223,7 +223,7 @@ public class CrosswalkSignalComplianceTests
     // `BuildLivelyTimeline` directly (via reflection) so the assertion is about the TIMELINE'S SEGMENT
     // STRUCTURE itself, not an indirect inference from sampled positions.
     [Fact]
-    public void CrosswalkWaitSpreadRadius_Zero_IsPlainPause_Positive_AddsBoundedSidestepWalks()
+    public void CrosswalkWaitSpreadRadius_Zero_IsPlainPause_Positive_AddsEnterBlobAndDiagonalCross()
     {
         var (nav, polys) = BuildNav();
         var signals = CrosswalkSignals.FromNet(NetPath, polys);
@@ -254,7 +254,11 @@ public class CrosswalkSignalComplianceTests
 
         var offWalkCount = offSegments.Count(s => s is WalkSegment);
         var onWalkCount = onSegments.Count(s => s is WalkSegment);
-        Assert.Equal(offWalkCount + 2 * offWaitPauses, onWalkCount); // exactly 2 extra walks per wait, never more/less
+        // Each spread wait replaces the plain pause with enter-blob + pause + diagonal-cross: +2 walks for a
+        // mid-route crossing, +1 when the crossing is the walk's last sub-segment (the diagonal ends at the
+        // final vertex, so there is no tail leg). So between +1 and +2 extra walks per wait.
+        Assert.True(onWalkCount >= offWalkCount + onWaitPauses && onWalkCount <= offWalkCount + (2 * onWaitPauses),
+            $"expected {onWaitPauses} wait(s) to add 1-2 walks each: off={offWalkCount} on={onWalkCount}");
 
         // Locate the (first) wait pause in each timeline and inspect its immediate neighbours.
         var offIdx = offSegments.FindIndex(s => s is PauseSegment ps && ps.AnimTag == CrosswalkWaitAnimTag);
@@ -268,26 +272,28 @@ public class CrosswalkSignalComplianceTests
                 "OFF path must not carry a bounded 2-point sidestep walk before the wait");
         }
 
-        // ON: both neighbours are freshly-inserted 2-point sidestep walks, each strictly between 0 and
-        // the configured radius (2.0 m) in length, and equal in length (same |u| out and back).
-        Assert.True(onIdx > 0 && onIdx < onSegments.Count - 1, "expected sidestep walks on both sides of the wait");
+        // ON: the wait pause is flanked by two freshly-inserted 2-point walks -- an ENTER-BLOB step
+        // (kerb entry -> the ped's 2-D spot in the waiting blob) before it, and a DIAGONAL CROSS
+        // (blob spot -> the far crossing exit) after it. They share the blob spot; the enter starts at
+        // the kerb entry and the cross ends at the DIFFERENT far exit -- no step-back to the kerb.
+        Assert.True(onIdx > 0 && onIdx < onSegments.Count - 1, "expected enter-blob + diagonal-cross walks around the wait");
         var onBefore = Assert.IsType<WalkSegment>(onSegments[onIdx - 1]);
         var onAfter = Assert.IsType<WalkSegment>(onSegments[onIdx + 1]);
         Assert.Equal(2, onBefore.Path.Count);
         Assert.Equal(2, onAfter.Path.Count);
-        var beforeLen = (onBefore.Path[1] - onBefore.Path[0]).Abs;
-        var afterLen = (onAfter.Path[1] - onAfter.Path[0]).Abs;
-        Assert.True(beforeLen > 0.0 && beforeLen <= 2.0 + 1e-6, $"sidestep-out length {beforeLen} out of [0,2] bound");
-        Assert.True(afterLen > 0.0 && afterLen <= 2.0 + 1e-6, $"sidestep-back length {afterLen} out of [0,2] bound");
-        Assert.Equal(beforeLen, afterLen, precision: 9);
-        // The sidestep steps away from, then back onto, the exact same kerb point.
-        Assert.Equal(onBefore.Path[0].X, onAfter.Path[1].X, precision: 9);
-        Assert.Equal(onBefore.Path[0].Y, onAfter.Path[1].Y, precision: 9);
+        // Enter-blob length is bounded by the blob radius in 2-D: |(u, v)| <= R * sqrt(2), R = 2.0.
+        var enterLen = (onBefore.Path[1] - onBefore.Path[0]).Abs;
+        Assert.True(enterLen > 0.0 && enterLen <= (2.0 * Math.Sqrt(2.0)) + 1e-6, $"enter-blob length {enterLen} out of (0, R*sqrt2] bound");
+        // The two walks share the blob spot (enter ends exactly where the diagonal cross starts).
         Assert.Equal(onBefore.Path[1].X, onAfter.Path[0].X, precision: 9);
         Assert.Equal(onBefore.Path[1].Y, onAfter.Path[0].Y, precision: 9);
+        // The diagonal cross ends at the far crossing exit, NOT back at the kerb entry (the #6 no-step-back).
+        var crossEnd = onAfter.Path[1];
+        var kerbEntry = onBefore.Path[0];
+        Assert.True((crossEnd - kerbEntry).Abs > 0.5, "diagonal cross must reach the far exit, not step back to the kerb entry");
 
-        _output.WriteLine($"[Bug#6] OFF: {offWaitPauses} wait(s), {offWalkCount} walk segment(s); "
-            + $"ON: {onWaitPauses} wait(s), {onWalkCount} walk segment(s), sidestep length {beforeLen:F3} m.");
+        _output.WriteLine($"[Bug#6] OFF: {offWaitPauses} wait(s), {offWalkCount} walk(s); "
+            + $"ON: {onWaitPauses} wait(s), {onWalkCount} walk(s), enter-blob {enterLen:F3} m.");
     }
 
     private const string CrosswalkWaitAnimTag = "wait"; // mirrors PedDemand's private CrosswalkWaitTag

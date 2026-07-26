@@ -35,15 +35,17 @@ first-hand (re-run the gate / read the trace), never on a report.
   400 or 1600 peds, static or moving zone, up to 250 s; demotion is correct; the visible wander was #3.
 
 ## Stage 4 — #6 idle clustering  — DONE (crosswalk-wait spread, not dest jitter)
-- [x] T4.1 — per-ped seeded **crosswalk-wait lateral spread** (`PedDemand.SplitWalkAtCrossings`): a waiting ped
-  sidesteps to a seeded spot along the kerb (±`CrosswalkWaitSpreadRadius`), waits, steps back onto the crossing.
-  Opt-in (`PedDemandConfig.CrosswalkWaitSpreadRadius`, 0=off=byte-identical; `LiveCityConfig.ForRepoRoot`=2.0,
-  demo only). New `WaitJitterSalt` (no `System.Random`). Result: busiest 5 m idle cell **19% → 11.3%**, occupied
-  cells **70 → 102**. #3 still clean (0 wire-mismatches). Pedestrians 276/276, LiveCity 43/43.
-- [x] T4.2 — spread tests: determinism (byte-identical at radius=2.0) + OFF=plain-pause / ON=exactly-2-bounded-
-  sidestep-walks geometry (`CrosswalkSignalComplianceTests`). Also isolated the throwaway junction-turn probe
-  (`PedBackstepProbeTests`) from the spread (spread=0 there — the junction-turn window is backstep-free; the
-  spread's legitimate reversals are tested separately).
+- [x] T4.1 — per-ped seeded **crosswalk-wait BLOB + diagonal cross** (`PedDemand.SplitWalkAtCrossings`, owner-chosen
+  "Option B"): a waiting ped steps into a seeded 2-D spot in a dense blob at the kerb (lateral along the kerb
+  ±`CrosswalkWaitSpreadRadius` AND back into the sidewalk 0..R — "a circle at the end of the rod"), waits, then
+  crosses DIAGONALLY straight from its spot to the crossing exit (no step-back; the diagonal consumes the crossing
+  sub-segment so `segStart`→i+1). Opt-in (`PedDemandConfig.CrosswalkWaitSpreadRadius`, 0=off=byte-identical;
+  `LiveCityConfig.ForRepoRoot`=2.0, demo only). New `WaitJitterSalt` (no `System.Random`). Result: the original 23
+  peds stacked on ONE exact point → a dense blob; **busiest 0.5 m cell 2.5%**, worst hotspot = 17 peds over 18
+  distinct spots. #3 still clean (0 wire-mismatches). Pedestrians 277/277, LiveCity 43/43.
+- [x] T4.2 — tests: determinism (byte-identical at radius=2.0) + OFF=plain-pause / ON=enter-blob + diagonal-cross
+  geometry (`CrosswalkSignalComplianceTests`). Isolated the throwaway junction-turn probe (`PedBackstepProbeTests`)
+  from the spread (spread=0 there — the junction-turn window is backstep-free).
 
 ## Stage 5 — gate + close
 - [x] T5.1 — full gate re-run GREEN: parity **661/4-skip (657 pass)**, bench **D96213B7BB4021A7** (par==single),
@@ -53,9 +55,9 @@ first-hand (re-run the gate / read the trace), never on a report.
 ## Open items awaiting owner
 - ~~Drop #4a~~ — RATIFIED (dropped).
 - ~~#4b~~ — RATIFIED (done).
-- #6 crossing style: recommended **B (diagonal)** given crosswalks are wide; owner deciding from the diagram.
-  Current code is A (step-back); switching to B is a ~15-line change that also removes the direction reversal
-  (would make the PedBackstepProbe spread-isolation unnecessary).
+- ~~#6 crossing style~~ — RESOLVED: owner chose **B (blob + diagonal)**, implemented. Optional future tweak:
+  spread the far-side LANDING too (currently peds converge diagonally toward the exit vertex and disperse via
+  onward routes — they cross while moving, so no stationary far-side cluster forms).
 
 ---
 
