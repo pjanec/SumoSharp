@@ -352,3 +352,32 @@ freeze eliminated, and T1.10's cause now identified with citations rather than i
 this session (OBB anchor, stale binder diagnostics, OBB forward axis) — each produced confident wrong numbers
 before any engine bug was reached. Next: fix the OBB helper (axis + anchor together, re-baselining thresholds),
 then the 5 s `JUNCTION_BLOCKAGE_TIME` escape, then `isLeader()`.
+
+### Session 2 (continued) — the 5 s escape WORKS; T1.10 blocker resolved
+
+29. **Fixed the OBB helper properly**: `src/Sim.Ingest/VehicleObb.cs` (one implementation, beside
+    `LaneGeometry` which owns the convention) + `VehicleObbConventionTests` (15 tests) which derives the
+    tangent from `LaneGeometry` by finite difference across **2153 real internal lanes** rather than
+    restating the formula, plus a test asserting the *reflected* basis is perpendicular at 45° so the guard
+    cannot go vacuous. Both consumers migrated; the obsolete front-anchor/centre-corrected A/B deleted (it
+    varied the anchor while leaving the axis reflected, so neither variant was ever right).
+30. **Corrected F3 numbers** — see §3. Total 61→45; F3 bucket **8→15** (the reflected axis had been HIDING
+    seven real overlaps while manufacturing one deep false positive); `ONE-INTERNAL-ONE-NORMAL` 31→8; both
+    `BOTH-NORMAL` buckets unchanged (the consistency check — provably inert there).
+    `__veh134/__veh38` peaks at **1.022 m**, not 3.035 m.
+31. **Corrected my own claim about SUMO**: `--ignore-junction-blocker` defaults to **−1 = never ignore**
+    (`MSFrame.cpp:370-371`, −1 → `SUMOTime::max()` at `:1043`), and `JUNCTION_BLOCKAGE_TIME` prevents
+    *entering* behind a long-waiting leader rather than freeing a car already inside. So SUMO does NOT break
+    this deadlock by default; it avoids it via `isLeader()`. Enabling the knob is a SUMO-optional deviation.
+32. **Ported the option** (`Engine.IgnoreJunctionBlockerSeconds`, CLI `--ignore-junction-blocker`, cfg
+    `<processing>` element) **including its −1 default, so the default path is byte-identical.**
+33. **A first A/B was invalid** (direct `engine.Run()` vs the shim's config path — different baselines,
+    4 vs 2). Redone on the shim path: **teleports 5 → 2**, and vehicles **95 and 102 now arrive** (647 s,
+    587 s) where they previously never did. `WaitingTime` verified to accumulate inside junctions.
+34. **T1.10 RESOLVED.** With both `IgnoreJunctionBlockerSeconds=5` and `ContTurnInsideJunctionGate=true`:
+    661 goldens byte-identical, all 5 gridlock diagnostics green, hash unchanged, LiveCity 48/48. Left at
+    shipped defaults pending an owner decision, since flipping changes outward-facing defaults.
+
+**State:** gate green (**689/4/0**, `D96213B7BB4021A7`, 48/48, 272/272). **The cont-turn fix is now
+unblocked** — the last obstacle to enabling it is a defaults decision, not a defect. Remaining faithful work:
+**`isLeader()`** (unblocks T1.6 too), plus N2 (co-located vehicles), N3 (net geometry), scenario-44 golden.

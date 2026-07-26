@@ -74,7 +74,13 @@ public sealed record ScenarioConfig(
     // (MSInsertionControl.cpp:168, deleteVehicle(veh, true)) instead of retried forever. The default
     // -1 disables deletion (SUMO's default), so the eviction branch in InsertDepartingVehicles is
     // inert and every pre-P2-H scenario is byte-identical.
-    double MaxDepartDelay = -1.0)
+    double MaxDepartDelay = -1.0,
+    // SUMO's <processing><ignore-junction-blocker> (MSFrame.cpp:370-371; "Processing" category, same
+    // group as time-to-teleport). Wired to Engine.IgnoreJunctionBlockerSeconds by the sumo-shim CLI
+    // (SumoShim.cs) so a committed .sumocfg can carry the knob the same way it carries time-to-teleport.
+    // Default -1 is SUMO's own default ("never ignore"), so every scenario that omits this element is
+    // byte-identical to before.
+    double IgnoreJunctionBlockerSeconds = -1.0)
 {
     // Same "records can't default a reference-type param to an allocated empty collection" pattern
     // as VehicleDef.Stops / DemandModel.ProbabilisticFlows: callers that omit these (i.e. every

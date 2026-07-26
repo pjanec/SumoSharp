@@ -67,6 +67,59 @@ longer apply to either, leaving only arm 5, which has none. So the flag does not
 routes both cars into the one arm that cannot escape. The underlying gap (no `isLeader`, no blockage timer) is
 **pre-existing**.
 
+## RESOLVED (measured) — `--ignore-junction-blocker 5` fixes it
+
+Implemented as `Engine.IgnoreJunctionBlockerSeconds` + the CLI/cfg option
+`--ignore-junction-blocker TIME` / `<processing><ignore-junction-blocker value="…"/></processing>`
+(`SumoShim`, `ScenarioConfig`). Measured on `scenarios/_repro/synthetic-junction2`, 2000 s, **all four cases
+on the same SumoShim harness** as `LowDensityTeleportTests`:
+
+| ignore-blocker | `ContTurnInsideJunctionGate` | teleports (total / jam / yield) |
+| --- | --- | --- |
+| absent (−1) | OFF — today's shipped default | **2** / 0 / 2 |
+| absent (−1) | ON | **5** / 0 / 5 |
+| **5** | **ON** | **2** / 0 / 2 |
+| 5 | OFF | 2 / 0 / 2 |
+
+**Vehicles 95 and 102 — which never arrived at all in the (−1, ON) case — now complete their routes**
+(647 s and 587 s), and 317 improves 1100 s → 919 s. Confirmed by diffing `--tripinfo-output` arrived-vehicle
+sets: `{95, 102}` is exactly the difference, and the (−1,OFF) / (5,ON) / (5,OFF) cases produce identical
+arrived sets.
+
+**Why the knob reads the right signal** (checked, not assumed): `Engine.cs:9826-9830` is
+`v.WaitingTime = haltedLowAccelThisMove && !stoppedAtStopThisMove ? v.WaitingTime + dt : 0.0` — it accumulates
+whenever the vehicle is halted with low acceleration and resets otherwise, with **no internal-lane-based
+reset**, matching `MSVehicle::updateWaitingTime` (`MSVehicle.cpp:4081-4088`). So a car frozen inside a
+junction does reach the threshold.
+
+### ⚠ Methodology note worth keeping
+
+A first A/B drove `engine.LoadScenario(...)` + `engine.Run(2000)` **directly** and showed the knob having
+**no effect** (1→1, 4→4) with a different baseline (4, not 2). That was a **harness mismatch**, not a result:
+the direct path does not go through `SumoShim`'s config/engine wiring, so its numbers are not comparable to
+`LowDensityTeleportTests`. The committed test now drives the shim path and says so in its header. Do not mix
+the two harnesses.
+
+### The T1.10 blocker is resolved — and the combination is fully green
+
+Probed with **both** `IgnoreJunctionBlockerSeconds = 5` and `ContTurnInsideJunctionGate = true` as defaults:
+
+- **all 661 goldens byte-identical**;
+- **all five gridlock diagnostics pass**, `LowDensityTeleportTests` included (the blocker);
+- `Sim.Bench` hash **`D96213B7BB4021A7`**, par==single;
+- `Sim.LiveCity.Tests` 48/48.
+
+The only failure was `IgnoreJunctionBlockerTests.DefaultIsMinusOne_AndIsNeverIgnore`, which asserts the
+default IS −1 and therefore *must* fail when the default is changed — i.e. there is no hidden regression.
+
+**Both flags are nevertheless left at their shipped defaults (OFF / −1)**, because flipping them changes
+outward-facing default behaviour and takes the knob away from SUMO's own default. That is an owner decision,
+not a test outcome. The change is one line each if approved.
+
+**Honest caveat on faithfulness:** enabling the knob is a SUMO-*optional* deviation from SUMO's *default*.
+SUMO avoids this deadlock forming via `isLeader()`, which is still unported — so this is the pragmatic floor,
+and `isLeader()` remains the faithful fix (and is independently needed by T1.6).
+
 ## Recommended fix order
 
 1. **Port the `JUNCTION_BLOCKAGE_TIME` escape first** (`MSVehicle.cpp:3487`). Small, local to arm 5's call
