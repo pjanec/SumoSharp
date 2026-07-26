@@ -665,12 +665,23 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     as a neutral result**: `InternalJunctionAdmissionGate` was never wired into `LiveCitySim`, so the demo
     could not exercise it whatever was enabled. With all three gates ON:
 
-    | Metric | baseline (off) | all gates ON | |
+    | Demo metric (200 steps) | gates OFF | all gates ON | |
     | --- | --- | --- | --- |
-    | `BOTH-INTERNAL-DIFFERENT-LANE` total | 15 | **20** | ⬆ WORSE (count) |
+    | vehicle-steps stopped on a `:` lane (A2) | 206 | **94** | ⬇ **−54%** BETTER |
+    | max overlapping pairs / frame | 4 | **3** | ⬇ BETTER |
+    | deepest BOTH-MOVING penetration | 1.831 m | **0.639 m** | ⬇ **−65%** BETTER |
+    | total overlapping-pair events | 45 | **51** | ⬆ **+13%** WORSE |
+    | `BOTH-INTERNAL-DIFFERENT-LANE` total | 15 | **20** | ⬆ WORSE |
+    | — BOTH-MOVING count | 12 | **17** | ⬆ WORSE |
     | — STOPPED-FOE | 3, worst 2.382 m | 3, worst 2.382 m | unchanged |
-    | — BOTH-MOVING | 12, worst **1.831 m** | **17**, worst **0.639 m** | count ⬆, depth ⬇ **−65%** |
-    | vehicle-steps stopped on a `:` lane | 206 | **94** | ⬇ BETTER, **−54%** |
+    | **worst penetration overall** | **2.382 m** | **2.382 m** | **unchanged** — same pair, same step |
+    | distinct (veh, `:`lane) stopped pairs (A1) | 14 | **22** | ⬆ but see below |
+    | distinct `:` lanes hosting a stop (A4) | 13 | **18** | ⬆ but see below |
+
+    **A1/A4 up while A2 halves is the mechanism confirming itself:** stops become MORE NUMEROUS but MUCH
+    SHORTER — which is precisely what an admission gate does (it adds brief holds in bays and removes long
+    wedges). 22 distinct stopped pairs across only 94 vehicle-steps averages ~4 steps each, against 14
+    pairs across 206 steps (~15 steps each).
 
     **So the SECOND goal of this workstream is NOT met as specified.** The design's criterion was
     *"expect the 12 both-moving events to drop"*; the **count ROSE to 17**. What improved is *severity*
