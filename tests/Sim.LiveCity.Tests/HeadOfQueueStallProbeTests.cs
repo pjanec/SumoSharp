@@ -287,7 +287,11 @@ public class HeadOfQueueStallProbeTests
                     deep.Add(new Stall(
                         nameByHandle.TryGetValue(h, out var nm) ? nm : h.ToString(),
                         run.Lane, run.Pos, len, run.Binder));
-                    if (pendingWedge.TryGetValue(h, out var ws) && ws.BayLane == run.Lane)
+                    // Match `BayWedge`'s OWN filter exactly (Binder==14 at close, not just at the moment the
+                    // snapshot was taken) so `WedgeSnapshots.Count` never diverges from `BayWedge.Count` --
+                    // a run whose binder later moved off 14 before closing is real (worth noting), but is not
+                    // one of the 9 counted residual wedges and must not silently inflate the reported set.
+                    if (run.Binder == 14 && pendingWedge.TryGetValue(h, out var ws) && ws.BayLane == run.Lane)
                     {
                         ws.Length = len;
                         res.WedgeSnapshots.Add(ws);
@@ -325,7 +329,7 @@ public class HeadOfQueueStallProbeTests
                 deep.Add(new Stall(
                     nameByHandle.TryGetValue(kv.Key, out var nm) ? nm : kv.Key.ToString(),
                     kv.Value.Lane, kv.Value.Pos, len, kv.Value.Binder));
-                if (pendingWedge.TryGetValue(kv.Key, out var ws) && ws.BayLane == kv.Value.Lane)
+                if (kv.Value.Binder == 14 && pendingWedge.TryGetValue(kv.Key, out var ws) && ws.BayLane == kv.Value.Lane)
                 {
                     ws.Length = len;
                     res.WedgeSnapshots.Add(ws);

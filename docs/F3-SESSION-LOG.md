@@ -265,7 +265,17 @@ gates 1/2/4 now.
     even says so in a comment at the branch in question: *"in a mutual conflict scenario, use entry time
     to avoid deadlock"*. **When porting an admission rule, ask what breaks the tie before asking what
     the foe set is** — the four-way wedge was a missing tie-break, not a missing foe set.
-12. **Commit the instrument, not just the conclusion.** The head-of-queue probe was a scratch edit, run
+12. **A subagent that starts a background job will end its turn and lose the result — collect it
+    yourself.** This has now happened **three times** in this workstream: the agent launches a long
+    run, says something like *"I'll wait for the notification"*, and terminates — the notification fires
+    into a context that no longer exists. **Delegate the BUILDING of an instrument, never the WAITING for
+    it.** A delegation that ends in "run it and report the numbers" is a delegation that will come back
+    empty after burning its whole budget; one that ends in "build it, verify it compiles, commit it" comes
+    back useful. The orchestrator runs the measurement. (Corollary, learned the hard way in the same
+    exchange: do **not** hand a subagent a file the orchestrator has uncommitted edits in — the agent left
+    a non-compiling call site behind and the tree could not be committed until it was fixed by hand.
+    Commit first, *then* delegate.)
+13. **Commit the instrument, not just the conclusion.** The head-of-queue probe was a scratch edit, run
     once and reverted, so its numbers had to be taken on trust for a whole session and could not be
     compared against anything afterwards. Re-created as a committed test, it immediately paid twice: it
     **reproduced** the historical wedge (same four bays, same pos, 48.7% vs the reported 48.1%,
