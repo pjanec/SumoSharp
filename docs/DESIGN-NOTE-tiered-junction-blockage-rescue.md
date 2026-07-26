@@ -100,10 +100,27 @@ tier keyed off the existing config flag.
 The proposal triggers only on **physically overlapping** cars. Our one confirmed mutual deadlock is
 vehicles **95** (`:2336_42_0`, pos 1.90) and **102** (`:2336_3_0`, pos 15.99) at junction 2336.
 
-**Are they actually overlapping, or stopped at a distance?** (Measurement in progress; result to be appended.)
+**MEASURED: they do NOT overlap. This is a stopped-at-a-distance mutual-yield case.**
 
-- If **overlapping** → this is precisely the ORCA-tier case, and the idea addresses a real scenario.
-- If **stopped at a distance** → the ORCA tier is **not triggered by any case we have measured**, and the
+| quantity | value |
+| --- | --- |
+| OBB penetration | **0.0000 m** (separating axis found) |
+| box-to-box gap | **2.9866 m** clear |
+| centre-to-centre | 8.2995 m |
+| veh95 front bumper vs crossing point | **1.387 m short of it** |
+| veh102 front bumper vs crossing point | **2.733 m short of it** |
+| L × W | 5.000 × 1.800 m (`DEFAULT_VEHTYPE`) |
+
+The lanes *do* genuinely cross (`JunctionConflict EgoLink=3, FoeLink=18`,
+`CrossingPoint = (359.245, 619.732)`), but **both cars stopped short of the conflict point**, so there is no
+geometric conflict to resolve — each is simply car-following the other at a distance.
+
+⚠ This measurement also uncovered the **wrong-forward-axis bug** (see
+`NEED-obb-anchor-halflength.md`): the committed convention reported a **false positive 0.328 m overlap** here.
+The 0.0000 m figure is from the corrected, cross-validated basis.
+
+- ~~If **overlapping** → this is precisely the ORCA-tier case.~~ **Not the case here.**
+- **CONFIRMED: stopped at a distance** → the ORCA tier is **not triggered by any case we have measured**, and the
   correct fix for both known deadlocks is right-of-way arbitration (`isLeader()`) plus the 5 s blockage
   timeout. The ORCA tier would then be speculative machinery awaiting a demonstrated trigger — worth keeping
   as a recorded idea, not worth building yet.

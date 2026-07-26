@@ -1,4 +1,53 @@
-# NEED — vehicle OBB is anchored at the front bumper but treated as the centre (measurement bug)
+# NEED — the vehicle-OBB helper has TWO bugs: a wrong forward AXIS and a front-bumper anchor
+
+> ## ⚠ SECOND, WORSE BUG FOUND (2026-07-26) — the forward axis is a REFLECTION
+>
+> `ObbOverlap`'s forward axis `forward = (-sin θ, cos θ)` is **WRONG for every non-axis-aligned heading.**
+>
+> `LaneGeometry.PositionAtOffset` returns **naviDegree** (`naviDeg = 90 - atan2(dy,dx)·180/π`,
+> `src/Sim.Ingest/LaneGeometry.cs:59-60`). Inverting gives the math angle `α = 90 - θ`, so the true unit
+> tangent is
+>
+> ```
+> forward = (cos α, sin α) = (+sin θ, cos θ)      <-- CORRECT
+> ```
+>
+> The committed `(-sin θ, cos θ)` is a **reflection about the y-axis, not a sign flip**. Verified numerically:
+>
+> | segment | naviDeg | true tangent | committed axis | \|dot\| |
+> | --- | --- | --- | --- | --- |
+> | east | 90° | (1.000, 0.000) | (-1.000, 0.000) | **1.000 OK** (sign only — harmless for a symmetric box) |
+> | north | 0° | (0.000, 1.000) | (0.000, 1.000) | **1.000 OK** |
+> | NE | 45° | (0.707, 0.707) | (-0.707, 0.707) | **0.000 — PERPENDICULAR** |
+> | SE | 135° | (0.707, -0.707) | (-0.707, -0.707) | **0.000 — PERPENDICULAR** |
+> | NNE | 26.6° | (0.447, 0.894) | (-0.447, 0.894) | **0.600 — WRONG AXIS** |
+>
+> Because a box is symmetric about its axes, a pure sign flip is harmless — which is why the error hides on
+> N/S/E/W headings and shows up on everything else. **Junction internal lanes are curved, i.e. mostly
+> diagonal — exactly where it is wrong.**
+>
+> **How it evaded the handoff's own warning.** `F3-JUNCTION-OVERLAP-HANDOFF.md` §6 has a "heading-convention
+> lesson" about this very class of bug (a naive mapping "rotates every box 90° → 3215→467 when fixed") and
+> says the fix was *"validated on veh80 (`angle=90` runs along world X)"*. **90° is precisely the degenerate
+> case where both conventions give the same axis.** The validation could not distinguish them.
+>
+> **Measured consequence:** in the veh95/veh102 check, the committed convention reported a **false positive
+> 0.328 m overlap**; the corrected basis reports **0.000 m** (a genuine 2.99 m clear gap), cross-validated two
+> independent ways (differencing consecutive `PositionAtOffset` samples on straight segments of both lanes, and
+> a direct arc-length walk).
+>
+> **Scope: every overlap number in this repo that involves a non-axis-aligned heading is unreliable** —
+> including the F3 bucket classifications in `F3-JUNCTION-OVERLAP-DESIGN.md` §1 and this session's A/B tables.
+> Direction of error is NOT uniform: it can produce both false positives and false negatives, so re-measurement
+> is required rather than a correction factor.
+>
+> **Fix both bugs together, in one commit, and re-baseline every committed overlap threshold**, because the
+> two interact (the anchor shift is applied *along* the forward axis, so a wrong axis mis-applies the anchor
+> correction as well).
+>
+> Correct basis: `forward = (sin θ, cos θ)`, `right = (cos θ, -sin θ)`, `centre = (X,Y) - (Length/2)*forward`.
+
+## Bug 2 (original report) — front-bumper pose treated as the box centre
 
 **Found by:** F3 junction-overlap session (`docs/F3-JUNCTION-OVERLAP-DESIGN.md` §1b).
 **Scope:** measurement / diagnostics only — **the engine is NOT affected.**

@@ -83,6 +83,16 @@ Centre-corrected (see N1): totals 97, F3 bucket 13 (5 stopped-foe / **8 both-mov
    say junction collisions "are only registered when setting `--collision.check-junctions`". The
    SUMO-faithful invariant is 1-D `gap >= 0`; keep the 2-D check only as a calibrated tripwire. → design §6b.
 5. **`1.800 m` is the vehicle WIDTH** (L=5.0, W=1.8) — the min-penetration axis saturating, not a depth.
+5b. **⚠ THE OBB FORWARD AXIS IS ALSO WRONG — a REFLECTION, not a sign flip.** `ObbOverlap` uses
+   `forward = (-sin θ, cos θ)`, but `PositionAtOffset` returns **naviDegree**
+   (`naviDeg = 90 - atan2(dy,dx)·180/π`, `LaneGeometry.cs:59-60`), so the true tangent is
+   **`(+sin θ, cos θ)`**. Verified numerically: identical axis at 0°/90° (`|dot|=1.000`) but
+   **PERPENDICULAR at 45°** (`|dot|=0.000`). Junction internal lanes are curved, i.e. mostly diagonal —
+   exactly where it fails. It produced a **false positive 0.328 m overlap** in the veh95/veh102 check.
+   The handoff's own §6 heading-convention lesson "validated on veh80 (`angle=90`)" — the one degenerate
+   case where both conventions agree. **So every overlap figure in §3 and in this session's A/B tables is
+   unreliable for non-axis-aligned headings, in BOTH directions (false positives and false negatives).**
+   → `NEED-obb-anchor-halflength.md`. Fix WITH the anchor bug in one commit; they interact.
 6. **Scenario 44's skip banner is STALE.** Its documented bugs A and B do **not** reproduce at HEAD (both
    cont chains traverse correctly, 4/4 arrive). It is **not** a repro for the cont-turn defect.
    Separately its **golden is invalid** — generated with **ballistic** integration because
@@ -310,3 +320,30 @@ internal-lane wedge.
 **State:** gate green (**672/4/0**, `D96213B7BB4021A7`, 48/48, 272/272), tree clean. Four hypotheses refuted
 by measurement this session (H3, H-A/H-B, D3, and the D1/D2-primary framing), two fixes shipped, one 95-step
 freeze eliminated, and T1.10's cause now identified with citations rather than inferred.
+
+### Session 2 (continued) — owner's tiered-rescue idea, and a THIRD instrument bug
+
+26. **Owner proposed a tiered blockage rescue** (low realism: SUMO's 5 s let-go; high realism: brief
+    ORCA mode + cooperation, "one waits while the other passes"; **trigger only when cars physically
+    overlap**). Captured and assessed in `docs/DESIGN-NOTE-tiered-junction-blockage-rescue.md`.
+    Assessment: the overlap trigger is the strongest part — it is what stops a rescue becoming a bug
+    concealer (`__veh127` was stuck with NOTHING overlapping it; an ORCA rescue there would have masked the
+    mis-gate). `OrcaCrowd` is already deterministic/order-independent and the cross-regime bridge works both
+    ways, so the obstacles are (a) re-entry inverts the lane-authoritative data flow that
+    `LaneGeometry.cs:7-9` forbids, and (b) ORCA is holonomic/disc while a car is a non-holonomic box.
+    "Both turn to unblock" likely needs REVERSE (we have none); "one waits, the other passes" is pure
+    sequencing and is the cheap workable half.
+27. **Measured the trigger on our one confirmed deadlock: veh95/veh102 do NOT overlap.** Penetration
+    **0.0000 m**, box gap **2.9866 m**, and both cars stopped *short* of the crossing point (1.387 m and
+    2.733 m). The lanes do cross (`JunctionConflict EgoLink=3/FoeLink=18`) but the cars never reach it.
+    **So the ORCA tier is not triggered by any case measured so far** — `isLeader()` + the 5 s timeout is the
+    correct fix, and the ORCA tier is speculative machinery awaiting a demonstrated trigger.
+28. **THIRD instrument bug found (see §4.5b): the OBB forward axis is a reflection.** Correct at 0°/90°,
+    perpendicular at 45°. Curved junction lanes are exactly the failing case. It gave a false-positive
+    0.328 m overlap in this measurement. **This is now the highest-priority fix**, because every overlap
+    number this session rests on it.
+
+**State:** gate green (**672/4/0**, `D96213B7BB4021A7`), tree clean. **Three** instrument-level defects found
+this session (OBB anchor, stale binder diagnostics, OBB forward axis) — each produced confident wrong numbers
+before any engine bug was reached. Next: fix the OBB helper (axis + anchor together, re-baselining thresholds),
+then the 5 s `JUNCTION_BLOCKAGE_TIME` escape, then `isLeader()`.
