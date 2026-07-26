@@ -693,7 +693,62 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     1.959 m). With all gates ON, LiveCity is still **48/48** — `DemoCarOverlapInvariantTests` holds
     because 20 events spread across frames stay inside its ≤ 7 pairs/frame and 3.0 m ceiling.
 
-**State at end of session 3:** gate green (**729/4/0**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
+### Session 3 (continued) — ⭐ THE LONG-HORIZON MEASUREMENT: the demo's real failure, and the real result
+
+55. **The owner supplied the actual acceptance criterion — believability — and three observed symptoms:**
+    (a) after ~an hour of sim time, all cars queued at junctions blocked by cars stuck in each other,
+    **blocked forever, no fallback/teleport/unblock**; (b) cars driving **through** each other, e.g. from
+    two directions into the **same exit lane**, including in the high-realism zone; (c) a long queue in
+    **one lane** while the parallel same-direction lane is free. The owner then clarified that **(c) is a
+    CONSEQUENCE of (a)** — it would never show if junctions did not block forever.
+56. **⚠ EVERY demo diagnostic in this repo runs 200 STEPS** (`F3JunctionOverlapDiagTests.cs:213,478,892`,
+    `DemoCarOverlapInvariantTests`). At dt=0.5 s that is **100 seconds** — against an hour-scale failure.
+    **So this branch's own "45 → 51 overlap events" comparison was measuring the wrong horizon**, and any
+    believability claim resting on it was unsupported. This is the session's biggest methodological miss.
+57. **Teleport is DISABLED in the demo** — SUMO's default is 300 s and "non-positive disables"
+    (`MSFrame.cpp:412`); our parser defaults to **−1.0** when the element is absent
+    (`ScenarioConfigParser.cs:45`), `LiveCityConfig.TimeToTeleportSeconds` is **0.0**, and `LiveCitySim`
+    emits the element only when `> 0`. Every teleport path is gated on `TimeToTeleport > 0.0`. So the
+    failure mode is **absorbing**: the city can only accumulate wedges, never clear one.
+    → `NEED-livecity-teleport-safety-net-disabled.md`.
+58. **⭐ MEASURED OVER A FULL HOUR (7200 steps @ dt=0.5), gates OFF vs ALL THREE ON.** Teleports **0 in
+    both**, so every improvement below comes from the gates, not from a safety net. Reproduced identically
+    on a second run (deterministic):
+
+    | Metric | gates OFF | all gates ON | |
+    | --- | --- | --- | --- |
+    | horizon reached | 7200 | 7200 | both a full hour |
+    | **completed trips** | 1295 | **2709** | ⬆ **+109%, more than DOUBLE** |
+    | **stopped runs > 300 consecutive steps** | **161** | **0** | ⬇ **ELIMINATED** |
+    | stopped from some step through to horizon | 156 | **59** | ⬇ −62% (see below) |
+    | **SAME-TARGET-MERGE overlaps** (two directions → one exit lane) | **4374** | **0** | ⬇ **ELIMINATED** |
+    | **fully co-located events** (pen ≥ 1.79 m ≈ vehicle width) | **83015** | **868** | ⬇ **−99%** |
+    | **total overlap events (all pairs)** | **148877** | **1823** | ⬇ **−98.8%** |
+    | SAME-NORMAL-LANE overlaps (same lane id) | 492 | **696** | ⬆ WORSE, worst 1.800 m both |
+    | teleports fired | 0 | 0 | disabled in both |
+
+    **The 59 remaining "stopped to horizon" cases with the gates ON are NOT wedges.** All began in the
+    final few hundred steps (7066–7169 of 7200; runs of 31–134 steps) — ordinary queueing at the cut-off,
+    which is why "runs > 300 steps" is simultaneously **0**. Sampling confirms the city is still flowing at
+    the end of the hour (e.g. step 7050: **146 moving / 14 stopped** of 160). With the gates OFF the same
+    counters read 161 long runs and 156 blocked-to-horizon — **genuine permanent gridlock**.
+
+59. **This OVERTURNS the 200-step conclusion (§9.54).** At 200 steps the gates looked like a wash-to-worse
+    (overlap events 45 → 51). Over a realistic horizon they **halve nothing and double everything that
+    matters**: throughput +109%, total overlaps −98.8%, long stalls eliminated, and the owner's
+    symptom (b) — same-exit-lane interpenetration — **eliminated outright**. The 200-step window was
+    simply too short for gridlock to have formed yet, so it compared two healthy cities.
+60. **Promoted the probe to a committed guard, `LongHorizonGridlockDiagTests`** — but only *after* it was
+    shown to discriminate (161 vs 0; 4374 vs 0). Its four assertions are anchored to that measured
+    separation and bear only on the **gates-ON** configuration, so it cannot fail on an unrelated change to
+    the default path. A probe that cannot tell the two configurations apart would not have been worth
+    committing.
+61. **What is still NOT fixed:** `SAME-NORMAL-LANE` interpenetration — two vehicles on the **same** lane
+    overlapping, count **worse** (492 → 696), worst **1.800 m** = exactly the vehicle width = fully inside
+    each other, unchanged. That is owner symptom (b)'s same-lane half and is the documented, still-open
+    `NEED-colocated-vehicles.md`. **This is now the top remaining believability defect.**
+
+**State at end of session 3:** gate green (**730/4/0** — +1 `LongHorizonGridlockDiagTests`, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
 **complete, faithful and safe but insufficient alone**; the load-bearing mechanism was **admission
