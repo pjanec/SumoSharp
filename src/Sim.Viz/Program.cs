@@ -287,6 +287,14 @@ internal static class Program
         }
 
         var outPath = args[1];
+        // Optional sim-step count (default 160 = 80 s at Dt=0.5). Pass more for a longer replay, e.g. 400
+        // for ~200 s so the ped LOD lifecycle (promote/demote, idle spread) plays out over a full span.
+        var demoSteps = 160;
+        if (args.Length > 2 && int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ds) && ds > 0)
+        {
+            demoSteps = ds;
+        }
+
         using var source = new LiveCitySource(RepoRoot());
         var opts = new VizReplayOptions(
             "Live-city DEMO (faithful, DR-smoothed): cars + peds, real LiveCityConfig",
@@ -296,7 +304,8 @@ internal static class Program
             + "DrClock + KinematicReconstructor (center + emitted heading + upcoming-lane look-ahead: "
             + "continuous junction arcs, no facet-snaps), peds via PedRemoteReconstructor (analytic playout, "
             + "no tick kink). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = "
-            + "cars. A fix verified in this replay transfers directly to the demo.");
+            + "cars. A fix verified in this replay transfers directly to the demo.",
+            Steps: demoSteps);
         var scene = VizReplayBuilder.Build(source, opts);
         var payload = new ReplayData(new[] { scene });
         if (!WriteHtml(payload, scene.Name, outPath))
