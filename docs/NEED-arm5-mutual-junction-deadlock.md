@@ -47,17 +47,27 @@ lack.
 | SUMO mechanism | Where | What it does |
 | --- | --- | --- |
 | **`isLeader()` entry-time ordering** | `MSVehicle.cpp:7348-7483` | *Prevents formation.* Whoever entered the junction first does not yield (tie-break: speed, then vehicle id). Exactly one of a mutual pair yields. |
-| **`JUNCTION_BLOCKAGE_TIME` request revocation** | `MSVehicle.cpp:3487`, `#define JUNCTION_BLOCKAGE_TIME 5 // s` (`:119`) | *Breaks it if formed.* `\|\| leader->getWaitingTime() > TIME2STEPS(JUNCTION_BLOCKAGE_TIME)` → `setRequest = false`. **After 5 seconds.** |
-| **`gIgnoreJunctionBlocker`** | `MSLink.cpp:1601` | `if (leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker)` — a foe waiting longer than the threshold is **skipped entirely** in `getLeaderInfo`, so it stops constraining anyone. |
+| `JUNCTION_BLOCKAGE_TIME` request revocation | `MSVehicle.cpp:3487`, `#define JUNCTION_BLOCKAGE_TIME 5 // s` (`:119`) | Prevents ego **ENTERING** behind a leader standing >5 s (`setRequest = false`). Does **NOT** free a car already inside. |
+| `gIgnoreJunctionBlocker` | `MSLink.cpp:1601` | A foe standing ≥ the threshold is skipped entirely, so it constrains nobody — **but it is OFF BY DEFAULT** (see the correction below). |
 
-### This closes the question D3 could not answer
+### ⚠ CORRECTION — SUMO does NOT break this deadlock by default
 
-The open question was: *why does our vehicle wait > 120 s where SUMO's equivalent stall resolves in ~10 s?*
+An earlier version of this document claimed *"SUMO breaks exactly this deadlock after 5 seconds
+(`JUNCTION_BLOCKAGE_TIME`)"*. **That was wrong**, on two counts:
 
-**Because SUMO breaks exactly this deadlock after 5 seconds** (`JUNCTION_BLOCKAGE_TIME`), and we have no
-equivalent at all — so we wait for the 120 s teleport. The ~10 s SUMO recovery observed for vehicle 102 is
-consistent with a 5 s blockage timer plus re-acceleration. **The mechanism is identified; nothing here is a
-guess.**
+- **`gIgnoreJunctionBlocker` is disabled by default.** `--ignore-junction-blocker` defaults to `"-1"`
+  (`MSFrame.cpp:370-371`), whose help text is literally *"-1 means never ignore"*, and `-1` is mapped to
+  `std::numeric_limits<SUMOTime>::max()` (`MSFrame.cpp:1043-1044`) so the consuming comparison
+  `leader->getWaitingTime() < gIgnoreJunctionBlocker` is **always true** and the foe is **never** skipped.
+- **`JUNCTION_BLOCKAGE_TIME` is a different mechanism.** It revokes a request to **enter** a junction behind
+  a long-waiting leader. It does nothing for a car that is *already inside* one — which is our case.
+
+**So the only reason SUMO does not hit this deadlock is `isLeader()`** (`MSVehicle.cpp:7348-7483`): entry-time
+ordering means exactly one of a mutual pair yields, so the symmetric state never forms. That, not a timer, is
+the faithful fix — and it is still unported.
+
+D3's open question (*why > 120 s where SUMO resolves in ~10 s?*) is therefore answered as: **SUMO never gets
+into the state at all.** Its ~10 s stall for vehicle 102 is ordinary queueing, not a timed release.
 
 ## Why the flag exposes it (it does not cause it)
 
