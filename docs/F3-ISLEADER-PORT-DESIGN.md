@@ -169,7 +169,20 @@ of SUMO's `enterLaneAtMove` + the timestamp block. With
 | `J` | null | exit link | `ET = ETN = CET = MAX` |
 | null | null | not a junction hop | nothing |
 
-**One case is absent from that table on purpose:** a hop from junction `A`'s internal lane *directly*
+**Two net-shape facts found while implementing this, both worth keeping:**
+
+1. **A vehicle can cross two junction boundaries in one step, and the concrete reason is edge length.**
+   `:2336_42_0`'s downstream edge `-2337` is **0.20 m** long, so a car clears it within a single step
+   and stamps the *next* junction's entry time in the same step. SUMO does exactly the same — both
+   `enterLaneAtMove` calls share one `getCurrentTimeStep()`. This is why the entry-time tests assert a
+   whole-trace invariant (normal lane ⇒ all three `MAX`; internal lane ⇒ `ET`/`ETN` set) rather than
+   "the sample after the junction lane is `MAX`", which is simply false here.
+2. **An internal junction can carry a vestigial `intLanes` naming a lane owned by a *different* real
+   junction** (observed at `:J_2_0` in scenario 41). So a sweep over raw `IntLanes` strings reports
+   false violations; `junction.Links` is the correct scope, since `NetworkParser` only builds links for
+   junctions that have a real right-of-way matrix. The committed sweep is scoped that way.
+
+**One case is absent from the classification table on purpose:** a hop from junction `A`'s internal lane *directly*
 to a **different** junction `B`'s internal lane. It is unreachable in a netconvert-produced net —
 there is always a normal edge between two junctions, so an exit link is always traversed first — and
 the measured trace confirms it (veh 95 goes `:2336_42_0` → `:444_0_0` inside one step, and ET is
