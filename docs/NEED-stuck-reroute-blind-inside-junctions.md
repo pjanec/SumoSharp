@@ -81,6 +81,33 @@ inside a cont turn. Both prior instances were `!egoOnInternal` gates that should
 `!egoInsideJunction`. Worth auditing `JunctionYieldConstraint` / `RedLightConstraint` release paths for a
 third instance **before** building new rescue machinery — fixing the cause beats widening the mitigation.
 
+## D3 TESTED AND REFUTED (2026-07-26)
+
+D3 predicted a **third** mis-gated `!egoOnInternal` release path holding a committed vehicle indefinitely.
+Four further "am I committed / still approaching?" gates were found and corrected to `!egoInsideJunction`,
+all behind `ContTurnInsideJunctionGate`:
+
+| site | gate | why it looked like D3 |
+| --- | --- | --- |
+| `Engine.cs` cycle-hold arm | `!prePass && v.JunctionCycleHold && !egoOnInternal` | brakes to `egoDistToEntry` — a stop-line hold |
+| approaching-foe `takesCrossingYield` | `!(egoOnInternal \|\| …)` | brakes to `approachLane.Length - Pos`; on a cont turn `approachLane` **is** the lane ego stands on, so at its far end the target is ~0.1 m — a standstill re-applied every step, and the teleports are classified `Yield` |
+| external-agent arm | `egoOnInternal ? +Inf : StopSpeedFor(approachLane…)` | same stop-line formula |
+| `foeWillNotPass` keepClear probe | `!egoOnInternal && FoeKeepClearBlocked(…)` | "am I still approaching?" |
+
+`takesCrossingYield` was the strongest candidate — the arithmetic genuinely does produce a ~0.1 m stop target
+for an ego at the end of a first-stage lane.
+
+**Measured result: teleports remain 5 (jam=0, yield=5). D3 is REFUTED.** All 661 goldens stay byte-identical
+and the T1.9 freeze fix is unaffected (demo internal-lane stopped vehicle-steps still 206 → 39), so the four
+corrections were **kept**: they are the same faithful-port correction applied *consistently*, and the earlier
+28-stuck episode showed that applying this fix to only some of its sites is what manufactures artefacts. But
+they are a **consistency change, not a fix for the teleports** — do not read them as progress on T1.10.
+
+**Consequence: the teleports really are D1/D2 (rescue coverage), not a mis-gated release path.** The
+remaining fix order is **D1 → D2**, and the ">120 s vs SUMO's ~10 s" gap still needs explaining by something
+other than these gates — most likely the vehicles are genuinely blocked (red/downstream) and our rescue
+simply cannot reach them, which is exactly D1.
+
 ## Why the test ceiling must NOT simply be raised to 5
 
 The `<= 2` guard protects the **default (flag-OFF) path**, which still measures 2. Raising the shared ceiling
@@ -90,15 +117,31 @@ ON-path figure needs recording, it belongs in a **separate, explicitly-labelled*
 Also: the test's inline comment says *"current is 1"* — measured value in this checkout is **2**
 (deterministic, re-run twice). The comment is stale; the guard itself is unaffected.
 
-## Fix order (recommended)
+## Fix order (updated after D3 was refuted)
 
-1. **Defect 3 first** — audit for a third mis-gated `!egoOnInternal` release path. If a vehicle committed
-   inside a cont turn is being held indefinitely, that is the cause and both other defects become moot for
-   this scenario.
-2. **Defect 1** — allow the stuck rescue (or a sibling mechanism) to act on a vehicle wedged on an internal
-   lane. Today it is a hard `return`.
-3. **Defect 2** — consider periodic re-evaluation rather than a 2-shot last resort, closer to SUMO's
-   `device.rerouting` posture. Larger, and behavioural — needs its own parity argument.
+~~D3 first~~ — **done and refuted**, see the section above. The four gates it found were corrected and kept
+for consistency, but the teleport count did not move.
+
+1. **Defect 1 (next)** — allow the stuck rescue (or a sibling mechanism) to act on a vehicle wedged on an
+   internal lane. Today `Engine.cs:10169` is a hard `return`. This covers 2 of the 5 vehicles directly.
+   **Before coding it, answer the open question below** — D3's refutation means we still do not know *why*
+   these vehicles wait > 120 s, and a rescue that fires without knowing that is a mitigation for an
+   unidentified cause.
+2. **Defect 2** — consider periodic re-evaluation rather than a 2-shot last resort, closer to SUMO's
+   `device.rerouting` posture. Larger and behavioural — needs its own parity argument.
+
+### The open question D3 was supposed to answer, and did not
+
+Real SUMO's vehicle 102 stalls ~10 s at the same place and recovers; ours waits > 120 s. That is **still
+unexplained** — it is not the four commitment gates. Candidate next probes, in cheapness order:
+
+- Instrument the *actual binding constraint* for veh 95 / 102 / 14 / 317 across their stall on
+  `synthetic-junction2` (the T1.8 diagnostic fix makes this trustworthy now — it was not before). That names
+  the arm directly instead of guessing, exactly as it did for `__veh127`.
+- Check whether the blocker is a red light (`RedLightConstraint`) rather than a junction yield; the `Yield`
+  teleport classification may simply be the non-jam default rather than evidence of a yield arm. Verify what
+  `ClassifyTeleportKind` actually keys on before trusting that label.
+- Compare against SUMO's own per-step speed for those vehicles to locate the first step where the two diverge.
 
 ## Success conditions
 

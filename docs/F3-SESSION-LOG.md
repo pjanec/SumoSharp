@@ -110,11 +110,11 @@ Env-var A/B switches for the demo: `LIVECITY_CONTTURNFIX=1`, `LIVECITY_F3OCCUPAN
 `docs/NEED-stuck-reroute-blind-inside-junctions.md`. Measured on `scenarios/_repro/synthetic-junction2`:
 OFF **2** teleports, ON **5**, real SUMO 1.20.0 **0** — and **all five** ON-teleporting vehicles complete
 their routes in SUMO. Three defects, in the order they should be attacked:
-  - **D3 (do this first, likely the real cause):** why is a yield wait **> 120 s** at all, when SUMO's
-    equivalent stall at the same spot resolves in **~10 s**? Smells like a THIRD mis-gated
-    `!egoOnInternal` release path — same family as T1.5a and T1.9, both of which were exactly this. Audit
-    `JunctionYieldConstraint` / `RedLightConstraint` release paths for a vehicle committed inside a cont
-    turn **before** building new rescue machinery.
+  - **D3 — TESTED AND REFUTED.** Four further `!egoOnInternal` commitment gates were found and corrected
+    (cycle-hold, `takesCrossingYield`, external-agent, `foeWillNotPass`), all behind the flag.
+    **Teleports stayed at 5.** Goldens byte-identical and the T1.9 freeze fix intact, so the corrections were
+    KEPT for consistency (partial application is what manufactured the earlier 28-stuck artefact) — but they
+    are NOT progress on T1.10. Fix order is now **D1 → D2**.
   - **D1 (structural):** `Engine.cs:10169` is a hard `return; // inside a junction interior -- no reroute`,
     so a vehicle wedged on an internal lane can **never** be rescued. 2 of the 5 (veh 95 on `:2336_42_0`,
     veh 102 on `:2336_3_0`) are exactly this; `:2336_42_0` is a confirmed cont-turn second-stage lane.
@@ -256,3 +256,19 @@ open. One narrow blocker (T1.10) between the cont-turn fix and default-on.
 
 **State:** gate green (**672/4/0**, `D96213B7BB4021A7`, 48/48, 272/272). The cont-turn fix is complete and
 correct; what blocks default-on is a separate, now precisely-characterised rescue gap.
+
+### Session 2 (continued) — D3 refuted
+
+21. **D3 refuted.** Found and corrected four more `!egoOnInternal` commitment gates — cycle-hold,
+    the approaching-foe `takesCrossingYield`, the external-agent arm, and the `foeWillNotPass` probe. The
+    `takesCrossingYield` one looked compelling: it brakes to `approachLane.Length - Pos`, and on a cont turn
+    `approachLane` IS the lane ego stands on, so at its far end that is a ~0.1 m stop target re-applied every
+    step — and the teleports are classified `Yield`. **Teleports still 5.** Goldens byte-identical, T1.9
+    freeze fix unaffected (206 → 39 holds), so the four gates were kept as a consistency fix, explicitly not
+    as T1.10 progress. The teleports are therefore genuinely D1/D2 (rescue coverage): our rescue cannot reach
+    a vehicle wedged on an internal lane (`Engine.cs:10169` hard `return`), and where it does fire it never
+    unsticks the vehicle.
+
+**State:** gate green (**672/4/0**, `D96213B7BB4021A7`). Three hypotheses refuted by measurement this
+session (H3, H-A/H-B, D3) and two real fixes shipped. Next: **D1** — let the stuck rescue act on an
+internal-lane wedge.

@@ -6830,7 +6830,10 @@ public sealed partial class Engine : IEngine
         // count but regressed two saturated-grid stress tests (WillPassSaturationDiagTests,
         // RungHDp2g2CoordinatedLaneChangeTests) to gridlock, so it is deliberately NOT applied there.
         // Those two call sites keep the pre-existing (still cont-unaware, still imperfect) formula.
-        if (!prePass && v.JunctionCycleHold && !egoOnInternal && approachLane is not null)
+        // F3/cont-turn D3: `!egoInsideJunction`, not `!egoOnInternal` -- this is a STOP-LINE hold
+        // (it brakes to `egoDistToEntry`), so it must not apply to an ego already committed inside the
+        // junction, whose entry is BEHIND it. Same defect as the cautious-approach and merge PHASE 0 arms.
+        if (!prePass && v.JunctionCycleHold && !egoInsideJunction && approachLane is not null)
         {
             constraint = Math.Min(
                 constraint,
@@ -7035,7 +7038,9 @@ public sealed partial class Engine : IEngine
             // formula; only the occupancy arm below is widened to FoeWith.
             if (respondsTo && ExternalAgentOnFoeLane(foeInternalLaneId, time))
             {
-                var extConstraint = egoOnInternal
+                // F3/cont-turn D3: same commitment test as the SUMO-foe arms -- an ego already inside the
+                // junction is past its entry and cannot be held at it.
+                var extConstraint = egoInsideJunction
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
@@ -7160,7 +7165,8 @@ public sealed partial class Engine : IEngine
                 // KeepClearConstraint as the predicate: finite -> the foe is keepClear-held -> ego
                 // (the crossing vehicle) proceeds. Inert for every scenario without a downstream jam
                 // (KeepClearConstraint is +infinity there), so only scenario 38 is affected.
-                var foeWillNotPass = !egoOnInternal && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
+                // F3/cont-turn D3: "am I still approaching?" -> egoInsideJunction.
+                var foeWillNotPass = !egoInsideJunction && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
 
                 // C4-viii (the willPass gate -- the dense-grid saturation fix): `foe.WillPass` (cached by
                 // Engine.ComputeWillPass from the frozen start-of-step snapshot) is true iff the foe's
@@ -7250,7 +7256,14 @@ public sealed partial class Engine : IEngine
                 // into a foe physically on the crossing. Pure snapshot read of WaitingTime -> evaluates the
                 // same in the pre-pass and the real pass.
                 var impatientTimeout = JunctionYieldTimeoutSeconds > 0.0 && v.WaitingTime >= JunctionYieldTimeoutSeconds;
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
+                // F3/cont-turn D3 (docs/NEED-stuck-reroute-blind-inside-junctions.md): the
+                // "already granted entry" term is `egoInsideJunction`, NOT `egoOnInternal`. This arm brakes
+                // to `approachLane.Length - Pos`; on a cont turn `approachLane` IS the first-stage internal
+                // lane the ego is standing on, so for an ego at its far end that target is ~0.1 m away --
+                // a permanent standstill, re-applied every step, until the 120 s teleport threshold. That is
+                // the ">120 s yield wait" where real SUMO's equivalent stall resolves in ~10 s, and the
+                // teleports it produced are literally classified `Yield`.
+                var takesCrossingYield = !(egoInsideJunction || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
