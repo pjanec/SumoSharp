@@ -114,6 +114,11 @@ public sealed class LiveCitySim : IDisposable
     private readonly IPedReplicationSink? _recordPedSink;
     private readonly PedReplicationPublisher? _recordPedPublisher;
 
+    // A3 (design §1b): fractional insertion credit for OPEN-LOOP inflow. Carries the sub-vehicle remainder
+    // across steps so a rate like 1.7 veh/s is honoured exactly over time instead of truncating to 1/step.
+    // Untouched (and therefore inert) unless `CarInflowVehPerSec` is set.
+    private double _openLoopSpawnCredit;
+
     private double _now;
     private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
 
@@ -666,7 +671,24 @@ public sealed class LiveCitySim : IDisposable
         if (_cropEdges.Count >= 2)
         {
             var live = _engine.VehicleHandles.Length;
-            for (var s = 0; s < _cfg.CarSpawnPerStep && live < _cfg.CarTargetConcurrent; s++)
+
+            // A3 (design §1b): how many insertions to ATTEMPT this step.
+            //   closed-loop (default) -- up to CarSpawnPerStep, and only while below the occupancy cap. The
+            //                            cap makes inflow a function of our own drain, which is why this
+            //                            mode cannot measure discharge.
+            //   open-loop             -- a fixed rate, occupancy IGNORED, paced by a fractional-credit
+            //                            accumulator so any real-valued rate is expressible. Queue growth is
+            //                            then free to run away, which is the whole measurement.
+            var attempts = _cfg.CarSpawnPerStep;
+            if (_cfg.CarInflowVehPerSec is { } inflow)
+            {
+                _openLoopSpawnCredit += inflow * dt;
+                attempts = (int)Math.Floor(_openLoopSpawnCredit);
+                _openLoopSpawnCredit -= attempts;
+            }
+
+            for (var s = 0; s < attempts
+                 && (_cfg.CarInflowVehPerSec is not null || live < _cfg.CarTargetConcurrent); s++)
             {
                 var (fromId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
                 var (toId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
