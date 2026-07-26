@@ -57,7 +57,9 @@ report of "done" is not sufficient (CLAUDE.md, the orchestration loop).
       independently true **121/121** — a symmetric *geometric* fact no ordering can dissolve. The reason
       that geometry exists at all is that a cont turn's **second stage has no admission control**: all
       251 internal junctions parse inert, so veh 95 entered stage 2 without checking any foe. In SUMO
-      the bay link must yield to the parent's `response[18]` foe lanes, which include `:2336_3_0`.
+      the bay link must yield to the internal junction's foe lanes, and `:2336_3_0` is an
+      **UNCONDITIONAL** one (it is a plain internal lane — the `response[18]` test applies only to cont
+      *bay* lanes; see `F3-INTERNAL-JUNCTION-DESIGN.md` §1, which corrects the NEED doc on this).
       **`isLeader` is necessary but not sufficient — keep it, then port this.**
 - [ ] **Owner decision (deferred until the above)** — do `JunctionIsLeaderGate` /
       `ContTurnInsideJunctionGate` go default-ON, and does `IgnoreJunctionBlockerSeconds` stay at `-1`?
