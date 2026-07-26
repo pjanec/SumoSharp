@@ -810,6 +810,59 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     explanation for the merge discrepancy: 0 in-zone here, yet observed in-zone by the owner at a different
     camera position. Do not use these percentages to deprioritise an out-of-zone defect.
 
+### Session 3 (continued) — WHY the cars overlap: root cause found, and my hypothesis falsified
+
+64. **Analysed the 696 same-lane overlaps by cause** (`NEED-same-step-double-placement-colocation.md`).
+    Re-ran the hour with all gates ON and reproduced **696 events / 146 episodes exactly** ⇒ deterministic.
+65. **⚠ MY LEADING HYPOTHESIS WAS FALSIFIED, and it was a documented one.**
+    `LANE-CHANGE-OVERLAP-DESIGN.md` §3 Stage 3 proposed *"the second emerging vehicle overshoots its
+    cross-junction leader"*, fix = *"clamp behind the target lane's rearmost occupant"*. I adopted it and
+    asked for it to be attacked. Measured: of 103 emergence samples with a real prior occupant,
+    **0 (0%) negative gaps**, min **+4.05 m**, median +113 m. An emerging vehicle **never** overshoots.
+    **The Stage-3 clamp would fix nothing** — do not implement it on that document's strength.
+66. **ACTUAL ROOT CAUSE — same-step double placement, then perfect symmetry.** Three entry mechanisms
+    (junction emergence, insertion, lane change) each compute a placement from the **same frozen
+    start-of-step snapshot** and **none cross-checks another placement made in the same step**. Two
+    vehicles therefore land at the **same slot in the same step**, each correctly seeing an empty slot in
+    the pre-step world. Then the second half: **once byte-identical, Krauss/IDM applies identical forces to
+    both forever** — perfect symmetry, nothing can separate them. A one-step collision becomes a ~100-step
+    artefact. Concrete instances: insertion at a fixed depart offset (~5.65/6.95/8.90 m) **on top of a car
+    already queued at the lane start** (insertion never checks for a backed-up queue); two cars
+    lane-changing from *adjacent* source lanes into the *same* target lane+pos in one step
+    (`…4_1→…4_2` and `…4_3→…4_2`, both at pos 27.83, spd 16.67).
+67. **PERSISTENCE, not onset frequency, drives the visible volume.**
+
+    | Episode length | Episodes | Events | Share |
+    | --- | --- | --- | --- |
+    | 1 step | 53 | 53 | 7.6% |
+    | 2 steps | 47 | 94 | 13.5% |
+    | 3–5 | 28 | 95 | 13.6% |
+    | 6–10 | 5 | 32 | 4.6% |
+    | **> 10 steps** | **13** | **422** | **60.6%** |
+
+    **13 episodes = 60.6% of all events.** One incident (`__veh56`/`__veh84`, onset an H-LC double
+    lane-change at step 191) holds a byte-identical pose 28 steps, persists across **three lanes/edges for
+    ~100 steps**, and alone contributes **91 events (13.1%)**. ⇒ Making episodes *self-resolve* removes
+    ~60% of events even if **no** onset is prevented.
+68. **Attribution** (categories overlap; per-episode onset is the causal basis — per-event is inflated by a
+    3-step lookback, 239 of 386 "unexplained" being later events in an episode whose onset *was*
+    explained): H-E **61.6%**, H-LC **52.7%**, H-INS **56.8%**, H-CF **0.7%**, unexplained-at-onset
+    **4.1%**. **147 events (21%) sit in episodes unexplained from onset** — recorded as genuinely open, not
+    force-fitted. **H-CF is effectively ruled out (1 event)**, so the *"ECS frozen-snapshot car-following
+    reaction"* that `LaneChangeOverlapDiagTests`' skip banner blames is real but **negligible** here.
+    Clustering: 63 lanes, top-10 ≈ 54%, top-2 ≈ 23%.
+69. **Fix options — all rung 1 (prevention), so all admissible in high realism.** (1) **insertion
+    occupancy check** — cheapest, SUMO-native (`MSLane::isInsertionSuccess` refuses an insertion that does
+    not fit; we never check), removes one onset mechanism outright. (3) **symmetry break** so co-location
+    self-resolves — highest leverage per unit work (bounds the 60.6%), deterministic tie-break on the
+    **ordinal vehicle id** as `IsLeaderByEntryOrder` already does, never `EntityIndex`; does **not** fix
+    onset so must not ship *instead of* (1)/(2). (2) **same-step arrival arbitration** — the correct but
+    largest piece: SUMO gets it free by being sequential (`MSLaneChanger` in order), our frozen-snapshot
+    parallel plan does not; needs a claim/reservation in the command buffer, i.e. exactly the *"timing of
+    structural mutations"* deviation CLAUDE.md permits — **and it is where the owner's "check for imminent
+    overlap and pause one of the cars" belongs**: deferring one of two simultaneous arrivals *is* the
+    arbitration. **Recommended order (1) → (3) → (2).**
+
 **State at end of session 3:** gate green (**730/4/0** — +1 `LongHorizonGridlockDiagTests`, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
