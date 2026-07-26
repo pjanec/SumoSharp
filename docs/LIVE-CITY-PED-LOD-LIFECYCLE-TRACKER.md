@@ -31,9 +31,16 @@ first-hand (re-run the gate / read the trace), never on a report.
 - [x] ~~T3.2 — #4a leaky dwell + watchdog~~ — DROPPED (evidence: no stuck-ORCA reproduces at 400 or 1600, static
   or moving zone; demotion is correct). Pending owner ratification.
 
-## Stage 4 — #6 idle clustering (LOW PRI)
-- [ ] T4.1 — per-ped seeded destination jitter (or pause-spot spread), demo-only, jitter-off byte-identical
-- [ ] T4.2 — demand spread test above baseline
+## Stage 4 — #6 idle clustering  — DONE (crosswalk-wait spread, not dest jitter)
+- [x] T4.1 — per-ped seeded **crosswalk-wait lateral spread** (`PedDemand.SplitWalkAtCrossings`): a waiting ped
+  sidesteps to a seeded spot along the kerb (±`CrosswalkWaitSpreadRadius`), waits, steps back onto the crossing.
+  Opt-in (`PedDemandConfig.CrosswalkWaitSpreadRadius`, 0=off=byte-identical; `LiveCityConfig.ForRepoRoot`=2.0,
+  demo only). New `WaitJitterSalt` (no `System.Random`). Result: busiest 5 m idle cell **19% → 11.3%**, occupied
+  cells **70 → 102**. #3 still clean (0 wire-mismatches). Pedestrians 276/276, LiveCity 43/43.
+- [x] T4.2 — spread tests: determinism (byte-identical at radius=2.0) + OFF=plain-pause / ON=exactly-2-bounded-
+  sidestep-walks geometry (`CrosswalkSignalComplianceTests`). Also isolated the throwaway junction-turn probe
+  (`PedBackstepProbeTests`) from the spread (spread=0 there — the junction-turn window is backstep-free; the
+  spread's legitimate reversals are tested separately).
 
 ## Stage 5 — gate + close
 - [ ] T5.1 — full gate re-run + docs synced (design/tasks/tracker, COORDINATION, TASKS-TODO)

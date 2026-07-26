@@ -263,6 +263,7 @@ public sealed class LiveCitySim : IDisposable
                 },
                 EnableWeave = cfg.PedEnableWeave,
                 CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
+                CrosswalkWaitSpreadRadius = cfg.PedCrosswalkWaitSpreadRadius,
             };
 
             _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);

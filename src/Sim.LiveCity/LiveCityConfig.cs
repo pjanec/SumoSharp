@@ -163,6 +163,11 @@ public sealed class LiveCityConfig
     public double PedArrivalRadius { get; set; } = 0.6;
     public bool PedEnableWeave { get; set; } = true;
 
+    // Bug #6 (crosswalk-wait kerb clustering; docs cross-ref: PedDemandConfig.CrosswalkWaitSpreadRadius):
+    // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
+    // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.
+    public double PedCrosswalkWaitSpreadRadius { get; set; } = 0.0;
+
     // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: the PedLivelinessConfig block, likewise
     // promoted as a group from LiveCitySim's ctor-hardcoded literals (same byte-identical-demo argument
     // as PedMaxSpeed et al. above).
@@ -188,6 +193,9 @@ public sealed class LiveCityConfig
         cfg.DatasetDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box");
         cfg.NavMode = PedNavMode.Navmesh;
         cfg.RegionPlan = false;
+        // Bug #6: the demo enables the crosswalk-wait kerb spread; goldens/other configs (ForDataset,
+        // and any caller building LiveCityConfig directly) keep the 0.0 default => byte-identical.
+        cfg.PedCrosswalkWaitSpreadRadius = 2.0;
         return cfg;
     }
 
