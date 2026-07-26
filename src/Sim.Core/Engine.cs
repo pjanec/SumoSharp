@@ -5102,7 +5102,7 @@ public sealed partial class Engine : IEngine
         // by sim logic; assigned to v.BindingConstraint (a diagnostic field) only on the real plan pass.
         // Ids: 1 leaderFollow, 2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge,
         // 6 stopLine, 7 redLight, 8 railSignal, 9 railCrossing, 10 junctionYield, 11 keepClear,
-        // 12 obstacle, 13 crowd.
+        // 12 obstacle, 13 crowd, 14 internalJunctionAdmission.
         byte binder = 0;
         double dc;
         // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds.
@@ -5220,6 +5220,12 @@ public sealed partial class Engine : IEngine
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
         dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 13; vPos = Math.Min(vPos, dc);
+
+        // F3/internal-junction-foes T3.2: cont-turn stage-1 BAY admission gate (design §3). +infinity
+        // (non-binding) whenever InternalJunctionAdmissionGate is off (the default) -- see the
+        // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
+        // header comment for the parity argument and the deliberate omissions.
+        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
         // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
         // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
         // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
@@ -7539,6 +7545,124 @@ public sealed partial class Engine : IEngine
         const double distToStopLine = 1.0;
         var approachLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]];
         var stopDist = approachLane.Length - v.Kinematics.Pos - distToStopLine;
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§3a; ported from
+    // MSInternalJunction.cpp's postloadInit AS CONSUMED via the bay link's foe lanes --
+    // MSLink::setRequestInformation(ownLinkIndex, hasFoes=true, isCont=false, myInternalLinkFoes,
+    // myInternalLaneFoes, ...), the `myFoeLanes` HALF of that split ONLY. See
+    // InternalJunctionAdmissionGate's own header comment for the full omissions list (design §5).
+    //
+    // Gated on InternalJunctionAdmissionGate (default OFF): +infinity unconditionally when off, so
+    // this is a no-op Min term -- every golden stays byte-identical BY CONSTRUCTION (design §6.1).
+    //
+    // WHAT: ego is on a cont turn's STAGE-1 BAY lane of some internal junction `IJ` iff (design
+    // §3a) `LinkIndexByInternalLane` resolves ego's OWN lane to link index `i` at parent junction
+    // `J`, `J.Requests[i].Cont` is true, AND `J.IntLanes[i] != ego's own lane` (ego's lane is NOT
+    // the link-controlling/final stage-2 lane for that index -- if it were, ego would already be
+    // past the bay). `InternalJunctionByBayLane` (keyed on ego's lane id, T3.1) then resolves `IJ`
+    // itself, and `InternalLaneFoes[IJ.Id]` (T3.1, the two-branch rule) is the foe-lane set.
+    //
+    // "Occupied" is a PHYSICAL PRESENCE scan -- FindCrossFoeVehicle's shape (a plain lane-handle
+    // membership test over ActiveVehicles()), NOT an approach/WillPass test. SUMO's own comment on
+    // this half of the split: "only respect vehicles before internal junctions if they have
+    // priority" for the CONDITIONAL (bay) branch of the two-branch rule, but once a candidate makes
+    // it into `InternalLaneFoes` at all (T3.1 already resolved conditional vs unconditional), its
+    // occupancy is always respected here -- there is no further approach/WillPass refinement (that
+    // is `myInternalLinkFoes`, the omitted half).
+    //
+    // If occupied, ego is held at the END of its own (bay) lane -- the same StopSpeedFor-at-lane-end
+    // shape every other stop-line arm uses (KeepClearConstraint immediately above, the crossing-yield
+    // arm in JunctionYieldConstraint, etc).
+    private double InternalJunctionAdmissionConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (!InternalJunctionAdmissionGate)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (_network!.LinkIndexByInternalLane is null
+            || _network.InternalJunctionByBayLane is null
+            || _network.InternalLaneFoes is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (!_network.LinkIndexByInternalLane.TryGetValue(v.LaneId, out var own))
+        {
+            // Ego is not on any internal lane (of any junction, any cont stage) at all.
+            return double.PositiveInfinity;
+        }
+
+        var (junction, linkIndex) = own;
+
+        JunctionRequest? request = null;
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == linkIndex)
+            {
+                request = r;
+                break;
+            }
+        }
+
+        if (request is null || !request.Cont)
+        {
+            // Not a cont link -- ego is on a plain internal lane (or this lookup is otherwise
+            // inapplicable), so there is no bay to hold it in.
+            return double.PositiveInfinity;
+        }
+
+        if (linkIndex < 0 || linkIndex >= junction.IntLanes.Count || junction.IntLanes[linkIndex] == v.LaneId)
+        {
+            // Ego's own lane IS the link-controlling (stage-2) lane for this index -- it has
+            // already left the bay, so this arm no longer applies (§3a's exact "!=" test).
+            return double.PositiveInfinity;
+        }
+
+        if (!_network.InternalJunctionByBayLane.TryGetValue(v.LaneId, out var internalJunction)
+            || !_network.InternalLaneFoes.TryGetValue(internalJunction.Id, out var foeLaneHandles)
+            || foeLaneHandles.Count == 0)
+        {
+            // Either ego's bay lane is not any internal junction's checker lane (shouldn't happen
+            // once the Cont+"!=" test above passed, but guarded), or SUMO's own early return applies
+            // (no parent right-of-way logic for this internal junction, design §4's "absent" case).
+            return double.PositiveInfinity;
+        }
+
+        var occupied = false;
+        foreach (var other in ActiveVehicles())
+        {
+            if (ReferenceEquals(other, v) || other.IsParked)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < foeLaneHandles.Count; i++)
+            {
+                if (other.LaneHandle == foeLaneHandles[i])
+                {
+                    occupied = true;
+                    break;
+                }
+            }
+
+            if (occupied)
+            {
+                break;
+            }
+        }
+
+        if (!occupied)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Hold ego at the end of its own bay lane -- v.LaneHandle IS the bay lane here (the
+        // Cont+"!=" test above already established ego is standing on it, not on stage 2).
+        var bayLane = _network.LanesByHandle[v.LaneHandle];
+        var stopDist = bayLane.Length - v.Kinematics.Pos - PositionEps;
         return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
     }
 
@@ -12172,6 +12296,44 @@ public sealed partial class Engine : IEngine
     // default changes. Flipping this default is an owner decision (design §6.4), not a test
     // outcome.
     public bool JunctionIsLeaderGate { get; set; } = false;
+
+    // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3, §6; docs/
+    // F3-ISLEADER-PORT-TRACKER.md T3.2). DEFAULT false = OFF = byte-identical to every golden BY
+    // CONSTRUCTION: with the flag off, InternalJunctionAdmissionConstraint (Engine.cs) returns
+    // +infinity unconditionally, so the Math.Min fold in ComputeMoveIntent is unaffected -- see
+    // that method's own header comment.
+    //
+    // WHAT IT DOES when on: ports MSInternalJunction::postloadInit's SECOND-STAGE admission check
+    // (sumo/src/microsim/MSInternalJunction.cpp) -- a vehicle standing on a cont turn's STAGE-1
+    // BAY lane must not advance onto stage 2 while any lane in that internal junction's
+    // (precomputed, T3.1) InternalLaneFoes set is PHYSICALLY OCCUPIED by another vehicle. It is
+    // held at the end of the bay lane instead (a StopSpeedFor arm, exactly like every other
+    // stop-line constraint).
+    //
+    // WHY THIS EXISTS (docs/NEED-internal-junction-second-stage-admission.md): the `isLeader` port
+    // (T2.4b/JunctionIsLeaderGate immediately above) arbitrates who goes first among vehicles
+    // legitimately ALREADY inside a junction; it does not stop a vehicle from being admitted into a
+    // physical conflict area it was never allowed into in the first place. Measured root cause of
+    // the veh 95 / 102 deadlock: veh 95 advances from its bay (`:2336_18_0`) onto cont stage 2
+    // (`:2336_42_0`) while veh 102 sits on `:2336_3_0`, an UNCONDITIONAL foe of that internal
+    // junction (design §1) -- SUMO would never have admitted veh 95 there.
+    //
+    // DELIBERATE OMISSIONS (design §5, each a guarded no-op, not silently dropped): this arm ports
+    // ONLY the `myFoeLanes` (physical-occupancy) half of `postloadInit`'s foe split.
+    // `myInternalLinkFoes` (approach-gating a foe still on its way in, not yet physically present)
+    // + the mutual `addBlockedLink` registration are NOT ported -- a second, independent behaviour
+    // with much larger blast radius; bundling it here would make this change's measurement
+    // uninterpretable. `indirectBicycleTurn` is NOT ported -- 0 of 134 committed nets contain an
+    // indirect connection (IndirectLinkGuard test). The EXIT link's foe-lane attachment
+    // (`hasFoes=false`, constraining leaving stage 2 rather than entering it) is NOT ported -- not
+    // the measured defect. Walking-area foe exits are NOT ported -- no walking areas in the
+    // affected nets.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT: flag-ON behaviour is measured, not assumed, against all four
+    // parity surfaces (goldens, bench hash, the five gridlock diagnostics, live-city overlap
+    // buckets) before any default changes -- the same standing discipline as JunctionIsLeaderGate
+    // immediately above. Flipping this default is a T3.3 owner decision, not a test outcome.
+    public bool InternalJunctionAdmissionGate { get; set; } = false;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

@@ -66,6 +66,11 @@ namespace Sim.Sumo;
 //                              sets Engine.JunctionIsLeaderGate (docs/F3-ISLEADER-PORT-DESIGN.md
 //                              §5a). Not a SUMO option; unset/anything-but-"1" => false, the Engine
 //                              default, so this is inert for every existing invocation.
+//   SUMOSHARP_INTERNALJUNCTIONFIX=1 (env var, NOT a --flag)
+//                              sets Engine.InternalJunctionAdmissionGate
+//                              (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§6, T3.2). Not a SUMO
+//                              option; unset/anything-but-"1" => false, the Engine default, so
+//                              this is inert for every existing invocation.
 // Any OTHER flag is TOLERATED (a warning to stderr, not an abort) so minor extra flags SumoData
 // passes never break the run. Both `--flag value` and `--flag=value` forms are accepted.
 public static class SumoShim
@@ -260,6 +265,13 @@ public static class SumoShim
         // Unset/non-"1" => false, the Engine default, so every existing shim invocation that never
         // sets this env var is byte-identical to before.
         engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("SUMOSHARP_ISLEADERFIX") == "1";
+        // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§6; docs/
+        // F3-ISLEADER-PORT-TRACKER.md T3.2): env-var test/measurement gate for
+        // Engine.InternalJunctionAdmissionGate -- NOT a SUMO option, so (mirroring
+        // SUMOSHARP_CONTTURNFIX/SUMOSHARP_ISLEADERFIX immediately above) it is deliberately NOT a
+        // `--flag` in the parsed-args table. Unset/non-"1" => false, the Engine default, so every
+        // existing shim invocation that never sets this env var is byte-identical to before.
+        engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("SUMOSHARP_INTERNALJUNCTIONFIX") == "1";
         try
         {
             engine.LoadScenario(cfgPath);
