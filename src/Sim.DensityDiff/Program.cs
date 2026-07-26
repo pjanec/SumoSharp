@@ -88,7 +88,15 @@ sim.SpawnLog = new System.Collections.Generic.List<(double Depart, string From, 
 // A3/SC1+SC3: resident-count-over-time. This series IS the discharge measurement: a level that holds is
 // steady state (inflow == drain), a level that climbs to the horizon is runaway (inflow > drain) and means
 // the network cannot sustain this inflow. Sampled every 60 simulated seconds.
-var series = new System.Collections.Generic.List<(double Sec, int Resident, long Arrived)>();
+var series = new System.Collections.Generic.List<(double Sec, int Resident, long Arrived, int Halting)>();
+// "Moving but slow" is measured against EACH CAR'S OWN LANE LIMIT, never a single global reference.
+// The first version of this probe used a flat 13.89 m/s, which was simply wrong for this net: its car
+// lanes run 8.33 / 11.11 / 13.89 / 16.67 m/s, so on a 30 km/h lane a car driving the limit correctly
+// looked "slow" and `freeFlow` dominated the histogram as a pure artefact. Same error class as the two
+// other mislabels on this branch -- comparing a population against the wrong yardstick.
+const double MovingSlowFraction = 0.8;
+var movingSlow = 0;
+var slowBinders = new System.Collections.Generic.Dictionary<byte, int>();
 var sampleEvery = Math.Max(1, (int)Math.Round(60.0 / cfg.Dt));
 
 for (var s = 0; s < steps; s++)
@@ -96,7 +104,35 @@ for (var s = 0; s < steps; s++)
     sim.Step();
     if ((s + 1) % sampleEvery == 0)
     {
-        series.Add(((s + 1) * cfg.Dt, sim.CurrentCars, sim.ArrivedTotal));
+        // Also record how many of the resident cars are HALTING. The halting FRACTION is directly
+        // comparable to SUMO's own `halting`/`running` in summary-output, and it splits the deficit
+        // hypothesis space in half without any new engine surface: if our extra time in system is spent
+        // STOPPED, the cause is queueing/yielding; if it is spent rolling slowly, the cause is
+        // car-following / acceleration / speed limits. Threshold matches SUMO's SUMO_const_haltingSpeed.
+        var halting = 0;
+        foreach (var w in sim.WitnessAuthoritative())
+        {
+            if (w.Speed < 0.1) { halting++; continue; }
+
+            // WHICH ARM IS COSTING US SPEED? The halting fraction came out identical to SUMO's (33.3% vs
+            // 33.7%), so the extra ~37% of time in system is NOT spent stopped -- our cars ROLL slower
+            // (~8.0 m/s while moving against SUMO's ~11.0). So the question is no longer "what stops our
+            // cars" but "what holds a MOVING car below speed", and `BindingConstraint` answers it directly.
+            // Counted only for cars that are moving yet well below the lane's allowed speed, so free-flow
+            // cars (correctly bound by arm 3) do not swamp the histogram.
+            if (!sim.Network.LanesById.TryGetValue(w.LaneId ?? string.Empty, out var wLane))
+            {
+                continue;
+            }
+
+            if (w.Speed < MovingSlowFraction * wLane.Speed)
+            {
+                movingSlow++;
+                slowBinders.TryGetValue(w.Binder, out var n);
+                slowBinders[w.Binder] = n + 1;
+            }
+        }
+        series.Add(((s + 1) * cfg.Dt, sim.CurrentCars, sim.ArrivedTotal, halting));
     }
 }
 
@@ -189,15 +225,42 @@ Console.WriteLine($"  arrived total       : {sim.ArrivedTotal}");
 Console.WriteLine($"  mean resident, prev quarter -> last quarter: {earlierMean:F0} -> {laterMean:F0}");
 Console.WriteLine($"  VERDICT             : {verdict}");
 
+// Halting fraction over everything after the first quarter (skip warm-up), the same window the SUMO side
+// uses, so the two numbers are comparable as-is.
+if (series.Count >= 4)
+{
+    var tail = series.Skip(series.Count / 4).Where(x => x.Resident > 0).ToList();
+    if (tail.Count > 0)
+    {
+        var mr = tail.Average(x => (double)x.Resident);
+        var mh = tail.Average(x => (double)x.Halting);
+        Console.WriteLine($"  mean resident={mr:F0} mean halting={mh:F0}"
+            + $" -> HALTING FRACTION {100 * mh / mr:F1}%   (SUMO emits the same pair in summary-output)");
+        Console.WriteLine($"  MOVING-BUT-SLOW samples: {movingSlow} (moving, yet under {MovingSlowFraction:P0} of THEIR OWN lane's limit)");
+        var names = new System.Collections.Generic.Dictionary<byte, string>
+        {
+            [0] = "none", [1] = "leaderFollow", [2] = "crossJxnLeader", [3] = "freeFlow",
+            [4] = "successiveLaneSpeed", [5] = "deadLaneMerge", [6] = "stopLine", [7] = "redLight",
+            [8] = "railSignal", [9] = "railCrossing", [10] = "junctionYield", [11] = "keepClear",
+            [12] = "obstacle", [13] = "crowd", [14] = "internalJxnAdmission", [15] = "colocationBreak",
+        };
+        foreach (var kv in slowBinders.OrderByDescending(k => k.Value).Take(8))
+        {
+            var pct = movingSlow == 0 ? 0.0 : 100.0 * kv.Value / movingSlow;
+            Console.WriteLine($"    binder {kv.Key,2} {names.GetValueOrDefault(kv.Key, "?"),-22} {kv.Value,9}  {pct,5:F1}%");
+        }
+    }
+}
+
 if (seriesPath is not null)
 {
     using var sw = new StreamWriter(seriesPath);
     sw.WriteLine("# demand_model=" + demandModel
         + (inflow is null ? $" cap={cars}" : $" inflow_veh_per_s={inflow.Value.ToString("R", CultureInfo.InvariantCulture)}"));
-    sw.WriteLine("sim_seconds,resident_cars,arrived_total");
-    foreach (var (sec, res, arr) in series)
+    sw.WriteLine("sim_seconds,resident_cars,arrived_total,halting_cars");
+    foreach (var (sec, res, arr, halt) in series)
     {
-        sw.WriteLine($"{sec.ToString("F1", CultureInfo.InvariantCulture)},{res},{arr}");
+        sw.WriteLine($"{sec.ToString("F1", CultureInfo.InvariantCulture)},{res},{arr},{halt}");
     }
     Console.WriteLine($"  series -> '{seriesPath}'");
 }

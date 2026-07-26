@@ -244,6 +244,53 @@ At **1.4 veh/s** (both engines steady, so the comparison is apples-to-apples and
 diff one vehicle's trajectory between ours and SUMO on identical demand and find **where the extra ~25% of
 time in system is spent** — which edge, which junction, approach vs interior. Only then pick a mechanism.
 
+---
+
+## ⭐⭐⭐ THE DEFICIT IS *ROLLING SPEED*, NOT QUEUEING (measured at 1.4 veh/s, both engines STEADY)
+
+Measured at the one inflow where **both** engines hold equilibrium, so the comparison is not confounded by
+our collapse. Identical demand, identical routes (`routeLength` 1320.8 m both sides).
+
+| | SUMO s-honest | **Ours** |
+| --- | --- | --- |
+| mean trip duration | **180.6 s** | **247.7 s** (Little: 303 resident / 1.2356 s⁻¹) |
+| **halting fraction** | **33.7%** | **33.3%** ← *the same* |
+| ⇒ mean speed while MOVING | **~11.0 m/s** | **~8.0 m/s** |
+
+**We are 37% slower per trip while stopping exactly as much as SUMO.** Both figures are computed the same way
+on both sides (halting/running from SUMO's `summary-output`, the same speed threshold on ours), so the
+conclusion is arithmetic rather than inference: **the lost time is spent ROLLING SLOWLY, not standing still.**
+
+That reframes the whole problem. "Discharge deficit" suggested junctions blocking; the measurement says our
+cars simply progress more slowly between stops, which inflates residency at every inflow (~25% more cars
+resident for the same flow) and is what eventually tips us into collapse at 1.6 where SUMO is still steady.
+
+### What holds a MOVING car below its own lane's limit
+
+| binder | share of moving-but-slow samples |
+| --- | --- |
+| **1 `leaderFollow`** | **36.1%** |
+| **10 `junctionYield`** | **30.4%** |
+| 3 `freeFlow` | 21.1% |
+| 7 `redLight` | 5.9% |
+| 2 `crossJxnLeader` | 2.8% |
+| 5 `deadLaneMerge` | 2.6% |
+
+`junctionYield` holding a **moving** car below 80% of its lane limit for 30% of such samples points at
+**over-cautious junction approach** — decelerating for junctions harder or earlier than SUMO does. And a large
+part of `leaderFollow`'s 36% is plausibly *downstream* of that: a car slowed by an over-cautious leader is
+recorded against `leaderFollow`. Existing candidates to check against this:
+`NEED-multilane-junction-passage.md` (documented over-yield) and
+`NEED-priorityjunction-farrouted-foe-falsepositive.md` (false-positive yields).
+
+### ⚠ THE FIRST VERSION OF THIS HISTOGRAM WAS AN ARTEFACT — recorded so it is not repeated
+
+It measured "slow" against a flat **13.89 m/s**. This net's car lanes run **8.33 / 11.11 / 13.89 / 16.67**,
+so on a 30 km/h lane a car driving the limit *correctly* counted as slow, and `freeFlow` came out top at
+34.8%. Re-measured against **each car's own lane limit**, `freeFlow` fell to 21.1% and the two junction/
+following arms took the top slots. **Third mislabel of this kind on the branch** (cf. `downstreamFree`,
+occupancy-vs-causation): the yardstick has to come from the same row as the measurement.
+
 ## Known-answer anchors (an instrument that misses these is wrong, not interesting)
 
 | Anchor | Expected | Source |
