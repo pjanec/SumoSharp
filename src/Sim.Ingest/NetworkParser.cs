@@ -225,12 +225,27 @@ public static class NetworkParser
         // via=":C_16_0"/>`), so walking `Connection.From` backwards while it is an internal (':')
         // edge enumerates every earlier stage. The walk is bounded (guard 8, as in the pool's
         // via-chain walk) and terminates as soon as `From` is a normal edge.
+        // F3/isLeader T2.1: `LinkIndexByInternalLane` and `EntryConnectionByLink` are built by the
+        // SAME back-walk as `junctionByInternalLane` above -- it already visits exactly the lanes
+        // (both cont stages) these two new maps need, so this extends that traversal rather than
+        // adding a second one (per the design doc's explicit instruction).
+        //
+        // `entryConnection` starts as `link.Connection` (correct already for a non-cont link, whose
+        // `Connection` IS the entry hop) and is overwritten by each `previousHop` found while
+        // walking back through internal stages; the LAST such overwrite -- the hop whose `From` is
+        // finally a normal edge -- is SUMO's `getCorrespondingEntryLink()` result
+        // (MSLink.cpp:1331-1339: "walks back while laneBefore->isInternal()").
         var junctionByInternalLane = new Dictionary<string, Junction>(StringComparer.Ordinal);
+        var linkIndexByInternalLane = new Dictionary<string, (Junction Junction, int LinkIndex)>(StringComparer.Ordinal);
+        var entryConnectionByLink = new Dictionary<(string JunctionId, int LinkIndex), Connection>();
         foreach (var junction in junctions)
         {
             foreach (var link in junction.Links)
             {
                 junctionByInternalLane[link.InternalLaneId] = junction;
+                linkIndexByInternalLane[link.InternalLaneId] = (junction, link.Index);
+
+                var entryConnection = link.Connection;
 
                 var fromEdgeId = link.Connection.From;
                 for (var guard = 0; guard < 8 && fromEdgeId.Length > 0 && fromEdgeId[0] == ':'; guard++)
@@ -243,6 +258,7 @@ public static class NetworkParser
                     foreach (var lane in internalEdge.Lanes)
                     {
                         junctionByInternalLane[lane.Id] = junction;
+                        linkIndexByInternalLane[lane.Id] = (junction, link.Index);
                     }
 
                     // Step one stage further back: the connection whose `via` lands on this edge.
@@ -263,8 +279,11 @@ public static class NetworkParser
                         break;
                     }
 
+                    entryConnection = previousHop;
                     fromEdgeId = previousHop.From;
                 }
+
+                entryConnectionByLink[(junction.Id, link.Index)] = entryConnection;
             }
         }
 
@@ -289,7 +308,9 @@ public static class NetworkParser
             linkByInternalLane,
             lanesByHandle,
             laneHandleById,
-            junctionByInternalLane);
+            junctionByInternalLane,
+            linkIndexByInternalLane,
+            entryConnectionByLink);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert

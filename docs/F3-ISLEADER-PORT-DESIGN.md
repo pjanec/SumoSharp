@@ -229,6 +229,14 @@ yielded its request still keeps its queue order against a same-lane follower).
 Our equivalent: the normal predecessor of a junction link is `EntryConnectionByLink[(J,i)]`'s
 `(From, FromLane)`. Same source lane ⟺ those are equal for `e` and `f`.
 
+**Validated on junction `2336`** (39 links): all 39 resolve an entry connection via
+`(tl, linkIndex)` — including all ten cont links, so §2c's resolution strategy has no gaps here; the
+39 links reduce to **11 distinct source lanes**, every one feeding 2–7 links, so case (a) is genuinely
+reachable and is not a dead branch; and **no same-source pair responds to the other in the matrix**,
+so case (a) and the response arms of §3a are disjoint — consistent with SUMO's intent that a shared
+source lane is a queueing relationship, not a conflict. The deadlock pair is *not* same-source
+(link 3 ← `-2437_1`, link 18 ← `2417_1`), which is why §0a's analysis goes through the response arms.
+
 The nested `isExitLinkAfterInternalJunction() && …->isIndirect()` sub-case (`:7366-7367`) applies
 only to **indirect** (bicycle-style two-stage) left turns. No committed scenario has one; it is
 **omitted, with an explicit comment** and a guard test asserting no committed net contains an

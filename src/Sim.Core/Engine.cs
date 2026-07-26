@@ -3823,6 +3823,12 @@ public sealed partial class Engine : IEngine
         _laneSeqPool.AddRange(poolSeq);
         _laneSeqArrival.AddRange(arrivalSeq);
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: a freshly inserted vehicle is not on any junction -- reset all three
+        // timestamps to SUMOTime_MAX so a RECYCLED VehicleRuntime instance never inherits a stale
+        // entry time from whatever vehicle previously occupied this slot.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
 
         v.Inserted = true;
         return true;

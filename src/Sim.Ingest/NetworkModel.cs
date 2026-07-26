@@ -249,7 +249,28 @@ public sealed record NetworkModel(
     //
     // Defaulted so existing NetworkModel construction sites (tests that build a model by hand) keep
     // compiling; an empty map degrades to the old IntLanes-only behaviour rather than misreporting.
-    IReadOnlyDictionary<string, Junction>? JunctionByInternalLane = null)
+    IReadOnlyDictionary<string, Junction>? JunctionByInternalLane = null,
+    // F3/isLeader T2.1: every internal lane of a junction, BOTH stages of a `cont` turn, mapped to
+    // its owning junction link index -- i.e. `JunctionByInternalLane` plus the link index that lane
+    // controls (SUMO has no equivalent named lookup; this is the per-lane companion to
+    // `Junction.IntLanes[i]`, generalised to also cover the first-stage `cont` lane that
+    // `IntLanes` omits). Built by the SAME back-walk that builds `JunctionByInternalLane`
+    // (NetworkParser.cs) -- both cont stages resolve to the SAME link index, since they are one
+    // physical turn movement split across an internal junction (design doc §2c fact 1).
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no lookup available"
+    // (nothing reads this yet -- Stage 1 is parity-inert by construction).
+    IReadOnlyDictionary<string, (Junction Junction, int LinkIndex)>? LinkIndexByInternalLane = null,
+    // F3/isLeader T2.1: SUMO's `MSLink::getCorrespondingEntryLink()` (MSLink.cpp:1331-1339) --
+    // for a junction link index `i`, the top-level <connection> that actually ENTERS the junction
+    // (carries the live `tl`/`linkIndex`/right-of-way `state`), as opposed to
+    // `Junction.Links[i].Connection`, which for a `cont` link is the SECOND hop (state 'm', no
+    // `tl`/`linkIndex` -- design doc §2a fact 2/3). For a non-cont link the two coincide exactly
+    // (`Junction.Links[i].Connection` already IS the entry connection).
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no lookup
+    // available" (nothing reads this yet).
+    IReadOnlyDictionary<(string JunctionId, int LinkIndex), Connection>? EntryConnectionByLink = null)
 {
     // F3/cont-turn: SUMO's `myLane->isInternal() && myLane->getEdge().getToJunction() == junction`
     // (the guard opening MSVehicle::isLeader, sumo/src/microsim/MSVehicle.cpp:7348). True when

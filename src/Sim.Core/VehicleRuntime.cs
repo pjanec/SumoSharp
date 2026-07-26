@@ -273,6 +273,40 @@ internal sealed class VehicleRuntime
     // junction that is not `type="allway_stop"` (and thus for every pre-C4-ii scenario).
     public double WaitingTime;
 
+    // F3/isLeader T2.2 (docs/F3-ISLEADER-PORT-DESIGN.md §2, §2b, §4). Ports SUMO's three
+    // `SUMOTime myJunctionEntryTime` / `myJunctionEntryTimeNeverYield` / `myJunctionConflictEntryTime`
+    // fields (MSVehicle.h, initialised to `SUMOTime_MAX` at MSVehicle.cpp:1000-1002), assigned at the
+    // lane-advance seam Engine.cs documents as "the ONE site a lane is fully left" (MSVehicle.cpp:
+    // 4354-4368's `enterLaneAtMove` timestamp block). `long` STEP INDICES (Engine._elapsedSteps), NOT
+    // `double` seconds: the eventual isLeader tie-break (T2.3) compares entry times for EXACT
+    // EQUALITY, and SUMO's own `SUMOTime` is an integer millisecond count -- storing accumulated
+    // `double` seconds would make that equality fire or not fire on floating-point noise, exactly the
+    // determinism bug the parity bar exists to catch (design doc §4). `long.MaxValue` is the
+    // `SUMOTime_MAX` sentinel.
+    //
+    // STAGE 1 IS PARITY-INERT BY CONSTRUCTION: these three fields are written (Engine.cs's lane-
+    // advance seam) but read by NOTHING yet -- IsLeader itself is T2.3, arm 5 wiring is T2.4. Written
+    // ONLY in the EXECUTE phase (ExecuteMoveVehicle), each vehicle its own fields only -- safe under
+    // region-parallel ExecuteMoves, the same discipline as RouteDistanceTraveled/WaitingTime above.
+    //
+    // `JunctionEntryTime` ("ET"): when ego entered the junction; RELINQUISHABLE (renewed on a cont
+    // turn's second stage, restored FROM `JunctionEntryTimeNeverYield` -- MSVehicle.cpp:4361's "renew
+    // yielded request"; also the field SUMO's unported yield-request reset would blank, design §5b).
+    public long JunctionEntryTime = long.MaxValue;
+
+    // `JunctionEntryTimeNeverYield` ("ETN"): the SAME instant as `JunctionEntryTime` on entry, but
+    // NEVER relinquished afterward -- the source `JunctionEntryTime` is restored from on a cont turn's
+    // second stage, and the pair used for SUMO's same-source-lane (queue-order) case (design §3(a)).
+    public long JunctionEntryTimeNeverYield = long.MaxValue;
+
+    // `JunctionConflictEntryTime` ("CET"): when ego entered the junction's CONFLICT AREA specifically
+    // -- set on a non-cont entry link and on the internal->internal (cont second-stage) hop, but
+    // NEVER on a cont link's first stage (MSLink::isConflictEntryLink, MSLink.cpp:1292-1296). Staying
+    // at `long.MaxValue` while a vehicle sits in a cont turn's waiting bay is LOAD-BEARING (design
+    // §2b): it makes `egoET > foeET` true against any foe, so a car waiting in the bay yields to
+    // everything.
+    public long JunctionConflictEntryTime = long.MaxValue;
+
     // C8-ii: the simulation time of this vehicle's last ACTION step (MSVehicle::myLastActionTime).
     // With actionStepLength > dt a vehicle re-plans its speed only every actionStepLength seconds
     // (its "reaction time"); between action steps it continues with the acceleration decided at the
