@@ -1084,6 +1084,44 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
     config; hold the two deviations at engine-default OFF until the `_bench` city scenarios are measured
     and the O(bucket) shape is addressed.
 
+### Session 3 (continued) — ⚠ 3x DENSITY: the fixes hold on collisions, NOT on gridlock
+
+91. **Stress-tested at 3x vehicles** (`LIVECITY_CARS=480`, **449 concurrent achieved**) — note the config's
+    own comment says the downtown crop holds *"~157 concurrent cars … cleanly"*, so this is **~3x its
+    documented capacity**, i.e. deliberately oversaturated. Full hour, OFF vs ALL GATES ON:
+
+    | Metric | OFF | ALL ON | |
+    | --- | --- | --- | --- |
+    | completed trips | 1583 | **3426** | ⬆ +116% ✅ |
+    | total overlap events | 340287 | **26011** | ⬇ −92% ✅ |
+    | fully co-located (≥1.79 m) | 208688 | **11511** | ⬇ −94% ✅ |
+    | same-lane **IN-ZONE** | 1540 | **36** | ⬇ **−98%** ✅ |
+    | same-target merge | 16915 | **1561** | ⬇ −91% ✅ |
+    | — merge **IN-ZONE** | 11056 | **0** | ⬇ eliminated ✅ |
+    | **stopped runs > 300 steps** | 622 | **539** | ⬇ only −13% ❌ |
+    | **stopped to horizon** | 470 | **394** | ⬇ only −16% ❌ |
+    | **longest overlap episode** | 4301 | **2849** steps | ❌ ~24 min |
+    | same-lane events (total) | 7774 | **11076** | ⬆ WORSE ❌ |
+    | episodes > 10 steps | 27 | **43** | ⬆ WORSE ❌ |
+
+92. **The headline must be qualified: gridlock elimination is a DESIGN-DENSITY result, not a general one.**
+    At 1x the gates take stalls > 300 steps from **161 → 0**. At 3x they take **622 → 539** — the city
+    still gridlocks. So the earlier "the city no longer gridlocks" claim holds **at ~160 concurrent cars
+    and does NOT hold at 449**.
+93. **What DOES scale is the collision/visual quality.** Every overlap metric improves by ~−92% or better at
+    3x, and **in-zone** same-lane overlaps fall **1540 → 36 (−98%)** with in-zone merge overlaps
+    **eliminated**. So inside the high-realism pocket the picture is dramatically better even when the city
+    as a whole is jammed — the visual artefacts are fixed, the *throughput collapse* is not.
+94. **Two readings, and I cannot yet separate them:** (a) the fixes do not scale to oversaturation; or
+    (b) 3x is simply beyond the crop's physical capacity and *some* jamming is legitimate — a real city
+    oversaturated 3x does queue. **But 539 stalls > 300 steps and 394 cars stopped to the horizon are NOT
+    legitimate queueing** — that is terminal gridlock, so at minimum the *rung-1 violation returns at 3x*.
+    Distinguishing (a) from (b) needs a density sweep (e.g. 160 / 240 / 320 / 400) to find where the gates
+    stop holding — not done.
+95. **Consequence for the demo:** **3x is not a believable configuration even with every gate on.** If more
+    traffic is wanted, the honest options are to raise capacity rather than demand (more lanes / a bigger
+    crop), or to find the density ceiling first via the sweep in §9.94.
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
