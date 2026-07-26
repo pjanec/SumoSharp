@@ -22,16 +22,45 @@ Two open items collapse into one piece of work (log §6):
 - **The true-F3 residue.** The remaining `BOTH-INTERNAL-DIFFERENT-LANE` overlaps are **12 of 15
   both-moving** — simultaneous admission, which is what entry-time ordering resolves.
 
-**Confirmation that this is the right mechanism for the measured deadlock** (new, this session):
-veh 95 sits on `:2336_42_0` = `intLanes[18]`, veh 102 on `:2336_3_0` = `intLanes[3]`. At junction
-`2336`, `response[18]` has bit 3 set **and** `response[3]` has bit 18 set — the two links **mutually
-respond**. That is exactly the case `isLeader`'s comment calls out:
+### 0a. Proof that this port resolves the measured deadlock
 
-> `// in a mutual conflict scenario, use entry time to avoid deadlock` (`MSVehicle.cpp:7438`)
+veh 95 sits on `:2336_42_0` = `intLanes[18]`, veh 102 on `:2336_3_0` = `intLanes[3]`, both at speed
+exactly 0.000 for the 121 steps t=323…443.
 
-So the deadlock is not an incidental symptom; it is precisely the state SUMO's mutual-conflict
-entry-time branch exists to prevent. That is the strongest available evidence that porting `isLeader`
-addresses the measured cause rather than a plausible-looking neighbour of it.
+**Which of `isLeader`'s four response attempts (§3a) actually runs was measured, not assumed** — and
+the first answer was wrong, so it is worth stating carefully:
+
+- The two links **do** mutually respond in the matrix (`response[18]` has bit 3 set **and**
+  `response[3]` has bit 18 set). That was the original reasoning for this port.
+- But junction `2336`'s traffic light **never shows both links non-red**: in all 12 phases of its
+  90 s cycle at least one of link 3 / link 18 is red. So `attempt 1`
+  (`entry->haveRed() || foeEntry->haveRed()`) fires in **121 of 121** deadlock steps and the response
+  matrix is **never reached** for this pair.
+
+Attempt 1's stuck-foe arm is `response = foeEntry->haveRed(); response2 = entry->haveRed();`
+(`MSVehicle.cpp:7405-7407` — the `else`, taken here because both cars are stopped, so
+`veh->getSpeed() > SUMO_const_haltingSpeed` is false). Over the 121 steps that yields:
+
+| Phase class | Steps | `response` / `response2` | Branch taken | Pair compared |
+| --- | --- | --- | --- | --- |
+| both red | **75** | true / true | mutual conflict (`:7437-7440`) | `ego.CET` vs `foe.CET` |
+| link 3 red only | 26 | true / false | neither adjustment | `ego.CET` vs `foe.ET` |
+| link 18 red only | 20 | false / true | ego has right of way (`:7433-7436`) | `ego.ET` vs `foe.CET` |
+| neither red | **0** | — | — | — |
+
+In **every** class the two vehicles compare the *same two numbers* in opposite senses — veh 95
+evaluates `egoET > foeET` while veh 102 evaluates exactly the transposed comparison — so the result is
+**antisymmetric: precisely one of the pair yields, never both.** If the two values tie, the tie-break
+chain (§4) still resolves it: speeds are equal (both 0.000), so it falls to the id, and
+`CompareOrdinal("102", "95") < 0` — so veh 102 yields and veh 95 proceeds. **The symmetric state is
+structurally unreachable.** That is the correctness argument for this port, and it is a proof about
+the measured pair rather than a plausible-looking mechanism.
+
+**Implementation consequence — attempt 1 is mandatory, not optional.** For the one confirmed deadlock
+it is the *only* arm that ever executes. The matrix happens to also report "mutual" for this pair, so
+a matrix-only port would break the deadlock too — but it would pick the wrong pair in the 46
+one-red steps and so deviate from SUMO. Anyone tempted to stage attempt 1 out of T2.3 should read
+this table first.
 
 **Hard constraint.** Arm 5 today applies presence-only to a `RespondsTo` foe — a *parity-locked*
 path (every committed golden traverses it). Introducing `isLeader` changes that path. Therefore the
@@ -208,7 +237,7 @@ indirect link, so the omission cannot silently start mattering.
 **(b) Ego has right of way** (`!response`, `:7433-7436`): `foeET = foe.CET; egoET = ego.ET`.
 
 **(c) Mutual conflict** (`response && response2`, `:7437-7440`): `foeET = foe.CET; egoET = ego.CET`.
-**This is the measured deadlock case** (§0).
+**This is the measured deadlock case** — reached via attempt 1's both-red arm, not the matrix (§0a).
 
 If `response && !response2` neither adjustment applies and the default pair stands.
 
@@ -230,7 +259,27 @@ already parsed with SUMO's rightmost-char-is-link-0 convention).
 
 Attempt 1's `brakeGap` sub-branch needs the `gap` that `MSLink::getLeaderInfo` passes at `:3429`.
 Arm 5 has the same quantities `FoeIsInTheWay` derives (`distToCrossing`, `leaderBackDist`), so the
-gap is available; it is used **only** inside the red branch.
+gap is available; it is used **only** inside the red branch. Per Q12 the gap arriving at `isLeader` is
+already reduced by ego's `minGap`
+(`gap = distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth`, `MSLink.cpp:1647`), which is
+why `:7386-7388` adds `-2 * minGap` back when re-deriving `foeGap` — reproduce that arithmetic
+verbatim rather than "simplifying" it.
+
+**Attempt 1 is not optional** (§0a): it is the only arm that executes for the one confirmed deadlock,
+because that junction never shows its two conflicting links non-red simultaneously.
+
+**Blast-radius measurement** (all 134 committed nets, so the parity risk is quantified rather than
+guessed):
+
+- mutual-response pairs are **2599 of 93961** conflicting link pairs (**2.8%**), confined to **12**
+  nets — concentrated in `_bench` / `_repro` scenarios, i.e. the gridlock diagnostics.
+- **26 of 134** nets contain cont links (8623 cont request rows), so §2b's two-stage timestamp logic
+  is broadly load-bearing, not repro-specific.
+- **0 of 134** nets contain an indirect link, confirming §7's omission.
+
+Crucially, clause 1 means a vehicle **not yet on the junction always yields**, which is exactly what
+arm 5 does today. So the behavioural delta is confined to **ego already inside the junction** — the
+deadlock and the both-moving F3 overlaps, and nothing else.
 
 ---
 

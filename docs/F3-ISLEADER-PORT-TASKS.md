@@ -121,11 +121,22 @@ that `IsLeader` delegates to. Omissions per §7, each carrying the comment state
    `string.Compare` too is vacuous and does not satisfy this condition.
 3. A test asserting **no committed net contains an indirect link**, so §7's omission of the
    indirect-left sub-case cannot silently begin to matter.
-4. Case-selection tests on junction `2336` asserting the §0 fact directly: `response[18]` has bit 3
-   set **and** `response[3]` has bit 18 set, so links 18/3 take the **mutual-conflict** branch and
-   both sides use `CET`. This is the measured deadlock pair; if this assertion fails the port is
-   aimed at the wrong branch.
-5. `Sim.ParityTests` green + the new tests; hash unchanged (nothing calls `IsLeader` yet).
+4. **Case-selection tests on the measured deadlock pair, per design §0a** — note this condition was
+   corrected after measurement, so read §0a rather than reasoning from the matrix:
+   - Assert junction `2336`'s TL **never shows links 3 and 18 non-red simultaneously** (0 of 12
+     phases). This is why `attempt 1` is the only arm that ever runs for this pair.
+   - Assert that with both entry links red, `ResponseFor` returns `response == response2 == true`, so
+     the **mutual-conflict** branch is selected and **both** sides use `CET` — reached via attempt 1,
+     *not* via the response matrix.
+   - Assert the one-red cases pick the other two pairs (`ego.CET` vs `foe.ET` when only the foe's link
+     is red; `ego.ET` vs `foe.CET` when only ego's is red).
+   - **Assert antisymmetry directly:** for each of the three phase classes, evaluating `IsLeader`
+     both ways round yields exactly one `true`. This is the property that makes the deadlock
+     structurally unreachable, and it is the single most important assertion in this task.
+5. **Attempt 1 must be implemented** — it is not stageable. §0a shows it is the only arm that executes
+   for the confirmed deadlock. Include the `brakeGap` sub-branch with `:7386-7388`'s `-2 * minGap`
+   arithmetic verbatim.
+6. `Sim.ParityTests` green + the new tests; hash unchanged (nothing calls `IsLeader` yet).
 
 ### T2.4 — wire into arm 5 behind `JunctionIsLeaderGate` (default OFF)
 
