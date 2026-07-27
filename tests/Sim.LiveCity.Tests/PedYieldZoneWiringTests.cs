@@ -16,6 +16,8 @@ namespace Sim.LiveCity.Tests;
 // that can silently break -- the ctor never arming it, or SetLcRealismZone moving the highlight while
 // leaving the yield behind -- so both are pinned here. The LIVECITY_PEDYIELD=0 opt-out is pinned too,
 // because DemoPedYieldInvariantTests' whole A/B baseline arm rests on it actually disabling the guard.
+// Driven through LiveCityConfig.PedYieldEnabled, never the process environment -- xunit runs test classes
+// in parallel and a global env flip corrupts concurrent tests.
 public class PedYieldZoneWiringTests
 {
     private readonly ITestOutputHelper _out;
@@ -25,11 +27,9 @@ public class PedYieldZoneWiringTests
     [Fact]
     public void YieldZoneIsArmedOnTheLcRealismZone_AndFollowsIt()
     {
-        var prev = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD");
-        try
         {
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", null);
             var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+            cfg.PedYieldEnabled = true;
             using var sim = new LiveCitySim(cfg);
 
             // (a) the ctor arms it, on the LC-realism zone.
@@ -49,20 +49,14 @@ public class PedYieldZoneWiringTests
             Assert.Equal(newY, sim.PedYieldZoneY);
             Assert.Equal(newR, sim.PedYieldZoneRadius);
         }
-        finally
-        {
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", prev);
-        }
     }
 
     [Fact]
     public void LivecityPedYieldZero_LeavesTheGuardDisarmed_EvenAfterTheCameraMoves()
     {
-        var prev = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD");
-        try
         {
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", "0");
             var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+            cfg.PedYieldEnabled = false;
             using var sim = new LiveCitySim(cfg);
 
             Assert.Equal(0.0, sim.PedYieldZoneRadius);
@@ -71,10 +65,6 @@ public class PedYieldZoneWiringTests
             // flag's back -- otherwise the A/B baseline arm would quietly become a second fixed arm.
             sim.SetLcRealismZone(sim.LcZoneX + 10.0, sim.LcZoneY + 10.0, sim.LcZoneRadius + 10.0);
             Assert.Equal(0.0, sim.PedYieldZoneRadius);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", prev);
         }
     }
 

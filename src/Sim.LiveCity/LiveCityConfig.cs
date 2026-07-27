@@ -149,6 +149,13 @@ public sealed class LiveCityConfig
     // Ped crowd size knobs (SceneGen.BuildLiveCity's PedDemandConfig). Overridable via LIVECITY_PEDS,
     // which sets the concurrent cap and scales the spawn rate proportionally so the crowd fills to the
     // new cap at about the same wall-time as the default 160 does.
+    // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md): cars YIELD to pedestrians in their path
+    // inside the high-realism zone. A real CONFIG knob rather than an env read inside LiveCitySim's ctor,
+    // so a test can A/B it without mutating process-global state -- xunit runs test classes in parallel,
+    // and an env-var flip in one class corrupted a concurrent determinism test in another. Overridable via
+    // LIVECITY_PEDYIELD=0 in ForRepoRoot below, like every other demo knob here.
+    public bool PedYieldEnabled { get; set; } = true;
+
     public int PedPopulationCap { get; set; } = 160;
     public double PedSpawnRatePerSecond { get; set; } = 8.0;
 
@@ -215,6 +222,12 @@ public sealed class LiveCityConfig
         if (int.TryParse(Environment.GetEnvironmentVariable("LIVECITY_CARS"), out var cars))
         {
             cfg.CarTargetConcurrent = cars;
+        }
+
+        // LIVECITY_PEDYIELD=0: turn the car->ped yield guard off (the A/B baseline arm).
+        if (Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD") == "0")
+        {
+            cfg.PedYieldEnabled = false;
         }
 
         // LIVECITY_PEDS: concurrent ped cap; spawn rate scales with it so it fills at ~the default's pace.

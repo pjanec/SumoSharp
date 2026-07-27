@@ -269,15 +269,7 @@ Two structural reasons the remaining events are NOT reachable by tuning this gua
    have no pedestrian data. That is a ped-LOD feed question, not a car-yield question. It also means the
    net-wide column above is largely NOT a defect: ~85% of those events are `offside` (the ped is beside the
    road, not in the car's path), which on a city net with kerbside footways is ordinary traffic.
-2. **`ICrowdFootprintSource.QueryNear` truncates arbitrarily.** `OrcaCrowd.QueryNear`
-   (`src/Sim.Core/Orca/OrcaCrowd.cs:817`) fills the caller's span in SLOT ORDER and stops when it is full;
-   it is not nearest-first. Every crowd consumer -- this constraint, `CrowdLongitudinalConstraint`, and the
-   crowd-threat scan in `ComputeLateralEvasion` -- passes `stackalloc WorldDisc[16]`. At 800 peds a car
-   inside the zone has far more than 16 peds inside its ~66 m query radius, so peds are silently dropped,
-   including one directly ahead. This is the leading suspect for the residual HEAD-ON events (a car at
-   16.5 m/s with a ped in its corridor). PRE-EXISTING, shared across consumers, and NOT fixed here --
-   fixing it means either a nearest-k `QueryNear` or per-consumer radius/capacity budgets, which changes
-   crowd behaviour for every consumer and wants its own design pass.
+2. **`ICrowdFootprintSource.QueryNear` truncated arbitrarily. FIXED -- see §8.**
 
 **Gates:** `Sim.ParityTests` 680 passed / 4 skipped (= the 664/4 baseline plus exactly the 16 tests added
 here, no pre-existing test perturbed); `Sim.Bench` hash `D96213B7BB4021A7`, par == single; all 48
@@ -298,3 +290,68 @@ one doing the fast approaching: it stops at contact and creeps below 1.5 m.
 - Junction methods (`JunctionYieldConstraint`, `AdaptToJunctionLeader`, `KeepClearConstraint`) — owned by
   the F3 session. This change touches `ComputeLateralEvasion`, a new sibling of
   `CrowdLongitudinalConstraint`, and the fold line in `ComputeMoveIntent`.
+
+
+---
+
+## 8. Follow-up: `QueryNear` returned an arbitrary subset, not the nearest
+
+Found while explaining §6's residual HEAD-ON events (a car at 16.5 m/s with a pedestrian inside its own
+corridor -- a ped the guard was, on paper, watching for).
+
+**The defect.** `QueryNear` is the only window a vehicle has onto the pedestrian crowd, and every consumer
+passes a small fixed span (`stackalloc WorldDisc[16]` in `CrowdYieldConstraint`,
+`CrowdLongitudinalConstraint`, and `ComputeLateralEvasion`'s crowd scan). All three implementations filled
+that span in **enumeration order and stopped when it was full**:
+
+- `OrcaCrowd.QueryNear` walked agent SLOTS, so an agent in a high slot index was invisible however close it
+  was. At 800 peds a car has far more than 16 inside its ~66 m query radius, so which sixteen it saw was
+  decided by slot index -- and the pedestrian in front of the bumper routinely was not among them.
+- `CompositeFootprintSource.QueryNear` CONCATENATED its children, so once the first child (the promoted
+  ORCA crowd) saturated the span the second (`CrossingOccupancySource`) got **zero** slots -- starved
+  precisely in the dense-crowd case it exists for.
+- `CrossingOccupancySource.QueryNear` had the same break-when-full loop.
+
+`tests/Sim.ParityTests/CrowdQueryNearTests.cs` was written as failing repros of exactly these (a ped 2 m
+ahead in a high slot; a 1.5 m mover in a starved second child) before any fix.
+
+**The fix.** The interface contract is tightened to *"when more movers are in range than fit, the NEAREST
+win, ordered nearest-first, ties broken by enumeration order"*, and all three implementations route through
+one shared accumulator, `Sim.Core.Bridge.WorldDiscQuery.InsertNearest` -- a bounded insertion that
+recomputes distances from the discs already held, so it is zero-alloc and needs no parallel distance array.
+Ties keep the incumbent, which is what makes the result stable and reproducible run-to-run. The composite
+now merges its children through the same accumulator instead of concatenating (single-child wiring still
+hands the caller's span straight to the child, so it is unchanged).
+
+The cost is that `OrcaCrowd.QueryNear` can no longer exit its scan early -- a late slot holding a close
+agent must be able to displace an early slot holding a distant one. Measured on the 800-ped demo A/B, wall
+time moved from ~28 s to ~31 s per 600-step arm (~10%). `OrcaCrowd` already has an opt-in uniform spatial
+hash (`UseSpatialHash`) used by the ORCA neighbour gather; wiring `QueryNear` onto it would remove the scan
+cost and is the obvious next step if that 10% ever matters.
+
+**Effect on the demo (800 peds, 600 steps, same harness as §6):**
+
+| | before the QueryNear fix | after |
+|---|---|---|
+| in-zone close-fast-passes (baseline -> guarded) | 200 -> 70 | 207 -> **27** |
+| of which HEAD-ON (ped ahead, in ego's corridor) | 10 -> 7 | 8 -> **0** |
+| `ArrivedTotal` (baseline -> guarded) | 173 -> 175 | 175 -> 174 |
+
+**Zero cars now drive at a pedestrian inside the zone.** The remaining 27 in-zone events are all ABEAM
+(pedestrian beside a passing car, not in its path) -- dominated by peds walking into cars, which is C5's
+territory (§7).
+
+**Parity:** `QueryNear` has no caller on any golden or bench path (the whole crowd seam is
+`CrowdSource`-gated), so `Sim.ParityTests` stays byte-identical -- 684 passed / 4 skipped, = the 664/4
+baseline plus the 20 tests this branch added -- and `Sim.Bench` keeps hash `D96213B7BB4021A7`, par ==
+single. All 272 `Sim.Pedestrians.Tests` (the heaviest `OrcaCrowd` users) stay green.
+
+### 8.1 A test-isolation bug this surfaced
+
+Raising the demo A/B to 800 peds / 600 steps made `LiveCitySimTests.TwoRuns_SameConfig_AreByteExactDeterministic`
+flaky. It was NOT engine non-determinism: the yield A/B flipped `LIVECITY_PEDYIELD` with
+`Environment.SetEnvironmentVariable`, which is process-global, and xunit runs test classes in parallel --
+so the determinism test could build its two sims either side of the flip and legitimately diverge. The
+toggle is now a real config knob (`LiveCityConfig.PedYieldEnabled`, still defaulted from `LIVECITY_PEDYIELD`
+in `ForRepoRoot`, matching how every other demo knob in that file is wired) and the tests set the config,
+never the environment. Full suite green twice in a row afterwards.

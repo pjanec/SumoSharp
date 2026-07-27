@@ -27,6 +27,13 @@ report.
 - [x] **CY-8** no-new-gridlock / throughput (173 -> 175 at 800 peds; `DenseFlow...NoGridlock` green)
 - [x] **CY-9** parity 664/4 + bench `D96213B7BB4021A7` + `Sim.LiveCity.Tests` green
 
+## Stage 6 — `QueryNear` nearest-k follow-up (design §8)
+- [x] **CY-10** failing repros for all three `QueryNear` implementations (`CrowdQueryNearTests`)
+- [x] **CY-11** `WorldDiscQuery.InsertNearest` + nearest-k in `OrcaCrowd` / `CompositeFootprintSource` /
+      `CrossingOccupancySource`; contract tightened on `ICrowdFootprintSource`
+- [x] **CY-12** demo re-measure at 800 peds: in-zone **70 -> 27**, HEAD-ON **7 -> 0**
+- [x] **CY-13** test-isolation fix: `LiveCityConfig.PedYieldEnabled` replaces the process-global env flip
+
 ## Measurements log
 | what | baseline | after |
 |---|---|---|
@@ -34,14 +41,15 @@ report.
 | repro speed at that moment | 3.90 m/s | 3.67 m/s |
 | repro max abs posLat (the weave) | 1.41 m | **0.00 m** |
 | repro holds while ped in lane / resumes | no / n-a | yes (Speed 0.00) / 1 tick |
-| demo in-zone close-fast-passes @ **800 peds / 600 steps** | **200** | **70** (-65%) |
-| ...of which HEAD-ON (ped ahead, in corridor) | 10 | 7 |
-| demo net-wide close-fast-passes | 3968 | 3739 |
-| `ArrivedTotal` (demo, 800 peds, 600 steps) | 173 | **175** |
+| demo in-zone close-fast-passes @ **800 peds / 600 steps** | **207** | **27** (-87%) |
+| ...of which HEAD-ON (ped ahead, in corridor) | 8 | **0** |
+| demo net-wide close-fast-passes | 4253 | 3867 |
+| `ArrivedTotal` (demo, 800 peds, 600 steps) | 175 | 174 |
+| (before the §8 `QueryNear` fix: in-zone 200 -> 70, HEAD-ON 10 -> 7) | | |
 | demo in-zone close-fast-passes @ 160 peds / 300 steps | 7 | 0 |
 | demo worst case @ 160 peds | body overlap -0.30 m @ 5.30 m/s | 1.79 m @ 2.4 m/s |
 | `DenseFlow...NoGridlock` | green | **green** (guard armed) |
-| parity | 664/4 | **680/4** (= 664 + exactly the 16 new tests) |
+| parity | 664/4 | **684/4** (= 664 + exactly the 20 tests this branch adds) |
 | bench hash | `D96213B7BB4021A7` | **`D96213B7BB4021A7`** (par == single) |
 | `Sim.LiveCity.Tests` | green | **48/48 green** |
 
@@ -60,18 +68,15 @@ report.
   committed test now runs at the real density and asserts a >= 40% cut instead of zero.
 
 ## Remaining defects this session did NOT fix (measured, with the reason)
+- **`OrcaCrowd.QueryNear` is now a full scan** (no early exit -- a late slot holding a close agent must be
+  able to displace an early slot holding a distant one). Measured cost: ~28 s -> ~31 s per 600-step
+  800-ped arm (~10%). `OrcaCrowd` already has an opt-in spatial hash (`UseSpatialHash`); wiring `QueryNear`
+  onto it removes the scan and is the obvious next step if that 10% ever matters.
 - **Out-of-zone cars cannot see pedestrians at all**, so no yield-zone radius helps them. The car feed is
   `Composite(HighPowerFootprints, CrossingOccupancy)` and peds promote to HighPower only inside the
   LC-realism zone. Measured cross-tab: every `HighPower` event is in-zone, every `LowPowerWalking`/`Paused`
   event is out-of-zone. A third probe arm with the yield armed NET-WIDE confirmed it barely helps
   (net-wide 3739 -> 3458). This is a ped-LOD feed question. (Mitigating context: ~85% of net-wide events
   are `offside` -- ped beside the road, not in the car's path -- i.e. largely not defects.)
-- **`OrcaCrowd.QueryNear` truncates arbitrarily** (`src/Sim.Core/Orca/OrcaCrowd.cs:817`): it fills the
-  caller's span in SLOT ORDER and stops when full, and every consumer passes `stackalloc WorldDisc[16]`.
-  At 800 peds a car in the zone has far more than 16 peds inside its ~66 m query radius, so peds are
-  dropped -- including one directly ahead. Leading suspect for the residual HEAD-ON events (a car at
-  16.5 m/s with a ped in its corridor). PRE-EXISTING and shared by `CrowdLongitudinalConstraint` and
-  `ComputeLateralEvasion` too; fixing it (nearest-k, or per-consumer radius/capacity budgets) changes
-  crowd behaviour for every consumer and needs its own design pass.
 - **Peds do not avoid cars** (C5, owned by the ped-vehicle session), so a ped can still walk into a
   stopped/creeping car. The car side no longer approaches fast.

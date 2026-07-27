@@ -352,7 +352,10 @@ public sealed class LiveCitySim : IDisposable
         // LC-realism zone the viewer highlights, so the yield region is exactly the region the user sees;
         // SetLcRealismZone keeps the two in step. On by default; LIVECITY_PEDYIELD=0 disables for A/B.
         // Demo-only: parity/bench drive Engine directly and never set a zone, so it stays fully inert.
-        _pedYieldEnabled = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD") != "0";
+        // Read from CONFIG (LiveCityConfig.PedYieldEnabled, itself defaulted from LIVECITY_PEDYIELD in
+        // ForRepoRoot) rather than from the environment here, so an A/B test can flip it per-instance
+        // instead of mutating process-global state that a concurrently-running test would see.
+        _pedYieldEnabled = cfg.PedYieldEnabled;
         if (_pedYieldEnabled)
         {
             _engine.SetCrowdYieldZone(_lcZoneX, _lcZoneY, _lcZoneR);

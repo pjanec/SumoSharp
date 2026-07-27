@@ -98,10 +98,10 @@ public class DemoPedYieldInvariantTests
         const int peds = 800;    // the demo's real crowd density
 
         var sw = Stopwatch.StartNew();
-        var baseline = RunArm(pedYieldEnv: "0", steps, peds, "BASELINE (LIVECITY_PEDYIELD=0)");
+        var baseline = RunArm(pedYield: false, steps, peds, "BASELINE (yield guard off)");
         var baselineElapsed = sw.Elapsed;
         sw.Restart();
-        var fixedArm = RunArm(pedYieldEnv: null, steps, peds, "FIXED (Task-B guard on)");
+        var fixedArm = RunArm(pedYield: true, steps, peds, "FIXED (Task-B guard on)");
         var fixedElapsed = sw.Elapsed;
 
         _out.WriteLine(
@@ -145,15 +145,14 @@ public class DemoPedYieldInvariantTests
             + $"(tolerance {throughputTolerance:F1}).");
     }
 
-    private ArmResult RunArm(string? pedYieldEnv, int steps, int peds, string label)
+    private ArmResult RunArm(bool pedYield, int steps, int peds, string label)
     {
-        var prevEnv = Environment.GetEnvironmentVariable("LIVECITY_PEDYIELD");
-        try
+        // A/B'd through the CONFIG, never through the process environment: xunit runs test classes in
+        // parallel, and an env-var flip here corrupted LiveCitySimTests' concurrent byte-exact determinism
+        // test (it built its two sims either side of the flip and they legitimately diverged).
         {
-            // Latches in the LiveCitySim ctor -- must be set BEFORE `new LiveCitySim(cfg)`.
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", pedYieldEnv);
-
             var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+            cfg.PedYieldEnabled = pedYield;
             // Pin the scenario so the assertions are about ENGINE behaviour, not config/env drift -- same
             // discipline as LiveCitySimTests' DenseFlow_OverAThousandSeconds_KeepsDischarging_NoGridlock:
             // explicit values for every knob a stray LIVECITY_* env var could otherwise perturb.
@@ -248,10 +247,6 @@ public class DemoPedYieldInvariantTests
             }
 
             return new ArmResult(closeFastPassCount, headOnCount, headOnMaxSpeed, netWideCount, sim.ArrivedTotal);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("LIVECITY_PEDYIELD", prevEnv);
         }
     }
 }
