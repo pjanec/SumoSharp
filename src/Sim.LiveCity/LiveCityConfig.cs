@@ -168,6 +168,11 @@ public sealed class LiveCityConfig
     // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.
     public double PedCrosswalkWaitSpreadRadius { get; set; } = 0.0;
 
+    // Demo-only realism (per-ped walking speed variation; docs cross-ref: PedDemandConfig.SpeedVariationFrac):
+    // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
+    // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.
+    public double PedSpeedVariationFrac { get; set; } = 0.0;
+
     // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: the PedLivelinessConfig block, likewise
     // promoted as a group from LiveCitySim's ctor-hardcoded literals (same byte-identical-demo argument
     // as PedMaxSpeed et al. above).
@@ -196,6 +201,10 @@ public sealed class LiveCityConfig
         // Bug #6: the demo enables the crosswalk-wait kerb spread; goldens/other configs (ForDataset,
         // and any caller building LiveCityConfig directly) keep the 0.0 default => byte-identical.
         cfg.PedCrosswalkWaitSpreadRadius = 2.0;
+        // Demo-only realism: per-ped walking speed variation so a group that started together spreads
+        // out as it walks; goldens/other configs (ForDataset, and any caller building LiveCityConfig
+        // directly) keep the 0.0 default => byte-identical.
+        cfg.PedSpeedVariationFrac = 0.15;
         return cfg;
     }
 

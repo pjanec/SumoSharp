@@ -53,6 +53,12 @@ public sealed class PedDemand
     // byte-identical to pre-change PedDemand (the ITERON RULE).
     private const ulong WaitJitterSalt = 0x5044_5354_5741_4A31UL; // "PDSTWAJ1" per-ped crosswalk-wait lateral spread, independent of every other stream
 
+    // Demo-only realism (per-ped walking speed variation): a SIXTH, dedicated salt for the per-ped
+    // desired-speed factor. Independent of every other stream -- when `PedDemandConfig.SpeedVariationFrac`
+    // is 0 (the default) this salt's stream is never even constructed, let alone drawn from, so the off
+    // path stays byte-identical to pre-change PedDemand (the ITERON RULE).
+    private const ulong SpeedSalt = 0x5044_5354_5350_4431UL; // "PDSTSPD1" per-ped desired-speed factor
+
     // Phase 2b (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md): the anim tag a low-power ped plays while
     // waiting at a signalized crossing's kerb on red. Anything other than ActivityTimeline.WalkAnimTag
     // renders as a paused disc (SceneGen.BuildLivelyCrowd), so a waiting ped is visibly stopped at the kerb.
@@ -180,6 +186,18 @@ public sealed class PedDemand
     {
         var id = _nextId++;
 
+        // Demo-only realism (per-ped walking speed variation): OFF (SpeedVariationFrac<=0) keeps
+        // `pedSpeed` exactly `_config.MaxSpeed` -- byte-identical, and the speed salt's stream is never
+        // even constructed (the ITERON RULE). ON: each ped draws its own desired speed in
+        // MaxSpeed*(1 +/- SpeedVariationFrac), seeded per-ped, so a group that started together spreads
+        // longitudinally as it walks and staggers its kerb arrivals.
+        var pedSpeed = _config.MaxSpeed;
+        if (_config.SpeedVariationFrac > 0.0)
+        {
+            var speedRng = VehicleRng.SeedFor(_config.Seed, id, SpeedSalt);
+            pedSpeed = _config.MaxSpeed * (1.0 + (((speedRng.NextDouble() * 2.0) - 1.0) * _config.SpeedVariationFrac));
+        }
+
         Vec2 origin;
         Vec2 destination;
         if (_config.WeightedEndpoints is { } weighted)
@@ -258,14 +276,14 @@ public sealed class PedDemand
             var waitJitterRng = VehicleRng.SeedFor(_config.Seed, id, WaitJitterSalt);
 
             var timeline = BuildLivelyTimeline(
-                path, now, liveliness, _config.MaxSpeed, ref livelinessRng,
+                path, now, liveliness, pedSpeed, ref livelinessRng,
                 _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
                 _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng);
-            _lodManager.AddPedLively(id, timeline, _config.MaxSpeed, _config.Radius, now);
+            _lodManager.AddPedLively(id, timeline, pedSpeed, _config.Radius, now);
         }
         else
         {
-            _lodManager.AddPed(id, path, _config.MaxSpeed, _config.Radius, now);
+            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now);
         }
 
         _destinationOf[id] = destination;
@@ -491,9 +509,27 @@ public sealed class PedDemand
             {
                 var d = kerbDir / kerbDir.Abs;                  // crossing direction (rod axis), unit
                 var perp = new Vec2(-d.Y, d.X);                 // along the near kerb, unit
-                var u = (waitRng.NextDouble() * 2.0 - 1.0) * waitSpreadRadius; // lateral, both sides
-                var v = waitRng.NextDouble() * waitSpreadRadius;              // back into the sidewalk (never onto the road)
-                var candidate = path[i] + (perp * u) - (d * v);
+
+                // Bug #6 follow-up (looser waiting blob): place the ped by a golden-angle slot with radius
+                // r = s0*sqrt(slot). Since `slot` is a per-ped RANDOM draw (not a sequential arrival rank --
+                // low-power peds don't know how many others are waiting), r^2 is uniform, i.e. this fills a
+                // disc of radius s0*sqrt(SlotCount) with roughly UNIFORM area density: a bigger, lower-density
+                // cluster than the old tight disc, all on the sidewalk side. It does NOT truly bound
+                // personal space or grow with the crowd (that needs neighbour/rank awareness the low-power
+                // model omits); the per-ped SPEED variation is what actually thins a moving group. Scale
+                // chosen so the disc radius is ~2x `waitSpreadRadius` (~4 m at R=2) -- loose but still a
+                // crossing-mouth cluster, not peds stranded mid-sidewalk.
+                const int SlotCount = 64;
+                const double GoldenAngle = 2.399963229728653; // pi*(3 - sqrt 5)
+                var s0 = 0.25 * waitSpreadRadius;                      // -> max disc radius s0*sqrt(64) = 2x R
+                var slot = (int)(waitRng.NextDouble() * SlotCount);    // per-ped RANDOM slot (uniform-area fill)
+                var rr = s0 * Math.Sqrt(slot + 0.5);
+                var ang = slot * GoldenAngle;
+                var jx = ((waitRng.NextDouble() * 2.0) - 1.0) * 0.15;  // small jitter so it's not a rigid pattern
+                var jy = ((waitRng.NextDouble() * 2.0) - 1.0) * 0.15;
+                var lateral = (rr * Math.Cos(ang)) + jx;               // along the kerb, both sides
+                var back = Math.Abs(rr * Math.Sin(ang)) + 0.3 + Math.Abs(jy); // into the sidewalk, always >= 0 (never onto the road)
+                var candidate = path[i] + (perp * lateral) - (d * back);
                 if ((candidate - path[i]).Abs >= 1e-6)
                 {
                     blobPoint = candidate;
@@ -729,12 +765,20 @@ public sealed class PedDemandConfig
     /// crosswalk kerb wait is the single point `path[i]` exactly as before -- byte-identical to
     /// pre-change `PedDemand` (no rng stream is even drawn on the dedicated wait-jitter salt). >0.0 =>
     /// each ped waiting at a signalized crossing steps into a per-ped seeded 2-D spot in the waiting BLOB
-    /// at the kerb -- offset up to this many metres laterally along the kerb AND back into the sidewalk (a
-    /// dense cluster at the crossing mouth, not a single line) -- waits there, then crosses DIAGONALLY
-    /// straight to the crossing exit. So waiting peds form a realistic blob instead of stacking on one
-    /// point, and each crosses from where it stood.
+    /// at the kerb -- waits there, then crosses DIAGONALLY straight to the crossing exit. This value sets
+    /// the blob's characteristic scale (the sunflower/phyllotaxis slot spacing is 0.4x it, ~0.8 m at
+    /// R=2.0): peds fill a sunflower pattern of ~0.8 m-spaced slots that grows outward with the crowd
+    /// (instead of packing uniformly into a fixed disc), so waiting peds form a realistic min-spaced
+    /// cluster rather than stacking on or crowding into one point, and each crosses from where it stood.
     /// Only meaningful together with `Liveliness` and `CrosswalkSignals`.
     public double CrosswalkWaitSpreadRadius { get; init; } = 0.0;
+
+    /// Demo-only realism (per-ped walking speed variation): ADDITIVE, opt-in. 0.0 (the default) => off
+    /// => byte-identical to pre-change `PedDemand` (no rng stream is even drawn on the dedicated speed
+    /// salt) -- every ped walks at exactly `MaxSpeed`. >0.0 => each ped's walking speed is drawn as
+    /// `MaxSpeed * (1 +/- up to this fraction)`, seeded per-ped, so a group that started together
+    /// spreads out longitudinally as it walks and staggers its kerb arrivals instead of moving in lockstep.
+    public double SpeedVariationFrac { get; init; } = 0.0;
 }
 
 /// LIVE-PROD-1b (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4): per-trip liveliness knobs. Deliberately

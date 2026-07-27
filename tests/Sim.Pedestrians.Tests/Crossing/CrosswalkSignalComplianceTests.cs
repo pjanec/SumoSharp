@@ -281,9 +281,11 @@ public class CrosswalkSignalComplianceTests
         var onAfter = Assert.IsType<WalkSegment>(onSegments[onIdx + 1]);
         Assert.Equal(2, onBefore.Path.Count);
         Assert.Equal(2, onAfter.Path.Count);
-        // Enter-blob length is bounded by the blob radius in 2-D: |(u, v)| <= R * sqrt(2), R = 2.0.
+        // Enter-blob length is bounded by the phyllotaxis slot's max radius: rr_max = 0.4*R*sqrt(SlotCount)
+        // (SlotCount=64), plus the fixed 0.3 m back-offset and up to ~0.15*sqrt(2) m of jitter on each axis
+        // (bounded here by a conservative +0.6 total slack), R = 2.0.
         var enterLen = (onBefore.Path[1] - onBefore.Path[0]).Abs;
-        Assert.True(enterLen > 0.0 && enterLen <= (2.0 * Math.Sqrt(2.0)) + 1e-6, $"enter-blob length {enterLen} out of (0, R*sqrt2] bound");
+        Assert.True(enterLen > 0.0 && enterLen <= (0.25 * 2.0 * Math.Sqrt(64.0)) + 0.6 + 1e-6, $"enter-blob length {enterLen} out of the phyllotaxis-slot bound");
         // The two walks share the blob spot (enter ends exactly where the diagonal cross starts).
         Assert.Equal(onBefore.Path[1].X, onAfter.Path[0].X, precision: 9);
         Assert.Equal(onBefore.Path[1].Y, onAfter.Path[0].Y, precision: 9);
