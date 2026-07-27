@@ -59,8 +59,9 @@ never committed). Probed with existing public APIs only, no feature code. M1/M2/
 | M5 | Real-net load cost | §7, §8/R6 | Geneva 44 MB: parse 9.2 s + ped 1.2 s + crosswalk 1.3 s = **11.6 s**, 53 229 lanes, **572 MB**. Switzerland 161 MB: parse **67.7 s** + ped 6.5 s (+~5 s) ≈ **80 s**, 175 465 lanes, **1 652 MB**. Ctor makes **four** net passes (not two); pass 1 is ~85 % of cost. |
 | M7 | Georeference & elevation, real files | §5 | Both nets: `netOffset="-388091.80,-5257586.90"` **identical**, `projParameter="+proj=utm +zone=32 +ellps=WGS84 …"`. Cut preserves the absolute UTM offset exactly; only `convBoundary` shrinks. Elevation span **199.48–1633.77 m** (CH), **324.39–1062.24 m** (Geneva). |
 | M8 | Does `RouteFiles[0]` name a real route file? | §0/C4 | **NO.** `geneve_Medium.sumocfg`'s first entry is `common/vType.config.xml` — 107 `<vType>`, **0 routes**. Real routes are entries 4–5 (600 and 1 000 routes). Design corrected to scrape **all** route files. |
-| M3 | Max \|pedZ − carZ\| for pairs within 10 m | §3.5(b), C4·SC2, E2·SC4 | *pending — needs C4* |
-| M4 | `Sample()` cost, elevation on vs. off at ≥300 peds | §8/R3, C4·SC4 | *pending — needs C4* |
+| M9 | Is a 2-D (horizontal-only) elevation lookup ambiguous on real nets? | §3.3a, §8/R8 | **Negligible — API validated.** Ped-lane vertices bucketed at 2 m, cells spanning > 3 m of z: Geneva **7 / 78 083** (0.009 %, worst 6.3 m); Switzerland **27 / 679 340** (0.004 %, worst 12.6 m). Several of the 27 are *intra*-lane (same lane id both extremes), which nearest-segment projection resolves correctly, so true inter-lane ambiguity is lower. **R8 closed.** |
+| M3 | Distribution of \|pedZ − carZ\| for pairs within 10 m, + outlier classification | §3.5(b), C4·SC2, E2·SC4 | *pending — needs C4. Not a bare threshold: p90 ≤ 2 m, and every outlier classified multi-level vs. wrong-lane-snap (bounded by M9 at ≤ 27 nationwide).* |
+| M4 | `Sample()` cost, elevation on vs. off at ≥300 peds | §8/R3, C4·SC4 | *pending — needs C4. Parametric (cell size / ring cap), not architectural.* |
 | M6 | Demo 200-step `PeakCars`/`PeakPeds`/`ArrivedTotal`, before vs. after | B1·SC5, D1·SC6 | *pending — capture before touching `src/`* |
 
 ---

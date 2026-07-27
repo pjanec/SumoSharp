@@ -229,6 +229,32 @@ Teaching `PedNetworkParser.ParseShape` to keep a 3rd coordinate would mean widen
 baker — a large blast radius through the ped solver for a purely output-side value. The handoff's
 instinct is right: leave the ped ingest 2-D.
 
+### §3.3a Why a 2-D lookup is sound — the vertical-ambiguity measurement
+
+`ElevationAt(Vec2)` resolves elevation from a **horizontal** position alone. That is only defensible if
+pedestrian lanes do not stack vertically: at a footbridge over a sidewalk, two ped lanes share an (x,y)
+and horizontal distance cannot tell them apart. Neither surface can supply a lane hint to break the tie —
+`PedLodManager` exposes only `PositionOf(id, now)` (`PedLodManager.cs:394`), and the wire the
+reconstructor reads carries positions, not lane ids. So if stacking were common, this API would be the
+wrong shape and §3.5's two surfaces would both be mis-specified.
+
+**[measured] Stacking is negligible.** Bucketing every ped-lane vertex into 2 m horizontal cells and
+looking for cells spanning > 3 m of elevation:
+
+| net | ped-lane vertices | occupied buckets | ambiguous buckets | share | worst span |
+|---|---|---|---|---|---|
+| `geneve.net.xml` | 103 498 | 78 083 | **7** | 0.009 % | 6.3 m |
+| `swiss_roads.net.xml` | 888 359 | 679 340 | **27** | 0.004 % | 12.6 m |
+
+27 locations in all of Switzerland, and several of those have the *same* lane id at both extremes (e.g.
+`ped_bas_cros_14.1_0`) — intra-lane steepness, which nearest-segment projection plus arc interpolation
+resolves correctly. True inter-lane ambiguity is therefore lower still. The 2-D API is sound; the residual
+error is bounded at **≤ 27 spots nationwide, ≤ 12.6 m each**, and is a documented limitation rather than a
+defect to engineer around.
+
+This question was **architectural** — a bad answer would have forced a different API and invalidated
+C2/C3/C4 — so it was settled on real data before implementation, not after.
+
 ### §3.4 Determinism
 
 `ElevationAt` is a pure function of committed net geometry and the query point: no RNG, no clock, no
@@ -433,9 +459,18 @@ paths — so the absolute branch stays covered by a synthesised temp-dir config 
 - **R2 — CLOSED by measurement.** Branch-1 index size is 98 897 segments (Geneva) / 860 276
   (Switzerland). At ~16 B per segment reference that is single-digit to ~14 MB of index — negligible
   beside the 572 MB / 1.65 GB the parsed net itself already costs (§7).
-- **R3 — OPEN.** `Sample()` gains a per-ped geometric query on the frame path. Zero on 2-D nets by
-  construction (null source), but must be measured on a 3-D net at a realistic ped count (C4·SC4). This
-  is now the largest genuinely open question in the design.
+- **R3 — OPEN, but PARAMETRIC not architectural.** `Sample()` gains a per-ped geometric query on the
+  frame path. Zero on 2-D nets by construction (null source), but unmeasured on a 3-D net at a realistic
+  ped count (C4·SC4). Two sub-risks: uneven cell occupancy (25 m cells over 860 k segments, dense at a
+  Geneva junction, empty in the Alps), and ring expansion running to the 64-ring cap for a ped far from
+  any indexed lane. Both are tuned by **constants inside C2** (cell size, cap) — a bad answer changes a
+  number, not the design — so this is correctly a C2/C4 success condition rather than something to
+  prototype twice. Known mitigation if it fails: cache z per ped and refresh every N frames (peds move
+  ~1.3 m/s, so z changes far slower than the frame rate). Deliberately **not** pre-implemented, to avoid
+  optimising against an unmeasured cost.
+- **R8 — CLOSED by measurement (§3.3a).** Vertical ambiguity of the 2-D lookup: 27 locations in all of
+  Switzerland (0.004 % of occupied buckets), some of them intra-lane and thus not ambiguous at all. The
+  `ElevationAt(Vec2)` API shape is validated.
 - **R6 — OPEN (informational, not ours to fix).** Full-Switzerland load is ~80 s / 1.65 GB across four
   pre-existing net passes (§7). Not caused by this change and explicitly out of scope, but BIG must be
   told before it builds a UI around it.

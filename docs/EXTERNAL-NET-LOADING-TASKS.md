@@ -183,8 +183,18 @@ literal `0.0` at `:1076`).
 **Success conditions:**
 1. **3-D net:** on the A1 fixture, after stepping until ≥5 peds are live, **every** sampled
    `LiveCityPed.Z` is non-zero and within the fixture's actual elevation range.
-2. **Cross-check against cars (the handoff's own bar):** for the ped nearest to a live car, `|pedZ −
-   carZ| ≤ 2.0 m`. Report the **max** over all ped/car pairs within 10 m, not just one sample.
+2. **Cross-check against cars — a DIAGNOSTIC with outlier classification, not a bare threshold.**
+   Cars already resolve correct Z via `PoseResolver` → `LaneGeometry.ElevationAtOffset`, so a nearby
+   car's Z is the oracle. Report the **distribution** of `|pedZ − carZ|` over all ped/car pairs within
+   10 m (p50, p90, max), then:
+   - **p90 ≤ 2.0 m** is the pass bar (kerb height + camber + the ped's lateral offset from the road
+     centreline account for the bulk).
+   - Every sample above 2.0 m must be **classified by hand** as either (a) a genuine multi-level case —
+     footbridge/underpass, of which design §3.3a measured ≤ 27 nationwide — or (b) a wrong-lane snap,
+     which is a bug. A blanket `max ≤ 2.0 m` assertion is **wrong** and must not be used: a ped
+     legitimately standing on a bridge deck over a road is legitimately 5–12 m above the car beneath it,
+     and would fail a check that is behaving correctly.
+   - Record the classification in the tracker (M3). If any outlier is category (b), the task is not done.
 3. **2-D regression:** on `demo_city/box`, `PedElevation == null` and **every** `LiveCityPed.Z` is
    exactly `0.0` (bitwise), across 200 steps. This is what keeps City3D / raylib / `VizReplayBuilder`
    bit-identical.
@@ -242,7 +252,9 @@ test stays ~15 s):
    walkingareas == **2 179** (the measured figures — a drift here means an ingest regression).
 3. `PedElevation` is **non-null** and selects **branch 1**; step until ≥20 peds are live ⇒ every
    `LiveCityPed.Z` lies within **324.39 – 1062.24 m** (the measured range) and none is 0.
-4. Ped↔car cross-check: max |pedZ − carZ| over pairs within 10 m is **≤ 2.0 m**. Report the max.
+4. Ped↔car cross-check on the **real** net, same rule as C4·SC2: report p50/p90/max of |pedZ − carZ|
+   over pairs within 10 m; **p90 ≤ 2.0 m**; classify every > 2.0 m outlier as multi-level (expected,
+   ≤ 27 such spots nationwide per design §3.3a) or wrong-lane snap (a bug).
 5. Cars spawn and move: `Sample()` returns > 0 cars, and `ArrivedTotal` > 0 within 600 steps.
 6. Standing gate unchanged with the var unset.
 
