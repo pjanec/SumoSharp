@@ -408,6 +408,15 @@ public partial class Main : Node3D
     private readonly List<(int LaneHandle, MeshInstance3D HeadInstance, StandardMaterial3D HeadMaterial)> _signalHeads = new();
     private bool _signalHeadsBuilt;
 
+    // Pedestrian-crosswalk signal heads (docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md, option B): a smaller
+    // pole+head at each TL-controlled crossing's stop-line, coloured red/green by the crossing's live TL
+    // char from LiveCitySource.SampleCrossingSignals(). Same build-once/recolour-per-frame split as the car
+    // heads above; keyed by crossing lane handle. Local live-city path only (crossing state comes straight
+    // off the in-process sim). `_pedSignalMatByLane` is the O(1) laneHandle -> head-material lookup the
+    // per-frame recolour uses.
+    private readonly Dictionary<int, StandardMaterial3D> _pedSignalMatByLane = new();
+    private bool _pedSignalsBuilt;
+
     // Buildings visibility toggle (`--hide-buildings` startup flag + runtime `B` key). `ReadyLocal`'s
     // `--scenario` path calls BuildBuildings (procedural BuildingPlacer, one MultiMeshInstance3D); every
     // `--live-city` entry point (local live, replay, remote) calls BuildLiveCityBuildings, which is
@@ -1701,6 +1710,16 @@ public partial class Main : Node3D
         {
             UpdateTrafficLights(tlStateByLane);
         }
+
+        // Pedestrian crosswalk signals (design option B): build the mini heads once, recolour each frame
+        // from the live crossing TL chars. Local live path only.
+        if (!_pedSignalsBuilt)
+        {
+            BuildPedCrossingSignals();
+            _pedSignalsBuilt = true;
+        }
+
+        UpdatePedCrossingSignals();
 
         ApplyOrbitCamera();
 
@@ -3783,6 +3802,105 @@ public partial class Main : Node3D
         SignalColor.Red => TlRedColor,
         SignalColor.Yellow => TlYellowColor,
         SignalColor.Green => TlGreenColor,
+        _ => TlOffColor,
+    };
+
+    // Pedestrian crosswalk signals (design option B): build a SMALLER pole+head at each TL-controlled
+    // crossing's stop-line. Reuses TrafficLightPlacer.Place (same Shape[^1] stop-line convention as the car
+    // heads) for the position, then builds a half-height pole + half-size head box so a ped signal reads as
+    // distinct from (and subordinate to) the car heads. Local live-city path only. Built once.
+    private void BuildPedCrossingSignals()
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        var crossings = _liveCitySource.SampleCrossingSignals();
+        if (crossings.Count == 0)
+        {
+            return;
+        }
+
+        var laneHandles = new List<int>(crossings.Count);
+        foreach (var c in crossings)
+        {
+            laneHandles.Add(c.LaneHandle);
+        }
+
+        var heads = TrafficLightPlacer.Place(_liveCitySource.Network, laneHandles);
+        var poleMaterial = new StandardMaterial3D { AlbedoColor = TlPoleColor, Roughness = 0.8f };
+
+        foreach (var head in heads)
+        {
+            // Half the car head's pole height + a smaller head box (design: "smaller TL box and approx half
+            // the height of the car's one").
+            var carPoleHeight = head.HeadY - head.PoleY;
+            if (carPoleHeight <= 0f)
+            {
+                carPoleHeight = TrafficLightPlacer.HeadHeightMeters;
+            }
+
+            var poleHeight = carPoleHeight * 0.5f;
+
+            var pole = new MeshInstance3D
+            {
+                Mesh = new BoxMesh { Size = new Vector3(0.15f, poleHeight, 0.15f) },
+                Position = new Vector3(head.PoleX, head.PoleY + poleHeight / 2f, head.PoleZ),
+                Name = $"PedTlPole_{head.LaneHandle}",
+            };
+            pole.SetSurfaceOverrideMaterial(0, poleMaterial);
+            AddChild(pole);
+
+            var headMaterial = new StandardMaterial3D
+            {
+                AlbedoColor = TlOffColor,
+                EmissionEnabled = true,
+                Emission = TlOffColor,
+                EmissionEnergyMultiplier = 2.5f,
+            };
+            var headInstance = new MeshInstance3D
+            {
+                Mesh = new BoxMesh { Size = new Vector3(0.45f, 0.45f, 0.45f) },
+                Position = new Vector3(head.PoleX, head.PoleY + poleHeight, head.PoleZ),
+                Name = $"PedTlHead_{head.LaneHandle}",
+            };
+            headInstance.SetSurfaceOverrideMaterial(0, headMaterial);
+            AddChild(headInstance);
+
+            _pedSignalMatByLane[head.LaneHandle] = headMaterial;
+        }
+
+        GD.Print($"Main: built {_pedSignalMatByLane.Count} pedestrian crossing signal(s).");
+    }
+
+    // Recolour each crossing head from the live TL char (r/y/g/G/...) each frame. Cheap: ~tens of crossings,
+    // one material colour write each (same per-frame discipline as UpdateTrafficLights).
+    private void UpdatePedCrossingSignals()
+    {
+        if (_liveCitySource is null || _pedSignalMatByLane.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (laneHandle, state) in _liveCitySource.SampleCrossingSignals())
+        {
+            if (_pedSignalMatByLane.TryGetValue(laneHandle, out var material))
+            {
+                var color = ColorForCrossingState(state);
+                material.AlbedoColor = color;
+                material.Emission = color;
+            }
+        }
+    }
+
+    // SUMO TL link char -> colour. Upper/lower G/g both "go" (protected vs permissive), r stop, y/Y amber;
+    // 'o'/'O' (off/blinking) and 'u'/anything-else render Off.
+    private static Color ColorForCrossingState(char state) => state switch
+    {
+        'G' or 'g' => TlGreenColor,
+        'y' or 'Y' => TlYellowColor,
+        'r' => TlRedColor,
         _ => TlOffColor,
     };
 
