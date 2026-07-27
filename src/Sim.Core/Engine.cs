@@ -9744,6 +9744,25 @@ public sealed partial class Engine : IEngine
     // 256 covers realistic demo densities with headroom (40 B/disc -> 10 KB stackalloc, safe). PARITY-INERT:
     // every crowd query is gated on CrowdSource != null, which is null for every committed golden and the
     // bench, so this buffer is never even allocated on the parity path -- byte-identical.
+    // How many crowd discs one QueryNear may hand back. This is a FIDELITY/COST knob, NOT a correctness
+    // threshold -- and the difference matters, because it used to be the latter.
+    //
+    // Raised 16 -> 256 on main (f9c837c) because at density the 16-slot buffer truncated the in-path disc
+    // and cars drove THROUGH pedestrians. That fixed the symptom by making truncation RARE; it could not
+    // make truncation SAFE, because the implementations dropped whichever discs they happened to enumerate
+    // last (measured: median 39 / max 131 discs near a car at 10x ped density -- already half of 256).
+    // ICrowdFootprintSource.QueryNear now guarantees the NEAREST survive (WorldDiscQuery), so truncation
+    // degrades gracefully: what is lost is always the farthest, which is what these constraints care about
+    // least. Measured at 800 peds, 600 steps, demo A/B (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §8.2):
+    //
+    //   MaxCrowdDiscs   16    32    64   256      <- in-zone close-fast-passes, guarded arm
+    //                   22    21    14    14
+    //   HEAD-ON (car driving AT a ped)   0     0     0     0
+    //
+    // i.e. the SAFETY property (zero head-on) holds at every size including the original 16 -- that comes
+    // from the nearest-first contract, not from this number -- while the total count keeps improving up to
+    // 64, above which nothing changes at this density. Wall time is flat across the whole range. 256 is
+    // kept for headroom at the 10x density f9c837c measured; 64 would be measurably identical at 800 peds.
     private const int MaxCrowdDiscs = 256;
 
     private double CrowdLongitudinalConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)

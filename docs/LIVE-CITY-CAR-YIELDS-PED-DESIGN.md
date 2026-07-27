@@ -355,3 +355,42 @@ so the determinism test could build its two sims either side of the flip and leg
 toggle is now a real config knob (`LiveCityConfig.PedYieldEnabled`, still defaulted from `LIVECITY_PEDYIELD`
 in `ForRepoRoot`, matching how every other demo knob in that file is wired) and the tests set the config,
 never the environment. Full suite green twice in a row afterwards.
+
+
+### 8.2 Two fixes for one symptom? No -- one contract and one knob
+
+While this branch was in flight, main landed an independent fix for the same symptom: `MaxCrowdDiscs`
+16 -> 256 (f9c837c), on the measurement that a car at 10x ped density had a median of 39 and a maximum of
+131 crowd discs in range, so the 16-slot buffer truncated the in-path one and cars drove through
+pedestrians. That is the same defect §8 describes, attacked from the other side: make truncation RARE
+rather than make it CORRECT.
+
+Keeping both looked like duplication, so it was measured -- the demo A/B (800 peds, 600 steps) re-run at
+four buffer sizes with the nearest-first contract active:
+
+| `MaxCrowdDiscs` | 16 | 32 | 64 | 256 |
+|---|---|---|---|---|
+| in-zone close-fast-passes, baseline arm | 240 | 235 | 203 | 203 |
+| in-zone close-fast-passes, guarded arm | 22 | 21 | **14** | **14** |
+| of which HEAD-ON (car driving AT a ped) | **0** | **0** | **0** | **0** |
+| wall time per 600-step arm | 28/27 s | 28/27 s | 27/27 s | 28/27 s |
+
+They are not two fixes for one problem. They are **one correctness contract and one quality knob**:
+
+- **The nearest-first contract is what makes it safe.** HEAD-ON is zero at *every* buffer size, including
+  the original 16. No car is blind to the pedestrian in front of it regardless of how small the buffer is,
+  because the buffer now spends its slots on the closest movers -- which is exactly what all three
+  consumers (nearest in-path leader, nearest threat, min-over-clearance proximity cap) actually read.
+- **The buffer size is now a fidelity/cost dial with graceful degradation**, not a cliff. It still buys
+  something real (total in-zone count 22 -> 14 from 16 to 64 slots, as the proximity cap and lateral scan
+  see more neighbours) and saturates at 64 for this density. Before the contract it was the ONLY thing
+  standing between the demo and cars driving through people, and it could fail silently at any density
+  above its size -- 131-of-256 at 10x was already uncomfortably close.
+
+An earlier hypothesis -- that a 256-slot buffer would be measurably SLOWER than a small one under
+`InsertNearest`, since the O(1)-reject path only engages once the buffer is full -- was **wrong**: wall
+time is flat across 16..256. So there is no perf argument for shrinking it.
+
+Decision: **keep 256, keep the contract, and document the relationship** (see the constant's own comment).
+256 costs nothing measurable and preserves the headroom f9c837c measured at 10x density; 64 would be
+measurably identical at 800 peds if the ~10 KB of stack per call site ever matters.

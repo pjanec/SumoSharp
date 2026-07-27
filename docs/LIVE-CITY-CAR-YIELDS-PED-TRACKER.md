@@ -33,6 +33,11 @@ report.
       `CrossingOccupancySource`; contract tightened on `ICrowdFootprintSource`
 - [x] **CY-12** demo re-measure at 800 peds: in-zone **70 -> 27**, HEAD-ON **7 -> 0**
 - [x] **CY-13** test-isolation fix: `LiveCityConfig.PedYieldEnabled` replaces the process-global env flip
+- [x] **CY-14** merged `origin/main` (F3 junction #13, ped-LOD #14, `MaxCrowdDiscs` 16->256); binder
+      renumbered 14 -> **16** (main took 14/15); re-verified on the merged tree
+- [x] **CY-15** unification check for the two same-symptom fixes: buffer-size sweep 16/32/64/256 shows the
+      safety property (HEAD-ON = 0) comes from the nearest-first CONTRACT at every size, and the buffer is
+      a fidelity knob that saturates at 64. Kept 256, documented the split (design §8.2).
 
 ## Measurements log
 | what | baseline | after |
@@ -49,9 +54,11 @@ report.
 | demo in-zone close-fast-passes @ 160 peds / 300 steps | 7 | 0 |
 | demo worst case @ 160 peds | body overlap -0.30 m @ 5.30 m/s | 1.79 m @ 2.4 m/s |
 | `DenseFlow...NoGridlock` | green | **green** (guard armed) |
-| parity | 664/4 | **684/4** (= 664 + exactly the 20 tests this branch adds) |
-| bench hash | `D96213B7BB4021A7` | **`D96213B7BB4021A7`** (par == single) |
-| `Sim.LiveCity.Tests` | green | **48/48 green** |
+| parity (post-merge, main's baseline 755/4) | 755/4 | **775/4** (= 755 + exactly the 20 tests this branch adds) |
+| bench hash (post-merge, main's new baseline) | `BF3794A4704BCD79` | **`BF3794A4704BCD79`** (par == single) |
+| `Sim.LiveCity.Tests` (post-merge) | green | **53/53 green** |
+| demo in-zone close-fast-passes, POST-MERGE @ 800 peds | **203** | **14** (-93%) |
+| ...of which HEAD-ON, POST-MERGE | 11 | **0** |
 
 ## Corrections made during implementation (recorded, not hidden)
 - **CY-3 success condition 2 was wrong as written** ("brakes a tick earlier, peak decel below 3.7 m/s^2").
