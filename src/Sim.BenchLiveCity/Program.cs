@@ -64,6 +64,14 @@ var profile = false;
 double hiResRadius = 0.0;
 double? hiResCentreX = null;
 double? hiResCentreY = null;
+// T1 (docs/LIVE-CITY-PERF-SESSION-LOG.md REVISED PLAN, A8): big-net support. Mutually exclusive with
+// each other; default (neither given) stays LiveCityConfig.ForRepoRoot, byte-identical to before.
+string? sumocfgPath = null;
+string? datasetDir = null;
+// T2: prefill phase + spawn-rate overrides. 0 = fill phase disabled (byte-identical to before T2).
+var fillSteps = 0;
+int? carSpawnPerStepArg = null;
+double? pedSpawnRateArg = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -119,6 +127,22 @@ for (var i = 0; i < args.Length; i++)
             break;
         }
 
+        case "--sumocfg" when i + 1 < args.Length:
+            sumocfgPath = args[++i];
+            break;
+        case "--dataset" when i + 1 < args.Length:
+            datasetDir = args[++i];
+            break;
+        case "--fill-steps" when i + 1 < args.Length:
+            fillSteps = int.Parse(args[++i], inv);
+            break;
+        case "--car-spawn-per-step" when i + 1 < args.Length:
+            carSpawnPerStepArg = int.Parse(args[++i], inv);
+            break;
+        case "--ped-spawn-rate" when i + 1 < args.Length:
+            pedSpawnRateArg = double.Parse(args[++i], inv);
+            break;
+
         default:
             Console.Error.WriteLine($"Sim.BenchLiveCity: unrecognized argument '{args[i]}'.");
             return 2;
@@ -134,6 +158,18 @@ if (steps <= 0)
 if (warmup < 0)
 {
     Console.Error.WriteLine("Sim.BenchLiveCity: --warmup must be >= 0.");
+    return 2;
+}
+
+if (fillSteps < 0)
+{
+    Console.Error.WriteLine("Sim.BenchLiveCity: --fill-steps must be >= 0.");
+    return 2;
+}
+
+if (sumocfgPath is not null && datasetDir is not null)
+{
+    Console.Error.WriteLine("Sim.BenchLiveCity: --sumocfg and --dataset are mutually exclusive.");
     return 2;
 }
 
@@ -167,6 +203,69 @@ else
 
 var repoRoot = FindRepoRoot();
 
+// T1: which scenario factory this run uses -- one choice for the whole invocation (every config in
+// --sweep shares the same net). buildBaseConfig is passed into RunOne so each config still gets a
+// FRESH LiveCityConfig (RunOne mutates CarTargetConcurrent/PedPopulationCap/etc. on it), but they all
+// resolve to the SAME net.
+LiveCityConfig BuildBaseConfig()
+{
+    if (sumocfgPath is not null)
+    {
+        return LiveCityConfig.ForSumocfg(sumocfgPath);
+    }
+
+    if (datasetDir is not null)
+    {
+        return LiveCityConfig.ForDataset(datasetDir);
+    }
+
+    return LiveCityConfig.ForRepoRoot(repoRoot);
+}
+
+var scenarioLabel = sumocfgPath is not null
+    ? $"sumocfg:{sumocfgPath}"
+    : datasetDir is not null
+        ? $"dataset:{datasetDir}"
+        : "ForRepoRoot (demo box)";
+
+// T1 (docs/LIVE-CITY-PERF-SESSION-LOG.md REVISED PLAN, A8): report the scenario's physical size BEFORE
+// any results. The original failed ladder's root cause (net far too small for the requested population)
+// was invisible precisely because nothing printed the net's extent/lane count -- a config that could
+// never physically host the request ran to completion and reported a fabricated REALTIME verdict.
+// Parses the net directly (NetworkParser.Parse) rather than constructing a full LiveCitySim, which is
+// cheaper and does not depend on cars/peds counts.
+var probeCfg = BuildBaseConfig();
+var netPath = probeCfg.ResolveNetPath();
+var netModel = Sim.Ingest.NetworkParser.Parse(netPath);
+var netLaneCount = netModel.LanesByHandle.Count;
+var netMinX = double.MaxValue;
+var netMinY = double.MaxValue;
+var netMaxX = double.MinValue;
+var netMaxY = double.MinValue;
+foreach (var lane in netModel.LanesByHandle)
+{
+    foreach (var (x, y) in lane.Shape)
+    {
+        if (x < netMinX) netMinX = x;
+        if (x > netMaxX) netMaxX = x;
+        if (y < netMinY) netMinY = y;
+        if (y > netMaxY) netMaxY = y;
+    }
+}
+
+var netExtentX = netLaneCount > 0 ? netMaxX - netMinX : 0.0;
+var netExtentY = netLaneCount > 0 ? netMaxY - netMinY : 0.0;
+
+Console.WriteLine("== Scenario (T1) ==");
+Console.WriteLine($"  source: {scenarioLabel}");
+Console.WriteLine($"  net path: {netPath}");
+Console.WriteLine(
+    $"  lanes: {netLaneCount}   extent: x={netExtentX.ToString("F1", inv)} m  y={netExtentY.ToString("F1", inv)} m"
+    + (netLaneCount > 0
+        ? $"   bbox=[{netMinX.ToString("F1", inv)},{netMinY.ToString("F1", inv)}]..[{netMaxX.ToString("F1", inv)},{netMaxY.ToString("F1", inv)}]"
+        : "   (no lanes parsed)"));
+Console.WriteLine();
+
 // CLAUDE.md rule 10: these gates are PROCESS-GLOBAL. Print every one this process observed, once,
 // before any config runs (they cannot vary per-config -- they are read once by LiveCityConfig.
 // WithEnvOverrides at construction time, same ambient value every time).
@@ -183,7 +282,10 @@ if (csvPath is not null)
             "cars_req,peds_req,cars_actual,peds_actual,hi_res_radius,ped_highpower_end,ped_highpower_max,"
             + "ped_lowpower_end,ped_lowpower_max,steps,warmup,dt,repeat,wall_s,steps_per_s,rtf,realtime,"
             + "mean_ms,p50_ms,p95_ms,p99_ms,max_ms,over_3xp50_count,gc0,gc1,gc2,alloc_mib,"
-            + "alloc_bytes_per_step,gc_pause_ms,gc_pause_pct_wall,peak_ws_mib,arrived_total");
+            + "alloc_bytes_per_step,gc_pause_ms,gc_pause_pct_wall,peak_ws_mib,arrived_total,"
+            // T3: added columns.
+            + "fill_ok,scenario,net_lanes,net_extent_x,net_extent_y,car_spawn_per_step,ped_spawn_rate,"
+            + "fill_steps_used");
     }
 }
 
@@ -192,8 +294,10 @@ foreach (var (carsReq, pedsReq) in configs)
     for (var rep = 0; rep < repeats; rep++)
     {
         RunOne(
-            carsReq, pedsReq, steps, warmup, hz, repoRoot, quiet, profile, csv, rep, inv,
-            hiResRadius, hiResCentreX, hiResCentreY);
+            carsReq, pedsReq, steps, warmup, hz, BuildBaseConfig, quiet, profile, csv, rep, inv,
+            hiResRadius, hiResCentreX, hiResCentreY,
+            fillSteps, carSpawnPerStepArg, pedSpawnRateArg,
+            scenarioLabel, netLaneCount, netExtentX, netExtentY);
     }
 }
 
@@ -203,11 +307,13 @@ return 0;
 // ---- helpers (local functions -- top-level statements file) ----
 
 static void RunOne(
-    int carsReq, int pedsReq, int steps, int warmup, double? hz, string repoRoot,
+    int carsReq, int pedsReq, int steps, int warmup, double? hz, Func<LiveCityConfig> buildBaseConfig,
     bool quiet, bool profile, StreamWriter? csv, int repeatIndex, CultureInfo inv,
-    double hiResRadius, double? hiResCentreX, double? hiResCentreY)
+    double hiResRadius, double? hiResCentreX, double? hiResCentreY,
+    int fillSteps, int? carSpawnPerStepArg, double? pedSpawnRateArg,
+    string scenarioLabel, int netLaneCount, double netExtentX, double netExtentY)
 {
-    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    var cfg = buildBaseConfig();
     // Direct property sets -- no LIVECITY_CARS/LIVECITY_PEDS env var touched, nothing leaks (same
     // discipline as Sim.DensityDiff). --cars 0 / --peds 0 both simply mean "the spawn loop's own
     // `live < cap` guard is never true" -- Step() already handles a zero cap without special-casing.
@@ -216,6 +322,33 @@ static void RunOne(
     if (hz is { } h)
     {
         cfg.SimHz = h;
+    }
+
+    // T2: explicit overrides always win. Otherwise, when a fill phase is requested, auto-scale so the
+    // requested population is actually reachable within --fill-steps instead of leaving the defaults
+    // (LiveCityConfig.CarSpawnPerStep=5 / PedSpawnRatePerSecond=8.0) that produced the original
+    // under-fill. Car formula: ceil(requested / fillSteps) floored at the existing default 5 (never
+    // slower than today just because a caller asked for a fill phase). Ped formula: mirrors
+    // LiveCityConfig.WithEnvOverrides' LIVECITY_PEDS scaling EXACTLY (LiveCityConfig.cs:427-431:
+    // `8.0 * Math.Max(1.0, peds / 160.0)`), not an invented formula. Both are inert (config default
+    // stays as-is) when --fill-steps is 0 (disabled) -- byte-identical to before T2 for every existing
+    // caller.
+    if (carSpawnPerStepArg is { } carSpawnOverride)
+    {
+        cfg.CarSpawnPerStep = carSpawnOverride;
+    }
+    else if (fillSteps > 0 && carsReq > 0)
+    {
+        cfg.CarSpawnPerStep = Math.Max(5, (int)Math.Ceiling(carsReq / (double)fillSteps));
+    }
+
+    if (pedSpawnRateArg is { } pedRateOverride)
+    {
+        cfg.PedSpawnRatePerSecond = pedRateOverride;
+    }
+    else if (fillSteps > 0 && pedsReq > 0)
+    {
+        cfg.PedSpawnRatePerSecond = 8.0 * Math.Max(1.0, pedsReq / 160.0);
     }
 
     using var sim = new LiveCitySim(cfg);
@@ -230,6 +363,35 @@ static void RunOne(
         var cy = hiResCentreY ?? sim.HighRealismPocketY;
         sim.SetLcRealismZone(cx, cy, hiResRadius);
     }
+
+    // T2: PREFILL phase -- runs BEFORE warmup and is excluded from every statistic below (the GC/alloc/
+    // pause/step-time baselines are all captured strictly after this block, exactly like warmup).
+    // Steps until BOTH achieved counts reach 95% of requested, or fillSteps elapses, whichever first.
+    // fillSteps==0 (the default) means this loop runs zero iterations -- byte-identical to before T2.
+    var fillStepsUsed = 0;
+    if (fillSteps > 0)
+    {
+        while (fillStepsUsed < fillSteps)
+        {
+            var carsNow = sim.CurrentCars;
+            var pedsNow = sim.CurrentPeds;
+            var carsFillOk = carsReq <= 0 || carsNow >= 0.95 * carsReq;
+            var pedsFillOk = pedsReq <= 0 || pedsNow >= 0.95 * pedsReq;
+            if (carsFillOk && pedsFillOk)
+            {
+                break;
+            }
+
+            sim.Step();
+            fillStepsUsed++;
+        }
+    }
+
+    var fillCarsAchieved = sim.CurrentCars;
+    var fillPedsAchieved = sim.CurrentPeds;
+    var fillReachedTarget =
+        (carsReq <= 0 || fillCarsAchieved >= 0.95 * carsReq)
+        && (pedsReq <= 0 || fillPedsAchieved >= 0.95 * pedsReq);
 
     for (var s = 0; s < warmup; s++)
     {
@@ -336,12 +498,24 @@ static void RunOne(
         }
     }
 
-    // ADD2: real-time verdict. Budget is the sim step length in wall-clock ms (Dt seconds); the
-    // config is real-time only if BOTH the mean AND the tail (p99) step fit the budget -- smoothness
-    // is a tail property, a mean that fits while p99 is 4x budget is not smooth, and a mean-only
-    // verdict would hide exactly that.
+    // T3: the fill-adequacy gate. Uses the achieved counts AT THE END OF THE MEASURED WINDOW (the same
+    // carsActual/pedsActual reported everywhere else) so the gate reflects what was actually measured,
+    // not just what the (optional) prefill phase reached. A class with 0 requested trivially passes
+    // (nothing to fill).
+    var carsAtCap = carsReq <= 0 || carsActual >= 0.95 * carsReq;
+    var pedsAtCap = pedsReq <= 0 || pedsActual >= 0.95 * pedsReq;
+    var fillOk = carsAtCap && pedsAtCap;
+
+    // ADD2/T3/T4: real-time verdict, against the EFFECTIVE dt's budget (cfg.Dt already reflects --hz).
+    // The config is real-time only if BOTH the mean AND the tail (p99) step fit the budget -- smoothness
+    // is a tail property, a mean that fits while p99 is 4x budget is not smooth, and a mean-only verdict
+    // would hide exactly that. T3: a config that never reached 95% of its requested workload never ran
+    // the target load at all, so its verdict is forced to "n/a" -- NEVER "yes" -- rather than reporting
+    // real-time behaviour for a workload that was never actually measured.
     var budgetMs = cfg.Dt * 1000.0;
-    var realtime = mean <= budgetMs && p99 <= budgetMs;
+    var meanFitsBudget = mean <= budgetMs;
+    var p99FitsBudget = p99 <= budgetMs;
+    var realtime = !fillOk ? "n/a" : (meanFitsBudget && p99FitsBudget ? "yes" : "no");
 
     var gc0 = gc0After - gc0Before;
     var gc1 = gc1After - gc1Before;
@@ -361,7 +535,8 @@ static void RunOne(
         + $"ped_lo_end={lowPowerEnd} ped_lo_max={maxLowPower} "
         + $"steps={steps} warmup={warmup} dt={cfg.Dt.ToString("R", inv)} repeat={repeatIndex} "
         + $"wall_s={wallS.ToString("F4", inv)} steps_per_s={stepsPerSec.ToString("F1", inv)} "
-        + $"rtf={rtf.ToString("F2", inv)} realtime={(realtime ? "yes" : "no")} mean_ms={mean.ToString("F3", inv)} "
+        + $"rtf={rtf.ToString("F2", inv)} realtime={realtime} fill_ok={(fillOk ? 1 : 0)} "
+        + $"mean_ms={mean.ToString("F3", inv)} "
         + $"p50_ms={p50.ToString("F3", inv)} p95_ms={p95.ToString("F3", inv)} "
         + $"p99_ms={p99.ToString("F3", inv)} max_ms={max.ToString("F3", inv)} over3xp50={overCount} "
         + $"gc0={gc0} gc1={gc1} gc2={gc2} alloc_mib={allocMib.ToString("F2", inv)} "
@@ -369,14 +544,40 @@ static void RunOne(
         + $"gc_pause_ms={pauseMs.ToString("F3", inv)} gc_pause_pct={pausePctWall.ToString("F3", inv)} "
         + $"peak_ws_mib={peakWsMib.ToString("F1", inv)} arrived={arrivedTotal}");
 
+    // T3: loud, unconditional (not gated by --quiet) FILL-FAILED report -- the whole point of this task
+    // is that an unfilled config must never be silently reported as if it had run the requested workload.
+    if (!fillOk)
+    {
+        Console.WriteLine(
+            $"  *** FILL-FAILED: requested cars={carsReq} peds={pedsReq} -- ACHIEVED cars={carsActual} "
+            + $"({Pct(carsActual, carsReq, inv)}) peds={pedsActual} ({Pct(pedsActual, pedsReq, inv)}) "
+            + "-- REALTIME verdict is n/a (never 'yes' for a workload that never actually ran) ***");
+    }
+
     if (!quiet)
     {
         Console.WriteLine($"== Sim.BenchLiveCity: cars_req={carsReq} peds_req={pedsReq} repeat={repeatIndex} ==");
+        Console.WriteLine($"  scenario: {scenarioLabel}   net lanes={netLaneCount}   "
+            + $"extent x={netExtentX.ToString("F1", inv)} m y={netExtentY.ToString("F1", inv)} m");
         Console.WriteLine(
             $"  requested: cars={carsReq} peds={pedsReq}   ACTUAL at horizon: cars={carsActual} peds={pedsActual}"
             + (carsActual < carsReq || pedsActual < pedsReq
                 ? "   <-- UNDER-FILLED, did not reach requested cap in this run"
                 : string.Empty));
+        if (fillSteps > 0)
+        {
+            Console.WriteLine(
+                $"  PREFILL (T2): steps used={fillStepsUsed}/{fillSteps}   "
+                + $"achieved cars={fillCarsAchieved}/{carsReq} ({Pct(fillCarsAchieved, carsReq, inv)})   "
+                + $"peds={fillPedsAchieved}/{pedsReq} ({Pct(fillPedsAchieved, pedsReq, inv)})   "
+                + (fillReachedTarget
+                    ? "reached 95% target before fill-steps elapsed"
+                    : "fill-steps EXHAUSTED before reaching 95% target"));
+        }
+
+        Console.WriteLine(
+            $"  spawn rates (T2, effective): car_spawn_per_step={cfg.CarSpawnPerStep}   "
+            + $"ped_spawn_rate={cfg.PedSpawnRatePerSecond.ToString("F2", inv)}/s");
         Console.WriteLine(
             $"  ped LOD split (ADD1): pocket radius={hiResRadius.ToString("F1", inv)} m "
             + $"({(hiResRadius > 0.0 ? "explicit" : "static 70 m default, unchanged")})   "
@@ -387,8 +588,8 @@ static void RunOne(
             + $"({cfg.SimHz.ToString("F2", inv)} Hz)   step budget={budgetMs.ToString("F1", inv)} ms");
         Console.WriteLine(
             $"  wall={wallS.ToString("F3", inv)} s   steps/s={stepsPerSec.ToString("F1", inv)}   "
-            + $"RTF(sim/wall)={rtf.ToString("F2", inv)}x   REALTIME: {(realtime ? "yes" : "no")} "
-            + $"(mean<=budget AND p99<=budget)");
+            + $"RTF(sim/wall)={rtf.ToString("F2", inv)}x   REALTIME: {realtime} "
+            + (fillOk ? "(mean<=budget AND p99<=budget)" : "(n/a -- FILL-FAILED, see above)"));
         Console.WriteLine(
             $"  per-step wall time (ms): mean={mean.ToString("F3", inv)} p50={p50.ToString("F3", inv)} "
             + $"p95={p95.ToString("F3", inv)} p99={p99.ToString("F3", inv)} max={max.ToString("F3", inv)} "
@@ -430,7 +631,7 @@ static void RunOne(
             wallS.ToString("R", inv),
             stepsPerSec.ToString("R", inv),
             rtf.ToString("R", inv),
-            realtime ? "yes" : "no",
+            realtime,
             mean.ToString("R", inv),
             p50.ToString("R", inv),
             p95.ToString("R", inv),
@@ -446,10 +647,31 @@ static void RunOne(
             pausePctWall.ToString("R", inv),
             peakWsMib.ToString("R", inv),
             arrivedTotal.ToString(inv),
+            // T3: added columns.
+            fillOk ? "1" : "0",
+            CsvEscape(scenarioLabel),
+            netLaneCount.ToString(inv),
+            netExtentX.ToString("R", inv),
+            netExtentY.ToString("R", inv),
+            cfg.CarSpawnPerStep.ToString(inv),
+            cfg.PedSpawnRatePerSecond.ToString("R", inv),
+            fillStepsUsed.ToString(inv),
         }));
         csv.Flush();
     }
 }
+
+// T3: "achieved/requested" as a percentage string, InvariantCulture. 0 requested is reported as "n/a"
+// rather than a divide-by-zero-shaped 0.0%/Infinity% -- a class that was not requested at all trivially
+// satisfies the fill gate (see the carsFillOk/pedsFillOk checks above), so a percentage would mislead.
+static string Pct(int achieved, int requested, CultureInfo inv) =>
+    requested <= 0 ? "n/a, 0 requested" : (100.0 * achieved / requested).ToString("F1", inv) + "%";
+
+// T1: minimal CSV field escaping for the free-form scenario label (a --sumocfg/--dataset path could in
+// principle contain a comma or a double quote) -- RFC4180-shaped, applied only when needed so the
+// common case (no comma/quote) stays a plain unquoted field like every other column here.
+static string CsvEscape(string s) =>
+    s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0 ? s : "\"" + s.Replace("\"", "\"\"") + "\"";
 
 // Nearest-rank percentile over an ALREADY-SORTED (ascending) array.
 static double Percentile(double[] sorted, double p)
