@@ -43,28 +43,35 @@ change is called out in the tracker — it will not drift silently.**
 
 Your ped render path is **the wire path**, and the change on your side is ~2 lines.
 
-`demos/City3D/CityLib/PedReconstructor.cs:76,83` today:
+`demos/City3D/CityLib/PedReconstructor.cs` today (on the viewer branch — peds are parked on the frame's
+flat **ground datum**, because they have no elevation of their own yet):
 
 ```csharp
 if (!_reconstructor.TryGetRenderPose(id, out var pos, out var visible, out _) || !visible) continue;
-// The ped net is flat (z = 0); ...
-var (gx, gy, gz) = CoordinateTransform.SumoToGodot(pos.X, pos.Y, 0.0);
+// The ped stack is 2-D, so peds sit on the frame's GROUND DATUM. ...
+var (gx, gy, gz) = _frame.GroundToGodot(pos.X, pos.Y, 0.0);
 ```
 
-becomes:
+becomes — note this switches **method**, not just the argument, because peds now *have* real elevation and
+so join road meshes / cars / lane paint on the absolute-elevation path rather than the datum path:
 
 ```csharp
 if (!_reconstructor.TryGetRenderPose(id, out var pos, out var z, out var visible, out _) || !visible) continue;
 var (gx, gy, gz) = _frame.ToGodot(pos.X, pos.Y, z);   // NOT CoordinateTransform.SumoToGodot — see below
 ```
 
-> **⚠ Use the scene's `SumoGodotFrame`, not `CoordinateTransform.SumoToGodot`.** City3D routes all
-> placement through a recenter frame (origin subtracted in double precision before the float cast).
-> Bypassing it misplaces peds **twice**: horizontally by the recenter, and — once z is real — **vertically
-> by `OriginZ`**, the net's mean elevation. In a georeferenced cut whose roads sit at ~370–398 m, peds that
-> skip the frame render ~380 m above the road even if the horizontal origin is zero.
-> `SumoGodotFrame.Identity` is bitwise identical to `CoordinateTransform.SumoToGodot`, so passing the
-> frame is always correct.
+> **⚠ Two distinct traps here.**
+>
+> 1. **Use the scene's `SumoGodotFrame`, never `CoordinateTransform.SumoToGodot` directly.** City3D routes
+>    all placement through a recenter frame (origin subtracted in double precision before the float cast).
+>    Bypassing it offsets peds horizontally by the recenter *and* vertically by `OriginZ`.
+>    `SumoGodotFrame.Identity` is bitwise identical to `SumoToGodot`, so passing the frame is always safe.
+> 2. **`ToGodot`, not `GroundToGodot`.** `GroundToGodot(x, y, h)` places `h` metres above the scene's flat
+>    ground **datum** — correct for overlays with no elevation data (zone tint, POI marks, the realism
+>    ring), which is why peds sit there today. Once z is real, keeping `GroundToGodot` would pin every ped
+>    to the net's mid-elevation and throw away the elevation just plumbed through — on hilly terrain that
+>    is tens of metres off the local surface. `ToGodot` is the absolute-elevation path that road meshes,
+>    cars and lane paint already use.
 
 Nothing else changes on the render side:
 - `ReconstructedPed` **already has a `Z` field** — it is currently fed a literal `0.0`. Only its doc
