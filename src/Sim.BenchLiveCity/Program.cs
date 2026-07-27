@@ -39,6 +39,12 @@ using Sim.LiveCity;
 //     --profile         (LIVE-CITY-PERF-DESIGN.md P1) turn on LiveCitySim.ProfilePhases (+ the wrapped
 //                       Engine's) for the MEASURED loop only, and print the phase breakdown (ms + % of
 //                       measured wall, descending, with an explicit "unaccounted" remainder)
+//     --hi-res-radius R (ADD1) call LiveCitySim.SetLcRealismZone at the pocket's default centre with
+//                       radius R metres, resizing the high-realism (full-ORCA) ped pocket for the
+//                       WHOLE run (set once, before warmup). R=0 (the default) leaves the ctor's
+//                       static 70 m default pocket untouched.
+//     --hi-res-centre x,y  override the pocket centre (default: LiveCitySim.HighRealismPocketX/Y);
+//                       only meaningful together with --hi-res-radius > 0
 //     --quiet           suppress the per-config human-readable block (CSV, if requested, still written)
 
 // Locale trap (CLAUDE.md): this box is cs-CZ (comma decimal separator). Every number this tool prints
@@ -55,6 +61,9 @@ string? csvPath = null;
 var repeats = 1;
 var quiet = false;
 var profile = false;
+double hiResRadius = 0.0;
+double? hiResCentreX = null;
+double? hiResCentreY = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -90,6 +99,26 @@ for (var i = 0; i < args.Length; i++)
         case "--profile":
             profile = true;
             break;
+        case "--hi-res-radius" when i + 1 < args.Length:
+            hiResRadius = double.Parse(args[++i], inv);
+            break;
+        case "--hi-res-centre" when i + 1 < args.Length:
+        case "--hi-res-center" when i + 1 < args.Length:
+        {
+            var parts = args[++i].Split(',');
+            if (parts.Length != 2
+                || !double.TryParse(parts[0], NumberStyles.Float, inv, out var cx)
+                || !double.TryParse(parts[1], NumberStyles.Float, inv, out var cy))
+            {
+                Console.Error.WriteLine($"Sim.BenchLiveCity: bad --hi-res-centre value '{args[i]}' (want x,y).");
+                return 2;
+            }
+
+            hiResCentreX = cx;
+            hiResCentreY = cy;
+            break;
+        }
+
         default:
             Console.Error.WriteLine($"Sim.BenchLiveCity: unrecognized argument '{args[i]}'.");
             return 2;
@@ -151,7 +180,8 @@ if (csvPath is not null)
     if (writeHeader)
     {
         csv.WriteLine(
-            "cars_req,peds_req,cars_actual,peds_actual,steps,warmup,dt,repeat,wall_s,steps_per_s,rtf,"
+            "cars_req,peds_req,cars_actual,peds_actual,hi_res_radius,ped_highpower_end,ped_highpower_max,"
+            + "ped_lowpower_end,ped_lowpower_max,steps,warmup,dt,repeat,wall_s,steps_per_s,rtf,realtime,"
             + "mean_ms,p50_ms,p95_ms,p99_ms,max_ms,over_3xp50_count,gc0,gc1,gc2,alloc_mib,"
             + "alloc_bytes_per_step,gc_pause_ms,gc_pause_pct_wall,peak_ws_mib,arrived_total");
     }
@@ -161,7 +191,9 @@ foreach (var (carsReq, pedsReq) in configs)
 {
     for (var rep = 0; rep < repeats; rep++)
     {
-        RunOne(carsReq, pedsReq, steps, warmup, hz, repoRoot, quiet, profile, csv, rep, inv);
+        RunOne(
+            carsReq, pedsReq, steps, warmup, hz, repoRoot, quiet, profile, csv, rep, inv,
+            hiResRadius, hiResCentreX, hiResCentreY);
     }
 }
 
@@ -172,7 +204,8 @@ return 0;
 
 static void RunOne(
     int carsReq, int pedsReq, int steps, int warmup, double? hz, string repoRoot,
-    bool quiet, bool profile, StreamWriter? csv, int repeatIndex, CultureInfo inv)
+    bool quiet, bool profile, StreamWriter? csv, int repeatIndex, CultureInfo inv,
+    double hiResRadius, double? hiResCentreX, double? hiResCentreY)
 {
     var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
     // Direct property sets -- no LIVECITY_CARS/LIVECITY_PEDS env var touched, nothing leaks (same
@@ -186,6 +219,17 @@ static void RunOne(
     }
 
     using var sim = new LiveCitySim(cfg);
+
+    // ADD1 (LIVE-CITY-PERF-DESIGN.md): resize the high-realism (full-ORCA) ped pocket for the WHOLE
+    // run, set once before warmup so both warmup and the measured loop see the same zone. R<=0 (the
+    // default) leaves the ctor's static 70 m pocket untouched -- SetLcRealismZone is only called when
+    // the caller explicitly asked for a different radius.
+    if (hiResRadius > 0.0)
+    {
+        var cx = hiResCentreX ?? sim.HighRealismPocketX;
+        var cy = hiResCentreY ?? sim.HighRealismPocketY;
+        sim.SetLcRealismZone(cx, cy, hiResRadius);
+    }
 
     for (var s = 0; s < warmup; s++)
     {
@@ -209,6 +253,13 @@ static void RunOne(
     var stepMs = new double[steps];
     var toMs = 1000.0 / Stopwatch.Frequency;
 
+    // ADD1: high/low-power ped high-water marks over the measured window (the pocket population
+    // fluctuates as the crowd walks through it, so the end-of-run snapshot alone would understate the
+    // peak workload). Plain int comparisons -- no allocation, negligible added per-step cost, same
+    // class of cheap read as CurrentCars/CurrentPeds elsewhere in this loop.
+    var maxHighPower = 0;
+    var maxLowPower = 0;
+
     var sw = Stopwatch.StartNew();
     for (var s = 0; s < steps; s++)
     {
@@ -216,6 +267,18 @@ static void RunOne(
         sim.Step();
         var t1 = Stopwatch.GetTimestamp();
         stepMs[s] = (t1 - t0) * toMs;
+
+        var hp = sim.PedHighPowerCount;
+        if (hp > maxHighPower)
+        {
+            maxHighPower = hp;
+        }
+
+        var lp = sim.CurrentPeds - hp;
+        if (lp > maxLowPower)
+        {
+            maxLowPower = lp;
+        }
     }
 
     sw.Stop();
@@ -234,6 +297,21 @@ static void RunOne(
     var carsActual = sim.CurrentCars;
     var pedsActual = sim.CurrentPeds;
     var arrivedTotal = sim.ArrivedTotal;
+
+    // ADD1: end-of-run high/low-power split (alongside the high-water marks captured during the loop
+    // above). Ped cost is dominated by how many peds are high-power, not by the raw ped count, so
+    // neither number alone is an interpretable workload label -- both are reported.
+    var highPowerEnd = sim.PedHighPowerCount;
+    var lowPowerEnd = pedsActual - highPowerEnd;
+    if (highPowerEnd > maxHighPower)
+    {
+        maxHighPower = highPowerEnd;
+    }
+
+    if (lowPowerEnd > maxLowPower)
+    {
+        maxLowPower = lowPowerEnd;
+    }
 
     var wallS = sw.Elapsed.TotalSeconds;
     var stepsPerSec = wallS > 0 ? steps / wallS : 0.0;
@@ -258,6 +336,13 @@ static void RunOne(
         }
     }
 
+    // ADD2: real-time verdict. Budget is the sim step length in wall-clock ms (Dt seconds); the
+    // config is real-time only if BOTH the mean AND the tail (p99) step fit the budget -- smoothness
+    // is a tail property, a mean that fits while p99 is 4x budget is not smooth, and a mean-only
+    // verdict would hide exactly that.
+    var budgetMs = cfg.Dt * 1000.0;
+    var realtime = mean <= budgetMs && p99 <= budgetMs;
+
     var gc0 = gc0After - gc0Before;
     var gc1 = gc1After - gc1Before;
     var gc2 = gc2After - gc2Before;
@@ -272,9 +357,11 @@ static void RunOne(
     // labelled block below) -- it is the one parseable line a script greps for.
     Console.WriteLine(
         $"METRIC cars_req={carsReq} peds_req={pedsReq} cars={carsActual} peds={pedsActual} "
+        + $"hires_radius={hiResRadius.ToString("F1", inv)} ped_hi_end={highPowerEnd} ped_hi_max={maxHighPower} "
+        + $"ped_lo_end={lowPowerEnd} ped_lo_max={maxLowPower} "
         + $"steps={steps} warmup={warmup} dt={cfg.Dt.ToString("R", inv)} repeat={repeatIndex} "
         + $"wall_s={wallS.ToString("F4", inv)} steps_per_s={stepsPerSec.ToString("F1", inv)} "
-        + $"rtf={rtf.ToString("F2", inv)} mean_ms={mean.ToString("F3", inv)} "
+        + $"rtf={rtf.ToString("F2", inv)} realtime={(realtime ? "yes" : "no")} mean_ms={mean.ToString("F3", inv)} "
         + $"p50_ms={p50.ToString("F3", inv)} p95_ms={p95.ToString("F3", inv)} "
         + $"p99_ms={p99.ToString("F3", inv)} max_ms={max.ToString("F3", inv)} over3xp50={overCount} "
         + $"gc0={gc0} gc1={gc1} gc2={gc2} alloc_mib={allocMib.ToString("F2", inv)} "
@@ -291,12 +378,17 @@ static void RunOne(
                 ? "   <-- UNDER-FILLED, did not reach requested cap in this run"
                 : string.Empty));
         Console.WriteLine(
+            $"  ped LOD split (ADD1): pocket radius={hiResRadius.ToString("F1", inv)} m "
+            + $"({(hiResRadius > 0.0 ? "explicit" : "static 70 m default, unchanged")})   "
+            + $"high-power end={highPowerEnd} max={maxHighPower}   low-power end={lowPowerEnd} max={maxLowPower}");
+        Console.WriteLine(
             $"  demand model: CLOSED-LOOP (occupancy-capped; CLAUDE.md rule 4 -- not a capacity/discharge measurement)");
         Console.WriteLine($"  steps={steps} (measured) warmup={warmup} (excluded) dt={cfg.Dt.ToString("R", inv)}s "
-            + $"({cfg.SimHz.ToString("F2", inv)} Hz)");
+            + $"({cfg.SimHz.ToString("F2", inv)} Hz)   step budget={budgetMs.ToString("F1", inv)} ms");
         Console.WriteLine(
             $"  wall={wallS.ToString("F3", inv)} s   steps/s={stepsPerSec.ToString("F1", inv)}   "
-            + $"RTF(sim/wall)={rtf.ToString("F2", inv)}x");
+            + $"RTF(sim/wall)={rtf.ToString("F2", inv)}x   REALTIME: {(realtime ? "yes" : "no")} "
+            + $"(mean<=budget AND p99<=budget)");
         Console.WriteLine(
             $"  per-step wall time (ms): mean={mean.ToString("F3", inv)} p50={p50.ToString("F3", inv)} "
             + $"p95={p95.ToString("F3", inv)} p99={p99.ToString("F3", inv)} max={max.ToString("F3", inv)} "
@@ -326,6 +418,11 @@ static void RunOne(
             pedsReq.ToString(inv),
             carsActual.ToString(inv),
             pedsActual.ToString(inv),
+            hiResRadius.ToString("R", inv),
+            highPowerEnd.ToString(inv),
+            maxHighPower.ToString(inv),
+            lowPowerEnd.ToString(inv),
+            maxLowPower.ToString(inv),
             steps.ToString(inv),
             warmup.ToString(inv),
             cfg.Dt.ToString("R", inv),
@@ -333,6 +430,7 @@ static void RunOne(
             wallS.ToString("R", inv),
             stepsPerSec.ToString("R", inv),
             rtf.ToString("R", inv),
+            realtime ? "yes" : "no",
             mean.ToString("R", inv),
             p50.ToString("R", inv),
             p95.ToString("R", inv),
