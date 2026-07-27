@@ -62,6 +62,8 @@ golden attaches → still **661/4** byte-identical).
 ---
 
 ## Live-city realism (high-realism-zone demo) — active
+**Coordinator orientation + owner-replay recipe: `docs/LIVE-CITY-REALISM-COORDINATOR-HANDOFF.md`** (start
+here for the cross-session picture + the ZIPPED ~1k-ped/~300-car Sim.Viz replay recipe).
 Detail: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md` (shipped #1/#2), `docs/LIVE-CITY-REALISM-ATTEMPT-LOG.md`
 (trail), `docs/LIVE-CITY-REALISM-AB-DESIGN.md` (A/B brief), `TASKS-DONE.md` → "Realism violations in
 high-realism zones".
