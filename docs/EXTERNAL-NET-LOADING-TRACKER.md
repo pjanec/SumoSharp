@@ -19,21 +19,28 @@ Toolchain (ephemeral — re-provision each session): dotnet SDK **8.0.129** (apt
 
 ---
 
-## Status: design agreed, implementation not started
+## Status: design revised (retain-not-reconstruct), implementation not started
+
+**One decision needed before Stage C can be scheduled:** design §3.6 — how z reaches the *remote/wire*
+surface. `PathArcRecord` carries x,y only (8 B/point). **W1** extend the wire to 12 B/point
+(recommended; also closes the gap logged in `DEMO-CITY3D-TRACKER.md` T1.2) · **W2** receiver-side
+nearest-lane lookup (no wire change; reintroduces the search and the ≤27-spot ambiguity on that surface
+only) · **W3** defer, overload returns 0 and says so. Blocks neither Stage A/B nor BIG's own `Sample()`
+path.
 
 ## Stage A — Validation data (Tier 2, committed synthetic — design §6.2)
-- [ ] **A1** synthetic georeferenced 3-D ped-net fixture `scenarios/_ped/roadnet_geo3d/` (6 SCs; SC4 must reproduce the measured branch-1 property)
+- [ ] **A1** synthetic georeferenced 3-D ped-net fixture `scenarios/_ped/roadnet_geo3d/` (6 SCs; SC4 must reproduce the measured real-net property: 3-D shapes on **all** ped-lane categories)
 - [ ] **A2** fixture reachable from the test projects via the existing repo-root helper, no absolute paths
 
 ## Stage B — Change 1: net/route path resolution
 - [ ] **B1** `LiveCityConfig.NetPath`/`RoutePath` + ctor resolution across **all three** net consumers (SC3 is the non-vacuous one)
 - [ ] **B2** `LiveCityConfig.ForSumocfg` — relative + absolute + no-`<input>` cases, reflection drift-guard vs `ForDataset`
 
-## Stage C — Change 2: pedestrian elevation
-- [ ] **C1** `IPedElevationSource` seam in `Sim.Pedestrians` (both TFMs; **no** new project reference)
-- [ ] **C2** `NetPedElevationSource` in `Sim.LiveCity` (analytic 4.0/2.0 m checks, determinism, ring cap)
-- [ ] **C3** `PedRemoteReconstructor` 5-out-param overload (15 existing call sites unedited)
-- [ ] **C4** `LiveCitySim.PedElevation` + real Z in `Sample()` (3-D non-zero; 2-D bitwise `0.0`; ped↔car ≤ 2 m; frame cost < 5%)
+## Stage C — Change 2: pedestrian elevation (**redesigned** — retain, don't reconstruct)
+- [ ] **C1** `PedNetworkParser` retains the 3rd coordinate → `PedLane.ShapeZ` / `PedCrossing.ShapeZ` / `PedWalkingArea.PolygonZ` (2-D net ⇒ **null**, not zeros)
+- [ ] **C2** `IPedNavigation.ElevationsAlong` default interface method + `SumoNavMesh` / `SumoRouteGraphNav` overrides (existing providers unedited)
+- [ ] **C3** ped runtime exposes z; `LiveCitySim.Sample()` uses it (SC4 = **2-D trajectory bitwise identical** with z on vs. off — the proof z is output-only)
+- [ ] **C4** `PedRemoteReconstructor` 5-out-param overload — **BLOCKED on the §3.6 W1/W2/W3 wire decision**
 
 ## Stage D — Change 3: live pedestrian density knobs
 - [ ] **D1** mirror `PedPopulationCap`/`PedSpawnRatePerSecond` into `PedDemandConfig` each `Step()` (SC1: **fails before, passes after**)
@@ -55,13 +62,14 @@ never committed). Probed with existing public APIs only, no feature code. M1/M2/
 | # | Question | Design ref | Result |
 |---|---|---|---|
 | M1 | Do real `crossing`/`walkingarea` lanes carry `ShapeZ`? | §3.2, §8/R1 | **YES — 100 %, both nets.** Geneva: sidewalks 2 201, crossings 221, walkingareas 2 179, **all** with `ShapeZ`, **0** missing from `LanesById`. Switzerland: 13 811 / 735 / 13 537, same — 0 missing, 0 without Z. **R1 closed.** |
-| M2 | Which §3.2 lane-set branch do real nets select? | §3.2 | **Branch 1 (ped-lanes-only index)**, both nets. Index size 98 897 segs (Geneva, 30 % of all Z segs) / 860 276 (Switzerland, 52 %). **R2 closed** — ≈14 MB of index vs. the 1.65 GB the parsed net already costs. |
+| M2 | Ped-lane geometry volume (sized the superseded index; now sizes the retained `ShapeZ` arrays) | §3.2, §8/R2 | Geneva **98 897** ped-lane segments / **103 498** vertices; Switzerland **860 276** / **888 359**. Retained as `double[]`: **< 1 MB** / **~7 MB** against the 572 MB / 1.65 GB the parsed net already costs. **R2 dissolved** — there is no index. |
 | M5 | Real-net load cost | §7, §8/R6 | Geneva 44 MB: parse 9.2 s + ped 1.2 s + crosswalk 1.3 s = **11.6 s**, 53 229 lanes, **572 MB**. Switzerland 161 MB: parse **67.7 s** + ped 6.5 s (+~5 s) ≈ **80 s**, 175 465 lanes, **1 652 MB**. Ctor makes **four** net passes (not two); pass 1 is ~85 % of cost. |
 | M7 | Georeference & elevation, real files | §5 | Both nets: `netOffset="-388091.80,-5257586.90"` **identical**, `projParameter="+proj=utm +zone=32 +ellps=WGS84 …"`. Cut preserves the absolute UTM offset exactly; only `convBoundary` shrinks. Elevation span **199.48–1633.77 m** (CH), **324.39–1062.24 m** (Geneva). |
 | M8 | Does `RouteFiles[0]` name a real route file? | §0/C4 | **NO.** `geneve_Medium.sumocfg`'s first entry is `common/vType.config.xml` — 107 `<vType>`, **0 routes**. Real routes are entries 4–5 (600 and 1 000 routes). Design corrected to scrape **all** route files. |
-| M9 | Is a 2-D (horizontal-only) elevation lookup ambiguous on real nets? | §3.3a, §8/R8 | **Negligible — API validated.** Ped-lane vertices bucketed at 2 m, cells spanning > 3 m of z: Geneva **7 / 78 083** (0.009 %, worst 6.3 m); Switzerland **27 / 679 340** (0.004 %, worst 12.6 m). Several of the 27 are *intra*-lane (same lane id both extremes), which nearest-segment projection resolves correctly, so true inter-lane ambiguity is lower. **R8 closed.** |
-| M3 | Distribution of \|pedZ − carZ\| for pairs within 10 m, + outlier classification | §3.5(b), C4·SC2, E2·SC4 | *pending — needs C4. Not a bare threshold: p90 ≤ 2 m, and every outlier classified multi-level vs. wrong-lane-snap (bounded by M9 at ≤ 27 nationwide).* |
-| M4 | `Sample()` cost, elevation on vs. off at ≥300 peds | §8/R3, C4·SC4 | *pending — needs C4. Parametric (cell size / ring cap), not architectural.* |
+| M9 | Is a 2-D (horizontal-only) elevation lookup ambiguous on real nets? | §8/R8 | **Moot for the current design** (a ped now takes z from the path it walks, so there is nothing to disambiguate); retained because it **bounds the error of option W2** in §3.6. Ped-lane vertices bucketed at 2 m, cells spanning > 3 m of z: Geneva **7 / 78 083** (0.009 %, worst 6.3 m); Switzerland **27 / 679 340** (0.004 %, worst 12.6 m). Several of the 27 are *intra*-lane (same lane id both extremes). |
+| M3 | Ped z vs. the analytically-known lane elevation on the fixture ramp; and \|pedZ − carZ\| on the real net | C3·SC2, E2·SC4 | *pending — needs C3. The redesign raises the bar: **≤ 0.10 m** against known geometry, where the superseded search could only promise "within a road width".* |
+| M4 | `Sample()` cost, z on vs. off at ≥300 peds | §8/R3, C3·SC5 | *pending — needs C3. Expected in the noise (one lerp per ped); a measurable cost means the implementation searched something.* |
+| M10 | Is z genuinely output-only? 2-D ped trajectory over 200 steps, z populated vs. null | §3.3, C3·SC4 | *pending — needs C3. Must be **bitwise identical**. This is what turns "parity-inert" from a claim into a fact.* |
 | M6 | Demo 200-step `PeakCars`/`PeakPeds`/`ArrivedTotal`, before vs. after | B1·SC5, D1·SC6 | *pending — capture before touching `src/`* |
 
 ---

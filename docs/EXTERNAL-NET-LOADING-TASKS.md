@@ -51,11 +51,11 @@ not a parity golden"** (mirror `scenarios/_ped/roadnet_min/provenance.txt`'s wor
 2. ≥1 lane shape has **3 coordinates per vertex**; the parsed `Lane.ShapeZ` is non-null for ≥1 lane and
    spans a range of **≥ 3 m** across the net (i.e. there is real relief, not a constant plane).
 3. `PedNetworkParser.Load` yields **≥1 sidewalk, ≥1 crossing, ≥1 walkingarea**.
-4. **The fixture must reproduce the measured real-net property (design §3.2):** 100 % of its ped-lane ids
-   resolve in `NetworkModel.LanesById` **with `ShapeZ != null`**, in all three categories — i.e. it
-   selects §3.2 **branch 1**, as `geneve.net.xml` and `swiss_roads.net.xml` both do. If netconvert
-   produces 2-D crossings here while the real nets have 3-D ones, the fixture is **not representative**:
-   fix the recipe (or note the divergence loudly) rather than weakening the assertion.
+4. **The fixture must reproduce the measured real-net property (design §3.2):** its `<lane>` elements
+   carry a 3rd coordinate for **every** sidewalk, crossing and walkingarea — as `geneve.net.xml` and
+   `swiss_roads.net.xml` both do (100 %, measured). This is the precondition for C1 retaining z at all.
+   If netconvert produces 2-D crossings here while the real nets have 3-D ones, the fixture is **not
+   representative**: fix the recipe (or note the divergence loudly) rather than weakening the assertion.
 5. Total committed size of the directory **< 1 MB** (it is a fixture, not a benchmark net).
 6. Standing gate unchanged (no `src/` change in this task).
 
@@ -124,84 +124,111 @@ real configs' multi-line lists).
 
 ---
 
-## Stage C — Change 2: pedestrian elevation
+## Stage C — Change 2: pedestrian elevation (retain-not-reconstruct)
 
-### C1 — `IPedElevationSource` seam
-**Design:** §3.1. **Depends on:** nothing.
-**Touches (new):** `src/Sim.Pedestrians/Lod/IPedElevationSource.cs`.
-**Success conditions:**
-1. Builds for **both** TFMs (`net8.0;netstandard2.1`).
-2. `src/Sim.Pedestrians/Sim.Pedestrians.csproj` gains **no new `ProjectReference`** — verify by diff.
-   The csproj's "must never reference Sim.Ingest" rule is a hard constraint, not a preference.
-3. Standing gate unchanged.
+> Restructured after the design was corrected: z is **retained** from ingest and carried along the ped's
+> own path (design §3.1–§3.4), not recovered by a nearest-lane search. The whole stage stays inside
+> `Sim.Pedestrians` plus the two render seams; **no new project reference anywhere** (design §3.1).
 
-### C2 — `NetPedElevationSource`
-**Design:** §3.2, §3.4. **Depends on:** A1, C1.
-**Touches (new):** `src/Sim.LiveCity/NetPedElevationSource.cs`.
+### C1 — `PedNetworkParser` retains the third coordinate
+**Design:** §3.2, §3.3. **Depends on:** A1.
+**Touches:** `src/Sim.Pedestrians/PedNetwork.cs` (three records gain a defaulted trailing elevation
+channel), `src/Sim.Pedestrians/PedNetworkParser.cs` (add `ParseShapeZ`, mirroring
+`NetworkParser.ParseShapeZ`).
 
-**Do:** implement the once-at-construction lane-set selection (§3.2 branches 1/2/3), the 25 m uniform
-grid, ring expansion with **one extra ring after the first hit**, the 64-ring cap, and
-`(distSq, lane id ordinal, segment index)` tie-breaking. Elevation itself comes from the existing
-`LaneGeometry.ElevationAtOffset` — do not reimplement interpolation.
+**Do:** `PedLane.ShapeZ`, `PedCrossing.ShapeZ`, `PedWalkingArea.PolygonZ` — all
+`IReadOnlyList<double>?`, index-aligned with the existing 2-D shape, **null on a 2-D net**. Defaulted
+trailing parameters so every existing constructor call compiles unchanged. Copy `Lane.ShapeZ`'s header
+comment discipline: state explicitly that this is output-only and read by no routing/steering/ORCA code.
 
 **Success conditions:**
-1. **Correctness against a known analytic case:** on `demos/City3D/CityLib.Tests/fixtures/elevated.net.xml`
-   (E0_0 climbs 0→8 m over 100 m), a query at the lane's midpoint returns **4.0 ± 0.05 m**, at 25 m
-   returns **2.0 ± 0.05 m**, and on the flat control lane E1_0 returns **0.0**.
-2. **Off-lane query:** a point 5 m to the side of E0_0's midpoint still returns ≈4.0 m (nearest-segment
-   projection, not nearest-vertex).
-3. **2-D net ⇒ no index:** constructed against `scenarios/_ped/demo_city/box/net.xml`, the factory
-   returns **null** (or the construction path reports "no Z"), and **no** grid is allocated.
-4. **Determinism:** two independently constructed sources give **bit-identical** doubles for 1000
-   pseudo-random query points (fixed seed) on the A1 fixture. Equidistant-tie case exercised explicitly.
-5. **Ring-cap behaviour:** a query 5 km from any indexed lane returns exactly `0.0` and does not scan the
-   whole net (assert a bounded segment-visit count via an internal counter, or assert the call completes
-   in < 1 ms).
-6. Which §3.2 branch the A1 fixture selects is **recorded in the tracker** (ties back to A1's SC4/R1).
-7. Standing gate unchanged.
+1. On the A1 fixture, `ShapeZ`/`PolygonZ` is **non-null for every** sidewalk, crossing and walkingarea,
+   with `Count == Shape.Count` in every case (index alignment is the whole contract — assert it).
+2. Values match the net file: for one hand-picked lane, the parsed elevations equal the 3rd components in
+   its `shape=` attribute exactly (parse the XML in the test, don't hardcode).
+3. On `scenarios/_ped/demo_city/box/net.xml` (2-D) **every** channel is `null` — not an empty array, not
+   zeros. This is what keeps §3.3's parity-inertness claim honest.
+4. `PedCrossing.Outline` also gets its z retained, or the task states explicitly why not (it feeds
+   crosswalk polygons, which BIG may also need to place).
+5. Both TFMs build; `Sim.Pedestrians.csproj` gains **no** new `ProjectReference` (verify by diff).
+6. `tests/Sim.Pedestrians.Tests` green; standing gate unchanged.
 
-### C3 — `PedRemoteReconstructor` 5-out-param overload
-**Design:** §3.5(a). **Depends on:** C1.
-**Touches:** `src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs` — **add** a third defaulted ctor param
-and a sibling overload. The existing 4-out-param overload body must be **untouched**.
+### C2 — `IPedNavigation.ElevationsAlong` + provider overrides
+**Design:** §3.4. **Depends on:** C1.
+**Touches:** `src/Sim.Pedestrians/Navigation/INavigation.cs` (default interface method),
+`Navigation/Bake/*` + `Navigation/RouteGraph/SumoRouteGraphNav.cs` (overrides).
 
-**Success conditions:**
-1. All **15** existing `TryGetRenderPose` call sites (design §1.10) compile **unchanged** — verify by diff
-   that no call site was edited.
-2. With `elevation: null`, the new overload returns the **same** `pos`/`visible`/`animTag` as the old one
-   for the same id and render time, and `z == 0.0`.
-3. With a stub `IPedElevationSource` returning `pos.X * 0.1`, the overload returns exactly that value —
-   proving z is sampled at the **smoothed** render position, not the raw wire sample.
-4. `tests/Sim.Pedestrians.Tests` green; both TFMs build.
-5. Standing gate unchanged.
-
-### C4 — `LiveCitySim.PedElevation` + real Z in `Sample()`
-**Design:** §3.5(b). **Depends on:** C2, C3.
-**Touches:** `src/Sim.LiveCity/LiveCitySim.cs` (build the source in the ctor; expose it; replace the
-literal `0.0` at `:1076`).
+**Do:** add `ElevationsAlong(path)` as a **default interface method returning all zeros**, following the
+existing `HalfWidthsAlong` precedent (`INavigation.cs:51-58`) exactly — same shape, same rationale, so
+DotRecast and every test double inherit flat behaviour and need no edit. Override in `SumoNavMesh` and
+`SumoRouteGraphNav` from C1's retained channels.
 
 **Success conditions:**
-1. **3-D net:** on the A1 fixture, after stepping until ≥5 peds are live, **every** sampled
-   `LiveCityPed.Z` is non-zero and within the fixture's actual elevation range.
-2. **Cross-check against cars — a DIAGNOSTIC with outlier classification, not a bare threshold.**
-   Cars already resolve correct Z via `PoseResolver` → `LaneGeometry.ElevationAtOffset`, so a nearby
-   car's Z is the oracle. Report the **distribution** of `|pedZ − carZ|` over all ped/car pairs within
-   10 m (p50, p90, max), then:
-   - **p90 ≤ 2.0 m** is the pass bar (kerb height + camber + the ped's lateral offset from the road
-     centreline account for the bulk).
-   - Every sample above 2.0 m must be **classified by hand** as either (a) a genuine multi-level case —
-     footbridge/underpass, of which design §3.3a measured ≤ 27 nationwide — or (b) a wrong-lane snap,
-     which is a bug. A blanket `max ≤ 2.0 m` assertion is **wrong** and must not be used: a ped
-     legitimately standing on a bridge deck over a road is legitimately 5–12 m above the car beneath it,
-     and would fail a check that is behaving correctly.
-   - Record the classification in the tracker (M3). If any outlier is category (b), the task is not done.
-3. **2-D regression:** on `demo_city/box`, `PedElevation == null` and **every** `LiveCityPed.Z` is
-   exactly `0.0` (bitwise), across 200 steps. This is what keeps City3D / raylib / `VizReplayBuilder`
+1. **Existing providers untouched:** verify by diff that no test double, and not the DotRecast provider,
+   was edited. They must compile and behave identically via the default.
+2. Default returns `path.Count` zeros — asserted directly, so a provider without an elevation model is
+   provably flat rather than accidentally throwing or returning a short array.
+3. `ElevationsAlong(path).Count == path.Count` for every override, on every path the A1 fixture produces
+   (assert over ≥50 generated paths, not one).
+4. **Correctness on a known grade:** on the A1 fixture, take a path along the fixture's engineered ramp
+   and assert the returned elevations increase monotonically and match the node z within **0.05 m** at
+   each vertex.
+5. **Determinism:** identical path in ⇒ bitwise-identical elevations out, across two independently
+   constructed providers.
+6. Standing gate unchanged.
+
+### C3 — Ped runtime exposes z, and `LiveCitySim.Sample()` uses it
+**Design:** §3.4, §3.5(a). **Depends on:** C2.
+**Touches:** `src/Sim.Pedestrians/Lod/PedLodManager.cs` (an elevation accessor beside
+`PositionOf(id, now)`, `:394`), `src/Sim.LiveCity/LiveCitySim.cs` (the literal `0.0` at `:1076`).
+
+**Do:** interpolate z between the two path elevations bracketing the ped's existing waypoint cursor,
+reusing the fraction steering already computes. **No search of any kind** — if the implementation reaches
+for a nearest-lane or nearest-vertex lookup, it has misread the design; stop and report.
+
+**Success conditions:**
+1. **3-D:** on the A1 fixture, after stepping until ≥5 peds are live, every sampled `LiveCityPed.Z` is
+   non-zero and within the fixture's elevation range.
+2. **Exactness beats the superseded design — the point of the redesign.** For a ped walking the
+   engineered ramp, sampled z matches the analytically-known lane elevation at its arc position within
+   **0.10 m** at ≥10 successive steps. (The nearest-lane mechanism could only have promised "within a
+   road width"; assert the tighter bar that retaining z actually buys.)
+3. **2-D regression:** on `demo_city/box`, every `LiveCityPed.Z` is exactly `0.0` (bitwise) across 200
+   steps, and `PeakPeds`/`ArrivedTotal` are identical to pre-change. City3D / raylib / `VizReplayBuilder`
    bit-identical.
-4. **Frame cost (design §8/R3):** with ≥300 live peds on the A1 fixture, the added `Sample()` cost is
-   **< 5%** of `Sample()`'s total time (measure with the elevation source forced null vs. real, same
-   seed, ≥5 repeats, report both numbers — a single-run delta is not a measurement).
-5. Standing gate unchanged **and** `tests/Sim.LiveCity.Tests` explicitly built and green.
+4. **Parity-inertness, asserted not asserted-to:** a ped's 2-D trajectory over 200 steps is **bitwise
+   identical** with the elevation channel populated vs. forced null. This is the check that proves §3.3 —
+   that z touched no steering, ORCA or routing decision. Without it, "output-only" is a claim, not a fact.
+5. **Cost (design §8/R3, now ordinary rather than a risk):** with ≥300 live peds on the A1 fixture,
+   report `Sample()` time with the elevation channel on vs. forced null, ≥5 repeats, both absolute
+   numbers. Expected to be in the noise — it is one lerp per ped. A result that is *not* in the noise
+   means the implementation searched something.
+6. Standing gate unchanged **and** `tests/Sim.LiveCity.Tests` built explicitly and green.
+
+### C4 — `PedRemoteReconstructor` 5-out-param overload
+**Design:** §3.5(b), §3.6. **Depends on:** C3, **and on the §3.6 W1/W2/W3 decision — do not start until
+that is made.**
+**Touches:** `src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs`; under **W1** also
+`src/Sim.Replication/FrameCodec.cs` (`PathArcRecord` 8 → 12 B/point) and the ped publisher.
+
+**Success conditions (all options):**
+1. The existing 4-out-param overload's body is **untouched**, and all **15** call sites (design §1.10)
+   compile unedited — verify by diff.
+2. The 5-param overload returns the same `pos`/`visible`/`animTag` as the 4-param one for the same id and
+   render time; z is sampled at the **smoothed** render position, not the raw wire sample.
+3. `tests/Sim.Pedestrians.Tests` green; both TFMs build; standing gate unchanged.
+
+**Additional, per option:**
+- **W1 (wire extension):** round-trip a `PathArcRecord` with z through `FrameCodec` and assert
+  bit-exact recovery; assert the new record size is exactly `14 + 12 × pointCount`; a **decoder-version
+  test** proving old and new payloads are distinguishable rather than silently misparsed; the DDS
+  loopback self-test still passes.
+- **W2 (receiver-side lookup):** z within **2.0 m** of the C3 in-process value at ≥20 sampled poses,
+  **plus** an explicit test at one of the measured stacked-lane locations documenting the known error
+  (design §8/R8 bounds it at ≤ 27 spots nationwide, ≤ 12.6 m).
+- **W3 (defer):** the overload returns exactly `0.0` and both the XML doc comment and
+  `docs/EXTERNAL-NET-LOADING-TRACKER.md` say so plainly. A silently-flat z that callers mistake for real
+  elevation is the one unacceptable outcome.
 
 ---
 
@@ -250,8 +277,9 @@ test stays ~15 s):
 2. `NetPath` = the Geneva cut ⇒ `new LiveCitySim(cfg)` succeeds; `PedestriansEnabled` and
    `CrossingsEnabled` both **true**; lanes == **53 229**, sidewalks == **2 201**, crossings == **221**,
    walkingareas == **2 179** (the measured figures — a drift here means an ingest regression).
-3. `PedElevation` is **non-null** and selects **branch 1**; step until ≥20 peds are live ⇒ every
-   `LiveCityPed.Z` lies within **324.39 – 1062.24 m** (the measured range) and none is 0.
+3. Ped elevation is live on the real net: every ped lane's retained `ShapeZ` is non-null; step until
+   ≥20 peds are live ⇒ every `LiveCityPed.Z` lies within **324.39 – 1062.24 m** (the measured range) and
+   none is 0.
 4. Ped↔car cross-check on the **real** net, same rule as C4·SC2: report p50/p90/max of |pedZ − carZ|
    over pairs within 10 m; **p90 ≤ 2.0 m**; classify every > 2.0 m outlier as multi-level (expected,
    ≤ 27 such spots nationwide per design §3.3a) or wrong-lane snap (a bug).
@@ -267,8 +295,8 @@ test stays ~15 s):
 2. Reported and recorded in the tracker: total ctor wall time and peak working set. Flag if either
    exceeds the measured baseline (**≈ 80 s / ≈ 1.65 GB**) by > 25 % — that would mean this change added
    cost to the load path, which it must not.
-3. `PedElevation` selects branch 1 with **28 083** indexed ped lanes; a sampled ped z falls within
-   **199.48 – 1633.77 m**.
+3. All **28 083** ped lanes retain a non-null `ShapeZ` (the measured count); a sampled ped z falls
+   within **199.48 – 1633.77 m**.
 4. Standing gate unchanged with the var unset.
 
 ### E4 — Close-out

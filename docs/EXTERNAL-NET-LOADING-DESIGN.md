@@ -27,7 +27,7 @@ of its stated mechanisms is not implementable as written.
 | # | Handoff says | Reality | Consequence |
 |---|---|---|---|
 | C1 | net path is hardcoded; add `NetPath`/`RoutePath` + `ForSumocfg` | **Correct.** `LiveCitySim.cs:143`, `:473`; `LiveCityConfig` has only `DatasetDir` | Implement as asked (§2), plus a dir probe for `scenario.net.xml` so `ForDataset(cutDir)` also works |
-| C2 | add a `TryGetRenderPose(..., out double z, ...)` overload that projects onto the nearest ped lane and calls `ElevationAtOffset` | **Not implementable as written.** `PedRemoteReconstructor` is constructed from an `IPedReplicationSource` alone (`PedRemoteReconstructor.cs:104`) — it holds **no `PedNetwork` and no `NetworkModel`**. It has no geometry to project onto. Worse, `Sim.Pedestrians.csproj` states outright that the project **must never reference `Sim.Ingest`**, where `NetworkModel`/`LaneGeometry` live | The overload needs an **injected elevation seam** — abstraction in `Sim.Pedestrians`, implementation in `Sim.LiveCity` (the only project that already sees both models). §3 |
+| C2 | add a `TryGetRenderPose(..., out double z, ...)` overload that projects onto the nearest ped lane and calls `ElevationAtOffset` | **Not implementable as written.** `PedRemoteReconstructor` is constructed from an `IPedReplicationSource` alone (`PedRemoteReconstructor.cs:104`) — it holds **no `PedNetwork` and no `NetworkModel`**. It has no geometry to project onto. Worse, `Sim.Pedestrians.csproj` states outright that the project **must never reference `Sim.Ingest`**, where `NetworkModel`/`LaneGeometry` live | The overload cannot compute z from geometry it does not hold. §3 resolves this by **retaining** the z that `PedNetworkParser` currently discards, rather than reconstructing it — which also keeps the whole change inside `Sim.Pedestrians` and so *satisfies* Principle 6 instead of tunnelling through it (§3.1) |
 | C3 | "keep `Step()` reading these off the by-reference `cfg` each tick (**it does today**)" for `CarTargetConcurrent`, `CarSpawnPerStep`, `PedPopulationCap`, `PedSpawnRatePerSecond` | **Half true.** The *car* knobs are read live off `_cfg` every step (`:734`, `:743`). The *ped* knobs are **copied once into a fresh `PedDemandConfig` in the constructor** (`:277-278`) and never re-read | BIG's pedestrian slider would silently do nothing. A third change is required. §4 |
 
 **C4 — found by the real data, after the first draft of this design.** The draft said `ForSumocfg`
@@ -39,8 +39,14 @@ derive-from-net, and lose the real demand's edge set. Corrected in §2.3: scrape
 route files. This is exactly the kind of error that reading one real input catches and no amount of
 reasoning does (CLAUDE.md measurement discipline #2).
 
-Also corrected: the handoff's "no change to `PedNetworkParser`" holds and is the right call — elevation
-comes from the vehicle-side model, so `ParseShape` keeps dropping the 3rd coordinate (§3.3).
+**C5 — the handoff's "no change to `PedNetworkParser`" is wrong, and so was this design's first draft
+for accepting it.** Both assumed the ped subsystem should stay 2-D and z should be recovered from the
+vehicle-side model. But the ped net is parsed from the *same 3-D `net.xml`*, and `ParseShape`
+(`PedNetworkParser.cs:60,77,78,89`) reads the z and throws it away — so recovering it by spatial search
+is reconstructing discarded input, approximately and at a per-frame cost. `PedNetworkParser` **does**
+change: it retains the third coordinate (§3.2). The blast-radius fear behind the original decision does
+not survive checking — ped geometry has **9 usages across 5 files** — and the layering objection points
+the other way (§3.1).
 
 Out of scope, explicitly: SumoData's `--percent` / `auto_calibrate.py` density calibration (the handoff
 itself puts it off BIG's critical path), and everything on the IG side (UTM→flat, terrain Z, placement).
@@ -65,7 +71,8 @@ Each of these was read, not assumed. They are the load-bearing facts for §2–�
 5. `NetworkParser.Parse` iterates `root.Elements("edge")` with **no `function` filter** and populates
    `ShapeZ` for *every* `<lane>` (`NetworkParser.cs:39-67`). Therefore sidewalk, `crossing`,
    `walkingarea` and internal lanes **are** in `NetworkModel.LanesById`, each carrying `ShapeZ` when the
-   net is 3-D. This is what makes §3.3 possible — the handoff's claim here is sound.
+   net is 3-D. This makes the *superseded* nearest-lane mechanism possible, and it is also how the vehicle side gets
+   its own z; §3 no longer relies on it for pedestrians.
 6. `Lane.ShapeZ` is `IReadOnlyList<double>?`, **null on a 2-D net** (`NetworkModel.cs:43`), and its
    header states it is consumed only by output-side geometry, never by car-following/lane-change/junction
    math. Elevation is provably parity-inert.
@@ -158,139 +165,132 @@ construction.
 
 ## §3 — Change 2: pedestrian elevation
 
-### §3.1 The seam (why the handoff's placement does not work)
+> **Superseded design.** The first draft of this section resolved ped z by a **nearest-lane spatial
+> search** over the vehicle-side `NetworkModel`, keeping the ped subsystem 2-D. That was wrong in
+> principle: the source net **is** 3-D, `PedNetworkParser` currently **discards** the z it reads, and the
+> search was reconstructing — approximately, and at a per-frame cost — information that ingest had thrown
+> away. It also justified itself with a blast-radius claim that does not survive checking (9 geometry
+> usages across 5 files) and a Principle-6 claim that in fact argues the *other* way (below). The design
+> now **retains** z instead of reconstructing it. The superseded mechanism survives only as an optional
+> fallback for one surface (§3.6).
 
-`PedRemoteReconstructor` has no geometry (§0/C2), and `Sim.Pedestrians` is contractually barred from
-referencing `Sim.Ingest` — the csproj comment is explicit, and `PedRemoteReconstructor`'s own header
-cites "`Sim.Viewer.Motion` pulls in the vehicle-only `Sim.Ingest`" as a reason it does not reuse the
-vehicle stack. So the elevation lookup cannot live in `Sim.Pedestrians`, and the reconstructor cannot
-build it.
+### §3.1 Principle: retain, don't reconstruct
 
-Resolution — a one-method abstraction in `Sim.Pedestrians`, implemented where both models are already
-visible (`Sim.LiveCity` references `Sim.Ingest` *and* `Sim.Pedestrians`):
+The pedestrian network is parsed from the same `net.xml` as the vehicle network, and on a real Swiss net
+**every** ped lane carries a 3-coordinate shape (§3.2's measurement: 100 %, both nets). `ParseShape`
+(`PedNetworkParser.cs:60,77,78,89`) reads that shape and keeps only x,y. So the elevation a pedestrian
+needs is present in the input, three characters from where it is dropped.
+
+Retaining it is strictly better than reconstructing it on all four axes that matter:
+
+| | reconstruct (superseded) | **retain (this design)** |
+|---|---|---|
+| accuracy | nearest lane *in plan view* — approximate | the lane the ped is **actually on** — exact |
+| ambiguity | 27 stacked-lane spots nationwide can resolve to the wrong surface | none: a ped on a bridge follows the bridge |
+| runtime cost | a spatial query per ped per frame (grid, ring expansion) | interpolation at a cursor the ped already holds — **no search** |
+| project layering | needs a cross-project seam to reach `Sim.Ingest`'s `NetworkModel` | stays **entirely inside `Sim.Pedestrians`** |
+
+The layering point is worth stating plainly because the first draft got it backwards.
+`Sim.Pedestrians.csproj` forbids referencing `Sim.Ingest` (PEDESTRIAN-DESIGN.md §0 Principle 6). The
+superseded design had to tunnel *through* that rule with an `IPedElevationSource` seam precisely so it
+could read `NetworkModel.Lane.ShapeZ`. Retaining z needs **no new project reference at all** —
+`PedNetworkParser` already opens the net file itself. Principle 6 favours this design.
+
+### §3.2 Ingest: keep the third coordinate, output-only
+
+Add a per-vertex elevation channel to the ped geometry records, index-aligned with the existing 2-D
+shape, `null` when the net is 2-D:
 
 ```csharp
-// src/Sim.Pedestrians/Lod/IPedElevationSource.cs
-public interface IPedElevationSource
+public sealed record PedLane(..., IReadOnlyList<Vec2> Shape, IReadOnlyList<double>? ShapeZ = null);
+public sealed record PedCrossing(..., IReadOnlyList<double>? ShapeZ = null);
+public sealed record PedWalkingArea(..., IReadOnlyList<double>? PolygonZ = null);
+```
+
+This is **deliberately the same pattern the vehicle side already uses**: `Lane.ShapeZ`
+(`NetworkModel.cs:43`) is documented as "consumed only by the read surface's PosZ, never by any
+car-following / lane-change / junction math". The ped side becomes symmetric with the car side rather
+than inventing a second mechanism. Defaulted trailing parameters keep every existing
+`new PedLane(...)` / `new PedCrossing(...)` call compiling unchanged.
+
+`ParseShape` gains a sibling `ParseShapeZ` returning `null` unless the shape carries a 3rd component —
+mirroring `NetworkParser.ParseShapeZ`, which already does exactly this on the vehicle side.
+
+**[measured] The data supports this everywhere it matters.** 100 % of ped-lane ids in both real nets
+carry z, in all three categories:
+
+| net | sidewalks | crossings | walkingareas | with z / without |
+|---|---|---|---|---|
+| `geneve.net.xml` (44 MB) | 2 201 | 221 | 2 179 | **4 601 / 0** |
+| `swiss_roads.net.xml` (161 MB) | 13 811 | 735 | 13 537 | **28 083 / 0** |
+
+### §3.3 The simulation stays 2-D — on purpose
+
+Only the *output* becomes 3-D. ORCA collision avoidance is inherently a 2-D velocity-obstacle algorithm,
+strategic routing is a plan-view graph search, and walking distance on a road-legal grade differs from its
+horizontal projection by well under a percent. Making the solver 3-D would change trajectories for no
+fidelity gain and would put determinism and the ped regression suite at risk.
+
+So `ShapeZ` is **parity-inert by construction**, exactly as `Lane.ShapeZ` is: no steering, no ORCA, no
+routing, no `ActivityTimeline` decision reads it. It is carried alongside and consumed only at the render
+seam. This is what keeps every committed 2-D scenario bit-identical.
+
+### §3.4 How z reaches a pedestrian: a path-elevation channel
+
+A ped in flight holds a path (`IReadOnlyList<Vec2>` from `IPedNavigation.FindPath`) and a waypoint cursor
+(`ILocalSteering.DesiredVelocity`'s `ref int waypointIndex`). That is already enough to locate the ped
+along known geometry — no search required.
+
+`IPedNavigation` gains a **default interface method**, following the existing `HalfWidthsAlong(path)`
+precedent verbatim (`INavigation.cs:51-58`) — same signature shape, same "providers that have no model
+get a safe default so nothing needs changing" rationale:
+
+```csharp
+/// Per-vertex elevation (metres) along `path`, index-aligned with it. Default: all zeros, so a provider
+/// with no elevation model yields today's flat behaviour and needs no change.
+IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
 {
-    double ElevationAt(Vec2 pos);   // metres, in the net's own vertical datum; 0.0 when unknown
+    return new double[path.Count];   // flat
 }
 ```
 
-`Sim.Pedestrians` gains no new project reference. `Vec2` is already `Sim.Core.Orca.Vec2`, already
-referenced.
+`SumoNavMesh` and `SumoRouteGraphNav` override it from the `ShapeZ`/`PolygonZ` retained in §3.2 — each
+already knows which lane/polygon produced each waypoint, since it built the path. The ped's instantaneous
+z is then a linear interpolation between the two elevations bracketing its cursor, using the fraction it
+already computes for steering. Cost: one lerp. No grid, no nearest-neighbour, no ring expansion.
 
-### §3.2 The implementation: `NetPedElevationSource` (in `Sim.LiveCity`)
-
-Constructed from `(NetworkModel model, PedNetwork pedNet)`. Nearest-segment projection over a uniform
-grid, then the existing `LaneGeometry.ElevationAtOffset`.
-
-**Which lanes get indexed — decided once, at construction, not per query:**
-
-1. Collect the ped-lane id set = `pedNet.Sidewalks ∪ Crossings ∪ WalkingAreas` ids, look each up in
-   `model.LanesById`, keep those with `ShapeZ != null`.
-   → If **non-empty**, index exactly those. This is the expected 3-D-net case and is a small fraction of
-   a large net, which is what bounds memory on a full-Switzerland load.
-2. Else, if **any** lane in `model.LanesById` has `ShapeZ != null`, index all of them. This is the
-   degraded case where netconvert emitted 2-D `crossing`/`walkingarea` shapes but the road lanes are
-   3-D: a ped on a crossing then samples the road surface beside it, which is the right answer to within
-   a road width.
-
-   **[measured] The real nets take branch 1, unambiguously.** On both `geneve.net.xml` and
-   `swiss_roads.net.xml`, **100 % of ped-lane ids resolve in `NetworkModel.LanesById` and 100 % carry
-   `ShapeZ`** — zero missing, zero 2-D, in all three categories:
-
-   | net | sidewalks | crossings | walkingareas | all with `ShapeZ` / missing |
-   |---|---|---|---|---|
-   | `geneve.net.xml` (44 MB) | 2 201 | 221 | 2 179 | **4 601 / 0** |
-   | `swiss_roads.net.xml` (161 MB) | 13 811 | 735 | 13 537 | **28 083 / 0** |
-
-   So the handoff's shared-id-space claim is fully verified on production data, and branch 2 is a
-   defensive path that real Swiss nets never take. Branch 1 is also the memory-bounded one: it indexes
-   **98 897 segments (30 % of all Z-carrying segments) for Geneva** and **860 276 (52 %) for
-   Switzerland**, versus 328 793 / 1 645 061 for branch 2.
-3. Else the net is 2-D: the source is not constructed at all. Callers hold `null` and report `z = 0.0`.
-   **Every committed scenario, including the demo and all goldens, takes this branch** — zero index, zero
-   allocation, zero per-frame cost, bit-identical output.
-
-**Query.** Fixed 25 m cells. Expand rings from the query cell; on the first ring that yields a candidate,
-scan **one further ring** before answering (a segment in ring *r+1* can be nearer than one in ring *r*),
-then stop. Hard cap of 64 rings (1600 m) so a ped stranded far from any indexed lane returns `0.0`
-instead of scanning the whole net. Per hit: point-to-segment projection → clamped arc offset along the
-lane → `ElevationAtOffset(lane.Shape, lane.ShapeZ, offset)`.
-
-Cost is O(segments in a few 25 m cells) per ped per frame, independent of net size.
-
-### §3.3 Why no `PedNetworkParser` change
-
-Elevation is read from the vehicle-side `Lane.ShapeZ` for ids that are already in `LanesById` (§1.5).
-Teaching `PedNetworkParser.ParseShape` to keep a 3rd coordinate would mean widening `PedLane`,
-`PedCrossing`, `PedWalkingArea`, every navmesh/ORCA consumer of those shapes, and the walkable-polygon
-baker — a large blast radius through the ped solver for a purely output-side value. The handoff's
-instinct is right: leave the ped ingest 2-D.
-
-### §3.3a Why a 2-D lookup is sound — the vertical-ambiguity measurement
-
-`ElevationAt(Vec2)` resolves elevation from a **horizontal** position alone. That is only defensible if
-pedestrian lanes do not stack vertically: at a footbridge over a sidewalk, two ped lanes share an (x,y)
-and horizontal distance cannot tell them apart. Neither surface can supply a lane hint to break the tie —
-`PedLodManager` exposes only `PositionOf(id, now)` (`PedLodManager.cs:394`), and the wire the
-reconstructor reads carries positions, not lane ids. So if stacking were common, this API would be the
-wrong shape and §3.5's two surfaces would both be mis-specified.
-
-**[measured] Stacking is negligible.** Bucketing every ped-lane vertex into 2 m horizontal cells and
-looking for cells spanning > 3 m of elevation:
-
-| net | ped-lane vertices | occupied buckets | ambiguous buckets | share | worst span |
-|---|---|---|---|---|---|
-| `geneve.net.xml` | 103 498 | 78 083 | **7** | 0.009 % | 6.3 m |
-| `swiss_roads.net.xml` | 888 359 | 679 340 | **27** | 0.004 % | 12.6 m |
-
-27 locations in all of Switzerland, and several of those have the *same* lane id at both extremes (e.g.
-`ped_bas_cros_14.1_0`) — intra-lane steepness, which nearest-segment projection plus arc interpolation
-resolves correctly. True inter-lane ambiguity is therefore lower still. The 2-D API is sound; the residual
-error is bounded at **≤ 27 spots nationwide, ≤ 12.6 m each**, and is a documented limitation rather than a
-defect to engineer around.
-
-This question was **architectural** — a bad answer would have forced a different API and invalidated
-C2/C3/C4 — so it was settled on real data before implementation, not after.
-
-### §3.4 Determinism
-
-`ElevationAt` is a pure function of committed net geometry and the query point: no RNG, no clock, no
-mutable state, no thread-affinity. Ring expansion is a fixed spiral order. Ties are broken by
-`(distanceSquared, lane id ordinal, segment index)` so two equidistant segments always yield the same
-answer regardless of index-build order. Two runs, and any thread interleaving, give identical z.
+Existing providers (DotRecast, the test doubles) inherit the flat default and are untouched — the same
+property that made `HalfWidthsAlong` safe to add.
 
 ### §3.5 The two surfaces
 
-**(a) `PedRemoteReconstructor` — the overload the handoff asked for.**
+**(a) `LiveCitySim.Sample()` — the surface BIG actually drives.** The literal `0.0` at `:1076` becomes
+the ped's interpolated path elevation, read from the manager alongside `PositionOf`. On a 2-D net every
+`ShapeZ` is null, `ElevationsAlong` returns zeros, and `LiveCityPed.Z` stays exactly `0.0` — City3D,
+raylib and `VizReplayBuilder` bit-identical.
+
+**(b) `PedRemoteReconstructor` — the overload the handoff asked for.** Unchanged in signature from the
+first draft:
 
 ```csharp
-public PedRemoteReconstructor(
-    IPedReplicationSource source,
-    double playoutDelaySeconds = DefaultPlayoutDelaySeconds,
-    IPedElevationSource? elevation = null);          // third defaulted param — source-compatible
-
 public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag);
 ```
 
-The 5-out-param overload delegates to the untouched 4-param one, then sets
-`z = _elevation?.ElevationAt(pos) ?? 0.0`. All 15 existing call sites (§1.10) compile and behave
-identically; `null` elevation reproduces today's implicit zero.
+with the existing 4-out-param overload untouched so all 15 call sites (§1.10) compile as-is. But **the
+source of z here is a genuine open decision**, because this surface reconstructs from the wire alone and
+`PathArcRecord` carries 8 B/point — two `float32`, x and y only (`FrameCodec.cs:37,240`). There is no z on
+the wire to interpolate. Options in §3.6.
 
-**(b) `LiveCitySim.Sample()` — the surface BIG actually drives.**
+### §3.6 The one open decision: z on the remote/wire surface
 
-The ctor already holds both `model` and `pedNetwork`, so it builds the source there and exposes it:
+| option | what it means | cost | verdict |
+|---|---|---|---|
+| **W1 — extend the wire** | `PathArcRecord` 8 → 12 B/point, carrying z per path point; publisher fills it from §3.2 | +50 % on a once-per-ped-lifetime durable record (not the per-step hot path); a wire-format change touching `FrameCodec`, the DDS path and City3D consumers | **Recommended.** Consistent with §3.1 (retain, don't reconstruct), exact, and closes the pre-existing gap already noted in `DEMO-CITY3D-TRACKER.md` T1.2: *"wire `LaneGeo` is 2-D — elevation over the wire needs a future `GeometryCodec` Z-extension"* |
+| **W2 — receiver-side lookup** | the remote consumer loads the ped network itself and resolves z from the retained `ShapeZ` by nearest-lane search — i.e. the superseded mechanism, scoped to this one surface | no wire change; reintroduces the per-frame search and the 27-spot ambiguity, on this surface only | Acceptable fallback if a wire change is out of scope this cycle |
+| **W3 — defer** | ship (a) only; the reconstructor overload returns 0 and is documented as flat-until-W1 | none | Only if BIG's Spectacle path truly never uses the reconstructor — the handoff says it drives `Step()` + reconstruction, so **probably not** |
 
-```csharp
-public IPedElevationSource? PedElevation { get; }   // null on a 2-D net
-```
-
-`Sample()`'s literal `0.0` at `:1076` becomes `PedElevation?.ElevationAt(p) ?? 0.0`. On every committed
-(2-D) net `PedElevation` is null, so `LiveCityPed.Z` stays exactly `0.0` — the City3D viewer, the raylib
-viewer, and `VizReplayBuilder` are bit-identical. Exposing it publicly also lets BIG feed the same
-instance into its own reconstructor, so the two surfaces cannot disagree.
+**This needs a decision before Stage C is scheduled.** It does not block Stage A/B, and (a) — BIG's actual
+consumption path — is unaffected either way.
 
 ---
 
@@ -375,9 +375,10 @@ parity golden, with its generation recipe recorded in `provenance.txt`. Its job 
 always-run regression of the same code paths Tier 1 validates at scale, plus the analytic elevation
 checks that a real net cannot give (no known closed-form z).
 
-Its parameters are chosen to **match the measured real-net properties** from §3.2/§5, so the two tiers
-exercise the same branches: UTM32N `projParameter`, non-zero absolute `netOffset`, 3-D shapes on
-sidewalks *and* crossings *and* walkingareas (branch 1), elevations in a Swiss-like band.
+Its parameters are chosen to **match the measured real-net properties** from §3.2/§5 so both tiers
+exercise the same code: UTM32N `projParameter`, non-zero absolute `netOffset`, 3-D shapes on sidewalks
+*and* crossings *and* walkingareas (so every retained-`ShapeZ` path is covered), elevations in a
+Swiss-like band.
 
 New: `scenarios/_ped/roadnet_geo3d/`
 
@@ -453,24 +454,26 @@ paths — so the absolute branch stays covered by a synthesised temp-dir config 
 
 ## §8 — Risks
 
-- **R1 — CLOSED by measurement.** "netconvert may emit 2-D crossing/walkingarea shapes" does not happen
-  on the real nets: 100 % of ped lanes in both files carry `ShapeZ` (§3.2 table). Branch 1 is the live
-  path; branch 2 survives only as a defensive fallback. No longer the design's largest open question.
-- **R2 — CLOSED by measurement.** Branch-1 index size is 98 897 segments (Geneva) / 860 276
-  (Switzerland). At ~16 B per segment reference that is single-digit to ~14 MB of index — negligible
-  beside the 572 MB / 1.65 GB the parsed net itself already costs (§7).
-- **R3 — OPEN, but PARAMETRIC not architectural.** `Sample()` gains a per-ped geometric query on the
-  frame path. Zero on 2-D nets by construction (null source), but unmeasured on a 3-D net at a realistic
-  ped count (C4·SC4). Two sub-risks: uneven cell occupancy (25 m cells over 860 k segments, dense at a
-  Geneva junction, empty in the Alps), and ring expansion running to the 64-ring cap for a ped far from
-  any indexed lane. Both are tuned by **constants inside C2** (cell size, cap) — a bad answer changes a
-  number, not the design — so this is correctly a C2/C4 success condition rather than something to
-  prototype twice. Known mitigation if it fails: cache z per ped and refresh every N frames (peds move
-  ~1.3 m/s, so z changes far slower than the frame rate). Deliberately **not** pre-implemented, to avoid
-  optimising against an unmeasured cost.
-- **R8 — CLOSED by measurement (§3.3a).** Vertical ambiguity of the 2-D lookup: 27 locations in all of
-  Switzerland (0.004 % of occupied buckets), some of them intra-lane and thus not ambiguous at all. The
-  `ElevationAt(Vec2)` API shape is validated.
+- **R1 — CLOSED by measurement, and now moot.** "netconvert may emit 2-D crossing/walkingarea shapes"
+  does not happen: 100 % of ped lanes in both real nets carry z (§3.2 table). Under the retain design this
+  is not a fallback question at all — it is the precondition for §3.2, and it holds.
+- **R2 — DISSOLVED by the redesign.** There is no spatial index. `ShapeZ` is a `double[]` per ped lane,
+  index-aligned with a shape already in memory: ~8 B per vertex, 103 k vertices in Geneva / 888 k in
+  Switzerland ⇒ under 1 MB / ~7 MB, against the 572 MB / 1.65 GB the parsed net already costs (§7).
+- **R3 — DISSOLVED by the redesign.** The per-ped, per-frame spatial query is gone. z is one lerp between
+  two path elevations at a cursor the ped already maintains for steering (§3.4). The cell-size and
+  ring-expansion sub-risks no longer exist, and the "cache z and refresh every N frames" mitigation is
+  unnecessary. What remains is ordinary interpolation cost, still worth confirming at a high ped count
+  (C4) but no longer a design risk.
+- **R8 — DISSOLVED by the redesign.** Vertical ambiguity was an artefact of resolving z from a horizontal
+  position. A ped now takes z from the path it is actually walking, so a footbridge ped gets the bridge
+  deck by construction. (The measurement stands as a fact about the data — 27 stacked spots nationwide,
+  0.004 % — and now serves only to bound the error of option **W2** in §3.6, should that fallback be
+  chosen for the wire surface.)
+- **R9 — OPEN, and the one real decision left.** z on the remote/wire surface: `PathArcRecord` carries
+  x,y only, so §3.6's W1/W2/W3 must be chosen. W1 (extend the wire to 12 B/point) is recommended and also
+  closes a gap already logged in `DEMO-CITY3D-TRACKER.md` T1.2, but it is a wire-format change and needs
+  explicit sign-off. Blocks Stage C scheduling; blocks neither Stage A/B nor BIG's own `Sample()` path.
 - **R6 — OPEN (informational, not ours to fix).** Full-Switzerland load is ~80 s / 1.65 GB across four
   pre-existing net passes (§7). Not caused by this change and explicitly out of scope, but BIG must be
   told before it builds a UI around it.
