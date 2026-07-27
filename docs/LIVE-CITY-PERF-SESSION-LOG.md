@@ -313,9 +313,260 @@ refactor.**
 high-power count depends on the pocket radius. These are order-of-magnitude guides, **not** predictions;
 A1's own numbers supersede them.
 
+### A1 RESULTS (2026-07-28 01:26) — instrument LANDED (3 commits); first ladder is INVALID for the target, and that is the finding
+
+Commits: `e36d0da` (P0 `Sim.BenchLiveCity`), `814cdf7` (P1 `LiveCitySim.ProfilePhases` + `--profile`),
+`b2542fc` (hi/lo-power split + REALTIME verdict). Bench is in `Traffic.sln`. **P0/P1 = DONE.**
+
+Raw data: `<scratchpad>/ladder_r0.csv` (+ `.log`), 300 steps, 60 warmup, `dt=0.5`, 3 repeats.
+
+**THE HEADLINE IS THAT THERE IS NO HEADLINE YET: the ladder never reached the target counts.**
+
+| requested | cars achieved | peds achieved | hi-power | mean ms/step | p99 ms | alloc/step | GC pause %wall |
+|---|---|---|---|---|---|---|---|
+| 0:0 | 0 | 0 | 0 | 0.20 | 0.36 | 34 KB | 0% |
+| 1000:0 | 1001 | 0 | 0 | 5.25–7.04 | 8.5–19.1 | **17.0 MB** | **12–21%** |
+| 5000:0 | **1628** | 0 | 0 | 6.08–6.61 | 12.1–12.4 | **20.4 MB** | **15–17%** |
+| 0:5000 | 0 | **1391** | 72 | 2.20–3.45 | 5.1–8.3 | 184 KB | 2.5–4.8% |
+| 0:20000 | 0 | **1391** | 72 | 2.20–2.43 | 5.7–6.1 | 184 KB | 2.2–4.5% |
+| 1000:5000 | 1008 | **1391** | 72 | 8.25–8.95 | 12.6–18.1 | 17.3 MB | 7.6–8.0% |
+| 5000:20000 | **1601** | **1391** | 72 | 9.84 | 16.9 | **20.5 MB** | 8.2% |
+
+**Findings, in order of importance:**
+
+1. **THE TARGET WORKLOAD WAS NEVER RUN. Every "REALTIME: yes" above is worthless.** Peds pin at
+   **exactly 1391** whether 5 000 or 20 000 are requested; cars reach only **1628 of 5 000**. This is
+   why the design mandates achieved-not-requested reporting — without it this ladder would have been
+   filed as "5 000 cars + 20 000 peds runs real-time with 50× headroom", which is **false**.
+2. **Root cause is FILL RATE, not capacity — and probably also net size.** 300 steps at `dt=0.5` is only
+   150 simulated seconds; at the default `PedSpawnRatePerSecond` ≈ 8/s that is ~1 200 peds, matching the
+   observed 1391. So the run ends long before the population reaches its cap. Separately, the default
+   `LiveCityConfig` crop is an **840 m × 840 m** box (2055..2895) — 20 000 peds there is ~28 peds per m²
+   and 5 000 cars is instant gridlock, so **the demo scenario physically cannot host the target**
+   regardless of fill time. ⇒ needs (a) a prefill/much longer warmup **and** (b) a big net. The
+   **11 km central-Geneva cut already on disk** (`<scratchpad>/geneva_city.net.xml`) is the candidate.
+3. **Real-time is NOT currently the binding constraint — headroom is ~50×.** At `dt=0.5` the step budget
+   is **500 ms** and the worst observed mean is 9.8 ms (RTF ≈ 51×). So the interesting question is not
+   "does it fit 500 ms" but **"what counts can it reach before it stops fitting"** — the ladder must be
+   pushed until REALTIME flips to `no`, and/or run at a realistic `dt`. A 2 Hz sim is a very soft target;
+   the owner's felt problem is likely at a higher rate and/or far higher counts.
+4. **CARS, not peds, dominate at these counts — and the car side allocates catastrophically.**
+   1 628 cars = 6.4 ms/step and **20.4 MB per step** (~12.5 KB per car per step), with **15–17% of wall
+   in GC pause**. Peds (1 391, only 72 high-power) cost 2.2 ms/step and **184 KB per step** — two
+   ORDERS OF MAGNITUDE less allocation. **This is the GC-spike mechanism the owner reported, and it is
+   on the CAR path in the live-city host**, not the ped path. Note `PERF-ROADMAP.md` L0c/L0d cut
+   allocation hard on the `Sim.BenchCity` path; those wins evidently do **not** cover whatever
+   `LiveCitySim` does per step. **This is now the top suspect.**
+5. **Only 72 of 1 391 peds are high-power** at the static 70 m pocket — 5%. So ORCA is a small slice
+   *here*, and A3 (enable parallel ORCA) will show little at this scale. A3's value depends entirely on
+   the high-power population, which depends on the pocket radius — the `--hi-res-radius 300` arm was
+   never run. **A3 is therefore NOT yet justified; do not ship it on the borrowed BenchPedLod number.**
+6. Mild superadditivity: coupled 9.84 vs additive 6.4 + 2.2 − 0.2 = 8.4 (≈ +17%) — inside the noise band
+   given the differing achieved counts, so **not** yet evidence of a real interaction term.
+7. gen2 collections are non-zero and climbing with run length (0 → 1 → 2 → 3 → 4 across configs),
+   consistent with A2's finding #2 (the never-cleared `PedPublisher._events`) plus the car-side churn.
+
+**Process lesson (cost: one delegated agent's whole budget):** the implementor launched the ladder as a
+background run and ended its turn, losing the report — exactly `CLAUDE.md`'s "delegate BUILDING an
+instrument, never delegate WAITING for one". The CSV survived on disk and was recovered. **Future
+delegations end at "compiles, verified, committed"; the orchestrator runs every measurement.**
+
+### A9a RESULTS (2026-07-28 01:55) — car-side allocation attribution by SOURCE READING: ~350 KB of 20.4 MB explained. Residual is the story.
+
+Read-only trace of `LiveCitySim.Step()` → `Engine.Step()` → `Advance`/`AdvanceOneStep` and all ~16
+constraints, plus the publish path and the bench driver.
+
+**Refuted (good — these are ruled out, don't revisit):**
+- **Trajectory/FCD export is NOT active.** `LiveCitySim.cs:1019` calls parameterless `_engine.Step()` →
+  `Advance(null, steps)` (`Engine.cs:2122-2128`), so `if (trajectory is not null) EmitTrajectory(...)`
+  (`:3085-3090`) never runs. No `TrajectorySet` is built by this host.
+- **`Sample()`/`SampleCars()` are never called by the measured loop** (`Sim.BenchLiveCity/Program.cs:362-381`
+  calls only `Step()` + cheap property reads). So the documented "dominant GC pressure" ped-list
+  allocation is NOT in play here.
+- **Diagnostics are off by default** (`LiveCitySim.cs:460-461`).
+- The per-car plan/execute path is genuinely already clean: `MoveIntent`/`StopTransition`/
+  `JunctionLeaderCandidate` are `readonly record struct`, buckets reused, `stackalloc` spans, LINQ and
+  closures explicitly removed by the L0 work.
+
+**Accounted for (READ, ~300–350 KB/step ≈ 1.5–1.7% of the measured 20.4 MB):**
+| site | scope | est/step @1628 cars |
+|---|---|---|
+| `SimulationSnapshot.Capture(_engine)` (`SimulationSnapshot.cs:56-93`, called `LiveCitySim.cs:1042`) | per step, ~24 fresh arrays sized to car count | ~200–210 KB |
+| `InMemoryReplicationBus…PublishFrame` → `movers.ToArray()` (`InMemoryReplication.cs:111-112`) | per step, fresh `VehicleRecord[]` | ~100–130 KB |
+| `Engine.SpawnVehicle` `new Route` + `List<string>` + `VehicleDef` + 2 interpolated strings (`Engine.cs:2694-2716`) | per spawn (5/step) | ~1–2 KB |
+| `ResolveRightBeforeLeftCycles` nested dictionaries + per-link `Stack`/`HashSet` (`Engine.cs:6051-6231`) | per step, scales with busy priority junctions | tens of KB |
+
+**STRUCTURAL BUG FOUND — `Engine._bestLanesCache` is silently defeated by this host.**
+The cache (`Engine.cs:65-72`) is a `ConcurrentDictionary<(RouteId, EdgeId), …>` built by PERF-ROADMAP
+L0b on the stated assumption that each `(routeId, edgeId)` is computed **once and shared for the whole
+run** — true when many `<vehicle>`s reference one `<route id="r0">`. But `Engine.SpawnVehicle` — the API
+`LiveCitySim.Step()` uses for every car (`LiveCitySim.cs:916`) — mints a **unique RouteId per spawned
+vehicle** (`Engine.cs:2694`: `var routeId = $"__route{_runtimeRouteCounter++}"`). So the memo can never
+be shared across vehicles in the live-city host; only the same vehicle re-querying the same edge hits.
+Its two consumers are per-car-per-step and ON by default here (`CooperativeLaneChange` default true,
+`LiveCityConfig.cs:199`): `TryBestLanesForEdge` (`Engine.cs:12193, 12635-12650`) and
+`KeepRightStrategicStay`/`BestLanesCached` (`:12421-12428, 12706-12739`). A miss runs
+`NetworkModel.ComputeBestLanes` (`NetworkModel.cs:715-748`) — a full backward pass whose
+`BuildTerminalLaneQ` (`:768-793`) does `OrderBy(...).ToList()`/`.Select(...).ToList()` plus one
+heap `LaneContinuation` **record** per lane per edge. `Engine.cs:65-67` states the un-cached cost
+outright: *"Without this it re-allocated a `List<LaneContinuation>` (records) per lane-considering
+vehicle per step."* The host is effectively back in that state. The dictionary is also **never pruned on
+despawn** (only `Clear()`d at `LoadScenario`, `:1644`) ⇒ unbounded growth for the run.
+Fixing the **cache key** (key on the edge-sequence content / `(fromEdge,toEdge)` rather than the
+synthetic per-vehicle RouteId) should be **byte-identical by the cache's own stated invariant** —
+`ComputeBestLanes` is a pure function of its edges input, so sharing the memo across vehicles traversing
+the same edges cannot change any result, only whether it is recomputed. ⇒ **New A10.**
+
+**THE RESIDUAL IS THE MAIN FINDING: ~95%+ of the 20.4 MB/step is UNEXPLAINED by source reading.**
+The agent explicitly refused to stretch the identified sites to fit — correct behaviour, and per
+`CLAUDE.md` rule 2 (a mechanism reasoned from source has a bad track record here; trace instead).
+**Source reading has now hit its limit. The next step is a real allocation measurement, not more reading.**
+
+**Measurement plan (orchestrator runs it — cheap, zero code change, uses existing gates):**
+1. `--profile` on a car-only config for the per-phase time split (points at the region, even though the
+   flag reports time not bytes).
+2. **`LIVECITY_COOP=0` vs default A/B**, comparing `alloc_bytes_per_step`. `LIVECITY_COOP` gates
+   `CooperativeLaneChange` → `CoordinatedLaneChange` + `CooperativeInformFollower`, which is exactly
+   what enables BOTH `_bestLanesCache` consumers. A large alloc drop implicates the best-lanes path and
+   sizes A10 before a line is written; a small drop kills that hypothesis and sends me elsewhere.
+   Both arms must set every `LIVECITY_*` gate explicitly (rule 10).
+3. If both are inconclusive: `dotnet-trace`/PerfView allocation profile, or bisect by phase with
+   `GC.GetAllocatedBytesForCurrentThread` deltas.
+
+### A10 · `_bestLanesCache` re-key — VERIFIED FIRST-HAND, designed, NOT yet sized (do not implement before A11)
+
+Orchestrator re-checked all four load-bearing claims directly (not taking the implementor's word):
+1. `Engine.cs:2694` — `var routeId = $"__route{_runtimeRouteCounter++}";` ⇒ **unique per spawn**. ✓
+2. `Engine.cs:72` — key is `(string RouteId, string EdgeId)`, and the cache's own comment claims each key
+   is *"computed ONCE and shared for the whole run"* ⇒ **the stated invariant is violated here**. ✓
+3. `LiveCityConfig.cs:199` `CooperativeLaneChange = true` by default, wired at `LiveCitySim.cs:458-459`
+   to `CoordinatedLaneChange` + `CooperativeInformFollower` ⇒ **both consumers are LIVE in this host.**
+   (This is `CLAUDE.md` rule 3 — prove a live consumer before acting. Satisfied.) ✓
+4. `NetworkModel.cs:715` — the signature is
+   `ComputeBestLanes(IReadOnlyList<string> routeEdges, string currentEdgeId, (string,double)? stopOverride)`.
+   It takes the **edge list**, never a Route object, and never reads any route id; the body only scans
+   `routeEdges` and walks `BuildTerminalLaneQ`/`BackwardPassEdge`. ⇒ **the result is a pure function of
+   (edge-sequence CONTENT, currentEdgeId, stopOverride)**, so re-keying the memo on that content is
+   semantically identical ⇒ **byte-identical is achievable, by the function's own signature.** ✓
+
+**Design (for the implementor):** intern each distinct edge sequence to a dense `int` shapeId **at spawn**
+(`SpawnVehicle`, ~5/step — off the hot path), store it alongside the route, and key the memo
+`(int shapeId, int edgeHandle)`. Three wins in one: (a) the memo is shared across all vehicles with the
+same route shape, as originally intended; (b) the hot path stops hashing **two strings per lookup on
+every hit** — cf. `PERF-HANDOVER.md`, where replacing one per-vehicle-per-frame `LanesById[v.LaneId]`
+string hash with a dense handle array cut serial emit 28%; (c) the dictionary becomes **bounded** by
+(distinct shapes × edges) instead of growing per-vehicle forever, which removes the unbounded-growth leak.
+
+⚠ **Open correctness question for the implementor to check first:** the current key ignores
+`stopOverride`, yet `ComputeBestLanes` takes it and it changes the result. If any live caller passes a
+non-null `stopOverride` through the cached path, the existing cache is **returning wrong values** — a
+correctness bug, not a perf one. Establish this before touching anything; if real, it is more important
+than the perf work and must be reported separately.
+
+**NOT approved for implementation yet.** Reason: A9a accounts for only ~350 KB of 20.4 MB/step, and this
+fix targets part of the *unexplained* residual on a mechanism argument. `CLAUDE.md` rule 2 is explicit
+that mechanism arguments reasoned from source have a bad track record in this repo (5-for-5 inert). **Size
+it with A11 first.** If A11 shows the best-lanes path is a small slice, A10 is still worth doing for the
+leak alone — but as a correctness/memory fix, not billed as a speedup.
+
+### A11 (new, NEXT) · per-phase ALLOCATION accounting — the decisive instrument for the residual
+
+`ProfilePhases` currently records **time** per phase. The open question is **bytes**. Extend the existing
+default-off profiler to also accumulate allocated bytes per phase (process-wide
+`GC.GetTotalAllocatedBytes` deltas around each phase — note `GetAllocatedBytesForCurrentThread` would
+**undercount** any phase that runs `Parallel.For`, so it must not be used), and have `--profile` print
+bytes and % alongside ms, with the same explicit "unaccounted" remainder line.
+
+Why this and not more reading: it turns a 95%-unexplained residual into a ranked list in **one run**,
+costs nothing when off, and is a permanent committed instrument (`CLAUDE.md` rule 8) rather than a
+throwaway probe. It also sizes A10 as a side effect. **This is the gate on all remaining optimization work.**
+
+### A8 RESULTS + A12 · FIRST VALID MEASUREMENT AT 20 000 PEDS (2026-07-28 02:20) — commit `002398b`
+
+`002398b` added `--sumocfg`/`--dataset`, a real `--fill-steps` prefill with auto-scaled spawn rates, the
+`FILL-FAILED` gate (`REALTIME` forced to `n/a`, `fill_ok=0`), and a dt-honest budget. Gates all green
+(LiveCity 80/80, Pedestrians 317/317, ParityTests 775 + 4 pre-existing skips, 0 failed).
+
+**TWO OF MY OWN INFERENCES WERE WRONG — corrected by measurement:**
+- I reasoned the 840 m demo box "physically cannot host 20 000 peds (~28/m²)". **False.** With the fill
+  fix the default net reaches **19 996 / 20 000 peds**. The 1391 ceiling was *purely* a fill-rate
+  artifact. (Also: the net extent is **4758 m**, not 840 m — I had misread the crop as the net.)
+- Geneva was my candidate big net. **It is unusable for peds:** cars fill 4999/5000, but concurrent peds
+  plateau at **~40** regardless of fill time or spawn rate — that cut has essentially no pedestrian
+  infrastructure. Cars saturate at **3084/5000** on the default net (genuine gridlock, not fill rate).
+  ⇒ **A12 (new): no committed scenario can host 5 000 cars AND 20 000 peds simultaneously.** Needs a
+  purpose-built net (netgenerate grid with `--sidewalks.guess --crossings.guess`, committed under
+  `scenarios/_bench/` like `city-3000`), or a Geneva re-cut with sidewalks. Until then the target
+  workload is measurable only in its two halves.
+
+**MEASURED — ped-only, 19 996 peds (1 189 high-power end / 1 832 max, 18 807 low-power), static 70 m
+pocket, dt=0.5, 150 steps, 30 warmup, prefill 39/500 steps:**
+
+    mean 110.50 ms   p50 91.69   p95 185.18   p99 201.37   max 206.48   steps>3xp50: 0/150
+    RTF 4.52x   REALTIME yes (budget 500 ms)   alloc 7.94 MB/step (1135 MiB total)
+    GC gen0=57 gen1=20 gen2=2   GC PAUSE = 91.8 ms = 0.554% of wall   peak WS 274 MiB
+
+    phase breakdown:
+      pedDemandStep        10097.7 ms   60.9%
+      carYieldMetric        3655.5 ms   22.1%   <-- WITH ZERO CARS
+      pedLowPowerGather     2454.6 ms   14.8%
+      crossingOccupancy       197.8 ms    1.2%
+      publishPeds             150.0 ms    0.9%
+      engineStep               15.6 ms    0.1%
+      unaccounted               2.3 ms    0.0%
+
+**Findings:**
+1. **`carYieldMetric` burns 22.1% of wall with ZERO cars — pure waste, and it is a DIAGNOSTIC counter.**
+   `CountYieldObservationsThisStep` (`LiveCitySim.cs:1094`) early-outs only on crossing occupancy, then
+   `foreach (var p in _movingLowPowerPositions)` calls `_crossingOccupancy.QueryNear(p.X, p.Y, 0.01, …)`
+   **per ped per step** (~18 000 spatial queries) *before* it ever consults the car array. With
+   `carN == 0` the result is necessarily 0 (the counter only increments when a near car is found), so
+   **`if (carN == 0) return 0;` is provably byte-identical** and reclaims the whole 22% in ped-heavy runs.
+   Worse for the target: the structure is **O(on-crossing peds × cars)**, so at 5 000 cars it gets far
+   more expensive, not less. Consumers are diagnostic prints only (`Sim.Host.App`, `Sim.Viewer`,
+   `Sim.Viz`) but **two tests assert `CarYieldObservations > 0`** (`LiveCitySimTests.cs:75,380`), so the
+   VALUE must be preserved exactly — cannot simply be deleted or gated off by default. ⇒ **B1.**
+2. **`pedLowPowerGather` = 14.8%** — this is A4's target (redundant `PoseAt`/`PositionOf` re-evaluation),
+   now confirmed by measurement rather than inferred from source.
+3. **`pedDemandStep` = 60.9%** is the elephant but is a single opaque phase. It needs sub-phase
+   decomposition (ids+sort, frozenPos, promote/demote decide, promote/demote apply, ORCA step, the two
+   publish passes) before aiming at it. ⇒ **B2.**
+4. **A3 (parallel ORCA) is now JUSTIFIED where it was not before:** 1 189–1 832 peds are high-power at
+   the *static* 70 m pocket, not the 72 seen in the invalid ladder. ORCA is a real slice of the 61%.
+   Still measure the split first (B2) before enabling it.
+5. **GC is NOT the ped-side problem: pause is 0.554% of wall.** The owner's GC-spike hypothesis is
+   **refuted for peds** and remains open only for the **car** path (15–17% pause there). Note ped alloc
+   is still 7.9 MB/step — high, but the collector is absorbing it without pausing. This is exactly why
+   the design mandated measuring `GetTotalPauseDuration()` directly instead of inferring pauses from
+   allocation volume or collection counts.
+6. **`engineStep` = 0.1% with 0 cars**, and its sub-phases are all ~0 — the profiler's decomposition is
+   behaving sanely, and `unaccounted` is 0.0%, so the phase instrumentation is complete (no hidden work).
+7. **The real-time verdict is soft and must not be quoted without its budget.** `yes` here is against a
+   **500 ms** budget (dt=0.5, 2 Hz). At 10 Hz the budget is 100 ms and mean 110 ms would **FAIL**. So at
+   20 000 peds we are already at roughly the 10 Hz boundary — the honest statement is "real-time at 2 Hz
+   with 4.5× headroom; marginal at 10 Hz; and cars are not even in this measurement yet."
+
 ---
 
-## REVISED PLAN (post-A2) — ordered for tonight
+## REVISED PLAN (post-A1) — the ladder must be made VALID before any optimization
+
+**A8 (new, now FIRST) · make the bench reach the target counts.** Without this, no optimization can be
+evaluated, because the target workload has never executed. Needs: a net big enough to hold 5 000 cars +
+20 000 peds (the Geneva 11 km cut, or a generated grid city), a prefill/fill-to-cap phase that runs
+*before* the measured window with spawn rates raised so the population actually reaches the cap, a hard
+**refusal to report a config whose achieved counts miss the request** (loud FILL-FAILED, not a quiet
+number), and a `dt` sweep so the real-time verdict is against a realistic budget rather than a soft 2 Hz.
+
+**A9 (new) · chase the car-side 20 MB/step allocation + 15% GC pause.** Biggest measured effect so far,
+matches the owner's reported symptom, and is on a path prior perf work never covered. Profile with
+`--profile` per phase, then attribute the allocation.
+
+Then, only once A8 makes the numbers real: A4 (pose memoization), A5 (reusable buffers), A6 (bound the
+event list), and A3/A7 **only if** a large `--hi-res-radius` shows ORCA actually dominating.
+
+---
+
+## SUPERSEDED PLAN (post-A2, kept for the record) — ordered before A1's numbers arrived
 
 - **A3 · enable ORCA parallel step in `LiveCitySim`.** One config change, existing bit-identity tests,
   measured 3.4–4× on the dominant ped phase. Byte-identical expected. **Do first.**
