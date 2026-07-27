@@ -178,10 +178,38 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   barely helped (3739 → 3458) because the cars have no data. This is a **ped-LOD feed** decision with a real
   perf cost, not a car-yield change — it bounds how far any car-side ped safety work can go. *(unallocated;
   natural fit = ped-LOD-lifecycle or ped–vehicle)*
-- [ ] **`OrcaCrowd.QueryNear` is a full scan** since the nearest-first contract removed its early exit —
-  O(agents) per vehicle per constraint per step. Measured **flat** at 800 peds (27–28 s/arm, unchanged), so
-  not a problem today, but it will scale badly. `OrcaCrowd` already has an opt-in uniform spatial hash
-  (`UseSpatialHash`) used by the ORCA neighbour gather; wiring `QueryNear` onto it is the clean removal.
+- [ ] **`OrcaCrowd.QueryNear` is a full scan** since the nearest-first contract removed its early exit.
+  **MEASURED — it does NOT scale badly, and an earlier note here saying it would was wrong.** The scan is
+  over the crowd the car can actually see, which is `HighPowerFootprints` = the **promoted** population
+  only, and `OrcaCrowd.Count` is a slot high-water mark. Measured (200 steps, warm):
+
+  | total peds | promoted (live) | slots scanned | ms/step (160 cars) |
+  |---|---|---|---|
+  | 800 | 7 | 67 | 12.1 |
+  | 1600 | 38 | 132 | 15.6 |
+  | 3200 | 123 | 275 | 35.0 |
+
+  Doubling CARS is invisible in wall time (160 → 320 cars: 12.1 → 12.4 ms at 800 peds; 35.0 → 34.6 at
+  3200), so the O(cars × agents) term is below the noise floor — the growth with ped count is the
+  **ped-side ORCA/LOD** cost, not this scan. At dt=0.5 s, 35 ms/step is ~15× inside the real-time budget.
+  **Do not "optimise" this now: at 67–275 slots a 121-cell grid lookup plus the order-preserving sort
+  would very likely be SLOWER than the linear scan.** Revisit only when one of these lands, and measure
+  first:
+    * **much larger / multiple realism zones** (W4) — promoted count scales with zone area, and the owner's
+      standing requirement is "honor the zone radius, no matter perf";
+    * **feeding low-power peds to the car side** (the "out-of-zone cars are blind" item above) — that makes
+      `CrowdSource` the WHOLE population, at which point the scan really is O(total peds) per car and the
+      grid becomes necessary. **These two items are coupled: fixing the blindness is what makes this
+      urgent.**
+
+  If it is done, the existing `UseSpatialHash` grid (already ON for the demo crowd in `PedLodManager`, and
+  rebuilt every `Step`, so it is already paid for) is the vehicle — but it is **not a flag flip**:
+  `GridCandidates` is agent-indexed with a hard-coded 3×3 ring sized for `NeighbourDist = 15 m`, whereas
+  `QueryNear`'s radius reaches ~66 m (an 11×11 ring); the grid is rebuilt BEFORE the crowd commits its
+  move while the engine queries AFTER, so a query must inflate the ring by `maxSpeed × dt` or it
+  reintroduces exactly the silent-miss class the nearest-first contract just removed; and the candidate
+  list must stay sorted ascending by index, as `GridCandidates` already does, to keep the nearest-k
+  tie-break (enumeration order) deterministic.
 - [ ] **`MaxCrowdDiscs` 256 → 64** — measured identical at 800 peds for 4× less stack per call site, and
   with the nearest-first contract the degradation is graceful. Kept at 256 only for the 10×-density headroom
   f9c837c measured. Low priority (wall time is flat across 16…256).

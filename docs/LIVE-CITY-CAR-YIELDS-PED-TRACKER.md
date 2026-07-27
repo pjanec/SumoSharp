@@ -119,12 +119,28 @@ report.
    Fixing it is a **ped-LOD feed** decision with a real perf cost at 800+ peds, not a car-yield change.
    Mitigating context: ~85% of net-wide events are `offside` (ped beside the road, not in the car's path),
    i.e. largely ordinary traffic on a net with kerbside footways rather than defects.
-4. **`OrcaCrowd.QueryNear` is now a full scan.** The nearest-first contract removed the early exit (a late
-   slot holding a close agent must be able to displace an early slot holding a distant one), so it is
-   O(agents) per vehicle per constraint per step. Measured **flat** at 800 peds (27–28 s per 600-step arm,
-   unchanged), so this is not currently a problem — but it will scale badly. `OrcaCrowd` already has an
-   opt-in uniform spatial hash (`UseSpatialHash`, rebuilt in `Step`) used by the ORCA neighbour gather;
-   wiring `QueryNear` onto it is the clean removal.
+4. **`OrcaCrowd.QueryNear` is now a full scan — and, measured, that is FINE.** An earlier version of this
+   entry said it "will scale badly"; that was wrong and the measurement is below. The scan covers only the
+   crowd a car can see, which is `HighPowerFootprints` = the **promoted** population, bounded by the zone
+   and not by the total crowd (and `OrcaCrowd.Count` is a slot high-water mark):
+
+   | total peds | promoted (live) | slots scanned | ms/step @160 cars | ms/step @320 cars |
+   |---|---|---|---|---|
+   | 800 | 7 | 67 | 12.1 | 12.4 |
+   | 1600 | 38 | 132 | 15.6 | — |
+   | 3200 | 123 | 275 | 35.0 | 34.6 |
+
+   Doubling the CAR count is invisible, so the O(cars × agents) term is under the noise floor; the growth
+   with ped count is ped-side ORCA/LOD cost. 35 ms/step at dt = 0.5 s is ~15× inside real time. At 67–275
+   slots, a 121-cell grid lookup plus the order-preserving sort would probably be *slower* than the scan,
+   so optimising now would be a pessimisation. It becomes worth doing only alongside **much larger/multiple
+   zones (W4)** or **item 3** (feeding low-power peds), the latter of which turns `CrowdSource` into the
+   whole population — the two are coupled. Vehicle if/when needed: the `UseSpatialHash` grid, already ON in
+   `PedLodManager` and rebuilt every `Step` (so already paid for) — but not a flag flip: `GridCandidates`
+   is agent-indexed with a hard-coded 3×3 ring at `NeighbourDist = 15 m` vs `QueryNear`'s ~66 m reach; the
+   grid is rebuilt BEFORE the crowd commits its move while the engine queries AFTER, so a query must
+   inflate the ring by `maxSpeed × dt` or reintroduce the silent-miss class just removed; and candidates
+   must stay index-sorted to keep the nearest-k tie-break deterministic.
 5. **`MaxCrowdDiscs` could drop 256 → 64.** Measured identical at 800 peds (see design §8.2) for 4× less
    stack per call site (10 KB → 2.5 KB), and with the nearest-first contract the degradation is graceful.
    Kept at 256 only to preserve the headroom f9c837c measured at 10× ped density. Low priority either way —
