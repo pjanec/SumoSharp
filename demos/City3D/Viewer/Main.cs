@@ -549,8 +549,12 @@ public partial class Main : Node3D
     // driven to saturation, but bounded so a stray drag cannot ask for a population the renderer would
     // choke on. The MultiMesh instance counts are set from the live counts each frame, so nothing else
     // needs to know these numbers.
-    private const int MaxCarDensity = 2000;
-    private const int MaxPedDensity = 2000;
+    private const int MaxCarDensity = 10000;
+    private const int MaxPedDensity = 50000;
+    // "Fill speed" multiplier on the ramp rate (car spawn-per-step + ped spawn-rate), so a high target
+    // reaches its summit in seconds instead of minutes. 1x = the sim's own defaults.
+    private const int MaxFillSpeed = 100;
+    private const int DefaultCarSpawnPerStep = 5; // matches LiveCityConfig.CarSpawnPerStep default
 
     // The ped spawn rate at the reference cap of 160, matching LiveCityConfig's own default; the handler
     // scales it with the cap exactly as LIVECITY_PEDS does.
@@ -574,6 +578,9 @@ public partial class Main : Node3D
     private Label? _carDensityLabel;
     private HSlider? _pedDensitySlider;
     private Label? _pedDensityLabel;
+    private HSlider? _fillSpeedSlider;
+    private Label? _fillSpeedLabel;
+    private double _fillSpeed = 1.0; // ramp-rate multiplier set by the "fill speed" slider
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
     // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
@@ -2357,7 +2364,7 @@ public partial class Main : Node3D
         panel.OffsetLeft = 16f;
         panel.OffsetTop = 16f;
         panel.OffsetRight = 316f;
-        panel.OffsetBottom = 248f; // two extra rows (car + ped density) beyond the original three
+        panel.OffsetBottom = 282f; // + car/ped density + fill-speed rows beyond the original three
         _rateUi.AddChild(panel);
 
         var vbox = new VBoxContainer();
@@ -2451,6 +2458,24 @@ public partial class Main : Node3D
             };
             _pedDensitySlider.ValueChanged += OnPedDensitySliderChanged;
             pedRow.AddChild(_pedDensitySlider);
+
+            // Ramp-rate multiplier: how fast the sim fills toward the car/ped targets above, so a 10k/50k
+            // summit is reached in seconds, not minutes. Scales car spawn-per-step and ped spawn-rate.
+            var fillRow = new HBoxContainer();
+            vbox.AddChild(fillRow);
+            _fillSpeedLabel = new Label { Text = $"fill: {_fillSpeed:F0}x" };
+            fillRow.AddChild(_fillSpeedLabel);
+            _fillSpeedSlider = new HSlider
+            {
+                MinValue = 1,
+                MaxValue = MaxFillSpeed,
+                Step = 1,
+                Value = Math.Clamp(_fillSpeed, 1, MaxFillSpeed),
+                CustomMinimumSize = new Vector2(180f, 20f),
+                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            };
+            _fillSpeedSlider.ValueChanged += OnFillSpeedSliderChanged;
+            fillRow.AddChild(_fillSpeedSlider);
         }
 
         // #15 LC-realism zone mode selector -- local live-city path only (remote runs LiveCitySim in the
@@ -2516,12 +2541,15 @@ public partial class Main : Node3D
         }
 
         var target = (int)Math.Clamp(value, 0, MaxCarDensity);
-        _liveCitySource.SetCarTarget(target);
+        _liveCitySource.SetCarTarget(target, CarSpawnPerStepForFill());
         if (_carDensityLabel is not null)
         {
             _carDensityLabel.Text = $"cars: {target} (live {_liveCitySource.CurrentCars})";
         }
     }
+
+    // Car spawn-per-step scaled by the fill-speed multiplier (>=1). At 1x this is the sim's own default.
+    private int CarSpawnPerStepForFill() => Math.Max(1, (int)Math.Round(DefaultCarSpawnPerStep * _fillSpeed));
 
     // Live pedestrian density (engine change C3). The spawn RATE is scaled with the cap on the same
     // "fills to the new cap in about the time the default takes" rule LIVECITY_PEDS already uses, so one
@@ -2534,11 +2562,35 @@ public partial class Main : Node3D
         }
 
         var cap = (int)Math.Clamp(value, 0, MaxPedDensity);
-        var rate = DefaultPedSpawnRate * Math.Max(1.0, cap / 160.0);
-        _liveCitySource.SetPedDensity(cap, rate);
+        _liveCitySource.SetPedDensity(cap, PedRateForFill(cap));
         if (_pedDensityLabel is not null)
         {
             _pedDensityLabel.Text = $"peds: {cap} (live {_liveCitySource.CurrentPeds})";
+        }
+    }
+
+    // Ped spawn-rate scaled with both the cap (fills to target in ~constant time) and the fill-speed dial.
+    private double PedRateForFill(int cap) => DefaultPedSpawnRate * Math.Max(1.0, cap / 160.0) * _fillSpeed;
+
+    // "Fill speed" dial: re-applies the CURRENT car target + ped cap with a faster (or slower) ramp rate,
+    // so raising a target to 10k/50k reaches its summit in seconds. Does not change the targets themselves.
+    private void OnFillSpeedSliderChanged(double value)
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        _fillSpeed = Math.Clamp(value, 1, MaxFillSpeed);
+        _liveCitySource.SetCarTarget(_liveCitySource.CarTarget, CarSpawnPerStepForFill());
+        if (_liveCitySource.PedestriansEnabled)
+        {
+            _liveCitySource.SetPedDensity(_liveCitySource.PedCap, PedRateForFill(_liveCitySource.PedCap));
+        }
+
+        if (_fillSpeedLabel is not null)
+        {
+            _fillSpeedLabel.Text = $"fill: {_fillSpeed:F0}x";
         }
     }
 
