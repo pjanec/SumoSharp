@@ -4,20 +4,29 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law (unchanged): `dotnet test tests/Sim.ParityTests -c Release` = **661/4** byte-identical;
-`Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` =
-**43/43** once the arbitrary-net PR lands (25 base + the road-net/route-graph suite it adds; was 25/25).
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **755/4** with all 661 goldens byte-identical;
+`Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **50/50**
+(⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
+you will test stale code). `Sim.Pedestrians.Tests` = **272/272**.
+
+> **The bench hash moved with PR #13** (`D96213B7BB4021A7` → `BF3794A4704BCD79`) because the seven
+> junction/overlap gates now default **ON**. Verified attributable by stashing only the `Engine` defaults and
+> reproducing the old hash; determinism itself is unaffected (par == single). `Sim.Bench` runs
+> `_bench/highway-dense`, which has **no SUMO reference**, so this is a re-pinned tripwire, not a
+> verified-correct value — the parity statement is the goldens, and all 661 stayed byte-identical across the
+> flip. `.github/workflows/ci.yml` carries the same note. Parity count 664 → 755 is new tests only.
 
 **In-flight by session** (live-city cluster; full boundary + no-touch lists in
 `docs/COORDINATION-livecity-realism-sessions.md`):
 
 | Session | Branch | Status | Scope / tracker |
 |---|---|---|---|
-| realism-A/B | `claude/livecity-realism-fixes-vr4k4b` | **A DONE (redo)** | Task A (stopped-car lateral wobble): first blanket-freeze fix caused car–car overlaps (reverted); targeted redo shipped — `Engine.SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression), guarded by F4a. Parity 661/4, bench `D96213B7BB4021A7`, LiveCity 27/27 |
-| ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped **coupling** only: B + #5 (car→ped disc feed) · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`. (#4 moved to ped-LOD-lifecycle — its root is demotion, not coupling.) |
-| ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle` *(to be started — SAFE to run in parallel now)* | to be started | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored — wandering ORCA) + #6 (idle clustering / randomize destinations). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side session's surface** (Engine lateral/longitudinal, OrcaCrowd external-disc, ExternalObstacle API, net import). Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`**. See "Parallel-safe" note below. |
-| F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **in flight** | junction overlap + gridlock + **junction DISCHARGE**. Seven gates now default **ON**; arm-14 4-way circular wait fixed. Log: `F3-SESSION-LOG.md` (§6 = next action) · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` · ⚠ **changes the iron law when it lands — see note below** |
-| arbitrary-net | `claude/discussion-eqp53m` | **complete — PR to main** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` (+ Engine gate fix) · fixture + tests — all DONE; **C5 seam BLOCKED** (ped–vehicle session) · W4 handed off. Detail: `TASKS-DONE.md` → "Arbitrary road-net import"; `LIVE-CITY-ARBITRARY-NET-{DESIGN,TASKS,TRACKER}.md` |
+| realism-A/B | `claude/task-a-held-crowd-swerve` | **A DONE — MERGED to main** (PR #12) | Task A (stopped-car lateral wobble): targeted redo `Engine.SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression), guarded by F4a. Crosswalk scope verified (`CrosswalkCrossingPedTests`). Parity 664/4, bench `D96213B7BB4021A7`, LiveCity 45/45 |
+| car-yields-ped | `claude/car-yields-crossing-ped` | **to be started** | **car→ped YIELD (Task B-guard)**: a car STOPS for a ped crossing/in its path instead of weaving past at ~5 m/s. Edits `ComputeLateralEvasion` crowd-swerve gate + `CrowdLongitudinalConstraint`. Repro committed: `CrosswalkCrossingPedTests`. Clear of the two running sessions (§coordination). Brief: **`docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`** |
+| ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling **minus the yield**: B-api (`ExternalObstacle`→`WorldDisc`) + #5/C5 (car→ped disc feed) · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`. (B-guard → car-yields-ped; #4 → ped-LOD-lifecycle.) |
+| ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle-bylitj` | **STARTED** | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored) + #6 (idle clustering). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side surface**. Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`** |
+| F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **MERGED to main (PR #13)** | junction overlap + gridlock + **junction DISCHARGE**. Seven junction/overlap gates now default **ON**; the arm-14 four-way circular wait is fixed; the density-diff harness (vs *honest* SUMO) is in. Discharge is measured but NOT fixed — next step is a per-vehicle SUMO-oracle trace, see `F3-SESSION-LOG.md` §6. Docs: `F3-SESSION-LOG.md` · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` |
+| arbitrary-net | `claude/discussion-eqp53m` | **complete — merged (PR #11)** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` · fixture + tests. Detail: `TASKS-DONE.md` → "Arbitrary road-net import" |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
 not a repo-wide board; other `claude/*` branches are not tracked here.*
@@ -35,15 +44,6 @@ session — coordinate by editing your **own** method/region: `LiveCitySim.cs` (
 methods). Parity is untouched either way (the whole ped/LOD path is gated on `CrowdSource != null`, which no
 golden attaches → still **661/4** byte-identical).
 
-> **⚠ THE IRON-LAW LINE ABOVE CHANGES WHEN `claude/f3-junction-overlap-handoff-okf5nu` LANDS.** Deliberately
-> **not** edited in place, because every other session is working against `main`, where the current numbers
-> still hold. On that branch: `Sim.ParityTests` **752/4** (was 661/4 — new tests only; **all 661 goldens
-> remain byte-identical**), `Sim.LiveCity.Tests` **50/50**, and `Sim.Bench` **`BF3794A4704BCD79`**
-> (was `D96213B7BB4021A7`). The bench hash moved because the seven junction/overlap gates now default ON;
-> attribution was verified by stashing only the `Engine` defaults and reproducing the old hash. `Sim.Bench`
-> runs `_bench/highway-dense`, which has **no SUMO reference**, so the new hash is a re-pinned tripwire, not a
-> verified-correct value — the goldens are the parity statement and they did not move. Whoever merges that
-> branch must update the line above in the same commit.
 
 
 ---
@@ -83,10 +83,17 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   `D96213B7BB4021A7`, LiveCity **27/27**, no new/worse overlap class (worst 3.035 m F3 + max pairs/frame 4
   unchanged; fix adds only 0.74 m / 0.09 m normal-lane overlaps, shallower than 6 pre-existing). Detail:
   `docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2, `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task A.
-- [ ] **B — car close-fast-passes ORCA peds on internal junction lanes** *(ped–vehicle avoidance session — to be started)*.
+  **Crosswalk scope verified** (repro `tests/Sim.ParityTests/CrosswalkCrossingPedTests.cs`, findings §F2
+  "Crosswalk scope"): the wobble is the *static/stopped-mid-crossing* ped case → **fixed**; a *moving*
+  crossing ped never floats a stopped car (fix inert). The distinct "car weaves around a crossing ped at
+  speed instead of stopping" is NOT the wobble → routed to **B** below.
+- [ ] **B — car close-fast-passes / weaves around ORCA peds instead of stopping** *(ped–vehicle avoidance session — to be started)*.
   High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
-  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. Briefs: AB-DESIGN §Task B,
-  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`.
+  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. **Also owns** the crosswalk
+  residual from Task A's repro: a car **anticipatorily dodges a crossing ped at ~5 m/s** rather than yielding
+  (crowd-swerve's "prefer swerve over hard-stop", `ComputeLateralEvasion`) — the hard guard must override it.
+  Minimal unit repro: `CrosswalkCrossingPedTests`' crossing-ped setup. Briefs: AB-DESIGN §Task B,
+  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` §4.
 - [ ] **Realism #3 — low-power peds DISAPPEAR on promotion** into the pocket (re-appear as ORCA later);
   one-sided `PedLodManager` promote handoff. *(ped-LOD-lifecycle session — parallel-safe, see table note)* (task #25)
 - [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /

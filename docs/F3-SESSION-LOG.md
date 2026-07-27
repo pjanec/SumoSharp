@@ -34,7 +34,7 @@ not** — that was a bad verification command (`import sumo` is not the module n
 
 | Command | Expected |
 | --- | --- |
-| `dotnet test tests/Sim.ParityTests -c Release` | **752 passed / 4 skipped / 0 failed** (session 3; was 689) |
+| `dotnet test tests/Sim.ParityTests -c Release` | **755 passed / 4 skipped / 0 failed** (752 + 3 from main at merge; was 689) |
 | `dotnet run --project src/Sim.Bench -c Release` | hash **`BF3794A4704BCD79`**, `deterministic=True`, par==single (⚠ **re-pinned session 4** — was `D96213B7BB4021A7` with the gates OFF; change verified attributable by stashing the defaults and re-running) |
 | `dotnet test tests/Sim.LiveCity.Tests` (**no** `--no-build`; **NOT in `Traffic.sln`**) | **50 / 50** (session 4: +`HeadOfQueueStallProbeTests`) |
 | `dotnet test tests/Sim.Pedestrians.Tests -c Release` | **272 / 272** |
@@ -1606,7 +1606,7 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > The demo used to gridlock terminally within an hour. **Seven gates now default ON** and it runs a full hour
 > at design density with **0 long stalls, +107% trips, −99% overlaps, 0 teleports**; at **3x** density peak
 > concurrent deep stalls are **469 → 17** and the arm-14 four-way circular wait is **fixed**.
-> `Sim.ParityTests` **752/4/0**, all 661 goldens byte-identical, `Sim.LiveCity.Tests` **50/50**,
+> `Sim.ParityTests` **755/4/0**, all 661 goldens byte-identical, `Sim.LiveCity.Tests` **50/50**,
 > `Sim.Pedestrians.Tests` **272/272**, `Sim.Bench` **`BF3794A4704BCD79`** par == single (⚠ re-pinned — was
 > `D96213B7BB4021A7` before the defaults flip; attribution verified).
 >
