@@ -32,9 +32,11 @@ public static class RoadMeshBuilder
     //   2. offset centerline vertices +/-width/2 along the (miter-averaged at interior vertices) normal to
     //      get left/right edges;
     //   3. emit 2 triangles per segment.
-    // Every emitted vertex is transformed through CoordinateTransform.SumoToGodot (Y = elevation from
-    // shapeZ, or 0 when null).
-    public static RibbonMesh Build(IReadOnlyList<(double X, double Y)> shape, IReadOnlyList<double>? shapeZ, double width)
+    // Every emitted vertex is transformed through `frame` (docs/EXTERNAL-NET-LOADING-DESIGN.md §5) --
+    // Y = elevation from shapeZ (or 0 when null), minus the frame's elevation origin. Pass
+    // SumoGodotFrame.Identity for the un-recentered mapping this used before the frame existed.
+    public static RibbonMesh Build(
+        SumoGodotFrame frame, IReadOnlyList<(double X, double Y)> shape, IReadOnlyList<double>? shapeZ, double width)
     {
         var n = shape.Count;
         if (n == 0)
@@ -126,8 +128,8 @@ public static class RoadMeshBuilder
         {
             var z0 = shapeZ is not null && i < shapeZ.Count ? shapeZ[i] : 0.0;
 
-            var (lgx, lgy, lgz) = CoordinateTransform.SumoToGodot(left[i].X, left[i].Y, z0);
-            var (rgx, rgy, rgz) = CoordinateTransform.SumoToGodot(right[i].X, right[i].Y, z0);
+            var (lgx, lgy, lgz) = frame.ToGodot(left[i].X, left[i].Y, z0);
+            var (rgx, rgy, rgz) = frame.ToGodot(right[i].X, right[i].Y, z0);
 
             var leftBase = i * 2 * 3;
             vertices[leftBase + 0] = lgx;
@@ -177,7 +179,8 @@ public static class RoadMeshBuilder
     // Iterates every lane in `network` (LanesByHandle, D2 dense handle order) and builds its ribbon mesh.
     // `includeInternal` (default true, design "Junctions are just the internal (':'-prefixed) lanes"):
     // when false, skips lanes whose Id starts with ':'.
-    public static IEnumerable<(int Handle, RibbonMesh Mesh)> BuildAll(NetworkModel network, bool includeInternal = true)
+    public static IEnumerable<(int Handle, RibbonMesh Mesh)> BuildAll(
+        SumoGodotFrame frame, NetworkModel network, bool includeInternal = true)
     {
         foreach (var lane in network.LanesByHandle)
         {
@@ -186,7 +189,7 @@ public static class RoadMeshBuilder
                 continue;
             }
 
-            yield return (lane.Handle, Build(lane.Shape, lane.ShapeZ, lane.Width));
+            yield return (lane.Handle, Build(frame, lane.Shape, lane.ShapeZ, lane.Width));
         }
     }
 
@@ -203,7 +206,7 @@ public static class RoadMeshBuilder
     // (GeometryCodec.LaneGeo.Z) through as `shapeZ` when the publisher had any -- null (flat, Y=0) exactly
     // like the NetworkModel overload when the source lane had no elevation.
     public static IEnumerable<(int Handle, RibbonMesh Mesh)> BuildAll(
-        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry, bool includeInternal = true)
+        SumoGodotFrame frame, IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry, bool includeInternal = true)
     {
         foreach (var lane in geometry.Values)
         {
@@ -228,7 +231,7 @@ public static class RoadMeshBuilder
                 }
             }
 
-            yield return (lane.Handle, Build(shape, shapeZ, lane.Width));
+            yield return (lane.Handle, Build(frame, shape, shapeZ, lane.Width));
         }
     }
 

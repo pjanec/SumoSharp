@@ -48,11 +48,22 @@ public readonly struct ReconstructedVehicle
 // CENTER (half a length behind the front), which is exactly what City3D's center-anchored box wants.
 public sealed class Reconstructor
 {
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather than
+    // defaulted so every construction site has to state its origin -- a car silently placed with the
+    // identity frame on a georeferenced net would render 90 km from the road it is driving on, and a
+    // default would let exactly that compile.
+    private readonly SumoGodotFrame _frame;
+
     private readonly DrClock _clock = new();
     private readonly KinematicReconstructor _recon = new() { CoarseFeed = true };
     private readonly List<ReconstructedVehicle> _scratch = new();
     private readonly Stopwatch _wall = Stopwatch.StartNew();
     private double _lastWallSec = -1.0;
+
+    public Reconstructor(SumoGodotFrame frame)
+    {
+        _frame = frame;
+    }
 
     // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent): the render-time instant THIS call
     // resolved vehicles against -- `_clock.RenderSim - delaySeconds` in the normal (wall-clock) path, or
@@ -142,7 +153,7 @@ public sealed class Reconstructor
             // Feed the box the CENTER (not the front): City3D's box is centered on the point, so before this
             // fix it drew the body at the front reference (~half a length too far forward). r.CenterX/Y is the
             // true geometric center KinematicHeading tows behind the front, which lands the box correctly.
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(r.CenterX, r.CenterY, r.Z);
+            var (gx, gy, gz) = _frame.ToGodot(r.CenterX, r.CenterY, r.Z);
             var yawRad = CoordinateTransform.NaviDegToGodotYawRad(r.HeadingDeg);
 
             // Pitch (tilt on ramps) still comes from the lane's own z-gradient along travel, walked down the

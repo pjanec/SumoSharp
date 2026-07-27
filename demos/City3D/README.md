@@ -53,6 +53,42 @@ opens an interactive window when `DISPLAY` is set, otherwise runs headless under
 reference. It hosts the engine in-process, publishes each step into an `InMemoryReplicationBus`, and
 reconstructs smooth per-frame poses with `Viewer.Motion` — a genuine DR viewer, just co-hosted.
 
+## Live city — the demo, or an arbitrary georeferenced net
+
+`--live-city` runs the coupled cars + pedestrians + crossing-yield scene (`SumoSharp.LiveCity`) live,
+ticking the sim every frame rather than replaying a recording.
+
+```bash
+demos/City3D/run-local.sh --live-city                                   # the pinned synthetic demo city
+demos/City3D/run-local.sh --live-city --dataset=/path/to/cut            # any dataset dir holding net.xml
+demos/City3D/run-local.sh --live-city --sumocfg=/path/to/scenario.sumocfg   # a SumoData preprocess.py cut
+```
+
+`--dataset` / `--sumocfg` (both also accept the two-token `--dataset <dir>` form) load an **arbitrary**
+net — e.g. a georeferenced Geneva box cut by SumoData's `preprocess.py`, whose net is named
+`scenario.net.xml` rather than `net.xml`. Loading one:
+
+* takes the arbitrary-net path (route-graph pedestrian navigation + region-planned car stepping) and
+  **drops the demo's pinned hero-block crop** — the whole cut is the playable area;
+* **recenters the scene** on the net's own bounding-box centre before the float cast. A cut keeps the
+  full net's UTM `netOffset`, so its local coordinates are ~1e5 where a `float` has ~cm of resolution —
+  rendered raw, the scene jitters and z-fights. The recenter is render-side only; the net's
+  georeference is never modified (consumers convert back with `utm = sumo - netOffset`);
+* places **pedestrians at the real road elevation** on a 3-D net instead of at z = 0.
+
+Two live density dials sit in the rate-control panel (top left), alongside the render-Hz and
+playout-delay sliders: **cars** (target concurrent) and **peds** (population cap). Both take effect on
+the next tick with no sim rebuild. Raising a dial fills at the spawn rate; lowering it stops new spawns
+and lets the population drain by arrival, rather than deleting vehicles or people mid-motion.
+
+To check a net loads before launching a GPU viewer at all:
+
+```bash
+dotnet run --project src/Sim.Viz -- --external-net /path/to/cut 400
+```
+
+Design, tasks, and the coordinate contract: `docs/EXTERNAL-NET-LOADING-{DESIGN,TASKS,TRACKER}.md`.
+
 ## Remote (decoupled host → viewer over DDS)
 
 ```bash

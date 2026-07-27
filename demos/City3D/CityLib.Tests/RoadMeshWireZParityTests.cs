@@ -61,12 +61,12 @@ public class RoadMeshWireZParityTests
         bus.Source.Pump();
 
         // LOCAL half (T1.2's "seam check" pattern): NetworkModel -> RoadMeshBuilder directly.
-        var fromNetwork = RoadMeshBuilder.BuildAll(network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var fromNetwork = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
 
         // "REMOTE" half: the wire-fed ILaneShapeSource + the geometry-dictionary RoadMeshBuilder overload,
         // exactly what a DDS-fed City3D remote viewer would build from DdsSubscriber.Geometry.
         var wireLanes = new ReplicationLaneShapeSource(bus.Source.Geometry);
-        var fromWire = RoadMeshBuilder.BuildAll(bus.Source.Geometry, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var fromWire = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, bus.Source.Geometry, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
 
         Assert.Equal(fromNetwork.Count, fromWire.Count);
 

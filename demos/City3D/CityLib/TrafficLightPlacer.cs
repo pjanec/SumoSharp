@@ -73,7 +73,8 @@ public static class TrafficLightPlacer
     // `right[i] = center - normal*halfWidth` uses, so a head sits at the actual road edge rather than
     // straddling the centerline). Unknown/out-of-range handles are skipped rather than throwing (a
     // defensive guard for a caller passing a stale or foreign handle set).
-    public static IReadOnlyList<SignalHead> Place(NetworkModel network, IEnumerable<int> controlledLaneHandles)
+    public static IReadOnlyList<SignalHead> Place(
+        SumoGodotFrame frame, NetworkModel network, IEnumerable<int> controlledLaneHandles)
     {
         var result = new List<SignalHead>();
 
@@ -121,7 +122,7 @@ public static class TrafficLightPlacer
             var lastIndex = shape.Count - 1;
             var groundZ = lane.ShapeZ is not null && lastIndex < lane.ShapeZ.Count ? lane.ShapeZ[lastIndex] : 0.0;
 
-            var (poleX, poleY, poleZ) = CoordinateTransform.SumoToGodot(baseX, baseY, groundZ);
+            var (poleX, poleY, poleZ) = frame.ToGodot(baseX, baseY, groundZ);
 
             result.Add(new SignalHead(handle, poleX, poleY, poleZ, poleX, poleY + HeadHeightMeters, poleZ));
         }
@@ -139,7 +140,9 @@ public static class TrafficLightPlacer
     // yet (out of E1's scope -- ReplicationLaneShapeSource/RoadMeshBuilder are the two files that task
     // touches) -- groundZ stays the flat-net fallback of 0 here regardless of the net's real elevation.
     public static IReadOnlyList<SignalHead> Place(
-        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry, IEnumerable<int> controlledLaneHandles)
+        SumoGodotFrame frame,
+        IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry,
+        IEnumerable<int> controlledLaneHandles)
     {
         var result = new List<SignalHead>();
 
@@ -175,7 +178,7 @@ public static class TrafficLightPlacer
             // flat-net fallback of 0, same convention RoadMeshBuilder's geometry-dictionary overload uses.
             const double groundZ = 0.0;
 
-            var (poleX, poleY, poleZ) = CoordinateTransform.SumoToGodot(baseX, baseY, groundZ);
+            var (poleX, poleY, poleZ) = frame.GroundToGodot(baseX, baseY, groundZ);
 
             result.Add(new SignalHead(handle, poleX, poleY, poleZ, poleX, poleY + HeadHeightMeters, poleZ));
         }

@@ -16,7 +16,7 @@ public class ZoneGroundBuilderTests
     {
         var polygon = new (double X, double Y)[] { (0, 0), (100, 0), (100, 100), (0, 100) };
 
-        var mesh = ZoneGroundBuilder.Build(polygon);
+        var mesh = ZoneGroundBuilder.Build(SumoGodotFrame.Identity, polygon);
 
         Assert.Equal(4 * 3, mesh.Vertices.Length);   // 4 vertices, xyz each
         Assert.Equal(2 * 3, mesh.Indices.Length);     // fan triangulation of a quad = 2 triangles
@@ -32,7 +32,7 @@ public class ZoneGroundBuilderTests
             (1600.0, 1600.0), (3100.0, 1600.0), (3100.0, 3100.0), (1600.0, 3100.0),
         };
 
-        var mesh = ZoneGroundBuilder.Build(polygon);
+        var mesh = ZoneGroundBuilder.Build(SumoGodotFrame.Identity, polygon);
 
         // 1500m x 1500m square.
         Assert.Equal(1500.0 * 1500.0, mesh.Area, 1e-6);
@@ -50,7 +50,7 @@ public class ZoneGroundBuilderTests
             (4450.0, 4450.0), (2350.0, 4450.0), (250.0, 4450.0), (250.0, 2350.0),
         };
 
-        var mesh = ZoneGroundBuilder.Build(polygon);
+        var mesh = ZoneGroundBuilder.Build(SumoGodotFrame.Identity, polygon);
 
         Assert.Equal(6 * 3, mesh.Indices.Length); // 8-gon fan = 6 triangles
         // The polygon is exactly the 4200x4200 square (250..4450 on each axis) with 4 extra collinear
@@ -65,7 +65,7 @@ public class ZoneGroundBuilderTests
     {
         var polygon = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
 
-        var mesh = ZoneGroundBuilder.Build(polygon);
+        var mesh = ZoneGroundBuilder.Build(SumoGodotFrame.Identity, polygon);
 
         for (var i = 0; i < mesh.Vertices.Length; i += 3)
         {
@@ -84,7 +84,7 @@ public class ZoneGroundBuilderTests
     [Fact]
     public void Build_DegeneratePolygon_ReturnsEmptyMesh()
     {
-        var mesh = ZoneGroundBuilder.Build(new (double X, double Y)[] { (0, 0), (1, 1) });
+        var mesh = ZoneGroundBuilder.Build(SumoGodotFrame.Identity, new (double X, double Y)[] { (0, 0), (1, 1) });
 
         Assert.Empty(mesh.Vertices);
         Assert.Empty(mesh.Indices);

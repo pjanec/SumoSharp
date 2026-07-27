@@ -325,6 +325,14 @@ public partial class Main : Node3D
     private int? _framesOverride;
     private string _cameraMode = "overview";
     private (Vector3 Min, Vector3 Max) _sceneBbox;
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the ONE SUMO->Godot placement frame for this scene.
+    // `Identity` (no recenter) for every pre-existing path, so the demo and the scenario/replay/remote
+    // modes render byte-identically. Set to the loaded net's AABB centre when an ARBITRARY net is loaded
+    // (--dataset / --sumocfg), because a georeferenced cut's coordinates are ~1e5 where float ULP is ~cm:
+    // rendered raw they jitter and z-fight. Every placement in this file -- meshes, cars, peds, overlays,
+    // rings, and the camera's own inverse mapping -- goes through this one value.
+    private SumoGodotFrame _sumoFrame = SumoGodotFrame.Identity;
     private Camera3D? _closeCamera;
 
     // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable):
@@ -533,6 +541,17 @@ public partial class Main : Node3D
     private int _renderHz = 60;
     private double _liveCityDt = LiveCityTickSeconds;
 
+    // T3 slider ranges. Generous headroom over the defaults (160 cars / 160 peds) so a real cut can be
+    // driven to saturation, but bounded so a stray drag cannot ask for a population the renderer would
+    // choke on. The MultiMesh instance counts are set from the live counts each frame, so nothing else
+    // needs to know these numbers.
+    private const int MaxCarDensity = 2000;
+    private const int MaxPedDensity = 2000;
+
+    // The ped spawn rate at the reference cap of 160, matching LiveCityConfig's own default; the handler
+    // scales it with the cap exactly as LIVECITY_PEDS does.
+    private const double DefaultPedSpawnRate = 8.0;
+
     // The on-screen render-hz control (BuildRateControlUi) -- built once from ReadyLiveCityLive/
     // ReadyLiveCityReplay/ReadyLiveCityRemote (Fix 6), mirrors _playbackUi/_timelineSlider's own field
     // shape. `_playoutDelayLabel`/`_playoutDelaySlider` are Fix 6's added third row.
@@ -541,6 +560,16 @@ public partial class Main : Node3D
     private Label? _rateLabel;
     private HSlider? _playoutDelaySlider;
     private Label? _playoutDelayLabel;
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3, -TASKS.md T3: the free-style DENSITY dials. Both are LIVE --
+    // the handlers poke the very objects the running sim holds (the by-reference LiveCityConfig for cars,
+    // the live PedDemand for peds), so a drag is felt on the next tick with no sim/scene rebuild. The ped
+    // one is live only because of engine change C3; before it, ped density was baked into an init-only
+    // PedDemandConfig at LiveCitySim's ctor and a slider could not move it at all.
+    private HSlider? _carDensitySlider;
+    private Label? _carDensityLabel;
+    private HSlider? _pedDensitySlider;
+    private Label? _pedDensityLabel;
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
     // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
@@ -745,11 +774,11 @@ public partial class Main : Node3D
             return;
         }
 
-        _reconstructor = new Reconstructor();
+        _reconstructor = new Reconstructor(_sumoFrame);
         _source = _sim.Source;
         _lanes = _sim.LocalLanes;
         var sim = _sim;
-        _placeSignalHeads = keys => TrafficLightPlacer.Place(sim.Network, keys);
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(_sumoFrame, sim.Network, keys);
         GD.Print($"Main: loaded scenario '{scenarioRel}' from '{scenarioDir}' (transport=local).");
 
         _cameraMode = ParseCameraArg();
@@ -857,7 +886,7 @@ public partial class Main : Node3D
             return;
         }
 
-        _pedReconstructor = new PedReconstructor();
+        _pedReconstructor = new PedReconstructor(_sumoFrame);
         _cameraMode = ParseCameraArg();
 
         var roadBbox = BuildRoadMeshes(pedNetwork);
@@ -939,11 +968,53 @@ public partial class Main : Node3D
             // invariant), so this one assignment is enough; no separate ped-side knob needed here. `_liveCityDt`
             // mirrors it back out for ProcessLiveCity's accumulator (replacing the old hardcoded
             // `LiveCityTickSeconds` const read).
-            var liveCfg = LiveCityConfig.ForRepoRoot(repoRoot);
+            // docs/EXTERNAL-NET-LOADING-DESIGN.md §1, -TASKS.md T1: which net to load.
+            //   --sumocfg <path>  -> ForSumocfg: the scenario names its own net/route files (the form a
+            //                        SumoData preprocess.py cut ships, whose net is `scenario.net.xml`).
+            //   --dataset <dir>   -> ForDataset: an arbitrary dataset dir containing net.xml.
+            //   neither           -> ForRepoRoot: the pinned synthetic demo, byte-identical to before.
+            // The first two are the ARBITRARY-net path (RouteGraph ped nav + RegionPlan + no demo crop).
+            var sumocfgArg = ParseSumocfgArg();
+            var datasetArg = ParseDatasetArg();
+
+            LiveCityConfig liveCfg;
+            if (sumocfgArg is not null)
+            {
+                liveCfg = LiveCityConfig.ForSumocfg(sumocfgArg);
+                GD.Print($"Main: live-city loading sumocfg '{sumocfgArg}' (arbitrary net).");
+            }
+            else if (datasetArg is not null)
+            {
+                liveCfg = LiveCityConfig.ForDataset(datasetArg);
+                GD.Print($"Main: live-city loading dataset '{datasetArg}' (arbitrary net).");
+            }
+            else
+            {
+                liveCfg = LiveCityConfig.ForRepoRoot(repoRoot);
+            }
+
             liveCfg.SimHz = _simHz;
             _liveCityDt = liveCfg.Dt;
             _liveCitySource = new LiveCitySource(liveCfg);
-            _liveCityPedReconstructor = new CityLib.PedReconstructor();
+
+            // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the recenter origin, computed ONCE here, before
+            // any geometry is placed. The demo keeps `Identity` so its output is byte-identical; an
+            // arbitrary net gets the net's own AABB centre, because a georeferenced cut's coordinates are
+            // ~1e5 (float ULP ~cm -> jitter, z-fighting, an unstable orbit) and its roads sit at z ~400 m
+            // (which would put every ground-referenced overlay hundreds of metres underground).
+            _sumoFrame = liveCfg.NavMode == PedNavMode.RouteGraph
+                ? SumoGodotFrame.ForNetwork(_liveCitySource.Network)
+                : SumoGodotFrame.Identity;
+            if (!_sumoFrame.IsIdentity)
+            {
+                GD.Print(
+                    $"Main: recentering scene on SUMO origin ({_sumoFrame.OriginX:F1}, {_sumoFrame.OriginY:F1}, "
+                    + $"z={_sumoFrame.OriginZ:F1}) for float precision.");
+            }
+
+            // C2: hand the net's ground-elevation sampler to the ped reconstructor so wire-reconstructed
+            // peds sit on the road surface of a 3-D net instead of at the ground datum. Inert on a 2-D net.
+            _liveCityPedReconstructor = new CityLib.PedReconstructor(_sumoFrame, _liveCitySource.PedElevation);
         }
         catch (Exception ex)
         {
@@ -952,7 +1023,7 @@ public partial class Main : Node3D
             return;
         }
 
-        _reconstructor = new Reconstructor();
+        _reconstructor = new Reconstructor(_sumoFrame);
         _source = _liveCitySource.Source;
         _lanes = _liveCitySource.LocalLanes;
 
@@ -1022,6 +1093,7 @@ public partial class Main : Node3D
         // Fix #16: crop the controlled-lane handles to the SAME box as the rendered roads so no signal-head
         // pole floats over bare ground outside the crop.
         _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            _sumoFrame,
             liveCitySource!.Network, CropTlLaneHandles(liveCitySource.Network, keys, x0, y0, x1, y1));
 
         if (ParseShowZonesArg() && _zonesNode is not null)
@@ -1113,7 +1185,7 @@ public partial class Main : Node3D
         _liveCityDt = _clock.Dt;
         _simHz = _clock.Dt > 0.0 ? (int)Math.Round(1.0 / _clock.Dt) : _simHz;
 
-        _reconstructor = new Reconstructor();
+        _reconstructor = new Reconstructor(_sumoFrame);
         _lanes = new ReplicationLaneShapeSource(_replaySource.Geometry);
         _source = _replaySource;
 
@@ -1175,6 +1247,7 @@ public partial class Main : Node3D
         // the wire-geometry overload here even though this IS a replay path, since the road geometry was
         // never actually replicated (it's read locally, same as the live path).
         _placeSignalHeads = keys => TrafficLightPlacer.Place(
+            _sumoFrame,
             network, CropTlLaneHandles(network, keys, cfg.X0, cfg.Y0, cfg.X1, cfg.Y1)); // Fix #16: crop TL poles to the rendered net
 
         if (ParseShowZonesArg() && _zonesNode is not null)
@@ -1234,10 +1307,10 @@ public partial class Main : Node3D
 
         _ddsParticipant = new DdsParticipant();
         _ddsSource = new DdsSubscriber(_ddsParticipant);
-        _reconstructor = new Reconstructor();
+        _reconstructor = new Reconstructor(_sumoFrame);
         _source = _ddsSource;
         var ddsSource = _ddsSource;
-        _placeSignalHeads = keys => TrafficLightPlacer.Place(ddsSource.Geometry, keys);
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(_sumoFrame, ddsSource.Geometry, keys);
 
         _carMultiMesh = BuildCarMultiMesh();
 
@@ -1306,11 +1379,11 @@ public partial class Main : Node3D
         _ddsParticipant = new DdsParticipant();
         _ddsSource = new DdsSubscriber(_ddsParticipant);
         _ddsPedSource = new DdsPedReplicationSource(_ddsParticipant);
-        _reconstructor = new Reconstructor();
-        _pedReconstructor = new PedReconstructor();
+        _reconstructor = new Reconstructor(_sumoFrame);
+        _pedReconstructor = new PedReconstructor(_sumoFrame);
         _source = _ddsSource;
         var ddsSource = _ddsSource;
-        _placeSignalHeads = keys => TrafficLightPlacer.Place(ddsSource.Geometry, keys);
+        _placeSignalHeads = keys => TrafficLightPlacer.Place(_sumoFrame, ddsSource.Geometry, keys);
 
         _carMultiMesh = BuildCarMultiMesh();
         _pedMultiMesh = BuildPedMultiMesh();
@@ -2282,7 +2355,7 @@ public partial class Main : Node3D
         panel.OffsetLeft = 16f;
         panel.OffsetTop = 16f;
         panel.OffsetRight = 316f;
-        panel.OffsetBottom = 176f;
+        panel.OffsetBottom = 248f; // two extra rows (car + ped density) beyond the original three
         _rateUi.AddChild(panel);
 
         var vbox = new VBoxContainer();
@@ -2326,6 +2399,57 @@ public partial class Main : Node3D
         };
         _playoutDelaySlider.ValueChanged += OnPlayoutDelaySliderChanged;
         delayRow.AddChild(_playoutDelaySlider);
+
+        // docs/EXTERNAL-NET-LOADING-TASKS.md T3: car + pedestrian density, same row shape as the two
+        // sliders above (Label + HSlider + a ValueChanged handler). LOCAL live-city only: replay has no
+        // sim to retune, and in remote mode the sim runs in the producer where this viewer cannot reach
+        // its config -- offering a dead dial in those modes would be worse than offering none.
+        if (_liveCitySource is not null)
+        {
+            var carRow = new HBoxContainer();
+            vbox.AddChild(carRow);
+
+            _carDensityLabel = new Label { Text = $"cars: {_liveCitySource.CarTarget}" };
+            carRow.AddChild(_carDensityLabel);
+
+            _carDensitySlider = new HSlider
+            {
+                MinValue = 0,
+                MaxValue = MaxCarDensity,
+                Step = 10,
+                Value = Math.Clamp(_liveCitySource.CarTarget, 0, MaxCarDensity),
+                CustomMinimumSize = new Vector2(180f, 20f),
+                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            };
+            _carDensitySlider.ValueChanged += OnCarDensitySliderChanged;
+            carRow.AddChild(_carDensitySlider);
+
+            var pedRow = new HBoxContainer();
+            vbox.AddChild(pedRow);
+
+            _pedDensityLabel = new Label
+            {
+                Text = _liveCitySource.PedestriansEnabled
+                    ? $"peds: {_liveCitySource.PedCap}"
+                    : "peds: n/a (net has no sidewalks)",
+            };
+            pedRow.AddChild(_pedDensityLabel);
+
+            _pedDensitySlider = new HSlider
+            {
+                MinValue = 0,
+                MaxValue = MaxPedDensity,
+                Step = 10,
+                Value = Math.Clamp(_liveCitySource.PedCap, 0, MaxPedDensity),
+                CustomMinimumSize = new Vector2(180f, 20f),
+                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+                // A net with no pedestrian infrastructure cannot grow a crowd at any cap (the engine-side
+                // setter is a documented no-op there), so the dial is disabled rather than misleading.
+                Editable = _liveCitySource.PedestriansEnabled,
+            };
+            _pedDensitySlider.ValueChanged += OnPedDensitySliderChanged;
+            pedRow.AddChild(_pedDensitySlider);
+        }
 
         // #15 LC-realism zone mode selector -- local live-city path only (remote runs LiveCitySim in the
         // producer, so the viewer can't drive the zone there; replay has no live sim). Mirrors the `H` key.
@@ -2374,6 +2498,45 @@ public partial class Main : Node3D
         if (_playoutDelayLabel is not null)
         {
             _playoutDelayLabel.Text = $"playout delay: {_playoutDelaySeconds:F2}s";
+        }
+    }
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (T3): live car density. Writes straight through to the config
+    // object the running LiveCitySim holds by reference, which its Step() re-reads every tick -- so the new
+    // target is in force on the next tick, no rebuild. Raising fills at CarSpawnPerStep; LOWERING stops new
+    // insertions and lets the live cars drain by arriving, rather than deleting cars out from under the
+    // viewer (the same attrition semantics the ped dial has, deliberately).
+    private void OnCarDensitySliderChanged(double value)
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        var target = (int)Math.Clamp(value, 0, MaxCarDensity);
+        _liveCitySource.SetCarTarget(target);
+        if (_carDensityLabel is not null)
+        {
+            _carDensityLabel.Text = $"cars: {target} (live {_liveCitySource.CurrentCars})";
+        }
+    }
+
+    // Live pedestrian density (engine change C3). The spawn RATE is scaled with the cap on the same
+    // "fills to the new cap in about the time the default takes" rule LIVECITY_PEDS already uses, so one
+    // dial is enough -- a user setting "600 peds" means it within seconds, not in ten minutes.
+    private void OnPedDensitySliderChanged(double value)
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        var cap = (int)Math.Clamp(value, 0, MaxPedDensity);
+        var rate = DefaultPedSpawnRate * Math.Max(1.0, cap / 160.0);
+        _liveCitySource.SetPedDensity(cap, rate);
+        if (_pedDensityLabel is not null)
+        {
+            _pedDensityLabel.Text = $"peds: {cap} (live {_liveCitySource.CurrentPeds})";
         }
     }
 
@@ -2610,7 +2773,7 @@ public partial class Main : Node3D
     // ArrayMesh construction.
     private (Vector3 Min, Vector3 Max) BuildRoadMeshes(NetworkModel network)
         => BuildRoadMeshesFromRibbons(
-            RoadMeshBuilder.BuildAll(network, includeInternal: true), network.LanesByHandle.Count,
+            RoadMeshBuilder.BuildAll(_sumoFrame, network, includeInternal: true), network.LanesByHandle.Count,
             PedByHandle(network));
 
     // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks" row -- Handle -> "is this a pedestrian-only lane"
@@ -2661,7 +2824,7 @@ public partial class Main : Node3D
                 continue;
             }
 
-            filtered.Add((lane.Handle, RoadMeshBuilder.Build(lane.Shape, lane.ShapeZ, lane.Width)));
+            filtered.Add((lane.Handle, RoadMeshBuilder.Build(_sumoFrame, lane.Shape, lane.ShapeZ, lane.Width)));
         }
 
         GD.Print(
@@ -2678,7 +2841,7 @@ public partial class Main : Node3D
     // ArrayMesh/MeshInstance3D construction) is untouched -- only the RibbonMesh SOURCE differs.
     private (Vector3 Min, Vector3 Max) BuildRoadMeshesFromGeometry(
         IReadOnlyDictionary<int, GeometryCodec.LaneGeo> geometry)
-        => BuildRoadMeshesFromRibbons(RoadMeshBuilder.BuildAll(geometry, includeInternal: true), geometry.Count);
+        => BuildRoadMeshesFromRibbons(RoadMeshBuilder.BuildAll(_sumoFrame, geometry, includeInternal: true), geometry.Count);
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E4) -- BuildRoadMeshesFromGeometry's
     // crop-filtered counterpart (mirrors BuildRoadMeshesCropped's NetworkModel-side filtering, one input
@@ -2733,7 +2896,7 @@ public partial class Main : Node3D
                 }
             }
 
-            filtered.Add((lane.Handle, RoadMeshBuilder.Build(shape, shapeZ, lane.Width)));
+            filtered.Add((lane.Handle, RoadMeshBuilder.Build(_sumoFrame, shape, shapeZ, lane.Width)));
         }
 
         GD.Print(
@@ -2854,7 +3017,7 @@ public partial class Main : Node3D
     // yaw-independent radius per box) so the camera can frame roads AND buildings together.
     private (Vector3 Min, Vector3 Max) BuildBuildings(NetworkModel network)
     {
-        var boxes = BuildingPlacer.PlaceAll(network);
+        var boxes = BuildingPlacer.PlaceAll(_sumoFrame, network);
 
         var min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
         var max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
@@ -2963,7 +3126,7 @@ public partial class Main : Node3D
         var built = 0;
         foreach (var building in buildings)
         {
-            var mesh = BuildingFromDataBuilder.Build(building);
+            var mesh = BuildingFromDataBuilder.Build(_sumoFrame, building);
             if (mesh.Vertices.Length == 0)
             {
                 continue; // degenerate footprint or non-positive height -- nothing to draw.
@@ -3058,7 +3221,7 @@ public partial class Main : Node3D
         var built = new List<(SceneZone Zone, FlatGroundMesh Mesh)>(scene.Zones.Count);
         foreach (var zone in scene.Zones)
         {
-            built.Add((zone, ZoneGroundBuilder.Build(zone.Polygon)));
+            built.Add((zone, ZoneGroundBuilder.Build(_sumoFrame, zone.Polygon)));
         }
 
         // Largest planar area first (descending) -- a plain insertion sort is fine at n=6 (one dataset's
@@ -3138,9 +3301,9 @@ public partial class Main : Node3D
         AddChild(root);
         _poisNode = root;
 
-        BuildPoiAreas(root, scene.Areas);
-        BuildPoiMarkers(root, scene.Pois);
-        BuildDoors(root, scene.Pois);
+        BuildPoiAreas(_sumoFrame, root, scene.Areas);
+        BuildPoiMarkers(_sumoFrame, root, scene.Pois);
+        BuildDoors(_sumoFrame, root, scene.Pois);
     }
 
     // POI AREAS (parking_lot/park -- pois.json records that carry a `polygon`): "flat colored ground
@@ -3150,7 +3313,7 @@ public partial class Main : Node3D
     // per the task (zones default -0.05m, roads sit at 0m -- -0.03m lands strictly between the two).
     // Largest-area-first, mirroring BuildZoneGround's own ordering (only 6 areas in the committed dataset,
     // but the same "big area's tint shouldn't get buried under a small nested one" reasoning applies).
-    private static void BuildPoiAreas(Node3D parent, IReadOnlyList<SceneArea> areas)
+    private static void BuildPoiAreas(SumoGodotFrame frame, Node3D parent, IReadOnlyList<SceneArea> areas)
     {
         if (areas.Count == 0)
         {
@@ -3163,7 +3326,7 @@ public partial class Main : Node3D
         var built = new List<(SceneArea Area, FlatGroundMesh Mesh)>(areas.Count);
         foreach (var area in areas)
         {
-            built.Add((area, ZoneGroundBuilder.Build(area.Polygon, groundOffsetSumoZ)));
+            built.Add((area, ZoneGroundBuilder.Build(frame, area.Polygon, groundOffsetSumoZ)));
         }
 
         built.Sort((a, b) => b.Mesh.Area.CompareTo(a.Mesh.Area));
@@ -3227,9 +3390,9 @@ public partial class Main : Node3D
     // A round cylinder (not a flat quad) sidesteps any "which local axis does an unrotated PlaneMesh lie
     // in" ambiguity entirely -- a very short cylinder unavoidably reads as a flat puck regardless of
     // orientation assumptions, matching BuildPedMultiMesh's own reasoning for picking a cylinder mesh.
-    private static void BuildPoiMarkers(Node3D parent, IReadOnlyList<ScenePoi> pois)
+    private static void BuildPoiMarkers(SumoGodotFrame frame, Node3D parent, IReadOnlyList<ScenePoi> pois)
     {
-        var markers = PoiGroundBuilder.Build(pois);
+        var markers = PoiGroundBuilder.Build(frame, pois);
         if (markers.Count == 0)
         {
             GD.Print("Main: 0 POI marker(s) in scene.");
@@ -3283,9 +3446,9 @@ public partial class Main : Node3D
     // height); this method turns its plain instances into ONE MultiMeshInstance3D (a thin unit box, one
     // per-instance transform per door) -- same idiom BuildCarMultiMesh/UpdateCars use for oriented boxes
     // (ScaledLocal(scale) so the box's THIN axis, not a fixed world axis, points along Facing).
-    private static void BuildDoors(Node3D parent, IReadOnlyList<ScenePoi> pois)
+    private static void BuildDoors(SumoGodotFrame frame, Node3D parent, IReadOnlyList<ScenePoi> pois)
     {
-        var doors = DoorBuilder.Build(pois);
+        var doors = DoorBuilder.Build(frame, pois);
         if (doors.Count == 0)
         {
             GD.Print("Main: 0 building_entrance door(s) in scene.");
@@ -3382,7 +3545,7 @@ public partial class Main : Node3D
 
             if (CrosswalkBuilder.IsCrossingLaneId(lane.Id))
             {
-                var (mesh, stripeCount) = CrosswalkBuilder.Build(lane.Shape, lane.Width);
+                var (mesh, stripeCount) = CrosswalkBuilder.Build(_sumoFrame, lane.Shape, lane.Width, shapeZ: lane.ShapeZ);
                 if (stripeCount > 0)
                 {
                     crosswalkParts.Add(mesh);
@@ -3394,7 +3557,7 @@ public partial class Main : Node3D
 
             if (lane.AllowsRoadVehicle && lane.LeftNeighbor >= 0)
             {
-                var (mesh, dashCount) = LaneMarkingBuilder.Build(lane.Shape, lane.Width);
+                var (mesh, dashCount) = LaneMarkingBuilder.Build(_sumoFrame, lane.Shape, lane.Width, shapeZ: lane.ShapeZ);
                 if (dashCount > 0)
                 {
                     markingParts.Add(mesh);
@@ -3634,7 +3797,7 @@ public partial class Main : Node3D
         for (var i = 0; i < peds.Count; i++)
         {
             var p = peds[i];
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(p.X, p.Y, p.Z);
+            var (gx, gy, gz) = _sumoFrame.ToGodot(p.X, p.Y, p.Z);
 
             var scale = new Vector3(PedRenderWidthMeters, PedRenderHeightMeters, PedRenderWidthMeters);
             var basis = Basis.Identity.Scaled(scale);
@@ -3828,7 +3991,7 @@ public partial class Main : Node3D
             laneHandles.Add(c.LaneHandle);
         }
 
-        var heads = TrafficLightPlacer.Place(_liveCitySource.Network, laneHandles);
+        var heads = TrafficLightPlacer.Place(_sumoFrame, _liveCitySource.Network, laneHandles);
         var poleMaterial = new StandardMaterial3D { AlbedoColor = TlPoleColor, Roughness = 0.8f };
 
         foreach (var head in heads)
@@ -4175,7 +4338,7 @@ public partial class Main : Node3D
             return;
         }
 
-        var (gx, _, gz) = CityLib.CoordinateTransform.SumoToGodot(_liveCitySource.LcZoneX, _liveCitySource.LcZoneY, 0.0);
+        var (gx, _, gz) = _sumoFrame.GroundToGodot(_liveCitySource.LcZoneX, _liveCitySource.LcZoneY, 0.0);
         var r = Mathf.Max(0.001f, (float)_liveCitySource.LcZoneRadius);
         _highRealismNode.Transform = new Transform3D(
             Basis.Identity.Scaled(new Vector3(r, 1f, r)), new Vector3(gx, 0.2f, gz));
@@ -4189,9 +4352,14 @@ public partial class Main : Node3D
     // the ground: a raycast from the camera through the SCREEN CENTRE to the y=0 plane (so it tracks pitch
     // AND yaw, not just the orbit pivot). Radius respects the FOV: half the vertical view extent at the
     // look-point's depth (slant * tan(halfFov)), so a wider FOV / nearer look-point => a larger circle that
-    // fits within the ground frustum trapezoid. Godot ground point -> SUMO is the inverse of
-    // CoordinateTransform.SumoToGodot's (x, z, -y): SumoX = GodotX, SumoY = -GodotZ. If the camera looks at
-    // or above the horizon (no ground hit), fall back to the orbit focus + a distance-based radius.
+    // fits within the ground frustum trapezoid. If the camera looks at or above the horizon (no ground
+    // hit), fall back to the orbit focus + a distance-based radius.
+    //
+    // Godot ground point -> SUMO goes through `_sumoFrame.ToSumo`, the exact inverse of the placement mapping
+    // (docs/EXTERNAL-NET-LOADING-DESIGN.md §5.4). It MUST use the same origin the scene was placed with:
+    // the naive `(gx, -gz)` this used before the frame existed is right only for the identity frame, and on
+    // a recentered net it would silently put the realism zone (and the car-yields-ped zone that tracks it)
+    // an origin's distance away from where the user is looking -- a wrong answer that type-checks.
     private (double sumoX, double sumoY, double radius) CameraLcZone()
     {
         if (_orbitCamera is not null
@@ -4200,12 +4368,14 @@ public partial class Main : Node3D
             var slant = _orbitCamera.GlobalPosition.DistanceTo(centre);
             var halfFov = Mathf.DegToRad(_orbitCamera.Fov * 0.5f);
             var radius = Math.Clamp(slant * Math.Tan(halfFov) * LcZoneFovFillFactor, LcZoneMinRadius, LcZoneMaxRadius);
-            return (centre.X, -centre.Z, radius);
+            var (sumoX, sumoY) = _sumoFrame.ToSumo(centre.X, centre.Z);
+            return (sumoX, sumoY, radius);
         }
 
         var focus = _orbitController?.Focus ?? (0f, 0f, 0f);
         var dist = _orbitController?.Distance ?? 100f;
-        return (focus.X, -focus.Z, Math.Clamp(dist * LcZoneDistanceFactor, LcZoneMinRadius, LcZoneMaxRadius));
+        var (focusSumoX, focusSumoY) = _sumoFrame.ToSumo(focus.X, focus.Z);
+        return (focusSumoX, focusSumoY, Math.Clamp(dist * LcZoneDistanceFactor, LcZoneMinRadius, LcZoneMaxRadius));
     }
 
     // Raycast a viewport point through the camera to the ground plane (y = 0). Returns false if the ray is
@@ -4841,6 +5011,44 @@ public partial class Main : Node3D
         }
 
         return false;
+    }
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1, -TASKS.md T1: `--dataset <dir>` / `--dataset=<dir>` loads an
+    // ARBITRARY SumoData dataset directory (a cut sub-area) instead of the pinned demo, via
+    // LiveCityConfig.ForDataset -- the arbitrary-net path (RouteGraph ped nav + RegionPlan), which the
+    // viewer had never called even though the engine had supported it for some time. Returns null when
+    // absent, in which case the bare `--live-city` demo path is unchanged.
+    private static string? ParseDatasetArg() => ParseTwoFormArg("--dataset");
+
+    // `--sumocfg <path>` / `--sumocfg=<path>`: same, but the scenario names its own net/route files, via
+    // LiveCityConfig.ForSumocfg. This is the form a preprocess.py cut ships (its net is
+    // `scenario.net.xml`, not `net.xml`, so a bare `--dataset` on such a dir would not find a net).
+    private static string? ParseSumocfgArg() => ParseTwoFormArg("--sumocfg");
+
+    // Shared parser for this file's two accepted shapes -- `--flag=<value>` (the `=`-joined form every
+    // other arg here uses) and `--flag <value>` (the two-token form `--replay` also accepts). Relative
+    // values go through ResolveAgainstLaunchCwd, exactly like --replay/--shot, so a path typed at a shell
+    // prompt is resolved against the SHELL's directory and not Godot's `--path` project dir.
+    private static string? ParseTwoFormArg(string flag)
+    {
+        var eqPrefix = flag + "=";
+        var args = OS.GetCmdlineUserArgs();
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith(eqPrefix, StringComparison.Ordinal))
+            {
+                var v = arg[eqPrefix.Length..].Trim();
+                return v.Length > 0 ? ResolveAgainstLaunchCwd(v) : null;
+            }
+
+            if (arg == flag && i + 1 < args.Length)
+            {
+                return ResolveAgainstLaunchCwd(args[i + 1]);
+            }
+        }
+
+        return null;
     }
 
     // docs/LIVE-CITY-VIEWERS-TASKS.md D3 -- `--live-city --replay <file.simrec>` (a TWO-TOKEN arg, per the

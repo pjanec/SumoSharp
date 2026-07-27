@@ -84,7 +84,7 @@ public class PedTransformTests
     {
         var repoRoot = RepoRoot();
         using var sim = new PedSimSource(repoRoot);
-        var reconstructor = new PedReconstructor();
+        var reconstructor = new PedReconstructor(SumoGodotFrame.Identity);
 
         var sawAnyPed = false;
 

@@ -15,7 +15,7 @@ public class BuildingFromDataBuilderTests
     {
         var footprint = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
 
-        var mesh = BuildingFromDataBuilder.Build(footprint, heightM: 14.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, heightM: 14.0);
 
         Assert.Equal(4, mesh.RoofVertexCount);
         Assert.Equal(4, mesh.WallQuadCount); // one wall quad per footprint edge
@@ -39,7 +39,7 @@ public class BuildingFromDataBuilderTests
             (4140.0, 4270.0), (4360.0, 4270.0), (4360.0, 4410.0), (4140.0, 4410.0),
         };
 
-        var mesh = BuildingFromDataBuilder.Build(footprint, heightM: 14.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, heightM: 14.0);
 
         // 220m x 140m rectangle.
         Assert.Equal(220.0 * 140.0, mesh.FootprintArea, 1e-6);
@@ -53,8 +53,8 @@ public class BuildingFromDataBuilderTests
         var ccw = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
         var cw = new (double X, double Y)[] { (0, 0), (0, 10), (10, 10), (10, 0) };
 
-        var meshCcw = BuildingFromDataBuilder.Build(ccw, heightM: 20.0);
-        var meshCw = BuildingFromDataBuilder.Build(cw, heightM: 20.0);
+        var meshCcw = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, ccw, heightM: 20.0);
+        var meshCw = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, cw, heightM: 20.0);
 
         Assert.Equal(meshCcw.FootprintArea, meshCw.FootprintArea, 1e-6);
         Assert.Equal(meshCcw.RoofVertexCount, meshCw.RoofVertexCount);
@@ -74,7 +74,7 @@ public class BuildingFromDataBuilderTests
             (0, 0), (10, 0), (10, 5), (5, 5), (5, 10), (0, 10),
         };
 
-        var mesh = BuildingFromDataBuilder.Build(footprint, heightM: 12.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, heightM: 12.0);
 
         Assert.Equal(6, mesh.RoofVertexCount);
         Assert.Equal(6, mesh.WallQuadCount);
@@ -92,7 +92,7 @@ public class BuildingFromDataBuilderTests
     [Fact]
     public void Build_DegenerateFootprint_ReturnsEmptyMesh()
     {
-        var mesh = BuildingFromDataBuilder.Build(new (double X, double Y)[] { (0, 0), (1, 1) }, heightM: 10.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, new (double X, double Y)[] { (0, 0), (1, 1) }, heightM: 10.0);
 
         Assert.Empty(mesh.Vertices);
         Assert.Empty(mesh.Indices);
@@ -107,7 +107,7 @@ public class BuildingFromDataBuilderTests
     {
         var footprint = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
 
-        var mesh = BuildingFromDataBuilder.Build(footprint, heightM: 0.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, heightM: 0.0);
 
         Assert.Empty(mesh.Vertices);
         Assert.Equal(0, mesh.RoofVertexCount);
@@ -120,7 +120,7 @@ public class BuildingFromDataBuilderTests
     {
         var footprint = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
 
-        var mesh = BuildingFromDataBuilder.Build(footprint, heightM: 5.0);
+        var mesh = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, heightM: 5.0);
 
         // Vertex 0 = sumo (0,0) at height 5 -> godot (0, 5, 0).
         Assert.Equal(0f, mesh.Vertices[0], 1e-3f);
@@ -140,8 +140,8 @@ public class BuildingFromDataBuilderTests
         var footprint = new (double X, double Y)[] { (0, 0), (10, 0), (10, 10), (0, 10) };
         var building = new SceneBuilding("bldg_test", "office", footprint, HeightM: 30.0, Zone: null);
 
-        var fromScene = BuildingFromDataBuilder.Build(building);
-        var fromRaw = BuildingFromDataBuilder.Build(footprint, 30.0);
+        var fromScene = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, building);
+        var fromRaw = BuildingFromDataBuilder.Build(SumoGodotFrame.Identity, footprint, 30.0);
 
         Assert.Equal(fromRaw.FootprintArea, fromScene.FootprintArea, 1e-9);
         Assert.Equal(fromRaw.RoofVertexCount, fromScene.RoofVertexCount);

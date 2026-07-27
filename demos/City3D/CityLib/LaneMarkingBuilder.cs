@@ -19,12 +19,14 @@ public static class LaneMarkingBuilder
     // (thin) width. Elevated `elevationOffsetSumoZ` (SUMO z, additive) above the lane's own RoadMeshBuilder
     // ribbon to avoid z-fighting.
     public static (RibbonMesh Mesh, int DashCount) Build(
+        SumoGodotFrame frame,
         IReadOnlyList<(double X, double Y)> shape,
         double laneWidth,
         double dashLength = 1.0,
         double gapLength = 1.0,
         double markWidth = 0.15,
-        double elevationOffsetSumoZ = 0.02)
+        double elevationOffsetSumoZ = 0.02,
+        IReadOnlyList<double>? shapeZ = null)
     {
         if (shape.Count < 2 || laneWidth <= 0.0 || dashLength <= 0.0 || gapLength < 0.0)
         {
@@ -51,13 +53,20 @@ public static class LaneMarkingBuilder
                 continue;
             }
 
+            // Each dash vertex rides `elevationOffsetSumoZ` above the LANE'S OWN surface at that arc
+            // position, not above absolute z=0 -- see CrosswalkBuilder's twin remark. `cumulative` is
+            // measured on the OFFSET (left-edge) polyline while `shapeZ` is the centreline's, but the
+            // two share arc parameterisation to well within a lane width, and the result feeds a 2 cm
+            // paint offset -- far below the precision that matters here.
             var subZ = new double[sub.Count];
+            var subCumulative = CumulativeLengths(sub);
             for (var i = 0; i < subZ.Length; i++)
             {
-                subZ[i] = elevationOffsetSumoZ;
+                subZ[i] = CrosswalkBuilder.ZAtArc(shapeZ, cumulative, d + subCumulative[i])
+                    + elevationOffsetSumoZ;
             }
 
-            parts.Add(RoadMeshBuilder.Build(sub, subZ, markWidth));
+            parts.Add(RoadMeshBuilder.Build(frame, sub, subZ, markWidth));
             dashCount++;
         }
 

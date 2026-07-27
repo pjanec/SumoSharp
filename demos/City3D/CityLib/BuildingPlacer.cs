@@ -68,7 +68,8 @@ public static class BuildingPlacer
     private const ulong FnvOffsetBasis = 14695981039346656037UL;
     private const ulong FnvPrime = 1099511628211UL;
 
-    public static IReadOnlyList<BuildingBox> PlaceAll(NetworkModel network, int seed = DefaultSeed)
+    public static IReadOnlyList<BuildingBox> PlaceAll(
+        SumoGodotFrame frame, NetworkModel network, int seed = DefaultSeed)
     {
         var boxes = new List<BuildingBox>();
 
@@ -137,7 +138,7 @@ public static class BuildingPlacer
                     var cySumo = py + ny * dist * side;
                     var czSumo = pz + height / 2.0; // base sits on the sampled ground z; center is raised by half the height
 
-                    var (gx, gy, gz) = CoordinateTransform.SumoToGodot(cxSumo, cySumo, czSumo);
+                    var (gx, gy, gz) = frame.ToGodot(cxSumo, cySumo, czSumo);
 
                     boxes.Add(new BuildingBox(gx, gy, gz, footWidth, height, footDepth, yawRad));
                 }

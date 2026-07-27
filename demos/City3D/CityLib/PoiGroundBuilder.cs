@@ -66,7 +66,7 @@ public static class PoiGroundBuilder
     // Builds one marker per POI point, EXCEPT `building_entrance` (DoorBuilder owns that kind -- the one
     // vertical element, per the owner-confirmed style). Order is preserved from `pois` (stable, useful for
     // tests); this type stays Godot/palette-free -- callers look up their own colour by Kind.
-    public static IReadOnlyList<PoiMarkerInstance> Build(IReadOnlyList<ScenePoi> pois)
+    public static IReadOnlyList<PoiMarkerInstance> Build(SumoGodotFrame frame, IReadOnlyList<ScenePoi> pois)
     {
         var result = new List<PoiMarkerInstance>(pois.Count);
         foreach (var poi in pois)
@@ -76,7 +76,7 @@ public static class PoiGroundBuilder
                 continue;
             }
 
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(poi.X, poi.Y, GroundOffsetSumoZ);
+            var (gx, gy, gz) = frame.GroundToGodot(poi.X, poi.Y, GroundOffsetSumoZ);
             result.Add(new PoiMarkerInstance(poi.Kind, gx, gy, gz, RadiusForKind(poi.Kind)));
         }
 

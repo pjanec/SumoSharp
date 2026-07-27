@@ -25,7 +25,7 @@ public class RoadMeshTests
         var shape = new (double X, double Y)[] { (0, 0), (100, 0) };
         const double width = 3.2;
 
-        var mesh = RoadMeshBuilder.Build(shape, null, width);
+        var mesh = RoadMeshBuilder.Build(SumoGodotFrame.Identity, shape, null, width);
 
         Assert.Equal(100.0 * width, mesh.Area, 1e-3);
 
@@ -43,7 +43,7 @@ public class RoadMeshTests
         var shapeZ = new double[] { 0.0, 2.5, 5.0 };
         const double width = 3.2;
 
-        var mesh = RoadMeshBuilder.Build(shape, shapeZ, width);
+        var mesh = RoadMeshBuilder.Build(SumoGodotFrame.Identity, shape, shapeZ, width);
 
         var ys = new List<float>();
         for (var i = 0; i < mesh.Vertices.Length; i += 3)
@@ -76,7 +76,7 @@ public class RoadMeshTests
         var netPath = Path.Combine(RepoRoot(), "scenarios", "09-traffic-light", "net.net.xml");
         var network = NetworkParser.Parse(netPath);
 
-        var meshes = RoadMeshBuilder.BuildAll(network, includeInternal: true).ToList();
+        var meshes = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, network, includeInternal: true).ToList();
 
         Assert.Equal(network.LanesByHandle.Count, meshes.Count);
 
@@ -118,7 +118,7 @@ public class RoadMeshTests
         Assert.True(network.LanesByHandle.Count > 0);
         Assert.All(network.LanesByHandle, l => Assert.Null(l.ShapeZ));
 
-        var meshes = RoadMeshBuilder.BuildAll(network, includeInternal: true).ToList();
+        var meshes = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, network, includeInternal: true).ToList();
         Assert.Equal(network.LanesByHandle.Count, meshes.Count);
     }
 
@@ -141,7 +141,7 @@ public class RoadMeshTests
         Assert.Single(network.LanesByHandle);
         Assert.NotNull(network.LanesByHandle[0].ShapeZ);
 
-        var meshes = RoadMeshBuilder.BuildAll(network, includeInternal: true).ToList();
+        var meshes = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, network, includeInternal: true).ToList();
         Assert.Single(meshes);
 
         var mesh = meshes[0].Mesh;
@@ -184,8 +184,8 @@ public class RoadMeshTests
 
         Assert.True(sim.Source.GeometryComplete);
 
-        var fromNetwork = RoadMeshBuilder.BuildAll(sim.Network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
-        var fromWire = RoadMeshBuilder.BuildAll(sim.Source.Geometry, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var fromNetwork = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, sim.Network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var fromWire = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, sim.Source.Geometry, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
 
         Assert.Equal(fromNetwork.Count, fromWire.Count);
         foreach (var (handle, netMesh) in fromNetwork)
@@ -222,7 +222,7 @@ public class RoadMeshTests
         Assert.NotNull(rampLane.ShapeZ);
         Assert.Null(flatLane.ShapeZ);
 
-        var meshes = RoadMeshBuilder.BuildAll(network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
+        var meshes = RoadMeshBuilder.BuildAll(SumoGodotFrame.Identity, network, includeInternal: true).ToDictionary(x => x.Handle, x => x.Mesh);
 
         var rampMesh = meshes[rampLane.Handle];
         var rampYs = new List<float>();

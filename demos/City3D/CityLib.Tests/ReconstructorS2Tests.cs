@@ -78,7 +78,7 @@ public class ReconstructorS2Tests
     {
         var (net, rou, cfg) = Paths("09-traffic-light");
         using var sim = new SimSource(net, rou, cfg);
-        var recon = new Reconstructor();
+        var recon = new Reconstructor(SumoGodotFrame.Identity);
 
         var behind = new List<double>();
         double length = 0;
@@ -130,7 +130,7 @@ public class ReconstructorS2Tests
     {
         var (net, rou, cfg) = Paths("12-overtake");
         using var sim = new SimSource(net, rou, cfg);
-        var recon = new Reconstructor();
+        var recon = new Reconstructor(SumoGodotFrame.Identity);
         var classifyClock = new DrClock(); // independent, pure ResolveAt re-classification of straddle frames
 
         var target = new VehicleHandle(1, 1);
@@ -208,7 +208,7 @@ public class ReconstructorS2Tests
     {
         var (net, rou, cfg) = Paths("44-multilane-junction-turn");
         using var sim = new SimSource(net, rou, cfg);
-        var recon = new Reconstructor();
+        var recon = new Reconstructor(SumoGodotFrame.Identity);
 
         var target = new VehicleHandle(0, 1);
         int present = 0, firstFrame = -1, lastFrame = -1, frameIdx = 0, framesSinceSeen = 0;
@@ -289,7 +289,7 @@ public class ReconstructorS2Tests
     {
         var (net, rou, cfg) = Paths("09-traffic-light");
         using var sim = new SimSource(net, rou, cfg);
-        var recon = new Reconstructor();
+        var recon = new Reconstructor(SumoGodotFrame.Identity);
 
         var target = new VehicleHandle(0, 1);
         (float X, float Z)? prev = null;
@@ -369,7 +369,7 @@ public class ReconstructorS2Tests
     {
         var (net, rou, cfg) = Paths(scenario);
         using var sim = new SimSource(net, rou, cfg);
-        var recon = new Reconstructor();
+        var recon = new Reconstructor(SumoGodotFrame.Identity);
         var frames = new List<List<ReconstructedVehicle>>();
 
         for (var t = 0; t < ticks; t++)

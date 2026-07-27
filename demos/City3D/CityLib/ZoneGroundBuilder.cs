@@ -41,7 +41,7 @@ public static class ZoneGroundBuilder
     // here (the caller's material renders both sides -- CullMode.Disabled -- exactly because a flat ground
     // tint has no meaningful "back face", so getting the fan's winding backwards for a clockwise-authored
     // polygon costs nothing).
-    public static FlatGroundMesh Build(IReadOnlyList<(double X, double Y)> polygon, double groundOffsetSumoZ = -0.05)
+    public static FlatGroundMesh Build(SumoGodotFrame frame, IReadOnlyList<(double X, double Y)> polygon, double groundOffsetSumoZ = -0.05)
     {
         var n = polygon.Count;
         if (n < 3)
@@ -53,7 +53,7 @@ public static class ZoneGroundBuilder
         var normals = new float[n * 3];
         for (var i = 0; i < n; i++)
         {
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(polygon[i].X, polygon[i].Y, groundOffsetSumoZ);
+            var (gx, gy, gz) = frame.GroundToGodot(polygon[i].X, polygon[i].Y, groundOffsetSumoZ);
             var b = i * 3;
             vertices[b + 0] = gx;
             vertices[b + 1] = gy;

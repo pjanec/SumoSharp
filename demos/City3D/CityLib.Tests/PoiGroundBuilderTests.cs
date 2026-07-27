@@ -22,7 +22,7 @@ public class PoiGroundBuilderTests
             new ScenePoi("t1", "transit_stop", 50, 60),
         };
 
-        var markers = PoiGroundBuilder.Build(pois);
+        var markers = PoiGroundBuilder.Build(SumoGodotFrame.Identity, pois);
 
         Assert.Equal(2, markers.Count);
         Assert.DoesNotContain(markers, m => m.Kind == "building_entrance");
@@ -58,7 +58,7 @@ public class PoiGroundBuilderTests
     {
         var pois = new[] { new ScenePoi("v1", "venue", 10.0, 20.0) };
 
-        var markers = PoiGroundBuilder.Build(pois);
+        var markers = PoiGroundBuilder.Build(SumoGodotFrame.Identity, pois);
 
         var m = Assert.Single(markers);
         Assert.Equal(10f, m.PosX, 1e-6f);
@@ -70,7 +70,7 @@ public class PoiGroundBuilderTests
     [Fact]
     public void Build_EmptyList_ReturnsEmpty()
     {
-        Assert.Empty(PoiGroundBuilder.Build(System.Array.Empty<ScenePoi>()));
+        Assert.Empty(PoiGroundBuilder.Build(SumoGodotFrame.Identity, System.Array.Empty<ScenePoi>()));
     }
 
     // ---- 5: order is preserved (minus the excluded kind). ----
@@ -84,7 +84,7 @@ public class PoiGroundBuilderTests
             new ScenePoi("c", "parking_access", 2, 2),
         };
 
-        var markers = PoiGroundBuilder.Build(pois);
+        var markers = PoiGroundBuilder.Build(SumoGodotFrame.Identity, pois);
 
         Assert.Equal(new[] { "venue", "dwell_spot", "parking_access" }, markers.Select(m => m.Kind).ToArray());
     }

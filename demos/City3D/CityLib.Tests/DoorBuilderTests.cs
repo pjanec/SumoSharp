@@ -15,7 +15,7 @@ public class DoorBuilderTests
     {
         var poi = new ScenePoi("e1", "building_entrance", 10.0, 20.0, FacingX: 0.0, FacingY: 1.0);
 
-        var door = DoorBuilder.ForEntrance(poi);
+        var door = DoorBuilder.ForEntrance(SumoGodotFrame.Identity, poi);
 
         Assert.Equal(10f, door.PosX, 1e-6f);
         Assert.Equal(DoorBuilder.HeightMeters / 2f, door.PosY, 1e-6f);
@@ -29,7 +29,7 @@ public class DoorBuilderTests
     {
         var poi = new ScenePoi("e1", "building_entrance", 0.0, 0.0, FacingX: 0.0, FacingY: 1.0);
 
-        var door = DoorBuilder.ForEntrance(poi);
+        var door = DoorBuilder.ForEntrance(SumoGodotFrame.Identity, poi);
 
         AssertAngleClose(CoordinateTransform.NaviDegToGodotYawRad(0f), door.YawRad, 1e-4f);
     }
@@ -40,7 +40,7 @@ public class DoorBuilderTests
     {
         var poi = new ScenePoi("e1", "building_entrance", 0.0, 0.0, FacingX: 1.0, FacingY: 0.0);
 
-        var door = DoorBuilder.ForEntrance(poi);
+        var door = DoorBuilder.ForEntrance(SumoGodotFrame.Identity, poi);
 
         AssertAngleClose(CoordinateTransform.NaviDegToGodotYawRad(90f), door.YawRad, 1e-4f);
     }
@@ -53,7 +53,7 @@ public class DoorBuilderTests
     {
         var poi = new ScenePoi("e1", "building_entrance", 0.0, 0.0, FacingX: facingX, FacingY: facingY);
 
-        var door = DoorBuilder.ForEntrance(poi);
+        var door = DoorBuilder.ForEntrance(SumoGodotFrame.Identity, poi);
 
         AssertAngleClose(CoordinateTransform.NaviDegToGodotYawRad(naviDeg), door.YawRad, 1e-4f);
     }
@@ -64,7 +64,7 @@ public class DoorBuilderTests
     {
         var poi = new ScenePoi("e1", "building_entrance", 5.0, 5.0);
 
-        var door = DoorBuilder.ForEntrance(poi);
+        var door = DoorBuilder.ForEntrance(SumoGodotFrame.Identity, poi);
 
         AssertAngleClose(CoordinateTransform.NaviDegToGodotYawRad(0f), door.YawRad, 1e-4f);
     }
@@ -80,7 +80,7 @@ public class DoorBuilderTests
             new ScenePoi("e2", "building_entrance", 2, 2, FacingX: 1, FacingY: 0),
         };
 
-        var doors = DoorBuilder.Build(pois);
+        var doors = DoorBuilder.Build(SumoGodotFrame.Identity, pois);
 
         Assert.Equal(2, doors.Count);
     }

@@ -17,6 +17,7 @@ namespace CityLib;
 public sealed class LiveCitySource : IDisposable
 {
     private readonly LiveCitySim _sim;
+    private readonly LiveCityConfig _cfg;
 
     // repoRoot-relative convenience constructor -- LiveCityConfig.ForRepoRoot resolves the pinned
     // scenarios/_ped/demo_city/box dataset dir + the LIVECITY_CARS/LCMIN/YIELD env-var overrides, exactly
@@ -28,8 +29,42 @@ public sealed class LiveCitySource : IDisposable
 
     public LiveCitySource(LiveCityConfig cfg)
     {
-        Crop = (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1);
+        _cfg = cfg;
         _sim = new LiveCitySim(cfg);
+
+        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1 / -TASKS.md T1: the pinned X0..Y1 crop is the DEMO's
+        // hero-block (a ~840x840 m window on a 4750 m synthetic net). An arbitrary net -- a SumoData cut
+        // sub-area -- has no such window: the whole cut IS the playable area, and LiveCitySim itself
+        // already bypasses the crop predicates in RouteGraph mode (`_cropEnabled = !routeGraphMode`).
+        // Reporting the demo's pinned rect here anyway would make the viewer build road meshes and frame
+        // its camera on a window that, on a Geneva box, is 90 km from any road at all. So in arbitrary-net
+        // mode `Crop` is the net's own AABB, which is what "the whole net" means to every consumer of it.
+        Crop = cfg.NavMode == PedNavMode.RouteGraph
+            ? NetAabb(_sim.Network)
+            : (cfg.X0, cfg.Y0, cfg.X1, cfg.Y1);
+    }
+
+    // AABB over every parsed lane shape point -- the same definition LiveCitySim.ComputeNetAabbCentre
+    // uses for its own realism-pocket default, so the viewer's extent and the sim's centre agree.
+    private static (double X0, double Y0, double X1, double Y1) NetAabb(NetworkModel network)
+    {
+        var x0 = double.PositiveInfinity;
+        var y0 = double.PositiveInfinity;
+        var x1 = double.NegativeInfinity;
+        var y1 = double.NegativeInfinity;
+
+        foreach (var lane in network.LanesById.Values)
+        {
+            foreach (var (x, y) in lane.Shape)
+            {
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+
+        return x0 <= x1 ? (x0, y0, x1, y1) : (0.0, 0.0, 0.0, 0.0);
     }
 
     // The X0/Y0/X1/Y1 crop rectangle LiveCityConfig steps cars/peds within (SUMO metres). `Network`
@@ -106,6 +141,34 @@ public sealed class LiveCitySource : IDisposable
     // Advances the coupled sim one Dt=0.5s tick (LiveCityConfig.Dt) and publishes the resulting frame onto
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2), -TASKS.md T3: the net's ped ground-elevation sampler,
+    // for the viewer to hand to its CityLib.PedReconstructor so wire-reconstructed peds get the same
+    // elevation LiveCitySim.Sample() gives directly-sampled ones. Inert (always 0) on a 2-D net.
+    public Sim.Pedestrians.Lod.IPedElevationSource PedElevation => _sim.PedElevation;
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3), -TASKS.md T3: the LIVE density knobs a viewer slider
+    // drives. Both poke the very objects the running sim holds -- the by-reference LiveCityConfig for
+    // cars, the live PedDemand for peds -- so a change is felt on the NEXT Tick() with no rebuild of the
+    // sim, the scene meshes, or this source.
+    public void SetCarTarget(int targetConcurrent, int? spawnPerStep = null)
+        => _sim.SetCarDensity(targetConcurrent, spawnPerStep);
+
+    public void SetPedDensity(int populationCap, double spawnRatePerSecond)
+        => _sim.SetPedDensity(populationCap, spawnRatePerSecond);
+
+    // The live values a slider should initialise itself from (rather than assuming the defaults).
+    public int CarTarget => _cfg.CarTargetConcurrent;
+    public int PedCap => _sim.PedDemand?.PopulationCap ?? 0;
+    public double PedSpawnRate => _sim.PedDemand?.SpawnRatePerSecond ?? 0.0;
+
+    // Live counts, for a slider label to show what the dial actually achieved.
+    public int CurrentCars => _sim.CurrentCars;
+    public int CurrentPeds => _sim.CurrentPeds;
+
+    // True when this net has pedestrian infrastructure at all -- a viewer can grey out its ped slider
+    // rather than offering a dial that cannot move (LiveCitySim.SetPedDensity is a no-op there).
+    public bool PedestriansEnabled => _sim.PedestriansEnabled;
 
     public void Dispose() => _sim.Dispose();
 }
