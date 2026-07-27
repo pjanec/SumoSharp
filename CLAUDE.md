@@ -141,6 +141,67 @@ and is declared per scenario in `tolerance.json` via its parity mode. Never intr
 - A fresh clone into a blank VM must pass `dotnet test` **without** SUMO installed. If it
   doesn't, that's a bug in the harness, not a missing dependency.
 
+## Measurement discipline (hard-won — read before proposing any behavioural change)
+
+These are not general advice; each one cost this project real time, and several were learned by shipping a
+confident conclusion that turned out to be wrong. Full narrative and numbers in
+`docs/F3-SESSION-LOG.md` §7 (lessons) and `docs/DENSITY-DIFF-HARNESS-TRACKER.md`.
+
+1. **BOTH surfaces must accept a change. Neither alone can.** The goldens are small scenarios (2–5
+   vehicles, ~40 steps) and cannot contain a saturated junction; the demo and `_bench/*` saturate but have
+   **no SUMO reference**. Measured both ways round:
+   - a change kept **all 661 goldens byte-identical** while moving the demo 61 → 94 overlaps;
+   - a change **transformed** the demo (+67% throughput, gridlock eliminated) and broke **14 goldens**.
+
+   So "goldens green" is not sufficient and "demo better" is not sufficient. **Run both, always.** A result
+   you badly want to be true is exactly the one to check against the other surface.
+
+2. **A mechanism hypothesis reasoned from the SUMO source has a BAD track record here — trace instead.**
+   Score so far: `NEED-junctionyield-impatience-saturation.md` records **five** reasoned interventions that
+   were inert before a single SUMO-oracle FCD trace of one vehicle found the real cause in minutes; the
+   density session then went **0 for 2** the same way. Reading the source tells you what a mechanism *is*;
+   only a trace tells you what is actually happening. **Prefer one traced vehicle over any amount of
+   reading.**
+
+3. **Before porting a SUMO mechanism, prove it has a LIVE CONSUMER.** Grep the writer, the reader, and the
+   **reader's callers**. A whole session's primary hypothesis was porting `addBlockedLink`, which is dead
+   code in 1.20.0 — its only reader is commented out at both call sites. Cost of checking: one grep.
+
+4. **Label every measurement with the DEMAND MODEL that produced it.** `LiveCitySim` inserts only while
+   `live < CarTargetConcurrent` — **closed-loop**, so inflow is throttled by our own drain and resident
+   count *cannot* run away. A capacity/discharge claim from closed-loop demand is **invalid** however
+   careful the rest was: it reported "96% of SUMO" while an open-loop run had us climbing 258 → 2623 and
+   never reaching steady state. Use `--inflow` (open-loop) for anything about capacity.
+
+5. **The yardstick must come from the same row as the measurement.** Judging "slow" against one global
+   speed made cars correctly driving a 30 km/h lane look slow and put the wrong arm at the top of the
+   histogram. Per-lane question ⇒ per-lane limit. Three separate mislabels on one branch came from this.
+
+6. **An occupancy metric is not a causation metric.** A constraint that short-circuits at the *first*
+   blocking foe makes any "what was present" tally an **upper bound**. One such tally read 5-of-9 where the
+   causal answer was 0-of-9, and would have sent the next session to re-open a finished fix.
+
+7. **Judge stalls on HEADS, not the population** (followers are ~79% of stalled samples and 97%
+   `leaderFollow` — pure queue shadow), and **judge overlaps on EPISODES, not events** (13 episodes once
+   produced 60% of all events).
+
+8. **Commit the instrument, not just the conclusion.** A probe that is run once and reverted makes its own
+   number unfalsifiable and poisons every later comparison — cross-instrument numbers are never comparable.
+
+9. **`dotnet build -c Release` does NOT build `tests/Sim.LiveCity.Tests`** (not in `Traffic.sln`). Build
+   that csproj explicitly or you will measure stale code. This has produced contradictory numbers for the
+   same configuration more than once.
+
+10. **`LIVECITY_*` / `SUMOSHARP_*` env gates are PROCESS-GLOBAL.** Set **every** one explicitly in **both**
+    arms of an A/B; an inherited shell value is indistinguishable from a measured one. See
+    `AllLiveCityGateVars` and `SumoShimEnvCollection`.
+
+11. **SUMO's shipped defaults are not a target — they include the cheating.** `time-to-teleport=300`,
+    `collision.action=teleport`, and `collision.check-junctions=**false**` (junction interpenetration is not
+    even *detected*). Compare against **honest SUMO** — `--time-to-teleport -1 --collision.action warn
+    --collision.check-junctions true` — via `scripts/run-density-diff.sh`. Target SUMO's *flow*, never its
+    *method*: `docs/CONSTRAINT-high-realism-artefact-ladder.md` is binding.
+
 ## Subagents
 
 Use the definitions in `.claude/agents/`. **Model routing (to conserve the expensive
@@ -154,6 +215,12 @@ gate. This is already wired in the agent definitions: `algorithm-porter` (sonnet
 delegation must name: the exact `/sumo/` source file to read, the target C# file(s), the
 scenario, the command to run, and the numeric done-condition. Nothing crosses the boundary
 except the prompt.
+
+**Delegate BUILDING an instrument; never delegate WAITING for one.** A subagent that launches a
+long background run ends its turn and the result is lost — this happened three times in one
+session, each time burning the agent's whole budget for nothing. End a delegation at
+"compiles, verified, committed" and run the measurement yourself. Corollary: **commit before
+delegating**, and never hand a subagent a file you have uncommitted edits in.
 
 ### The orchestration loop (Opus orchestrates, Sonnet implements, Opus reviews hard)
 

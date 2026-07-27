@@ -142,46 +142,66 @@ core junction work**; F4b deferred until F3 fixed.
 
 ## Junction DISCHARGE / max-density (session: F3 junction / density) — active
 
-**The problem, measured twice by two independent workstreams:** our junctions **drain more slowly than
-SUMO's**. At fixed inflow vanilla SUMO reaches steady state at ~430 resident cars while SumoSharp climbs
-**258 → 2623** over a simulated hour and never levels off, so "max sustainable density" has no plateau to
-report. Corroborated on this branch by different means: we hold **~45% more cars resident to deliver 4% fewer
-trips**, at **~321 s** mean trip time against SUMO's **213.6 s**.
+**MEASURED, not estimated.** Max sustainable open-loop inflow: **ours ≈1.4 veh/s, SUMO's 1.6–2.0**. And at
+1.4, where *both* engines are steady, our halting fraction is **33.3%** against SUMO's **33.7%** — identical —
+yet our trips take **247.7 s** to SUMO's **180.6 s**. Same stopping, same routes ⇒ **our cars ROLL at ~8.0 m/s
+where SUMO rolls at ~11.0.** The problem is *not* junctions blocking; it is uniformly slower progress, which
+inflates residency ~25% at every inflow and then tips into **collapse** (trips 4448 → 2938 → 1681) where SUMO
+stays steady.
 
-Detail: `F3-SESSION-LOG.md` §6 (next action), §9.119-124 (how we got here);
-`DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md`; `CONSTRAINT-high-realism-artefact-ladder.md` (binding).
+Detail — read in this order:
+`docs/F3-SESSION-LOG.md` **§6** (next action) and **§9.125-130** (how this was established) ·
+`docs/DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` (the harness; TRACKER carries every measured table) ·
+`docs/reports/density-inflow-sweep.txt` (the sweep) ·
+`docs/CONSTRAINT-high-realism-artefact-ladder.md` (**binding** — what we may not copy from SUMO).
 
-- [ ] **A3 — open-loop demand mode. BLOCKS everything below.** `LiveCitySim` inserts only while
-      `live < CarTargetConcurrent`, so **inflow is throttled by our own drain** and a discharge deficit
-      *cannot* manifest. Needs a fixed-inflow mode + resident-count-over-time + steady-state detection.
-      **Non-vacuity: our column must REPRODUCE the runaway** — if it does not, the two workstreams' instruments
-      disagree and neither's numbers may be trusted until that is resolved.
-- [ ] **A2** — per-lane `e2` detectors for SUMO, so per-junction discharge is comparable.
-- [ ] **B2/B3** — our global metrics + per-junction discharge (crossings per 60 s, queue, internal occupancy)
-      in SUMO's schema. **Blocked on A3** — without it they measure the wrong quantity.
-- [ ] **C1/C2/C3** — gap decomposition (cheat dividend vs real gap), inflow sweep, ranked work list.
-- [ ] **DRAIN-1 — cars queueing INSIDE junctions** (`keepClear` / `checkRewindLinkLanes`). Measured: four cars
-      stopped on `:d_5_3_10_1`. A car standing in the intersection blocks the conflict area for everyone
-      crossing it. Rung-5 case: fix the cause, do not rescue.
-- [ ] **DRAIN-2 — `inTheWay` conflict-point geometry** (`MSLink.cpp:1437`,
-      `myConflicts[i].getLengthBehindCrossing`). We hold a cont bay closed while a foe is anywhere on a
-      conflicting lane, **including one still moving at 0.89–3.05 m/s that has already passed the conflict
-      point**. Every such step is lost saturation flow.
-- [ ] **Equalise pedestrians in the diff** — SUMO got **no** peds while our runs had 160 blocking crossings,
-      an uncontrolled variable favouring SUMO.
-- [ ] **Reroute + insertion-refusal counters** — both currently **NOT MEASURED** (no cumulative counter
-      exists), so demand fidelity between the two engines is unquantified.
+### DONE
+- [x] **A1** three-column SUMO runner (`scripts/run-density-diff.sh`) — S-default / S-honest, cheat isolation
+      asserted in-script.
+- [x] **A3** open-loop demand (`CarInflowVehPerSec`, `--inflow/--series`, `scripts/sweep-inflow.sh`) — this is
+      what made discharge measurable at all.
+- [x] **B1** demand recorder → SUMO `.rou.xml`, so both engines see identical cars.
 
-**⚠ HARD CONSTRAINT ON EVERY ITEM ABOVE.** SUMO's drain is partly wider because it **lets cars overlap inside
-junctions** — **26** junction collisions that SUMO's *own defaults do not even check for*
-(`collision.check-junctions=false`), clustered on the exact lanes we wedge on (`:d_5_3_10_1` ×4,
-`:d_5_4_9_1` ×4). That is ladder **rung 3**, and teleporting (its `time-to-teleport=300`,
-`collision.action=teleport`) is **rung 4**. **Target SUMO's FLOW, never SUMO's METHOD** — reject any port
-whose mechanism amounts to permitting interpenetration.
+### NEXT — and it is a TRACE, not a hypothesis
+- [ ] **TRACE-1 — per-vehicle SUMO-vs-us diff inside `jyArm 2`.** Open-loop at **1.4 veh/s** (both steady;
+      never diagnose inside our collapse), same recorded demand, `--fcd-output` on the SUMO side and an
+      equivalent dump on ours. Pick one vehicle whose trip is near our mean and well above SUMO's, diff
+      step-by-step, and find **where** the seconds are lost — which edge, which junction, approach vs
+      interior — together with our binder / `jyArm` at exactly those steps. **Only then name a mechanism.**
+      Rationale: **seven** reasoned-from-source interventions have now been refuted here against **one**
+      SUMO-oracle trace that found a real cause in minutes.
+- [ ] **B2/B3** our global metrics + per-junction discharge in SUMO's schema (crossings per 60 s, queue,
+      internal occupancy) — needed to turn TRACE-1's single-vehicle finding into a population claim.
+- [ ] **C1/C2/C3** gap decomposition, sweep, ranked work list.
+- [ ] **Equalise pedestrians** in the diff — SUMO got **none** while our runs had 160 blocking crossings, an
+      uncontrolled variable favouring SUMO.
+- [ ] **Reroute + insertion-refusal counters** — both currently **NOT MEASURED**, so demand fidelity between
+      the engines is unquantified.
 
-**⚠ AND A METHOD RULE, earned the hard way:** label every metric with the **demand model** that produced it.
-A capacity claim from **closed-loop** demand is invalid however carefully the rest was measured — that is how
-a confident "96% of SUMO" survived alongside a runaway queue. It is retracted; do not requote it.
+### REFUTED — do not re-attempt (each has its measurement)
+- [x] ~~**G1 `KeepClearHeldPropagation`**~~ — the `checkRewindLinkLanes` gap its own NEED ranks
+      "highest impact". Measured **worse**: trips 2938 → 2762. It makes admission *more* conservative, the
+      opposite of widening a drain. Kept, default OFF.
+- [x] ~~**`MinorApproachArrivalSpeed`**~~ — SUMO's nonzero arrival-speed target for minor links. **+67%
+      throughput at 1.6 and eliminated the collapse — and broke 14 goldens.** The goldens are SUMO's output,
+      so the change is unfaithful; `arrivalSpeed` is arbitration metadata, not step speed. Kept, default OFF,
+      labelled REFUTED **because the +67% localises where the capacity hides: `jyArm 2` under load.**
+- [x] ~~`addBlockedLink`~~ — dead code in SUMO 1.20.0 (only reader commented out at both call sites).
+- [x] ~~entry-time ordering for non-bay foes~~ — provably inert.
+- [x] ~~any capacity claim from **closed-loop** demand~~ — retracted "96% of SUMO"; the demo's spawn loop
+      self-throttles and cannot express a deficit.
+
+### ⚠ TWO HARD CONSTRAINTS ON EVERY ITEM ABOVE
+
+**1. Both surfaces must accept a change; neither alone can.** One change this session passed every golden and
+made the demo *worse*; another transformed the demo (+67%) and broke **14 goldens**. Run the goldens **and**
+the open-loop discharge test, every time.
+
+**2. Target SUMO's FLOW, never SUMO's METHOD.** SUMO's drain is partly wider because it **lets cars overlap
+inside junctions** — **26** junction collisions that its own defaults (`collision.check-junctions=false`) do
+not even check for, clustered on the exact lanes we wedge on. Plus `time-to-teleport=300` and
+`collision.action=teleport`. Those are ladder rungs 3 and 4. Reject any port whose mechanism amounts to
+permitting interpenetration or teleporting.
 
 ---
 

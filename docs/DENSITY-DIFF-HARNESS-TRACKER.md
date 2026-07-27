@@ -15,9 +15,6 @@ conditions first-hand** — never on an implementor's report (`CLAUDE.md` §orch
       **SC2 met decisively:** at 1.7 veh/s on identical demand SUMO is STEADY (311→306) and we are RUNAWAY
       (420→464). The two workstreams' instruments AGREE. Full sweep in
       `docs/reports/density-inflow-sweep.txt`.
-- [ ] ~~**A3**~~ ⚠ **(superseded by the line above) OPEN-LOOP demand mode — BLOCKS ALL CAPACITY WORK.** The demo's demand is occupancy-capped,
-      so inflow self-throttles and a discharge deficit is structurally invisible (design §1b). Do B2/B3/C
-      only after this, or they measure the wrong quantity.
 
 ## Stage B — our side
 - [x] **B1** demand recorder → SUMO `.rou.xml`. SC1 ✅ · SC2 ✅ (SUMO loads 5863 vehicles, exit 0, no
@@ -33,6 +30,9 @@ conditions first-hand** — never on an implementor's report (`CLAUDE.md` §orch
 - [ ] **B3** our per-junction discharge / queue / occupancy
 
 ## Stage C — the comparison
+- [ ] **TRACE-1** ⚠ **DO THIS FIRST — a per-vehicle SUMO-oracle diff inside `jyArm 2`, not another
+      hypothesis.** Seven reasoned-from-source interventions refuted vs one trace that worked. See
+      `F3-SESSION-LOG.md` §6 for the exact procedure.
 - [ ] **C1** gap-decomposition report (cheat dividend vs real gap)
 - [ ] **C2** density sweep 160 / 320 / 480 / 640
 - [ ] **C3** ranked work list (measured entries only; cheats listed as won't-fix)

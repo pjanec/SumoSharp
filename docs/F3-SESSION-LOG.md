@@ -165,52 +165,57 @@ the arm-14 wedge. **Session 4 fixed that** with gate 7: at 3x, trips **1583 → 
 stalls **469 → 17**, stall heads **57 → 7**, and the permanent 4890-step bay lock becomes a bounded 637-step
 delay (§9.114). A residual **9** bay stalls remain and are §6's open item.
 
-## 6. NEXT ACTION — A3 (open-loop demand), then widen the junction DRAIN
+## 6. NEXT ACTION — trace `jyArm 2` against the SUMO oracle (do NOT hypothesise again)
 
-### What is DONE (do not re-open)
+### What is DONE
 
-- The **arm-14 four-way circular wait** is fixed (§9.110-114): bare occupancy is symmetric, SUMO uses
-  `isLeader`'s entry-time ordering, longest bay lock **4890 → 637 steps**, trips **+57%** at 3x.
-- Its **residual 9 stalls are attributed** (§9.117): 9 of 9 held by a *plain* internal lane; **bay-only = 0**,
-  so the ordering is complete.
-- **All seven gates default ON** (§9.119), all 661 goldens byte-identical.
-- The **density diff harness** exists: design trio, A1 (three-column SUMO runner), B1 (demand recorder).
+Junction correctness: the arm-14 four-way circular wait is **fixed** (§9.110-114), its residual **attributed**
+(§9.117, bay-only wedges = 0), **all seven gates default ON** (§9.119) with all 661 goldens byte-identical.
+Instrumentation: the density diff harness — A1 three-column SUMO runner, A3 open-loop demand, B1 demand
+recorder, the head-of-queue probe, `scripts/sweep-inflow.sh`.
 
-### ⚠ THE OPEN PROBLEM IS DISCHARGE, AND IT IS NOT YET MEASURED BY US
+### The open problem, now precisely located
 
-Our junctions **drain more slowly than SUMO's**. Evidence (§9.121-122): the calibration workstream finds
-vanilla SUMO reaching steady state at ~430 resident cars while SumoSharp climbs **258 → 2623** and never
-levels off; and this branch's own closed-loop run shows us holding **~45% more cars resident to deliver 4%
-fewer trips**, at **~321 s** mean trip time against SUMO's **213.6 s**.
+**Our junctions do not block — our cars roll slowly.** At 1.4 veh/s with *both* engines steady, our halting
+fraction is **33.3%** against SUMO's **33.7%** (identical), yet our trips take **247.7 s** to SUMO's
+**180.6 s** — so we move at **~8.0 m/s** where SUMO moves at **~11.0** (§9.127). Max sustainable inflow:
+**ours ≈1.4 veh/s, SUMO's 1.6–2.0** (§9.126). We do not degrade, we collapse.
 
-**The 96%-of-SUMO figure from §9.117 is RETRACTED as a capacity claim** — closed-loop demand self-throttles,
-so it structurally cannot detect a drain deficit (§9.121). Do not quote it.
+Attribution: `junctionYield` **30.4%** and `leaderFollow` **36.1%** of the samples where a *moving* car is
+held under its own lane's limit — and much of `leaderFollow` is plausibly downstream of the former.
+`MinorApproachArrivalSpeed` (a wrong change, §9.129) bought **+67%** throughput at 1.6 by touching exactly
+`jyArm 2`, which is the strongest evidence available that **the capacity is hiding in that arm under load**.
 
-### A3 first — it BLOCKS everything downstream
+### THE NEXT STEP IS A TRACE, NOT A HYPOTHESIS
 
-`DENSITY-DIFF-HARNESS-TASKS.md` A3: a fixed-inflow mode that does **not** consult occupancy, plus
-resident-count-over-time per column and steady-state detection. **Non-vacuity: our column must REPRODUCE the
-runaway.** If it does not, the two instruments disagree and neither is trustworthy.
+Seven reasoned-from-source interventions have now been refuted against one SUMO-oracle trace that succeeded
+(§9.130). Do this:
 
-### Then widen the drain — two MEASURED candidates, ranked by A3, not by taste
+1. Open-loop at **1.4 veh/s** (both steady — never diagnose inside our collapse), record demand with B1,
+   run SUMO with `--fcd-output` and ours with an equivalent dump.
+2. Pick **one** vehicle whose trip time is near our mean and **well above** SUMO's for the same id.
+3. Diff position/speed step by step. Find **where** the seconds are lost — which edge, which junction,
+   approach vs interior — and what our binder/`jyArm` says at exactly those steps.
+4. Only then name a mechanism, and only then change code.
 
-1. **Cars queueing inside the junction** (§9.118/§9.123). `keepClear` / `checkRewindLinkLanes`.
-2. **`inTheWay` conflict-point geometry** (`MSLink.cpp:1437`). We hold a bay closed against a foe that has
-   already passed the conflict point — measured, foes still moving at 0.89–3.05 m/s.
+**Any change must clear BOTH surfaces** (§7 lesson 1 and its converse, §9.130): all 661 goldens **and** the
+open-loop discharge test. A change that wins one and loses the other is refused, whichever way round.
+
+### Do NOT re-attempt (each disproven, with the measurement)
+
+- `addBlockedLink` — **dead code** in 1.20.0 (§9.110).
+- Entry-time ordering for **non-bay** foes — **provably inert** (§9.115).
+- `InternalJunctionAdmissionGate` without its entry-order sub-gate — the 4890-step wedge.
+- Any **capacity** conclusion from **closed-loop** demand (§9.121).
+- **G1 `KeepClearHeldPropagation`** as a discharge fix — measured worse (§9.128).
+- **`MinorApproachArrivalSpeed`** — +67% and 14 broken goldens (§9.129). The *location* is right, the change
+  is not.
 
 ### Hard constraint on any discharge fix
 
-**SUMO's drain is partly wider because it lets cars overlap inside junctions — 26 junction collisions its own
-defaults do not even check for, on the exact lanes we wedge on** (§9.122). That is ladder rung 3.
-**Reject any port whose mechanism amounts to permitting interpenetration.** The target is SUMO's *flow*, not
-SUMO's *method*.
-
-### Do NOT re-attempt (each disproven, not merely untried)
-
-- `addBlockedLink` / `myBlockedFoeLinks` — **dead code** in 1.20.0 (§9.110).
-- Extending the entry-time ordering to **non-bay** foes — **provably inert** (§9.115).
-- `InternalJunctionAdmissionGate` without its entry-order sub-gate — that pairing is the 4890-step wedge.
-- Any **capacity** conclusion from closed-loop demand (§9.121).
+SUMO's drain is partly wider because it **lets cars overlap inside junctions** — 26 junction collisions its
+own defaults do not even check for, on the exact lanes we wedge on (§9.122). That is ladder rung 3.
+**Target SUMO's flow, never SUMO's method.**
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -1484,6 +1489,102 @@ Design: `docs/F3-INTERNAL-JUNCTION-DESIGN.md`.
      produced it, and a capacity claim from closed-loop demand is invalid** however carefully the rest was
      measured.
 
+### Session 5 (2026-07-27, overnight) — the deficit is ROLLING SPEED; 0 for 2 on fixes
+
+125. **A3 SHIPPED — open-loop demand, and it settles the argument.** `LiveCityConfig.CarInflowVehPerSec`
+     (null ⇒ unchanged closed-loop), a fractional-credit accumulator so any real rate is expressible,
+     `--inflow`/`--series` on the driver, a two-window steady-state test (last quarter vs the quarter
+     before, 5% tolerance — a "final value near the max" test cannot see a level that climbs steadily to the
+     horizon), and `scripts/sweep-inflow.sh`. **SC2 met:** at 1.7 veh/s on identical demand SUMO is STEADY
+     (311→306) while we are RUNAWAY (420→464). **The two workstreams' instruments AGREE**, which was the
+     precondition for trusting either.
+
+126. **⭐ THE CAPACITY ANSWER.** Sweep, 7200 steps, identical demand per row
+     (`docs/reports/density-inflow-sweep.txt`):
+
+     | inflow | OURS | SUMO s-honest |
+     | --- | --- | --- |
+     | 0.8 | STEADY @162 (arr 2573) | STEADY @130 |
+     | 1.0 | STEADY @201 (arr 3198) | STEADY @165 |
+     | 1.2 | STEADY @254 (arr 3817) | STEADY @203 |
+     | **1.4** | **STEADY @306 (arr 4448) ← OUR CEILING** | STEADY @240 |
+     | **1.6** | **RUNAWAY → 2242, arr 2938** | **STEADY @280** |
+     | 2.0 | RUNAWAY → 3528, arr 1681 | RUNAWAY @940 |
+
+     **Max sustainable inflow: ours ≈ 1.4 veh/s, SUMO's between 1.6 and 2.0** (≥14% deficit, likely ~30%).
+     Two things matter more than the ceiling: at **every** sustainable inflow we hold **~25% more resident
+     cars for the same flow**, and we do not degrade gracefully — crossing the ceiling takes trips
+     **4448 → 2938 → 1681**. SUMO's own runaway at 2.0 is far gentler. Our failure mode is self-amplifying.
+
+127. **⭐⭐ THE DEFICIT IS ROLLING SPEED, NOT QUEUEING.** Measured at 1.4, the one inflow where **both** are
+     steady, so nothing is confounded by our collapse. Identical routes (1320.8 m both sides):
+
+     | | SUMO s-honest | Ours |
+     | --- | --- | --- |
+     | mean trip duration | **180.6 s** | **247.7 s** |
+     | **halting fraction** | **33.7%** | **33.3%** ← *the same* |
+     | ⇒ mean speed while MOVING | **~11.0 m/s** | **~8.0 m/s** |
+
+     Both figures computed the same way on both sides (SUMO's own `halting`/`running`, the same threshold on
+     ours), so **the conclusion is arithmetic, not inference: the lost time is spent rolling slowly, not
+     standing still.** "Discharge deficit" implied junctions blocking; the measurement says our cars simply
+     progress more slowly *between* stops, which inflates residency at every inflow and is what eventually
+     tips us into collapse.
+
+     What holds a MOVING car below **its own lane's** limit: `leaderFollow` **36.1%**, `junctionYield`
+     **30.4%**, `freeFlow` 21.1%, `redLight` 5.9%. ⚠ The first version of this histogram used a flat
+     13.89 m/s and was an **artefact** — this net's car lanes run 8.33/11.11/13.89/16.67, so cars correctly
+     driving a 30 km/h limit counted as slow and `freeFlow` came out top at 34.8%. **Third mislabel of that
+     class on this branch.**
+
+128. **❌ G1 (`keepClear` held-propagation) REFUTED.** `Engine.KeepClearHeldPropagation` ports
+     `last->myHaveToWaitOnNextLink || last->isStopped()` (`MSVehicle.cpp:5126`), of which we had only the
+     second disjunct — the gap `NEED-checkrewindlinklanes-partial-port.md` itself ranks "highest impact".
+     A/B at 1.6: trips **2938 → 2762**, resident **2242 → 2498**. **Worse on both**, and coherent in
+     hindsight — G1 makes admission *more* conservative, the opposite of widening a drain. Faithful, kept,
+     **default OFF**, not to be retried for discharge. Ported with one documented deviation:
+     `HeldAtLinkLastStep` is written in the **commit** phase (following the `v.Acceleration` precedent) so
+     the parallel plan phase reads a stable previous-step value instead of an order-dependent one.
+
+     Also settled in passing: that NEED's ordering constraint ("finish this port, *then* enable the cont-turn
+     fix") is **obsolete** — `RungHDp2g2` passes today with the cont-turn gate ON, because the other gates
+     now throttle junction entry properly instead of accidentally.
+
+129. **❌❌ MINOR-APPROACH ARRIVAL SPEED — +67% CAPACITY, AND FLATLY UNFAITHFUL. The night's most
+     instructive failure.** `Engine.MinorApproachArrivalSpeed` replaces the minor-link stop-at-the-line plan
+     with SUMO's nonzero **arrival-speed** target (`MSVehicle.cpp:2806-2810`, comment: *"decelerates just
+     enough to be able to stop if necessary and then accelerates"*). Ours decays as `sqrt(2·decel·seen)`
+     toward **zero** at the line; that formula is a **constant 7.99 m/s**:
+
+     | distance to junction | 20 m | 15 m | 10 m | 7 m | 5 m | 4.6 m |
+     | --- | --- | --- | --- | --- | --- | --- |
+     | ours | 13.42 | 11.62 | 9.49 | 7.94 | 6.71 | 6.43 |
+     | SUMO formula | 7.99 | 7.99 | 7.99 | 7.99 | 7.99 | 7.99 |
+
+     **Capacity effect, at 1.6 where we collapse and SUMO does not: trips 2938 → 4919 (+67%),
+     RUNAWAY → STEADY @503, halting 79.9% → 29.7%.** The collapse simply stopped happening.
+
+     **And it is wrong: 14+ goldens fail** — `RungC5WillPass`, `RungC4i/iii/iv/v/vi`, `Rung9b`,
+     `RungC3OnRampMerge`, `RungER2`×2, `ContTurnSequence`, `DenseFlowDeadLaneDrain`,
+     `RungC4iiiSuccessiveLaneSpeed`, `RungHDgap3ParkedPassable`. The goldens **are** SUMO's output, so they
+     settle it: SUMO's realised minor approach matches our stop-at-the-line form; `arrivalSpeed` in that
+     branch is metadata for the DriveProcessItem's arrival **time** and junction arbitration, not the step
+     speed. I had flagged that exact uncertainty while reading and chose to let measurement decide.
+
+     **Kept, default OFF, labelled REFUTED — deliberately not deleted.** The +67% is the largest capacity
+     signal on this branch and it localises where the capacity hides: **inside `jyArm 2` under load, in
+     conditions no golden covers.**
+
+130. **THE METHOD LESSON, and it is the one worth carrying forward.** §7 lesson 1 says *goldens byte-identical
+     ≠ parity-inert* — the demo can move while goldens do not. **§9.129 is the converse and it is sharper: a
+     change can transform the demo and be flatly wrong.** A +67% throughput win that eliminates gridlock is
+     precisely the result one wants to believe. **Neither surface alone can accept a change; both must.**
+
+     Scoreboard: **0 for 2** on mechanism hypotheses reasoned from source (G1 died to the open-loop A/B, the
+     arrival speed to the goldens). With `NEED-junctionyield-impatience-saturation.md`'s five, that is **seven**
+     reasoned interventions refuted against **one** SUMO-oracle trace that found a real cause in minutes.
+     **The next attempt starts from a per-vehicle trace inside `jyArm 2`, not another reading of the source.**
+
 **State at end of session 3:** gate green (**752/4/0**, LiveCity **49/49**, `D96213B7BB4021A7` par==single, 48/48, 272/272),
 tree clean, all pushed. **The arm-5 mutual deadlock is RESOLVED at SUMO's own defaults** — both vehicles
 complete their routes, teleports at the ceiling, nothing regressed on any surface. The `isLeader` port is
@@ -1509,21 +1610,21 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > `Sim.Pedestrians.Tests` **272/272**, `Sim.Bench` **`BF3794A4704BCD79`** par == single (⚠ re-pinned — was
 > `D96213B7BB4021A7` before the defaults flip; attribution verified).
 >
-> ### YOUR TASK — §6: A3 (open-loop demand), then widen the junction DRAIN
-> **The open problem is DISCHARGE: our junctions drain more slowly than SUMO's.** The calibration workstream
-> finds vanilla SUMO steady at ~430 resident cars while SumoSharp climbs **258 → 2623** and never levels off.
-> This branch's own data agrees once read correctly: we hold **~45% more cars resident to deliver 4% fewer
-> trips**, at **~321 s** mean trip time vs SUMO's **213.6 s**.
+> ### YOUR TASK — §6: trace `jyArm 2` against the SUMO oracle
+> **Junction correctness is done** (arm-14 wedge fixed, residual attributed, seven gates default ON, 661
+> goldens byte-identical). **The open problem is that our cars ROLL SLOWLY, not that junctions block:** at
+> 1.4 veh/s with both engines steady our halting fraction is 33.3% vs SUMO's 33.7% — identical — yet our
+> trips take 247.7 s to SUMO's 180.6 s, i.e. ~8.0 m/s moving vs ~11.0. Max sustainable inflow: ours ≈1.4,
+> SUMO's 1.6–2.0.
 >
-> **⚠ The "96% of SUMO" figure is RETRACTED as a capacity claim** — `LiveCitySim`'s demand is CLOSED-LOOP
-> (`live < CarTargetConcurrent`), so inflow self-throttles and a drain deficit *cannot* manifest (§9.121).
-> Do not quote it. **A3 builds the open-loop mode and BLOCKS B2/B3/C**; its non-vacuity condition is that our
-> column must **reproduce the runaway**. Then port whichever drain mechanism A3 ranks higher: cars queueing
-> inside junctions (`keepClear`) or `inTheWay` conflict-point geometry — both already measured (§9.123).
+> **Do not propose a mechanism from reading the source.** Seven such interventions have been refuted here
+> against one SUMO-oracle trace that worked. Trace one vehicle at 1.4 veh/s (never inside our collapse),
+> find where the seconds go, then name a mechanism. `jyArm 2` is the strongest lead: a *wrong* change to it
+> bought +67% throughput at 1.6.
 >
-> **Hard constraint:** SUMO's drain is partly wider because it lets cars **overlap inside junctions** — 26
-> junction collisions its own defaults do not check for, on the exact lanes we wedge on. That is ladder
-> rung 3. **Target SUMO's flow, never SUMO's method.**
+> **Any change must clear BOTH surfaces** — all 661 goldens AND the open-loop discharge test. One change
+> this session broke 14 goldens while transforming the demo; another passed every golden while making the
+> demo worse.
 >
 > ### NON-NEGOTIABLES — every one of these cost real time here
 > 1. **Measure before building.** Five hypotheses were refuted by measurement this session, and **two
@@ -1571,9 +1672,8 @@ admission gate blocked on **bare foe-lane occupancy**, which is symmetric, so a 
 four cars motionless for **4890 steps**. SUMO never uses bare occupancy on the driving path — it filters
 foe-lane candidates through `isLeader(...) || inTheWay()`, whose tie-break chain is total precisely to avoid
 this. Restoring that ordering took the longest lock to **637 steps**. The branch's own carried hypothesis
-(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open is DISCHARGE.** Our junctions drain more slowly than SUMO's: the
-calibration workstream sees vanilla SUMO steady at ~430 resident cars while we climb 258 → 2623 without
-levelling off, and this branch's own numbers agree once read right — ~45% more cars resident for 4% fewer
-trips. The "96% of SUMO" figure is **retracted**: closed-loop demand self-throttles and cannot express a drain
-deficit at all. Next is A3 (open-loop demand), then widening the drain via `keepClear` or `inTheWay` geometry
-— **without** copying the mechanism SUMO actually uses there, which is letting cars overlap inside junctions.
+(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is that our cars **roll slowly** — not that junctions block. At matched inflow with both
+engines steady we stop exactly as much as SUMO (33.3% vs 33.7%) yet take 37% longer per trip, so our
+sustainable ceiling is ~1.4 veh/s against SUMO's 1.6–2.0. The lead is `jyArm 2`, where a *wrong* change bought
++67% throughput and broke 14 goldens. **Next step is a per-vehicle SUMO-oracle trace, not another hypothesis:
+seven reasoned-from-source interventions have now been refuted against one trace that worked.**
