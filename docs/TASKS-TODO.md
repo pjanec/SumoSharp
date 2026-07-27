@@ -28,6 +28,7 @@ you will test stale code). `Sim.Pedestrians.Tests` = **277/277**.
 | ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle-bylitj` | **STARTED** | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored) + #6 (idle clustering). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side surface**. Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`** |
 | F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **MERGED to main (PR #13)** | junction overlap + gridlock + **junction DISCHARGE**. Seven junction/overlap gates now default **ON**; the arm-14 four-way circular wait is fixed; the density-diff harness (vs *honest* SUMO) is in. Discharge is measured but NOT fixed — next step is a per-vehicle SUMO-oracle trace, see `F3-SESSION-LOG.md` §6. Docs: `F3-SESSION-LOG.md` · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — merged (PR #11)** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` · fixture + tests. Detail: `TASKS-DONE.md` → "Arbitrary road-net import" |
+| external-net viewer / 3-D elevation | `claude/handoff-docs-implementation-pmdu9z` | **code DONE + gated — awaiting GPU sign-off** | arbitrary-net loading in City3D (`NetPath`/`ForSumocfg`), float recenter, live density dials, ped elevation end-to-end, lane provenance, **z made mandatory** (breaking), baked **terrain field** (grid + zones + all ground overlays follow it). Parity 775/4, bench `BF3794A4704BCD79`, `Sim.Pedestrians.Tests` **317/317**, `Sim.LiveCity.Tests` **80/80**, `CityLib.Tests` 176/3-pre-existing. Docs: **`EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md`** (Stage E). Open item below. |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
 not a repo-wide board; other `claude/*` branches are not tracked here.*
@@ -324,6 +325,38 @@ not even check for, clustered on the exact lanes we wedge on. Plus `time-to-tele
 permitting interpenetration or teleporting.
 
 ---
+
+## External-net viewer / 3-D elevation (session: `claude/handoff-docs-implementation-pmdu9z`)
+Everything in this cluster is **built, gated and pushed**; what is left is the one thing this
+environment structurally cannot do. Design/tasks/tracker:
+`docs/EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md` (the follow-ups are **Stage E**, E1–E5).
+
+- [ ] **E5 — visual sign-off on a GPU, against the Geneva data.** *(needs a Windows desktop session; not
+  doable here)* Every claim in this cluster is asserted **headlessly** — the terrain field reproduces
+  each lane vertex's own height to **0.326 m** on `scenarios/_ped/georef_min` (27.5 m of relief, 693
+  vertices), the grid drape is exact, two bakes are bitwise identical. None of that says the scene
+  *looks* right. Step-by-step checklist, run recipes for both `--sumocfg` and `--dataset`, the
+  expected-not-a-bug list, and the two traps that have already bitten this work:
+  **`docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`**.
+  ⚠ The Geneva data is **local to that machine and access-restricted** — nothing in this repo may
+  reference it by path or env var; it is typed on the command line for that session only.
+
+- [ ] **Flag to the parallel ped-engine session: this branch BREAKS contract C5·SC1 on purpose.** The
+  contract's success condition was "the existing 4-out-param `TryGetRenderPose` overload's body is
+  untouched, and all 15 call sites compile unedited"; the overload is now **deleted** and every call
+  site edited to `out _`. Owner's call ("no dual interfaces when we need to pass z coord everywhere…
+  compiler will catch"). The *behaviour* C5 specifies is unchanged. Reasoning + what replaced SC2:
+  `EXTERNAL-NET-VIEWER-DESIGN.md` §4.1.1. Needs an explicit ack, not a merge conflict.
+
+- [ ] **Three `CityLib.Tests` failures are real, pre-existing, and were being MASKED** — worth their own
+  task. `ReconstructorS2Tests`: stopped car's center sits **6.484 m** behind the front bumper where
+  L/2 = 2.50 m is expected; **0.1250 m/frame** creep while stopped; **0.996 m** of stray off the
+  connecting-lane centreline through a turn. Confirmed failing on a clean worktree at `4bf36e5`. They
+  are vehicle-reconstructor bugs, unrelated to elevation, and may be visible on screen during E5.
+  ⚠ **Why they were invisible:** `demos/City3D/build.sh --pack-only` always writes version `0.1.0`, so
+  NuGet's global cache serves a **stale** package and City3D silently builds against an old engine.
+  Always `rm -rf ~/.nuget/packages/sumosharp.*` before repacking — CLAUDE.md measurement-discipline #9's
+  failure mode by a different mechanism.
 
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)
