@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/LIVE-CITY-PERF-DESIGN.md: a MEASUREMENT INSTRUMENT ONLY, a headless perf/GC/alloc harness for
+    Sim.LiveCity.LiveCitySim (the same coupled cars+peds host every viewer consumes), isolating car-only
+    vs ped-only vs combined cost and surfacing per-step wall-time spikes (mean is not enough; the
+    reported problem is spikes) plus GC pause time (the direct measurement of a GC-caused spike). Adds
+    ZERO behavioral risk: it drives LiveCitySim exactly like Sim.DensityDiff does and never mutates
+    simulation logic. NOT referenced by Traffic.sln's test path and NEVER invoked by `dotnet test`
+    (CLAUDE.md "two loops, kept strictly separate").
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Workstation GC: matches Sim.BenchCity's convention; more representative of the single viewer
+         process this instrument is modelling, and keeps CollectionCount/pause measurements comparable
+         run to run rather than at the mercy of Server GC's per-core heap count. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.LiveCity\Sim.LiveCity.csproj" />
+  </ItemGroup>
+
+</Project>
