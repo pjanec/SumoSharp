@@ -291,10 +291,12 @@ public partial class Main : Node3D
     private float _zoomTargetDistance;
     private bool _zoomInit;
 
-    // Infinite ground-grid reference (a Unity-editor-like floor grid, so empty ground reads as a plane).
-    private const float GridSpacingMeters = 25f;    // line every 25 m
-    private const float GridHalfExtentMeters = 2500f; // 5 km grid, recentered under the camera each frame => "infinite"
-    private const float GridGroundY = -0.1f;        // just below zone tint (-0.05) and roads (0) so both draw on top
+    // Ground-grid reference (a Unity-editor-like floor grid, so empty ground reads as a surface).
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §7.2.2: BAKED once over the net's extent and draped over the
+    // TerrainField by GroundGridBuilder, no longer a flat mesh translated under the camera -- a
+    // translated mesh cannot follow terrain, which is the whole point. Spacing/offset now live on
+    // GroundGridBuilder; this is only how far past the scene bbox the bake reaches.
+    private const float GridMarginMeters = 400f;
 
     // Task T3.1 -- video-wall channel tile pixel height (each channel's SubViewport). Width is derived per
     // channel so its aspect matches what that channel's frustum actually needs (screen-corners mode derives
@@ -4196,7 +4198,9 @@ public partial class Main : Node3D
         var (bboxMin, bboxMax) = frameBbox;
         _orbitSceneExtent = Mathf.Max(Mathf.Max(bboxMax.X - bboxMin.X, bboxMax.Z - bboxMin.Z), 10f);
 
-        BuildGroundGrid();  // build the infinite floor grid before the first apply so recenter has a node
+        // §7.2.2: bake the grid over the scene's own extent (converted back to SUMO metres so the
+        // terrain can be sampled), not over a camera-relative window.
+        BuildGroundGrid(bboxMin, bboxMax);
 
         ApplyOrbitCamera(); // push the (possibly CLI-overridden) initial pose to the node right away
         GD.Print(
@@ -4250,14 +4254,8 @@ public partial class Main : Node3D
         // (see the `_orbitBaseFar`/`_orbitSceneExtent` fields' doc comment for the formula's reasoning).
         _orbitCamera.Far = Mathf.Max(_orbitBaseFar, (_orbitController.Distance * 2.5f) + _orbitSceneExtent);
 
-        // Recenter the ground grid under the camera, SNAPPED to the grid spacing so the lines never appear to
-        // slide -- makes the finite mesh read as an infinite floor as you fly around.
-        if (_gridNode is not null)
-        {
-            var gx = Mathf.Round(pos.X / GridSpacingMeters) * GridSpacingMeters;
-            var gz = Mathf.Round(pos.Z / GridSpacingMeters) * GridSpacingMeters;
-            _gridNode.Position = new Vector3(gx, GridGroundY, gz);
-        }
+        // NO grid recenter any more (§7.2.2): the grid is baked over the net's own extent and draped over
+        // the terrain, so moving it would slide it off the surface it was baked onto.
     }
 
     // Fix #16 (Windows testing session): TL signal heads were placed for ALL TL-controlled lanes while
@@ -4494,32 +4492,46 @@ public partial class Main : Node3D
         return new MeshInstance3D { Mesh = mesh, MaterialOverride = material, Position = new Vector3(0f, 0.2f, 0f) };
     }
 
-    // Infinite ground-grid reference: a flat XZ line grid at GridGroundY, built ONCE (5 km span, 25 m lines)
-    // and recentered on the camera's XZ (snapped to the spacing) every frame in ApplyOrbitCamera, so it reads
-    // as an endless floor without ever rebuilding the mesh. Unlit grey lines; sits just under the roads/zones
-    // so both draw on top. Toggle with `G`.
-    private void BuildGroundGrid()
+    // Ground-grid reference (docs/EXTERNAL-NET-VIEWER-DESIGN.md §7.2.2): baked ONCE over the scene's
+    // bbox (+GridMarginMeters) and DRAPED over the frame's TerrainField, so on a 3-D net the grid shows
+    // the shape of the ground instead of a flat sheet cutting through the hills. Unlit grey lines; sits
+    // just under the roads/zones so both draw on top. Toggle with `G`.
+    //
+    // `bboxMin`/`bboxMax` arrive in GODOT space (the same scene bbox the camera's far-plane baseline is
+    // computed from), so they are converted back to SUMO metres via the frame's own inverse -- the grid
+    // has to be baked in the space the terrain field is defined in.
+    private void BuildGroundGrid(Vector3 bboxMin, Vector3 bboxMax)
     {
         if (_gridNode is not null)
         {
             return;
         }
 
-        var n = (int)(GridHalfExtentMeters / GridSpacingMeters);
-        var ext = n * GridSpacingMeters;
-        var verts = new List<Vector3>((n * 2 + 1) * 4);
-        for (var i = -n; i <= n; i++)
+        var (sx0, sy0) = _sumoFrame.ToSumo(bboxMin.X, bboxMin.Z);
+        var (sx1, sy1) = _sumoFrame.ToSumo(bboxMax.X, bboxMax.Z);
+        var grid = GroundGridBuilder.Build(
+            _sumoFrame,
+            Math.Min(sx0, sx1) - GridMarginMeters,
+            Math.Min(sy0, sy1) - GridMarginMeters,
+            Math.Max(sx0, sx1) + GridMarginMeters,
+            Math.Max(sy0, sy1) + GridMarginMeters);
+
+        if (grid.SegmentCount == 0)
         {
-            var p = i * GridSpacingMeters;
-            verts.Add(new Vector3(p, 0f, -ext)); // line parallel to Z
-            verts.Add(new Vector3(p, 0f, ext));
-            verts.Add(new Vector3(-ext, 0f, p)); // line parallel to X
-            verts.Add(new Vector3(ext, 0f, p));
+            GD.Print("Main: ground grid skipped (empty scene bbox).");
+            return;
+        }
+
+        var verts = new Vector3[grid.Vertices.Length / 3];
+        for (var i = 0; i < verts.Length; i++)
+        {
+            var b = i * 3;
+            verts[i] = new Vector3(grid.Vertices[b], grid.Vertices[b + 1], grid.Vertices[b + 2]);
         }
 
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
+        arrays[(int)Mesh.ArrayType.Vertex] = verts;
 
         var mesh = new ArrayMesh();
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
@@ -4532,10 +4544,14 @@ public partial class Main : Node3D
             VertexColorUseAsAlbedo = false,
         };
 
-        _gridNode = new MeshInstance3D { Name = "GroundGrid", Mesh = mesh, Position = new Vector3(0f, GridGroundY, 0f) };
+        _gridNode = new MeshInstance3D { Name = "GroundGrid", Mesh = mesh };
         _gridNode.MaterialOverride = material;
         AddChild(_gridNode);
-        GD.Print($"Main: ground grid built ({GridSpacingMeters:F0}m spacing, ±{GridHalfExtentMeters:F0}m, recentered on camera).");
+
+        var terrain = _sumoFrame.Terrain;
+        GD.Print(
+            $"Main: ground grid baked ({grid.Spacing:F0}m spacing, {grid.LineCount} lines, "
+            + $"{grid.SegmentCount} segments) over {terrain}.");
     }
 
     // Unity RMB flythrough: while RMB is held, WASD flies in the camera's right/forward plane and Q/E move

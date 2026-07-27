@@ -62,7 +62,7 @@ step — every "done" is unverified until proven).
 | ----- | ------ |
 | `tests/Sim.LiveCity.Tests` | 80/80 pass |
 | `tests/Sim.Pedestrians.Tests` | 317/317 pass |
-| `demos/City3D/CityLib.Tests` | 146 pass / 3 fail, all **pre-existing** (see below) |
+| `demos/City3D/CityLib.Tests` | 176 pass / 3 fail, all **pre-existing** (see below) |
 | `Traffic.sln` (parity) | 775 pass, 0 fail, 4 skip |
 | `Sim.Bench` determinism hash | `BF3794A4704BCD79`, par == single |
 
@@ -89,12 +89,28 @@ stopped, and 0.996 m of stray off the connecting-lane centreline through a turn.
 - [x] live ped-density setter lands — ped count changes with no sim rebuild
 - [x] all validated headless in isolation
 
+## Follow-ups delivered after the original handoff
+- [x] **Lane provenance through `IPedNavigation`** (design §4.1) — stacked pedestrian surfaces (a
+      footbridge over the path below it) no longer collapse onto one height.
+- [x] **Elevation made MANDATORY in the nav and render APIs** (design §4.1, §4.1.1) — the 2-D
+      `FindPath` / `ElevationsAlong` / `TryGetRenderPose` siblings are removed, so an omitted height
+      is a compile error rather than a silent zero. Contradicts contract C5·SC1 by owner decision.
+- [x] **`SumoNavMesh` given real provenance** — it was the "2-D demo provider" that City3D actually
+      routes 3-D peds on. Held to the same stacked-deck fixture as `SumoRouteGraphNav`.
+- [x] **The ground datum is no longer flat** (design §7.2) — a `TerrainField` baked from `Lane.ShapeZ`
+      on net load; the grey grid is baked over the net and draped over it; the zone tint subdivides so
+      its interior follows it too; POI markers, doors, building bases, TL poles and the realism ring
+      follow it for free through `GroundToGodot`. Measured on `georef_min` (27.5 m of relief): the
+      field reproduces every lane vertex's own height to **0.326 m**, versus up to ~14 m of error from
+      the flat datum it replaced. Grid drape and two-bake determinism are both exact.
+
 ## Not done, and why
 - The real **168 MB `swiss_roads.net.xml`** and a real **Geneva cut** are not in this repo (they live
   in BIG's dist repo / SumoData), so load time and memory on them are **unmeasured**. The loader has
   no size ceiling and `Sim.Viz --external-net <path>` is the one-command probe for confirming it
   there.
-- The viewer's ground datum is **flat** (design §5.6/§8.5): overlays with no elevation data of their
-  own — and, until the parallel workstream lands, pedestrians — sit at the net's mid-elevation and
-  can be tens of metres off on hilly terrain. Roads, cars, crosswalk zebra and lane dashes all follow
-  the net's real elevation.
+- The ground datum was flat; **§7.2 closed that**. What remains: the `TerrainField` interpolates
+  **road** heights, so ground far from any road is a smooth fill rather than surveyed terrain, and its
+  resolution is the 40 m cell (which grows on very large nets to keep the lattice bounded). The grey
+  grid is now **finite** — net bbox + 400 m — instead of following the camera to infinity; that is the
+  deliberate cost of baking it onto the terrain.

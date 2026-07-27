@@ -439,8 +439,11 @@ rendered a Geneva cut visibly broken, so they are fixed here rather than deferre
    anchors `heightAboveGround` to the datum instead. Anything that *has* real elevation — road
    meshes (`Lane.ShapeZ`), cars (`KinematicReconResult.Z`), peds (`IPedElevationSource`), the
    NetworkModel-fed signal heads (which already sample the lane's end z) — keeps using `ToGodot`
-   with that real value. The datum is FLAT, so a ground overlay can sit tens of metres off the true
-   surface on hilly terrain; that is a stated limitation (§8), not an oversight.
+   with that real value. **The datum was FLAT at this point**, so a ground overlay could sit tens of
+   metres off the true surface on hilly terrain. **§7.2 has since closed that**: `GroundToGodot`
+   samples a baked `TerrainField`, so every one of these overlays follows the real ground with no
+   further edits — putting the ground height behind this one seam is what made the later fix a
+   one-line change instead of seven.
 2. **Crosswalk zebra and lane dashes were emitted at absolute z ≈ 0.02.** Not merely un-recentered:
    they never followed the road at all, they just happened to be right on a flat net. Both builders
    now take the lane's own `ShapeZ` and interpolate the surface elevation at each stripe/dash's arc
@@ -540,6 +543,97 @@ committed corpus lacks" instinct generally.
 
 ---
 
+## §7.2 The ground datum stops being flat — a baked terrain field
+
+Owner's directive, verbatim: *"what about the grey grid - cant stay at zero elevation. maybe at avg
+elevation? maybe not flat but following the avg height of the closest road net parts?"* and
+*"regarding grey grid and zones. needs to be built/baken. on road net load. tinted zones need to
+follow the grid."* This closes §8.5 (was: "the viewer's ground datum is flat") and §5.6.
+
+### 7.2.1 Mechanism — one field, one seam
+
+The road network already carries the only elevation truth the viewer has: `Lane.ShapeZ`, a real
+height at every lane vertex. A **`TerrainField`** turns that scattered sample set into a function
+defined everywhere:
+
+1. **Lattice.** A uniform corner lattice over the net's x/y bbox at `CellSizeMeters` (40 m default).
+   The per-axis corner count is capped (`MaxCornersPerAxis = 512`) by growing the cell size, so a
+   Switzerland-sized net costs the same lattice as a city block — bounded memory, bounded bake time.
+2. **Scatter.** Every lane vertex with a z distributes its height into the four surrounding corners
+   by **bilinear weight** (the transpose of the sampling operator, so a corner surrounded by road
+   ends up at the road's height rather than at the height of whichever vertex happened to be
+   nearest). Each corner accumulates `Σ w·z` and `Σ w`; corners with `Σ w > 0` are **measured**.
+3. **Fill.** Corners with no road near them are filled by a deterministic breadth-first flood from
+   the measured set: each ring takes the mean of its already-known 4-neighbours. This is the literal
+   reading of the directive — *"following the avg height of the closest road net parts"*.
+4. **Relax.** Two Jacobi smoothing passes applied **only to filled corners**; measured corners are
+   pinned. So the field passes exactly through the road heights and the fill in between is smooth
+   rather than terraced.
+5. **Sample.** `HeightAt(x, y)` is bilinear over the containing cell, with the query clamped to the
+   lattice, so it is defined (and continuous) over the whole plane.
+
+`TerrainField.Flat(z)` is the degenerate field — `HeightAt` returns `z` everywhere. `IsFlat` is true
+for it and only for it.
+
+**The field lives on `SumoGodotFrame`.** That is the single seam every ground-anchored overlay
+already goes through:
+
+```csharp
+frame.GroundToGodot(x, y, h)   ==   frame.ToGodot(x, y, frame.Terrain.HeightAt(x, y) + h)
+```
+
+`SumoGodotFrame.ForNetwork` bakes the field from the same one lane scan it already makes to compute
+the recenter origin, so the terrain costs one extra pass over vertices it is already visiting. Every
+existing `GroundToGodot` caller — zone tint, POI markers, doors, procedural building bases and their
+walls, traffic-light poles, the realism ring — becomes terrain-following with **no signature change
+and no call-site edit**. That is why the field goes on the frame rather than being threaded as a new
+parameter: threading it would have meant touching seven builders and inviting exactly one of them to
+be missed.
+
+On a 2-D net `ForNetwork` bakes `Flat(0.0)` and `SumoGodotFrame.Identity` is `Flat(0.0)`, so
+`GroundToGodot` is bit-identical to what it was — the 2-D regression is structural, not a tolerance.
+
+### 7.2.2 Why the grid had to be re-baked rather than re-offset
+
+The grid was a **flat line mesh translated under the camera every frame** (snapped to the spacing, so
+it read as an infinite floor). A translated flat mesh cannot follow terrain — the whole point of the
+recenter was that the mesh never changes.
+
+So the grid is now **baked once, on net load, over the net's own bbox** (+ `GridMarginMeters`), and
+the per-frame recenter is **deleted**. Each grid line is a polyline subdivided at the terrain cell
+size and sampled through `GroundToGodot`, so it drapes over the field. The line spacing adapts
+(`max(25 m, extent / MaxGridLinesPerAxis)`) so the vertex count stays bounded on a large net.
+
+This is a deliberate behaviour change on the 2-D demo too: the grid is finite and shows where the
+city actually is, instead of following you to infinity. On a flat field the baked mesh is planar and
+looks exactly as before within the net; fly far enough out and it now ends.
+
+### 7.2.3 Zones: sampling at the corners is not enough
+
+A district polygon has a handful of vertices. Sampling the field only at those vertices makes each
+fan triangle a **plane through three terrain points** — over a 400 m district on a slope the middle
+of the tint can be metres under the road it is supposed to sit beneath.
+
+`ZoneGroundBuilder.Build` therefore keeps its fan topology (so the covered area is exactly what it
+was — no clipping, no coverage change) and **recursively subdivides each fan triangle at edge
+midpoints** until every edge is ≤ the terrain cell size, capped at `MaxSubdivisionDepth = 5`
+(1024 sub-triangles per fan triangle). Every generated vertex — including the interior midpoints —
+is placed with `GroundToGodot`, so the interior follows the field, not a chord across it.
+
+On a flat field subdivision changes the vertex *count* but not the surface, so the tint renders
+identically; `Area` (the largest-area-first sort key) is computed from the original polygon and is
+untouched. `PoiGroundBuilder` markers are single points and need no subdivision — they follow the
+field through `GroundToGodot` alone.
+
+### 7.2.4 Determinism
+
+The bake is a fixed sequence of double arithmetic in index order: the scatter walks lanes in
+`NetworkModel` order and vertices in shape order, the flood is a FIFO queue seeded in raster order,
+the relaxation is a fixed two-pass Jacobi. No `Random`, no parallelism, no dictionary-order
+dependence. Baking the same net twice yields a bitwise-identical field, asserted in
+`TerrainFieldTests`. None of this is in the engine: it is all viewer-side presentation, so the parity
+suite and the determinism hash cannot see it at all.
+
 ## §8 Known limitations, stated rather than hidden
 
 1. **Lowering a density cap drains by attrition** (§3.2) — deliberate, matches cars.
@@ -554,11 +648,15 @@ committed corpus lacks" instinct generally.
    recommendation — load a cut, not the country, and show a progress indicator if you must, since the
    load is synchronous in the constructor — applies directly to the City3D loader built here.
    `Sim.Viz --external-net` (§6.1) is the tool for re-checking on a given machine.
-5. **The viewer's ground datum is flat** (§5.6). Overlays with no elevation data of their own — zone
-   tint, POI markers, doors, procedural building bases, the realism ring, wire-fed signal heads —
-   sit at the net's mid-elevation, so on hilly terrain they can be tens of metres off the local
-   surface. Fixing it properly means sampling the surface per overlay point, which is
-   `IPedElevationSource`'s job and a reasonable follow-up; it was not needed to make a cut render.
+5. ~~**The viewer's ground datum is flat**~~ — **CLOSED by §7.2.** The datum is a baked `TerrainField`
+   interpolated from `Lane.ShapeZ`, and every overlay that goes through `GroundToGodot` (zone tint,
+   POI markers, doors, procedural building bases and walls, traffic-light poles, the realism ring)
+   follows it. The grey grid is baked over the net and draped over the same field. What *remains*
+   limited: the field is an interpolation of **road** heights, so terrain far from any road is a
+   smooth fill rather than real ground, and its resolution is `CellSize` (40 m, growing on very large
+   nets). Measured on `scenarios/_ped/georef_min` — 27.5 m of relief — the field reproduces every
+   lane vertex's own height to within **0.326 m**; the flat datum it replaced was out by up to ~14 m.
+   Also: the grid is now **finite** (net bbox + 400 m) rather than following the camera to infinity.
 6. **Three `CityLib.Tests` were already failing before this work** (`ReconstructorS2Tests`:
    `…DoesNotCreep`, `…CenterIsHalfLengthBehindSnapshotFront`, `…FollowsConnectingLaneArc_Smoothly`).
    Verified by running them on a clean worktree at the pre-change commit: same three fail. They are

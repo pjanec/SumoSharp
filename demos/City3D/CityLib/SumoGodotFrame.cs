@@ -31,11 +31,18 @@ public readonly struct SumoGodotFrame
     // for any caller that has not opted into recentering.
     public static readonly SumoGodotFrame Identity = new(0.0, 0.0, 0.0);
 
-    public SumoGodotFrame(double originX, double originY, double originZ = 0.0)
+    // §7.2: the baked ground field. Null means "flat at OriginZ", which is what `Identity`,
+    // `default`, and every pre-terrain construction site mean -- so `GroundToGodot` on those is
+    // bitwise what it was. Held as a nullable field rather than a non-null property because this is a
+    // struct: `default(SumoGodotFrame)` must remain valid and must remain flat.
+    private readonly TerrainField? _terrain;
+
+    public SumoGodotFrame(double originX, double originY, double originZ = 0.0, TerrainField? terrain = null)
     {
         OriginX = originX;
         OriginY = originY;
         OriginZ = originZ;
+        _terrain = terrain;
     }
 
     // The subtracted origin, in SUMO world metres. X/Y are the horizontal recenter; Z is the ELEVATION
@@ -49,6 +56,15 @@ public readonly struct SumoGodotFrame
     public double OriginZ { get; }
 
     public bool IsIdentity => OriginX == 0.0 && OriginY == 0.0 && OriginZ == 0.0;
+
+    // The scene's ground field (§7.2). Never null: a frame built without one is flat at its own
+    // elevation datum, which is precisely what the datum WAS before terrain existed. Read by the grid
+    // baker (which needs the cell size to choose its subdivision step) and by ZoneGroundBuilder (which
+    // needs `IsFlat` to skip subdivision that would produce the same planar surface).
+    public TerrainField Terrain => _terrain ?? TerrainField.Flat(OriginZ);
+
+    // True when this frame carries a real, non-degenerate baked field.
+    public bool HasTerrain => _terrain is { IsFlat: false };
 
     // SUMO (x, y, z) -> Godot (x, y, z), recentered. Same axis mapping as
     // CoordinateTransform.SumoToGodot (Godot.X = Sumo.X, Godot.Y = Sumo.Z, Godot.Z = -Sumo.Y); the
@@ -67,14 +83,24 @@ public readonly struct SumoGodotFrame
     // UNDERGROUND. Anchoring them to the datum (`OriginZ`, the net's mid-elevation) instead puts them
     // back on the visible surface.
     //
-    // LIMITATION, stated rather than hidden: the datum is FLAT, so on hilly terrain a ground overlay
-    // can sit tens of metres off the true local surface. Anything that HAS real elevation data --
-    // road meshes (Lane.ShapeZ), cars (KinematicReconResult.Z), crosswalk/lane-marking paint (the
-    // lane's own interpolated z) -- must use `ToGodot` with that real value and not this.
-    // Pedestrians currently use this datum because the ped stack is 2-D; per-pedestrian elevation is
-    // being added to the ped engine in a separate workstream, and lands as a `ToGodot` call here.
+    // §7.2: the datum is NO LONGER FLAT. The ground height comes from the baked `TerrainField`, so
+    // every overlay routed through here -- zone tint, POI markers, doors, procedural building bases
+    // and walls, traffic-light poles, the realism ring -- follows the real surface without any of them
+    // being edited. That is exactly why the field lives on the frame instead of being threaded as a
+    // parameter through seven builders, one of which would have been missed.
+    //
+    // On a frame with no field (Identity, `default`, a 2-D net -- see `Terrain`) this reduces to
+    // `heightAboveGround` above the flat OriginZ datum, i.e. bitwise what it computed before.
+    //
+    // Anything that HAS real elevation data of its own -- road meshes (Lane.ShapeZ), cars
+    // (KinematicReconResult.Z), pedestrians (the ped stack's retained channel), crosswalk and
+    // lane-marking paint (the lane's own interpolated z) -- must still use `ToGodot` with that real
+    // value. The field is an interpolation of road heights; the road's own z is the road's z.
     public (float X, float Y, float Z) GroundToGodot(double sumoX, double sumoY, double heightAboveGround)
-        => ((float)(sumoX - OriginX), (float)heightAboveGround, (float)-(sumoY - OriginY));
+    {
+        var ground = _terrain is null ? OriginZ : _terrain.HeightAt(sumoX, sumoY);
+        return ((float)(sumoX - OriginX), (float)(ground - OriginZ + heightAboveGround), (float)-(sumoY - OriginY));
+    }
 
     // The inverse, for the places that map a GODOT point back to SUMO -- the camera-driven LC-realism
     // zone being the one in the wild (Main.CameraLcZone). It must use the same origin, or the zone
@@ -132,6 +158,11 @@ public readonly struct SumoGodotFrame
         }
 
         var originZ = minZ <= maxZ ? (minZ + maxZ) * 0.5 : 0.0;
-        return new SumoGodotFrame((minX + maxX) * 0.5, (minY + maxY) * 0.5, originZ);
+
+        // §7.2: bake the ground field from the SAME lane geometry this pass just measured. A 2-D net
+        // (no ShapeZ anywhere) bakes to `Flat(0.0)`, which makes `GroundToGodot` bit-identical to the
+        // pre-terrain arithmetic -- the 2-D regression is structural, not a tolerance.
+        return new SumoGodotFrame(
+            (minX + maxX) * 0.5, (minY + maxY) * 0.5, originZ, TerrainField.FromNetwork(network));
     }
 }
