@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Sim.Core.Orca;
@@ -33,11 +34,11 @@ public class PedElevationMultiLevelTests
         "<net>\n"
         + "  <edge id=\"ground\" from=\"W\" to=\"E\">\n"
         + $"    <lane id=\"ground_0\" index=\"0\" allow=\"pedestrian\" width=\"3.0\" speed=\"1.5\" length=\"100.0\""
-        + $" shape=\"0.00,0.00,{GroundZ:F2} 50.00,0.00,{GroundZ:F2} 100.00,0.00,{GroundZ:F2}\"/>\n"
+        + $" shape=\"0.00,0.00,{GroundZ.ToString("F2", CultureInfo.InvariantCulture)} 50.00,0.00,{GroundZ.ToString("F2", CultureInfo.InvariantCulture)} 100.00,0.00,{GroundZ.ToString("F2", CultureInfo.InvariantCulture)}\"/>\n"
         + "  </edge>\n"
         + "  <edge id=\"bridge\" from=\"S\" to=\"N\">\n"
         + $"    <lane id=\"bridge_0\" index=\"0\" allow=\"pedestrian\" width=\"3.0\" speed=\"1.5\" length=\"100.0\""
-        + $" shape=\"50.00,-50.00,{BridgeZ:F2} 50.00,0.00,{BridgeZ:F2} 50.00,50.00,{BridgeZ:F2}\"/>\n"
+        + $" shape=\"50.00,-50.00,{BridgeZ.ToString("F2", CultureInfo.InvariantCulture)} 50.00,0.00,{BridgeZ.ToString("F2", CultureInfo.InvariantCulture)} 50.00,50.00,{BridgeZ.ToString("F2", CultureInfo.InvariantCulture)}\"/>\n"
         + "  </edge>\n"
         + "</net>\n";
 
@@ -90,9 +91,9 @@ public class PedElevationMultiLevelTests
         var groundZ = ElevationAtCrossingWalking(nav, new Vec2(10.0, 0.0), new Vec2(90.0, 0.0));
 
         Assert.True(Math.Abs(bridgeZ - BridgeZ) <= 0.05,
-            $"a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ:F2}");
+            $"a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ.ToString("F2", CultureInfo.InvariantCulture)}");
         Assert.True(Math.Abs(groundZ - GroundZ) <= 0.05,
-            $"a ped routed under the bridge read {groundZ:F2}, expected {GroundZ:F2} "
+            $"a ped routed under the bridge read {groundZ:F2}, expected {GroundZ.ToString("F2", CultureInfo.InvariantCulture)} "
             + "-- it was lifted onto the bridge");
         Assert.True(Math.Abs(bridgeZ - groundZ) > 1.0);
     }
@@ -170,7 +171,7 @@ public class PedElevationMultiLevelTests
         for (var i = 0; i < elevations.Count; i++)
         {
             Assert.True(Math.Abs(elevations[i] - BridgeZ) <= 0.05,
-                $"bridge vertex {i} resolved to {elevations[i]:F2}, expected {BridgeZ:F2} "
+                $"bridge vertex {i} resolved to {elevations[i]:F2}, expected {BridgeZ.ToString("F2", CultureInfo.InvariantCulture)} "
                 + "-- it picked up the surface underneath instead of the one it is on");
         }
     }
@@ -189,7 +190,7 @@ public class PedElevationMultiLevelTests
         for (var i = 0; i < elevations.Count; i++)
         {
             Assert.True(Math.Abs(elevations[i] - GroundZ) <= 0.05,
-                $"ground sample {i} resolved to {elevations[i]:F2}, expected {GroundZ:F2}");
+                $"ground sample {i} resolved to {elevations[i]:F2}, expected {GroundZ.ToString("F2", CultureInfo.InvariantCulture)}");
         }
 
         Assert.NotEmpty(ground.ShapeZ!);
@@ -243,9 +244,9 @@ public class PedElevationMultiLevelTests
         var groundZ = NavMeshElevationAtCrossing(nav, new Vec2(10.0, 0.0), new Vec2(90.0, 0.0));
 
         Assert.True(Math.Abs(bridgeZ - BridgeZ) <= 0.05,
-            $"navmesh: a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ:F2}");
+            $"navmesh: a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ.ToString("F2", CultureInfo.InvariantCulture)}");
         Assert.True(Math.Abs(groundZ - GroundZ) <= 0.05,
-            $"navmesh: a ped routed under the bridge read {groundZ:F2}, expected {GroundZ:F2} "
+            $"navmesh: a ped routed under the bridge read {groundZ:F2}, expected {GroundZ.ToString("F2", CultureInfo.InvariantCulture)} "
             + "-- it was lifted onto the bridge");
         Assert.True(Math.Abs(bridgeZ - groundZ) > 1.0);
     }
