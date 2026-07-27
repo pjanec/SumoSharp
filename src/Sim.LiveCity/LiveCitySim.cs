@@ -140,7 +140,11 @@ public sealed class LiveCitySim : IDisposable
         // instead of each re-parsing the dataset dir's JSON companions themselves.
         Scene = LiveCityScene.Load(cfg.DatasetDir);
 
-        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: the net path is `cfg.NetPath` when the caller set one
+        // (an explicit path, a `scenario.net.xml` cut, or a `.sumocfg`-resolved path via ForSumocfg),
+        // else the historical `<DatasetDir>/net.xml` convention -- see LiveCityConfig.ResolveNetPath.
+        // ForRepoRoot/ForDataset leave NetPath null, so the demo resolves to the identical string.
+        var netPath = cfg.ResolveNetPath();
 
         // net parsed twice (once for the vehicle-side NetworkModel, once for the ped-side PedNetwork) --
         // exactly as SceneGen.BuildLiveCity does; the two readers own disjoint models.
@@ -168,6 +172,12 @@ public sealed class LiveCitySim : IDisposable
 
         PedestriansEnabled = pedNetwork.Sidewalks.Count > 0;
         CrossingsEnabled = PedestriansEnabled && pedNetwork.Crossings.Count > 0;
+
+        // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the ped ground-elevation sampler, joining the
+        // ped lane ids to the vehicle-side lanes' ShapeZ. Built unconditionally (it is cheap and
+        // read-only) but INERT on a 2-D net -- `HasElevation` is false, every query returns 0.0, and
+        // `Sample()` below therefore still writes the literal 0.0 the demo has always seen.
+        PedElevation = new NetLaneElevationSource(model, pedNetwork);
 
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.2 (C1 mode branch): RouteGraph is the road-net
         // (arbitrary net) import path -- SumoRouteGraphNav, no sidewalk bake, no crop (§5.4). Navmesh
@@ -470,7 +480,11 @@ public sealed class LiveCitySim : IDisposable
                 ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
                 : _manager.HighPowerFootprints;
 
-        var routeEdges = ReadDrivableEdges(Path.Combine(cfg.DatasetDir, "scenario.rou.xml"));
+        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: scrape the resolved route-file LIST (a `.sumocfg`'s
+        // `<route-files>` is comma-separated and typically leads with vType files before the real
+        // demand -- see LiveCityConfig.RoutePaths). Unset => the single `<DatasetDir>/scenario.rou.xml`
+        // the demo has always used, so its scrape is byte-identical.
+        var routeEdges = ReadDrivableEdges(cfg.ResolveRoutePaths());
         if (routeEdges.Count == 0)
         {
             // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.6: a dataset with no (or an empty)
@@ -541,6 +555,13 @@ public sealed class LiveCitySim : IDisposable
     // The static world-overlay scene (zones/buildings/pois) loaded once from cfg.DatasetDir in the ctor.
     public LiveCityScene Scene { get; }
 
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the ped ground-elevation sampler for this net.
+    // `Sample()` uses it to fill `LiveCityPed.Z`; a viewer that reconstructs peds off the WIRE instead
+    // (City3D's PedReconstructor, BIG's Spectacle scene) passes it to its own PedRemoteReconstructor so
+    // the wire path gets the same elevation as the direct-sample path. `HasElevation` is false on a 2-D
+    // net, where every query is 0.0.
+    public NetLaneElevationSource PedElevation { get; }
+
     public NetworkLaneSource LocalLanes { get; }
 
     public IReplicationSource VehicleSource { get; }
@@ -566,6 +587,50 @@ public sealed class LiveCitySim : IDisposable
     public int CurrentCars => _engine.VehicleHandles.Length;
 
     public int CurrentPeds => _demand?.LiveCount ?? 0;
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): the live pedestrian demand, or null on a net with no
+    // pedestrians (`PedestriansEnabled == false`). Exposed as the escape hatch for a caller wanting
+    // finer control than `SetPedDensity` below (e.g. reading `SpawnEvents` for a determinism check).
+    public PedDemand? PedDemand => _demand;
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): change the pedestrian density LIVE -- takes effect on
+    // the next Step(), with no sim rebuild. This is the knob a free-style density slider drives, in
+    // BIG's Spectacle scene and the Godot City3D viewer alike; before it existed both had to rebuild
+    // the whole sim (their ped sliders were documented as "applies on Restart").
+    //
+    // Raising converges upward at the given rate; LOWERING stops new spawns but does not despawn
+    // anybody -- live peds drain as they arrive, exactly as lowering `CarTargetConcurrent` drains cars.
+    // See PedDemand.SetPopulationCap for why that asymmetry is deliberate.
+    //
+    // A silent no-op when this net has no pedestrians, so a slider handler needs no capability guard.
+    public void SetPedDensity(int populationCap, double spawnRatePerSecond)
+    {
+        if (_demand is null)
+        {
+            return;
+        }
+
+        _demand.SetPopulationCap(populationCap);
+        _demand.SetSpawnRatePerSecond(spawnRatePerSecond);
+    }
+
+    // The car-side twin of SetPedDensity, for symmetry at the call site. Cars needed no engine change:
+    // `Step()` already reads `CarTargetConcurrent`/`CarSpawnPerStep` off the by-reference `_cfg` every
+    // tick, so writing them here is felt on the next tick. This method exists so a viewer has ONE
+    // obvious API for "set the density" instead of having to know that trick -- and so the two
+    // densities are driven the same way from the same place.
+    //
+    // `spawnPerStep` null (the default) leaves the per-step insertion budget alone. Note the cap is
+    // IGNORED entirely while `CarInflowVehPerSec` is set (open-loop mode has no cap by design -- see
+    // that property's own header), so this is a no-op for a caller running an open-loop measurement.
+    public void SetCarDensity(int targetConcurrent, int? spawnPerStep = null)
+    {
+        _cfg.CarTargetConcurrent = targetConcurrent < 0 ? 0 : targetConcurrent;
+        if (spawnPerStep is { } perStep)
+        {
+            _cfg.CarSpawnPerStep = perStep < 0 ? 0 : perStep;
+        }
+    }
 
     // DIAGNOSTIC (#15 residual): how many vehicles hit the wrong-lane dead-end clamp in the engine's
     // last step (a turner that could not merge into its turn lane and stranded at the stop line with no
@@ -1073,7 +1138,11 @@ public sealed class LiveCitySim : IDisposable
                 var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
                     : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
                     : PedRegime.Paused;
-                peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+                // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): real ground elevation on a 3-D net
+                // (a georeferenced Swiss cut sits at z ~370-400 m -- placing its peds at 0 would bury
+                // them hundreds of metres under the road). Exactly 0.0 on a 2-D net, where the sampler
+                // indexed nothing, so the demo's snapshot is byte-identical to the former literal.
+                peds.Add(new LiveCityPed(id, p.X, p.Y, PedElevation.ElevationAt(p), regime, animTag));
             }
         }
 
@@ -1187,18 +1256,26 @@ public sealed class LiveCitySim : IDisposable
         return edges;
     }
 
-    // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).
-    // Copied from SceneGen.ReadDrivableEdges.
-    private static IReadOnlyList<string> ReadDrivableEdges(string rouPath)
+    // Read the union of drivable edge ids from the committed car route file(s) -- every `edges="..."`
+    // token, in first-seen order. Copied from SceneGen.ReadDrivableEdges and then (docs/EXTERNAL-NET-
+    // LOADING-DESIGN.md §1) generalised from one path to a LIST, because a `.sumocfg`'s `<route-files>`
+    // routinely names several files and the real demand is not the first of them. A listed file that
+    // does not exist, or that contains no `edges="..."` at all (a vType file), simply contributes
+    // nothing. With a single existing path the result is identical to the pre-list form, token for
+    // token and in the same order -- the demo's edge set is unchanged.
+    private static IReadOnlyList<string> ReadDrivableEdges(IReadOnlyList<string> rouPaths)
     {
         var edges = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        if (!File.Exists(rouPath)) return edges;
-        foreach (Match m in Regex.Matches(File.ReadAllText(rouPath), "edges=\"([^\"]*)\""))
+        foreach (var rouPath in rouPaths)
         {
-            foreach (var tok in m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            if (string.IsNullOrEmpty(rouPath) || !File.Exists(rouPath)) continue;
+            foreach (Match m in Regex.Matches(File.ReadAllText(rouPath), "edges=\"([^\"]*)\""))
             {
-                if (seen.Add(tok)) edges.Add(tok);
+                foreach (var tok in m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (seen.Add(tok)) edges.Add(tok);
+                }
             }
         }
 

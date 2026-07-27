@@ -77,6 +77,25 @@ public sealed class PedDemand
     private double _nextSpawnAt;
     private int _nextId = 1;
 
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): the two density values the spawn loop reads EVERY
+    // step, promoted out of the `init`-only `PedDemandConfig` into mutable fields so a live UI dial can
+    // move them without rebuilding the sim. `PedDemandConfig` itself stays immutable -- it is the SEED
+    // configuration, and several tests depend on that -- these are seeded FROM it in the ctor and are
+    // the only two values that may subsequently diverge from it. Nothing else about spawning changes:
+    // the cap is still a loop guard and the rate is still the inverse-CDF divisor, so a run that never
+    // calls a setter draws exactly the stream it drew before this existed (the ITERON RULE).
+    private int _populationCap;
+    private double _spawnRatePerSecond;
+
+    // Set when `SetSpawnRatePerSecond` actually CHANGES the rate; consumed by the next `SpawnDue`,
+    // which redraws `_nextSpawnAt` from the current instant. Without it a rate change could not take
+    // effect until the already-drawn wait elapsed -- and in the rate==0 case never at all, because the
+    // pending wait is +Infinity, which `SpawnDue`'s "clamp a stale schedule forward to now" guard
+    // (`_nextSpawnAt < now`) cannot rescue. That would make parking the rate at 0 a ONE-WAY door,
+    // which is not acceptable for a knob a UI slider drives. Only ever set by an explicit setter call,
+    // so a run that never touches the knob is bit-identical.
+    private bool _spawnScheduleDirty;
+
     public PedDemand(PedDemandConfig config, IPedNavigation navigation, PedLodManager lodManager, double startTime = 0.0)
     {
         // With WeightedEndpoints set, the endpoint set supplies O/D, so Origins/Destinations may be
@@ -105,8 +124,54 @@ public sealed class PedDemand
         _navigation = navigation;
         _lodManager = lodManager;
 
+        // Seed the live density fields BEFORE the first DrawInterArrivalInterval below -- it reads
+        // `_spawnRatePerSecond`, so an uninitialised 0 here would silently schedule "never spawn".
+        _populationCap = config.PopulationCap;
+        _spawnRatePerSecond = config.SpawnRatePerSecond;
+
         _spawnTimingRng = VehicleRng.SeedFor(config.Seed, entityIndex: 0, salt: SpawnTimingSalt);
         _nextSpawnAt = startTime + DrawInterArrivalInterval();
+    }
+
+    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: the LIVE target concurrent population -- seeded from
+    /// `PedDemandConfig.PopulationCap` and thereafter movable via `SetPopulationCap`.
+    public int PopulationCap => _populationCap;
+
+    /// The LIVE mean spawn rate in peds/sec -- seeded from `PedDemandConfig.SpawnRatePerSecond` and
+    /// thereafter movable via `SetSpawnRatePerSecond`. &lt;= 0 means "never spawn again" (reversibly).
+    public double SpawnRatePerSecond => _spawnRatePerSecond;
+
+    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: change the concurrent-population target live; takes
+    /// effect on the NEXT `Step`, with no rebuild.
+    ///
+    /// RAISING converges upward at the configured spawn rate. LOWERING stops new spawns but does NOT
+    /// despawn anybody -- live peds drain as they reach their destinations. That is deliberate and is
+    /// exactly how the car-side `CarTargetConcurrent` knob already behaves; deleting pedestrians
+    /// mid-stride to satisfy a slider would render as people vanishing into thin air.
+    ///
+    /// Negative values are clamped to 0 ("hold the current crowd, spawn nobody new").
+    public void SetPopulationCap(int populationCap)
+        => _populationCap = populationCap < 0 ? 0 : populationCap;
+
+    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: change the mean spawn rate (peds/sec) live; takes
+    /// effect on the next inter-arrival draw, with no rebuild. &lt;= 0 parks spawning indefinitely and
+    /// is fully reversible: raising the rate later resumes from `_nextSpawnAt`, which `SpawnDue`
+    /// clamps forward to `now`, so there is no burst of catch-up spawns for the quiet interval.
+    ///
+    /// Determinism is preserved for a fixed knob trajectory: same seed + same step sequence + same
+    /// sequence of setter calls => identical spawn/arrival events. A call that CHANGES the rate costs
+    /// one extra inter-arrival draw on the next step (the reschedule); a call that sets the rate to
+    /// the value it already had costs nothing and draws nothing.
+    public void SetSpawnRatePerSecond(double spawnRatePerSecond)
+    {
+        var rate = double.IsNaN(spawnRatePerSecond) ? 0.0 : spawnRatePerSecond;
+        if (rate == _spawnRatePerSecond)
+        {
+            return;
+        }
+
+        _spawnRatePerSecond = rate;
+        _spawnScheduleDirty = true;
     }
 
     /// Number of peds currently live (spawned, not yet arrived/despawned).
@@ -156,13 +221,22 @@ public sealed class PedDemand
     // reproducibility.
     private void SpawnDue(double now, double dt)
     {
+        // docs/EXTERNAL-NET-LOADING-DESIGN.md §3: a live rate change redraws the pending wait from the
+        // current instant, so the new rate is felt immediately instead of after the old rate's already-
+        // drawn interval (see `_spawnScheduleDirty`). Never true unless a setter was called.
+        if (_spawnScheduleDirty)
+        {
+            _spawnScheduleDirty = false;
+            _nextSpawnAt = now + DrawInterArrivalInterval();
+        }
+
         if (_nextSpawnAt < now)
         {
             _nextSpawnAt = now;
         }
 
         var horizon = now + dt;
-        while (_liveIds.Count < _config.PopulationCap && _nextSpawnAt < horizon)
+        while (_liveIds.Count < _populationCap && _nextSpawnAt < horizon)
         {
             TrySpawnOne(_nextSpawnAt);
             _nextSpawnAt += DrawInterArrivalInterval();
@@ -171,7 +245,7 @@ public sealed class PedDemand
 
     private double DrawInterArrivalInterval()
     {
-        if (_config.SpawnRatePerSecond <= 0.0)
+        if (_spawnRatePerSecond <= 0.0)
         {
             return double.PositiveInfinity; // a demand with no spawn rate never spawns again
         }
@@ -179,7 +253,7 @@ public sealed class PedDemand
         // Standard inverse-CDF draw for a Poisson process's exponential inter-arrival time.
         // NextDouble() is [0,1); (1 - u) keeps the log's argument in (0,1], never exactly 0.
         var u = _spawnTimingRng.NextDouble();
-        return -Math.Log(1.0 - u) / _config.SpawnRatePerSecond;
+        return -Math.Log(1.0 - u) / _spawnRatePerSecond;
     }
 
     private void TrySpawnOne(double now)

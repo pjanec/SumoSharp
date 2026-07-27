@@ -315,6 +315,27 @@ Target ≤ ~20×20 km, so a single recenter keeps everything within ±10–20 km
 **No tiling, no double-precision render path, no large-world machinery.** Loading all of
 Switzerland (~280 km) is out of scope and will show float error; that is accepted.
 
+### 5.6 Two elevation problems the recenter exposed (found while implementing, not in the handoff)
+
+Recentering a 3-D net surfaced two latent flat-net assumptions in the viewer. Both are invisible on
+the demo (a 2-D net, where "z = 0" and "on the ground" are the same statement) and both would have
+rendered a Geneva cut visibly broken, so they are fixed here rather than deferred.
+
+1. **Overlays with no elevation of their own.** The zone tint, POI ground markers, building-entrance
+   doors, procedural building bases, the realism-zone ring, and the wire-fed signal heads all pass
+   `sumoZ = 0` meaning "on the ground". Mapped as an absolute elevation against a datum of ~385 m,
+   they would render 385 m underground. They now go through `SumoGodotFrame.GroundToGodot`, which
+   anchors `heightAboveGround` to the datum instead. Anything that *has* real elevation — road
+   meshes (`Lane.ShapeZ`), cars (`KinematicReconResult.Z`), peds (`IPedElevationSource`), the
+   NetworkModel-fed signal heads (which already sample the lane's end z) — keeps using `ToGodot`
+   with that real value. The datum is FLAT, so a ground overlay can sit tens of metres off the true
+   surface on hilly terrain; that is a stated limitation (§8), not an oversight.
+2. **Crosswalk zebra and lane dashes were emitted at absolute z ≈ 0.02.** Not merely un-recentered:
+   they never followed the road at all, they just happened to be right on a flat net. Both builders
+   now take the lane's own `ShapeZ` and interpolate the surface elevation at each stripe/dash's arc
+   position (`CrosswalkBuilder.ZAtArc`), so the paint rides 2 cm above the actual road, uphill and
+   down. A 2-D lane passes `null` and gets exactly the old flat behaviour.
+
 ---
 
 ## §6 The test fixture
@@ -338,6 +359,31 @@ It is **not** a parity scenario: no golden, no `tolerance.json`. It is a loader/
 
 The absolute-path `.sumocfg` variant (what `preprocess.py` emits) cannot be committed portably, so a
 test writes one to a temp dir at run time, pointing at the committed fixture.
+
+### 6.1 The headless probe (V2), and what it measures on the fixture
+
+`Sim.Viz --external-net <dir|net.xml|scenario.sumocfg> [steps]` loads a net by any of the three
+accepted forms, steps it, and prints load time, capability flags, populations, and the ped-vs-car
+elevation agreement. It exists because the real targets — `swiss_roads.net.xml` (168 MB) and a real
+Geneva cut — live in another repo and no test here can reach them; this is what a human points at
+one of them, outside this environment, to find out whether it loads and behaves.
+
+Measured on `scenarios/_ped/georef_min` (400 steps):
+
+```
+loaded in 0.35s: 127 edges, 195 lanes, 17 spawn edges
+pedestrians=True crossings=True routeGraphNav=True
+pedElevation: 68/68 ped lanes carry 3-D geometry (hasElevation=True)
+stepped 400x in 2.65s (151 steps/s)
+cars=160 (peak 203, arrived 102)  peds=160 (peak 160)
+pedZ vs nearest carZ (<=30 m, 107 pairs): median 0.097 m, max 1.524 m
+```
+
+**100%** of ped lane ids resolved against `NetworkModel.LanesById` (the shared-id-space claim of
+§4.2, measured rather than assumed), and the ped-vs-car elevation agreement is ~10 cm at the median
+against the handoff's "within a metre or two" bar. The 1.52 m maximum is a ped on a walking area at
+a junction where the two joining lanes differ in height — the nearest-lane-polyline attribution of
+§8.2, behaving as documented.
 
 ---
 
@@ -367,4 +413,14 @@ tests in `EXTERNAL-NET-LOADING-TASKS.md` each asserting its stated numeric condi
 4. **Whole-Switzerland load (168 MB net) is untested here.** The loader has no size ceiling and the
    fixture proves the *shape* of the problem, but the 168 MB net lives in BIG's dist repo and is not
    available in this environment; parse time and memory on it are unmeasured, and this design makes
-   no claim about them.
+   no claim about them. `Sim.Viz --external-net` (§6.1) is the tool for finding out.
+5. **The viewer's ground datum is flat** (§5.6). Overlays with no elevation data of their own — zone
+   tint, POI markers, doors, procedural building bases, the realism ring, wire-fed signal heads —
+   sit at the net's mid-elevation, so on hilly terrain they can be tens of metres off the local
+   surface. Fixing it properly means sampling the surface per overlay point, which is
+   `IPedElevationSource`'s job and a reasonable follow-up; it was not needed to make a cut render.
+6. **Three `CityLib.Tests` were already failing before this work** (`ReconstructorS2Tests`:
+   `…DoesNotCreep`, `…CenterIsHalfLengthBehindSnapshotFront`, `…FollowsConnectingLaneArc_Smoothly`).
+   Verified by running them on a clean worktree at the pre-change commit: same three fail. They are
+   wall-clock/`Thread.Sleep`-paced reconstruction tests and are unrelated to anything here; they are
+   left as found rather than silently adjusted.

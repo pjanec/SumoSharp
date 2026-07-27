@@ -15,7 +15,7 @@
 # WHAT IT DOES: runs `netconvert` with three guessing passes over the input net --
 #   --sidewalks.guess              add sidewalk lanes to edges that lack one
 #   --crossings.guess               add crossings at junctions where pedestrians can cross
-#   --walkingareas.all-nonspecific  add walkingarea polygons at every junction needing one
+#   --walkingareas                  add walkingarea polygons at every junction needing one
 # -- the exact recipe design §8 documents, matching what `netgenerate --sidewalks.guess
 # --crossings.guess` does for a from-scratch synthetic net (see
 # scenarios/_ped/roadnet_min/provenance.txt).
@@ -35,7 +35,7 @@ set -euo pipefail
 usage() {
     echo "usage: $(basename "$0") <in.net.xml> <out.net.xml>" >&2
     echo "" >&2
-    echo "  Runs netconvert --sidewalks.guess --crossings.guess --walkingareas.all-nonspecific" >&2
+    echo "  Runs netconvert --sidewalks.guess --crossings.guess --walkingareas" >&2
     echo "  over <in.net.xml> and writes a pedestrian-capable net to <out.net.xml>." >&2
     echo "" >&2
     echo "  DEV-SIDE TOOLING ONLY -- never invoked by 'dotnet test'. Commit the output as a" >&2
@@ -71,13 +71,13 @@ if [[ -n "$out_dir" && "$out_dir" != "." ]]; then
     mkdir -p "$out_dir"
 fi
 
-echo "prep-ped-net: netconvert --sumo-net-file '$in_net' --sidewalks.guess --crossings.guess --walkingareas.all-nonspecific -o '$out_net'"
+echo "prep-ped-net: netconvert --sumo-net-file '$in_net' --sidewalks.guess --crossings.guess --walkingareas -o '$out_net'"
 
 netconvert \
     --sumo-net-file "$in_net" \
     --sidewalks.guess \
     --crossings.guess \
-    --walkingareas.all-nonspecific \
+    --walkingareas \
     -o "$out_net"
 
 echo "prep-ped-net: wrote '$out_net'"
