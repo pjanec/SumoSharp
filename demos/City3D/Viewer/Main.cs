@@ -1012,9 +1012,7 @@ public partial class Main : Node3D
                     + $"z={_sumoFrame.OriginZ:F1}) for float precision.");
             }
 
-            // C2: hand the net's ground-elevation sampler to the ped reconstructor so wire-reconstructed
-            // peds sit on the road surface of a 3-D net instead of at the ground datum. Inert on a 2-D net.
-            _liveCityPedReconstructor = new CityLib.PedReconstructor(_sumoFrame, _liveCitySource.PedElevation);
+            _liveCityPedReconstructor = new CityLib.PedReconstructor(_sumoFrame);
         }
         catch (Exception ex)
         {

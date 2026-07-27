@@ -173,12 +173,6 @@ public sealed class LiveCitySim : IDisposable
         PedestriansEnabled = pedNetwork.Sidewalks.Count > 0;
         CrossingsEnabled = PedestriansEnabled && pedNetwork.Crossings.Count > 0;
 
-        // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the ped ground-elevation sampler, joining the
-        // ped lane ids to the vehicle-side lanes' ShapeZ. Built unconditionally (it is cheap and
-        // read-only) but INERT on a 2-D net -- `HasElevation` is false, every query returns 0.0, and
-        // `Sample()` below therefore still writes the literal 0.0 the demo has always seen.
-        PedElevation = new NetLaneElevationSource(model, pedNetwork);
-
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.2 (C1 mode branch): RouteGraph is the road-net
         // (arbitrary net) import path -- SumoRouteGraphNav, no sidewalk bake, no crop (§5.4). Navmesh
         // is today's ONLY-EVER-WIRED demo path (`ForRepoRoot`), untouched below.
@@ -554,13 +548,6 @@ public sealed class LiveCitySim : IDisposable
 
     // The static world-overlay scene (zones/buildings/pois) loaded once from cfg.DatasetDir in the ctor.
     public LiveCityScene Scene { get; }
-
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the ped ground-elevation sampler for this net.
-    // `Sample()` uses it to fill `LiveCityPed.Z`; a viewer that reconstructs peds off the WIRE instead
-    // (City3D's PedReconstructor, BIG's Spectacle scene) passes it to its own PedRemoteReconstructor so
-    // the wire path gets the same elevation as the direct-sample path. `HasElevation` is false on a 2-D
-    // net, where every query is 0.0.
-    public NetLaneElevationSource PedElevation { get; }
 
     public NetworkLaneSource LocalLanes { get; }
 
@@ -1138,11 +1125,7 @@ public sealed class LiveCitySim : IDisposable
                 var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
                     : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
                     : PedRegime.Paused;
-                // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): real ground elevation on a 3-D net
-                // (a georeferenced Swiss cut sits at z ~370-400 m -- placing its peds at 0 would bury
-                // them hundreds of metres under the road). Exactly 0.0 on a 2-D net, where the sampler
-                // indexed nothing, so the demo's snapshot is byte-identical to the former literal.
-                peds.Add(new LiveCityPed(id, p.X, p.Y, PedElevation.ElevationAt(p), regime, animTag));
+                peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
             }
         }
 

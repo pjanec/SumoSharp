@@ -142,11 +142,6 @@ public sealed class LiveCitySource : IDisposable
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2), -TASKS.md T3: the net's ped ground-elevation sampler,
-    // for the viewer to hand to its CityLib.PedReconstructor so wire-reconstructed peds get the same
-    // elevation LiveCitySim.Sample() gives directly-sampled ones. Inert (always 0) on a 2-D net.
-    public Sim.Pedestrians.Lod.IPedElevationSource PedElevation => _sim.PedElevation;
-
     // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3), -TASKS.md T3: the LIVE density knobs a viewer slider
     // drives. Both poke the very objects the running sim holds -- the by-reference LiveCityConfig for
     // cars, the live PedDemand for peds -- so a change is felt on the NEXT Tick() with no rebuild of the

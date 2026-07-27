@@ -13,14 +13,10 @@ public enum PedRegime
     HighPower = 1,
 }
 
-// One pedestrian's fully-reconstructed render pose, in GODOT coordinates (the SumoGodotFrame already
+// One pedestrian's fully-reconstructed render pose, in GODOT coordinates (CoordinateTransform already
 // applied) -- the plain struct the Viewer glue turns into a MultiMesh per-instance transform. No Godot type
-// here (CityLib stays engine-agnostic); the ped analog of ReconstructedVehicle.
-//
-// Y (Godot up) is the ped's GROUND ELEVATION, recentered by the frame. It is 0 on a 2-D net -- the demo,
-// and the only case that existed before docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2) -- and the real
-// surface height on a georeferenced 3-D net, where peds would otherwise sit hundreds of metres below the
-// roads they walk beside.
+// here (CityLib stays engine-agnostic); the ped analog of ReconstructedVehicle. The ped stack is 2-D, so
+// Y (Godot up) is the scene's ground datum -- 0 on the flat demo net.
 public readonly struct ReconstructedPed
 {
     public ReconstructedPed(int id, float x, float y, float z, PedRegime regime, bool visible)
@@ -53,18 +49,15 @@ public sealed class PedReconstructor
 {
     private readonly List<ReconstructedPed> _scratch = new();
     private readonly SumoGodotFrame _frame;
-    private readonly IPedElevationSource? _elevation;
     private PedRemoteReconstructor? _reconstructor;
     private IPedReplicationSource? _boundSource;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4/§5: `frame` is the SUMO->Godot placement frame (required,
-    // for the same reason Reconstructor's is). `elevation` is the optional ground sampler -- pass
-    // `LiveCitySim.PedElevation` (surfaced as `LiveCitySource.PedElevation`) on a 3-D net; null leaves
-    // peds at the frame's ground datum, which is the correct and pre-C2 behaviour for a 2-D net.
-    public PedReconstructor(SumoGodotFrame frame, IPedElevationSource? elevation = null)
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather
+    // than defaulted for the same reason Reconstructor's is -- on a georeferenced net an unframed
+    // placement lands 90 km from everything else, and a default would let that compile.
+    public PedReconstructor(SumoGodotFrame frame)
     {
         _frame = frame;
-        _elevation = elevation;
     }
 
     // Call once per render frame with the ped-sim's current server time (PedSimSource.Time). Constructs the
@@ -75,7 +68,7 @@ public sealed class PedReconstructor
     {
         if (_reconstructor is null)
         {
-            _reconstructor = new PedRemoteReconstructor(source, _elevation);
+            _reconstructor = new PedRemoteReconstructor(source);
             _boundSource = source;
         }
         else if (!ReferenceEquals(source, _boundSource))
@@ -89,15 +82,16 @@ public sealed class PedReconstructor
         _scratch.Clear();
         foreach (var id in _reconstructor.KnownIds)
         {
-            if (!_reconstructor.TryGetRenderPose(id, out var pos, out var z, out var visible, out _) || !visible)
+            if (!_reconstructor.TryGetRenderPose(id, out var pos, out var visible, out _) || !visible)
             {
                 continue;
             }
 
-            // `z` is the sampled ground elevation (0 with no elevation source, i.e. a 2-D net) and the
-            // frame is the ONE SUMO->Godot mapping, reused verbatim from the vehicle path. Absolute-z
-            // placement, not the ground datum: this z IS the real surface height where one is known.
-            var (gx, gy, gz) = _frame.ToGodot(pos.X, pos.Y, z);
+            // The ped stack is 2-D, so peds sit on the frame's GROUND DATUM. On the flat demo net that is
+            // Y = 0, exactly as before. On a georeferenced 3-D net it is the net's mid-elevation rather
+            // than the true local road surface -- per-pedestrian elevation is being added to the ped
+            // engine itself in a separate workstream, and this line is where it lands when it does.
+            var (gx, gy, gz) = _frame.GroundToGodot(pos.X, pos.Y, 0.0);
             var regime = _reconstructor.Ig.ModelOf(id) == PedDrModel.FreeKinematic
                 ? PedRegime.HighPower
                 : PedRegime.LowPower;

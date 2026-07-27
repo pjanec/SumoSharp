@@ -63,12 +63,6 @@ public sealed class PedRemoteReconstructor
     private readonly PedReplicationReceiver _receiver;
     private readonly double _playoutDelay;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): optional ground-elevation sampler for the 5-out-param
-    // `TryGetRenderPose` overload. Null (the default) => that overload reports z = 0, which is both the
-    // correct answer for a 2-D net and the exact pre-C2 behaviour. See IPedElevationSource for why the
-    // ped stack takes an interface here instead of reaching into the vehicle-side network model.
-    private readonly IPedElevationSource? _elevation;
-
     private readonly HashSet<int> _knownIds = new();
     private readonly Dictionary<int, SmoothState> _smoothed = new();
 
@@ -77,23 +71,10 @@ public sealed class PedRemoteReconstructor
     private int _lifecycleIdCursor;
 
     public PedRemoteReconstructor(IPedReplicationSource source, double playoutDelaySeconds = DefaultPlayoutDelaySeconds)
-        : this(source, elevation: null, playoutDelaySeconds)
-    {
-    }
-
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the elevation-aware ctor. `elevation` is consulted by
-    // the 5-out-param `TryGetRenderPose` overload only -- everything else about reconstruction, including
-    // the 4-out-param overload, is untouched, so a caller that passes null (or uses the ctor above) gets
-    // bit-identical behaviour to before this parameter existed.
-    public PedRemoteReconstructor(
-        IPedReplicationSource source,
-        IPedElevationSource? elevation,
-        double playoutDelaySeconds = DefaultPlayoutDelaySeconds)
     {
         _source = source;
         _receiver = new PedReplicationReceiver(source);
         _playoutDelay = playoutDelaySeconds;
-        _elevation = elevation;
     }
 
     // The underlying reconstruction engine (P3-1), exposed for a caller/test that wants the raw,
@@ -123,28 +104,10 @@ public sealed class PedRemoteReconstructor
     // applying capped-correction smoothing to the position. Returns false if `id` has never been
     // observed on the wire (or has since despawned) -- there is nothing to render.
     public bool TryGetRenderPose(int id, out Vec2 pos, out bool visible, out string animTag)
-        => TryGetRenderPose(id, out pos, out _, out visible, out animTag);
-
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 (C2): the elevation-carrying sibling of the overload above.
-    // ADDITIVE and non-breaking by construction -- the 4-out-param form now delegates here and drops
-    // `z`, so its behaviour (position smoothing, visibility, anim tag, return value) is unchanged and
-    // every existing caller, including the raylib and City3D viewers, is unaffected.
-    //
-    // `z` is the GROUND elevation under the (already smoothed) render position, sampled from the
-    // injected `IPedElevationSource`; 0.0 when none was injected or the position is off any known
-    // surface. It is deliberately sampled from the SMOOTHED position rather than the raw reconstruction
-    // so a ped's height tracks the position actually drawn -- otherwise a reconciliation snap would show
-    // as the ped briefly hovering above or sinking into the road it has not visually reached yet.
-    //
-    // The pedestrian stack itself remains 2-D throughout (Vec2 positions, 2-D nav, 2-D wire format):
-    // this is a purely output-side surface query, exactly like the vehicle side's own
-    // LaneGeometry.ElevationAtOffset, and never feeds back into any pedestrian state.
-    public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag)
     {
         if (!_knownIds.Contains(id) || !_receiver.Ig.Knows(id))
         {
             pos = Vec2.Zero;
-            z = 0.0;
             visible = false;
             animTag = ActivityTimeline.IdleAnimTag;
             return false;
@@ -152,7 +115,6 @@ public sealed class PedRemoteReconstructor
 
         var sample = _receiver.Ig.ReconstructSample(id, RenderTime);
         pos = Smooth(id, sample.Pos);
-        z = _elevation?.ElevationAt(pos) ?? 0.0;
         visible = sample.Visible;
         animTag = sample.AnimTag;
         return true;

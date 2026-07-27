@@ -39,13 +39,6 @@ public readonly struct LiveCityCar
 }
 
 // One pedestrian's read-back pose for a viewer frame.
-//
-// `Z` is the GROUND elevation under the ped, in the net's own vertical units (docs/EXTERNAL-NET-
-// LOADING-DESIGN.md §4). It is exactly 0.0 on a 2-D net -- the demo, and every synthetic net whose
-// lane shapes carry no third component -- and the real surface height on a 3-D one (a georeferenced
-// Swiss cut sits at ~370-400 m). The pedestrian SIMULATION remains 2-D throughout; this is an
-// output-side surface query filled by LiveCitySim.Sample, exactly as the vehicle side derives its own
-// PosZ, and it never feeds back into pedestrian state.
 public readonly struct LiveCityPed
 {
     public LiveCityPed(int id, double x, double y, double z, PedRegime regime, string animTag)

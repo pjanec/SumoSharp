@@ -428,52 +428,6 @@ public class ExternalNetViewerTests
         Assert.True(Math.Abs(ringZ - lookGodotZ) < 1.0f, $"ring Z drifted: {ringZ} vs {lookGodotZ}");
     }
 
-    // ---- C2 through the viewer's own ped path ------------------------------------------------------
 
-    [Fact]
-    public void PedReconstructor_WithTheNetElevationSource_PlacesPedsOnTheRoadSurface()
-    {
-        var cfg = LiveCityConfig.ForSumocfg(FixtureCfg());
-        using var source = new LiveCitySource(cfg);
-        var frame = SumoGodotFrame.ForNetwork(source.Network);
-        var recon = new PedReconstructor(frame, source.PedElevation);
 
-        IReadOnlyList<ReconstructedPed> peds = Array.Empty<ReconstructedPed>();
-        for (var i = 0; i < 300; i++)
-        {
-            source.Tick();
-            peds = recon.Reconstruct(source.PedSource, source.Time);
-        }
-
-        Assert.True(peds.Count > 0, "expected reconstructed peds on the 3-D cut");
-
-        foreach (var ped in peds)
-        {
-            // Recentered ground elevation: within the net's own +-50 m elevation band around Y=0, and
-            // emphatically NOT the ~-385 a z=0 ped would land at.
-            Assert.InRange(ped.Y, -60f, 60f);
-        }
-    }
-
-    [Fact]
-    public void PedReconstructor_WithoutAnElevationSource_KeepsPedsAtTheGroundDatum()
-    {
-        // The 2-D/demo contract: no elevation source => Y is the old literal 0.
-        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
-        using var source = new LiveCitySource(cfg);
-        var recon = new PedReconstructor(SumoGodotFrame.Identity);
-
-        IReadOnlyList<ReconstructedPed> peds = Array.Empty<ReconstructedPed>();
-        for (var i = 0; i < 120; i++)
-        {
-            source.Tick();
-            peds = recon.Reconstruct(source.PedSource, source.Time);
-        }
-
-        Assert.True(peds.Count > 0);
-        foreach (var ped in peds)
-        {
-            Assert.Equal(0f, ped.Y);
-        }
-    }
 }

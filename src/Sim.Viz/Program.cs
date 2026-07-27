@@ -410,7 +410,7 @@ internal static class Program
     // SumoData `preprocess.py` Geneva cut -- live in another repo and cannot be committed here, so no
     // test can exercise them. This is the thing a human points at one of those, outside this
     // environment, to find out whether it loads, whether cars and pedestrians actually populate it, and
-    // whether pedestrian elevation lands on the road surface rather than at sea level.
+    // and how fast it steps.
     //
     // Accepts any of the three forms the loader now understands:
     //   a DIRECTORY            -> ForDataset (expects net.xml), or ForSumocfg if the dir holds exactly
@@ -458,8 +458,6 @@ internal static class Program
             + $"{sim.CropEdges.Count} spawn edges");
         Console.WriteLine($"pedestrians={sim.PedestriansEnabled} crossings={sim.CrossingsEnabled} "
             + $"routeGraphNav={sim.RouteGraphNavigationActive}");
-        Console.WriteLine($"pedElevation: {sim.PedElevation.ResolvedLaneCount}/{sim.PedElevation.PedLaneIdCount} "
-            + $"ped lanes carry 3-D geometry (hasElevation={sim.PedElevation.HasElevation})");
 
         var stepStart = Stopwatch.StartNew();
         for (var i = 0; i < steps; i++)
@@ -474,34 +472,20 @@ internal static class Program
         Console.WriteLine($"cars={snap.Cars.Count} (peak {sim.PeakCars}, arrived {sim.ArrivedTotal})  "
             + $"peds={snap.Peds.Count} (peak {sim.PeakPeds})");
 
-        // The C2 acceptance measure, printed rather than asserted: how far each ped's sampled ground
-        // elevation is from the nearest car's lane elevation. The handoff's bar is "within a metre or
-        // two"; the median is the honest summary and the max is printed so a single bad kerb is visible
-        // instead of hidden by the median.
-        var diffs = new List<double>();
-        foreach (var ped in snap.Peds)
+        // Lane elevation actually present on the net, since a 3-D net is the case the loader work is
+        // for: reported off the CAR side (LiveCityCar.Z, resolved from Lane.ShapeZ). Pedestrian
+        // elevation is a separate workstream and is deliberately not reported here.
+        var carZMin = double.PositiveInfinity;
+        var carZMax = double.NegativeInfinity;
+        foreach (var car in snap.Cars)
         {
-            var bestD2 = double.PositiveInfinity;
-            var bestCarZ = double.NaN;
-            foreach (var car in snap.Cars)
-            {
-                var d2 = ((car.X - ped.X) * (car.X - ped.X)) + ((car.Y - ped.Y) * (car.Y - ped.Y));
-                if (d2 < bestD2) { bestD2 = d2; bestCarZ = car.Z; }
-            }
-
-            if (bestD2 <= 30.0 * 30.0) diffs.Add(Math.Abs(ped.Z - bestCarZ));
+            if (car.Z < carZMin) carZMin = car.Z;
+            if (car.Z > carZMax) carZMax = car.Z;
         }
 
-        if (diffs.Count > 0)
-        {
-            diffs.Sort();
-            Console.WriteLine($"pedZ vs nearest carZ (<=30 m, {diffs.Count} pairs): "
-                + $"median {diffs[diffs.Count / 2]:F3} m, max {diffs[^1]:F3} m");
-        }
-        else
-        {
-            Console.WriteLine("pedZ vs nearest carZ: no ped/car pair within 30 m to compare");
-        }
+        Console.WriteLine(snap.Cars.Count > 0
+            ? $"car elevation range: {carZMin:F2} .. {carZMax:F2} m"
+            : "car elevation range: n/a (no live cars)");
 
         if (snap.Cars.Count == 0)
         {

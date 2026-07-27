@@ -74,7 +74,9 @@ net — e.g. a georeferenced Geneva box cut by SumoData's `preprocess.py`, whose
   full net's UTM `netOffset`, so its local coordinates are ~1e5 where a `float` has ~cm of resolution —
   rendered raw, the scene jitters and z-fights. The recenter is render-side only; the net's
   georeference is never modified (consumers convert back with `utm = sumo - netOffset`);
-* places **pedestrians at the real road elevation** on a 3-D net instead of at z = 0.
+* keeps roads, cars, crosswalk zebra and lane dashes on the net's **real elevation**. Pedestrians
+  render at the scene's flat ground datum — per-pedestrian elevation is being added to the ped
+  engine in a separate workstream.
 
 Two live density dials sit in the rate-control panel (top left), alongside the render-Hz and
 playout-delay sliders: **cars** (target concurrent) and **peds** (population cap). Both take effect on

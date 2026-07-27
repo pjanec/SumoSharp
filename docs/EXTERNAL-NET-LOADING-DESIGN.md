@@ -16,12 +16,13 @@ to-do list is `EXTERNAL-NET-LOADING-TRACKER.md`.
 
 Two consumers — BIG's Spectacle scene and the Godot City3D viewer — want to run **georeferenced
 external Swiss nets** (a SumoData `preprocess.py` cut sub-area of Geneva) through `LiveCitySim`,
-with free-style live density controls. Today they cannot, for five independent reasons:
+with free-style live density controls. Today they cannot, for five independent reasons (of which
+this work addresses four — see §4 for the one it deliberately leaves alone):
 
 | # | Blocker | Where |
 | - | ------- | ----- |
 | C1 | net path is hardcoded `<DatasetDir>/net.xml`; a cut is `scenario.net.xml` + a `.sumocfg` | `LiveCitySim.cs:143`, `:473` |
-| C2 | pedestrians have no Z; on a 3-D net they would render hundreds of metres below the road | `PedRemoteReconstructor.cs:106`, `LiveCitySim.Sample()` |
+| C2 | pedestrians have no Z; on a 3-D net they would render hundreds of metres below the road | `PedRemoteReconstructor.cs:106`, `LiveCitySim.Sample()` — **not addressed here, see §4** |
 | C3 | ped density is baked into an `init`-only `PedDemandConfig` at ctor time — a slider cannot move it | `LiveCitySim.cs:273-298`, `PedDemand.cs:718,721` |
 | T1 | City3D hardcodes `LiveCityConfig.ForRepoRoot` + the pinned demo crop | `Main.cs:942`, `LiveCityConfig.cs:42-45` |
 | T2 | `SumoToGodot` is a bare `(float)` cast with zero offset — a ~1e5 coordinate jitters | `CoordinateTransform.cs:32` |
@@ -181,84 +182,24 @@ is what makes the knob safe to drive from a UI.
 
 ---
 
-## §4 C2 — per-pedestrian elevation on a 3-D net
+## §4 C2 — per-pedestrian elevation: NOT DONE HERE (owned by a parallel workstream)
 
-### 4.1 The constraint that shapes the design
+The handoff's Change 2 asks for `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` and
+real pedestrian elevation on a 3-D net. **This work does not deliver it.** A separate, concurrent
+workstream is adding z to the pedestrian engine itself — i.e. making the ped stack 3-D rather than
+sampling a surface at render time — and two implementations of the same handoff item would collide
+on the same overload rather than compose.
 
-`src/Sim.Pedestrians/Sim.Pedestrians.csproj` states, and `docs/PEDESTRIAN-DESIGN.md` §0 Principle 6
-requires: **the pedestrian subsystem must never reference `Sim.Ingest` or any parity source.** But
-the elevation data lives exactly there — `Lane.ShapeZ` on `Sim.Ingest.NetworkModel`, sampled by
-`Sim.Ingest.LaneGeometry.ElevationAtOffset`. The handoff's sketch ("call the existing
-`LaneGeometry.ElevationAtOffset`" from inside `PedRemoteReconstructor`) would violate that boundary.
+An earlier revision of this branch did implement it, as an injected `IPedElevationSource` sampled
+from the vehicle-side `Lane.ShapeZ` (the ped subsystem may not reference `Sim.Ingest`, so the
+dependency was inverted rather than the ped types made 3-D). That is a fundamentally different shape
+from making the ped engine itself carry z, so it was **removed** rather than left to conflict. If it
+is ever wanted, it is in this branch's history.
 
-So the design **inverts the dependency**:
-
-```
-Sim.Pedestrians          interface IPedElevationSource { double ElevationAt(Vec2 pos); }
-                         PedRemoteReconstructor takes an optional one (ctor param, default null)
-
-Sim.LiveCity             sealed class NetLaneElevationSource : IPedElevationSource
-   (references both)     built from (NetworkModel, PedNetwork) — the only place both types are legal
-```
-
-`Sim.Pedestrians` gains one small interface and no new project reference. `Sim.LiveCity` already
-references both projects, so the concrete sampler lands there with no build-graph change at all.
-
-### 4.2 The sampler
-
-`NetLaneElevationSource` is built once, in `LiveCitySim`'s ctor, from the already-parsed
-`NetworkModel` and `PedNetwork`:
-
-1. **Which lanes.** Collect the lane ids of every `PedNetwork.Sidewalks` / `Crossings` /
-   `WalkingAreas` entry. These live in the SAME id space as `NetworkModel.LanesById`, because
-   `NetworkParser.Parse` parses *every* `<edge>`, including `function="crossing"` and
-   `function="walkingarea"` ones. Verified on the committed fixture: all 20 crossings and 24
-   walking areas resolve.
-2. **Geometry.** For each such lane take the **vehicle-side** `Lane.Shape` (2-D points) and
-   `Lane.ShapeZ`. A lane whose `ShapeZ` is null (a 2-D net) is skipped entirely — if nothing is
-   indexed, `ElevationAt` returns 0 and behaviour is exactly today's.
-3. **Index.** A uniform grid over the lane segments' bounding boxes, cell size ≈ 25 m (a few
-   segments per cell for urban geometry). Each cell holds the indices of segments whose bbox
-   overlaps it. Query = probe the point's cell, widening ring by ring until a hit is found and the
-   ring's inner radius exceeds the best distance found so far (so the answer is the true nearest
-   segment, not merely one in the same cell). Falls back to a linear scan only if the grid is empty.
-4. **Sample.** Project the query point onto the nearest segment, accumulate the arc length of the
-   preceding segments plus the projection's own `t`, and call
-   `LaneGeometry.ElevationAtOffset(shape, shapeZ, arc)` — the SAME function the vehicle side uses,
-   so a ped and a car at the same place get the same surface, by construction rather than by
-   coincidence.
-
-Cost: O(total ped-lane segments) memory, built once. For the ~10k-segment nets in scope this is
-negligible; the grid keeps queries O(1)-ish so the per-frame cost over a few hundred peds is noise.
-
-### 4.3 The API
-
-Non-breaking sibling overload, exactly as specified:
-
-```csharp
-public bool TryGetRenderPose(int id, out Vec2 pos, out bool visible, out string animTag)          // untouched
-public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag)  // new
-```
-
-The 4-out-param overload keeps its exact behaviour (it now delegates to the 5-param one and drops
-`z`), so the raylib viewer and every existing test are unaffected. With no elevation source
-injected, `z` is 0 — the documented 2-D fallback.
-
-`LiveCitySim.Sample()` stops writing a literal `0.0` into `LiveCityPed.Z` and writes
-`_pedElevation?.ElevationAt(p) ?? 0.0`. On a 2-D net (the demo) the source is null-or-empty and the
-value is still exactly `0.0`, so the demo snapshot is byte-identical.
-
-`LiveCitySim` exposes `PedElevation` so a viewer reconstructing peds off the wire (City3D's
-`PedReconstructor`, BIG) can pass it to its own `PedRemoteReconstructor`.
-
-### 4.4 Why not just carry z through `PedNetworkParser`
-
-Because the handoff explicitly rules it out, and it is the right call: `Vec2` is the ped stack's
-geometry type throughout (nav mesh, ORCA, timelines, the wire format). Making it 3-D is a rewrite of
-a parity-sensitive subsystem to serve a render-side concern. Sampling the surface at render time
-gets the same pixels for none of that risk.
-
----
+**Consequence, stated so it is not discovered later:** until the parallel work lands, pedestrians on
+a georeferenced 3-D net render at the viewer's flat ground datum (§5.3) rather than on the local road
+surface, and `LiveCityPed.Z` is 0. Every other part of the 3-D story is in place — road meshes, cars,
+crosswalk and lane markings all follow the net's real elevation (§5.6).
 
 ## §5 T2 — the Godot recenter (float precision)
 
@@ -373,17 +314,13 @@ Measured on `scenarios/_ped/georef_min` (400 steps):
 ```
 loaded in 0.35s: 127 edges, 195 lanes, 17 spawn edges
 pedestrians=True crossings=True routeGraphNav=True
-pedElevation: 68/68 ped lanes carry 3-D geometry (hasElevation=True)
 stepped 400x in 2.65s (151 steps/s)
 cars=160 (peak 203, arrived 102)  peds=160 (peak 160)
-pedZ vs nearest carZ (<=30 m, 107 pairs): median 0.097 m, max 1.524 m
+car elevation range: 371.64 .. 395.64 m
 ```
 
-**100%** of ped lane ids resolved against `NetworkModel.LanesById` (the shared-id-space claim of
-§4.2, measured rather than assumed), and the ped-vs-car elevation agreement is ~10 cm at the median
-against the handoff's "within a metre or two" bar. The 1.52 m maximum is a ped on a walking area at
-a junction where the two joining lanes differ in height — the nearest-lane-polyline attribution of
-§8.2, behaving as documented.
+The car elevation range is the 3-D check: cars resolve real `Lane.ShapeZ` elevations across the
+fixture's 370–400 m band rather than sitting at 0.
 
 ---
 
@@ -391,8 +328,8 @@ a junction where the two joining lanes differ in height — the nearest-lane-pol
 
 | Surface | Why it cannot move |
 | ------- | ------------------ |
-| Goldens / `Sim.ParityTests` | Nothing here is in the parity path. `Sim.Ingest`/`Sim.Core` are read-only to this work — no file in either is modified. The only shared type touched is `PedRemoteReconstructor`, whose existing overload is delegated-to, not changed. |
-| The demo (`ForRepoRoot`) | Every new config field is null/0/false by default and unset by `ForRepoRoot`. `netPath` resolves to the identical string. `RoutePaths` unset ⇒ the identical single-file scrape. `_pedElevation` is empty on a 2-D net ⇒ `Sample()` still writes literal 0.0. `SumoGodotFrame.Identity` is the same arithmetic. |
+| Goldens / `Sim.ParityTests` | One parity-core file IS modified: `Sim.Ingest/NetworkParser.cs`, for the multi-lane cont-bay bug of §7.1. Full suite re-run after: **775 pass, 0 fail** — no golden moved. Nothing else here is in the parity path, and `PedRemoteReconstructor` is left exactly as found. |
+| The demo (`ForRepoRoot`) | Every new config field is null/0/false by default and unset by `ForRepoRoot`. `netPath` resolves to the identical string. `RoutePaths` unset ⇒ the identical single-file scrape. `SumoGodotFrame.Identity` is bitwise the same arithmetic. |
 | Ped determinism | No new RNG stream; no existing draw removed or reordered. A run that never calls a density setter is bit-identical. |
 | `dotnet test` without SUMO | The fixture is committed XML. `gen-georef-fixture.sh` is never invoked by a test. |
 
@@ -400,15 +337,44 @@ The gate is: `dotnet test` green (including the City3D `CityLib.Tests`, which ar
 `Traffic.sln` and must be built explicitly — CLAUDE.md measurement-discipline item 9), plus the new
 tests in `EXTERNAL-NET-LOADING-TASKS.md` each asserting its stated numeric condition.
 
+### §7.1 A parser bug the fixture found (the one parity-core change)
+
+Committing `georef_min` immediately failed a test that nothing here touched:
+`JunctionLinkLaneMapTests.EveryCommittedNet_IntLanesAreAllPresentInLinkIndexByInternalLane…` sweeps
+**every** committed `*.net.xml`, and reported
+
+```
+[scenarios/_ped/georef_min/scenario.net.xml] junction 'n00' link 2 lane ':n00_2_0'
+mapped to link index 3, expected 2.
+```
+
+That is a real defect in `NetworkParser`, not a bad fixture. Building
+`LinkIndexByInternalLane`/`EntryConnectionByLink` involves walking back from a link's final internal
+stage through the earlier stages of a continuation ("cont") turn. The walk mapped **every lane of
+each internal edge** it passed through to that link, and found the previous hop by matching the
+**edge** rather than the lane.
+
+On a single-lane internal bay — which is every cont bay in every net committed before this one —
+"the edge" and "the lane" are the same thing, so the bug was invisible. `georef_min`'s junction
+`n00` has a two-lane internal bay `:n00_2` where only lane 1 continues through the internal junction
+into link 3's second stage. The edge-wide loop therefore also stamped `:n00_2_0` — which is link 2's
+own controlling lane — as belonging to link 3, silently overwriting a correct entry.
+
+The fix follows one lane per stage: the hop's own `fromLane` on the internal edge it came from, and a
+previous-hop search keyed on that exact lane id. It is the only change to a parity-core file in this
+work. **Full parity suite after: 775 pass, 0 fail** — no golden moved, which is what one expects
+given no previously-committed net has a multi-lane cont bay to trigger it.
+
+This is the fixture earning its keep on its first day, and an argument for the "add a net shape the
+committed corpus lacks" instinct generally.
+
 ---
 
 ## §8 Known limitations, stated rather than hidden
 
 1. **Lowering a density cap drains by attrition** (§3.2) — deliberate, matches cars.
-2. **`ElevationAt` is nearest-ped-lane, not point-in-polygon.** A ped standing in the middle of a
-   large walking area is attributed the elevation of the nearest *lane polyline* point, which for a
-   walkingarea is its outline. On real terrain that is a sub-metre error, well inside the "matches
-   the nearby car Z within a metre or two" bar the handoff sets.
+2. **Pedestrians have no elevation** (§4) — owned by the parallel ped-engine workstream, not
+   delivered here. On a 3-D net they render at the flat ground datum.
 3. **The recenter is ≤20 km** (§5.5) — owner scope, not a technical ceiling.
 4. **Whole-Switzerland load (168 MB net) is untested here.** The loader has no size ceiling and the
    fixture proves the *shape* of the problem, but the 168 MB net lives in BIG's dist repo and is not

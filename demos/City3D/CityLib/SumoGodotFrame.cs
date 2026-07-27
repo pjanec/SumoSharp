@@ -69,8 +69,10 @@ public readonly struct SumoGodotFrame
     //
     // LIMITATION, stated rather than hidden: the datum is FLAT, so on hilly terrain a ground overlay
     // can sit tens of metres off the true local surface. Anything that HAS real elevation data --
-    // road meshes (Lane.ShapeZ), cars (KinematicReconResult.Z), pedestrians (IPedElevationSource) --
-    // must use `ToGodot` with that real value and not this.
+    // road meshes (Lane.ShapeZ), cars (KinematicReconResult.Z), crosswalk/lane-marking paint (the
+    // lane's own interpolated z) -- must use `ToGodot` with that real value and not this.
+    // Pedestrians currently use this datum because the ped stack is 2-D; per-pedestrian elevation is
+    // being added to the ped engine in a separate workstream, and lands as a `ToGodot` call here.
     public (float X, float Y, float Z) GroundToGodot(double sumoX, double sumoY, double heightAboveGround)
         => ((float)(sumoX - OriginX), (float)heightAboveGround, (float)-(sumoY - OriginY));
 

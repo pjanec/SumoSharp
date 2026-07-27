@@ -56,27 +56,13 @@ Generate and commit a synthetic stand-in for a SumoData Geneva cut.
    `ForRepoRoot` sim's `CropEdges` sequence is unchanged (assert against the existing expectation in
    `ArbitraryNetStageATests`/`LiveCitySimTests` — those must still pass untouched).
 
-### C2 — pedestrian elevation on a 3-D net
-**Design:** §4. **Files:** `src/Sim.Pedestrians/Lod/IPedElevationSource.cs` (new),
-`src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs`, `src/Sim.LiveCity/NetLaneElevationSource.cs`
-(new), `src/Sim.LiveCity/LiveCitySim.cs`, `src/Sim.LiveCity/LiveCitySnapshot.cs` (doc comment only).
-**Depends:** F1.
+### C2 — pedestrian elevation on a 3-D net — **NOT IN THIS WORK**
+**Design:** §4.
 
-**Success conditions**
-1. `Sim.Pedestrians.csproj` gains **no** `ProjectReference` (Principle 6 — grep the diff).
-2. Existing 4-out-param `TryGetRenderPose` signature unchanged; all existing
-   `tests/Sim.Pedestrians.Tests` pass untouched.
-3. With no elevation source, the 5-param overload returns `z == 0.0` and a `pos` bit-identical to
-   the 4-param overload's, for the same id and pump sequence.
-4. On `georef_min`: for every live ped, `NetLaneElevationSource.ElevationAt(pedPos)` is in
-   [360, 410] and **not** 0.
-5. **Ped-vs-car agreement:** for at least one live ped, the nearest live car within 30 m has
-   `|pedZ - carZ| <= 2.0` m (the handoff's own bar). Assert over the whole population: the *median*
-   absolute difference to the nearest car within 30 m is ≤ 2.0 m.
-6. `LiveCitySim.Sample()` on the **demo** (`ForRepoRoot`, a 2-D net) still yields `Peds[i].Z == 0.0`
-   exactly, for every ped, at several time points.
-7. `NetLaneElevationSource` resolves ≥ 90% of the fixture's ped-lane ids against
-   `NetworkModel.LanesById` (proves the shared-id-space claim in §4.2 rather than assuming it).
+Owned by a parallel workstream that is adding z to the pedestrian engine itself. Deliberately not
+implemented here; an earlier revision of this branch did, in an incompatible shape (render-time
+surface sampling via an injected source), and it was removed rather than left to collide. See §4 for
+the consequence.
 
 ### C3 — live density setters
 **Design:** §3. **Files:** `src/Sim.Pedestrians/Demand/PedDemand.cs`,

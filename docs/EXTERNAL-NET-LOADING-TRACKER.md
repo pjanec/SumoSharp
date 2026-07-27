@@ -14,10 +14,12 @@ step — every "done" is unverified until proven).
       `tests/Sim.LiveCity.Tests/ExternalNetLoadingTests.cs` (relative + absolute `<input>` paths,
       multi-file `<route-files>` union, missing net-file throws, missing route-files falls back,
       demo overrides stay null).
-- [x] **C2** pedestrian elevation on a 3-D net (`IPedElevationSource`, `NetLaneElevationSource`,
-      the `TryGetRenderPose` overload) — **68/68** fixture ped lanes resolve to 3-D vehicle lanes;
-      median |pedZ − nearest carZ| = **0.097 m** (max 1.52 m) against the handoff's 2 m bar; the 2-D
-      demo still yields exactly `Z == 0.0`. `Sim.Pedestrians.csproj` gained no project reference.
+- [ ] **C2** pedestrian elevation on a 3-D net — **NOT IN THIS WORK, by decision.** Owned by a
+      parallel workstream adding z to the pedestrian engine itself. This branch briefly carried an
+      incompatible implementation (render-time surface sampling through an injected
+      `IPedElevationSource`); it was removed rather than left to collide on the same overload. See
+      design §4 for the consequence: peds render at the viewer's flat ground datum until that work
+      lands.
 - [x] **C3** live density setters (`PedDemand.SetPopulationCap`/`SetSpawnRatePerSecond`,
       `LiveCitySim.SetPedDensity`/`SetCarDensity`) — raise converges (40 → ≥100 within the run),
       lower is non-increasing with zero new spawn events, rate-0 is reversible, setters are
@@ -38,15 +40,18 @@ step — every "done" is unverified until proven).
       see "Test state" below.
 - [x] **V2** headless external-net harness (`Sim.Viz --external-net`) — output quoted in the
       design's §6.1.
+- [x] **P1** (unplanned) `NetworkParser` multi-lane cont-bay fix — the fixture broke
+      `JunctionLinkLaneMapTests`' every-committed-net sweep on its first day; a real parser defect,
+      not a bad fixture. Design §7.1. Full parity suite after the fix: **775 pass, 0 fail**.
 
 ## Test state (measured, not assumed)
 
 | Suite | Result |
 | ----- | ------ |
-| `tests/Sim.LiveCity.Tests` | 76/76 pass (22 of them new) |
+| `tests/Sim.LiveCity.Tests` | pass (17 new external-net tests) |
 | `tests/Sim.Pedestrians.Tests` | 277/277 pass |
-| `demos/City3D/CityLib.Tests` | 148/151 pass — the 3 failures are **pre-existing** |
-| `Traffic.sln` (parity) | pass |
+| `demos/City3D/CityLib.Tests` | 3 failures, all **pre-existing** (see below) |
+| `Traffic.sln` (parity) | 775 pass, 0 fail — including after the §7.1 parser fix |
 
 The three `CityLib.Tests` failures (`ReconstructorS2Tests.Reconstructor_StoppedVehicle_DoesNotCreep`,
 `…_CenterIsHalfLengthBehindSnapshotFront`, `…_JunctionTurn_FollowsConnectingLaneArc_Smoothly`) were
@@ -56,7 +61,8 @@ silently retuned.
 
 ## Definition of done (from the handoff)
 - [x] `LiveCityConfig.NetPath` / `ForSumocfg` land — BIG can load `swiss_roads.net.xml`, a cut box, or a `.sumocfg`
-- [x] `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` overload lands, real elevation on a 3-D net
+- [ ] `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` overload lands, real elevation
+      on a 3-D net — **reassigned to the parallel ped-engine workstream**, see above
 - [x] live ped-density setter lands — ped count changes with no sim rebuild
 - [x] all validated headless in isolation
 
@@ -66,5 +72,6 @@ silently retuned.
   no size ceiling and `Sim.Viz --external-net <path>` is the one-command probe for confirming it
   there.
 - The viewer's ground datum is **flat** (design §5.6/§8.5): overlays with no elevation data of their
-  own sit at the net's mid-elevation and can be tens of metres off on hilly terrain. Sampling the
-  surface per overlay point is the natural follow-up.
+  own — and, until the parallel workstream lands, pedestrians — sit at the net's mid-elevation and
+  can be tens of metres off on hilly terrain. Roads, cars, crosswalk zebra and lane dashes all follow
+  the net's real elevation.
