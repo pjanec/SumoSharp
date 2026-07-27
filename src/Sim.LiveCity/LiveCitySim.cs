@@ -1101,6 +1101,11 @@ public sealed class LiveCitySim : IDisposable
         var speed = _engine.Speed;
         var carN = cpx.Length;
 
+        // With zero cars the inner loop below can never find a `near` car, so the result is provably 0
+        // either way -- skip the O(on-crossing peds) QueryNear scan entirely. Byte-identical: the counter
+        // only ever increments inside `if (near) count++`, which requires carN > 0 to reach `near = true`.
+        if (carN == 0) return 0;
+
         foreach (var p in _movingLowPowerPositions)
         {
             // Is this exact ped position an occupied-crossing gate disc (i.e. is the ped ON a crossing)?
