@@ -3,6 +3,11 @@
 Checklist for `docs/EXTERNAL-NET-LOADING-TASKS.md` (design: `docs/EXTERNAL-NET-LOADING-DESIGN.md`;
 requirements: `docs/EXTERNAL-NET-LOADING-HANDOFF.md`).
 
+**Consumer-facing API contract: `docs/EXTERNAL-NET-LOADING-API-CONTRACT.md`** — the frozen signatures the
+parallel Godot/City3D and BIG sessions code against, with a per-task gating table (§11). If an
+implementation task has to change a signature, **update that file and note it here** — consumers are
+building against it.
+
 A box is ticked **only** after Opus confirms the task's success conditions first-hand — diff read, tests
 read for non-vacuity, gate re-run — never on an implementor's summary (CLAUDE.md orchestration loop).
 
