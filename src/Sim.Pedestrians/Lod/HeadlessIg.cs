@@ -13,6 +13,10 @@ public sealed class HeadlessIg
     {
         public PedDrModel Model = PedDrModel.PathArc;
         public IReadOnlyList<Vec2>? Path;
+
+        // C4/C5: the path's per-vertex elevation as it arrived on the wire (kind 5), or null for a
+        // kind-4 (z-less) stream. Output-only, exactly like the server-side channel.
+        public IReadOnlyList<double>? PathZ;
         public double PathStartTime;
         public double Speed;
         public Vec2 LastPos;
@@ -31,6 +35,7 @@ public sealed class HeadlessIg
         {
             case PathArcRecord r:
                 state.Path = r.Path;
+                state.PathZ = r.PathZ;
                 state.PathStartTime = r.StartTime;
                 state.Speed = r.Speed;
                 break;
@@ -95,6 +100,50 @@ public sealed class HeadlessIg
             PedDrModel.ActivityTimeline => state.Timeline is null ? Vec2.Zero : state.Timeline.PoseAt(now).Pos,
             _ => Vec2.Zero,
         };
+    }
+
+    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.6): the reconstructed SURFACE ELEVATION at `now`.
+    //
+    // For the PathArc model this is `PathArcMotion.SampleAt` walking the SAME arc length, on the SAME
+    // segment, with the SAME fraction `t` that `Reconstruct` above uses for the position -- one shared
+    // evaluator, so the reconstructed z and the reconstructed pos cannot disagree, and the remote
+    // surface lands on the same number the in-process one does.
+    //
+    // KNOWN GAP -- LIVELY PEDS GET NO WIRE ELEVATION. A ped in the ActivityTimeline model is published
+    // as an `ActivityTimelineRecord`, never as a PathArc, and `ActivityTimelineWire`'s encoding carries
+    // no elevation channel. The W1 decision extended the PathArc record only, so on this surface such a
+    // ped reports 0.0 no matter how 3-D the net is. This is a limitation of the frozen wire design, not
+    // of this implementation: closing it needs a second wire-format change (a per-WalkSegment elevation
+    // channel in ActivityTimelineWire), which is deliberately NOT taken unilaterally here. The
+    // IN-PROCESS surface (LiveCitySim.Sample) is unaffected and reports real elevation for these peds.
+    //
+    // 0.0 whenever the stream carries no elevation -- a kind-4 publisher, or a 2-D net. Per §9.1 that is
+    // deliberately indistinguishable from "genuinely at 0 m"; a consumer needing to tell them apart
+    // checks the net.
+    public double ReconstructElevation(int id, double now)
+        => ReconstructElevationAt(id, now, Reconstruct(id, now));
+
+    // C5·SC3: the same query, but evaluated AT a caller-supplied position -- the smoothed render
+    // position, so a ped's height tracks the body actually drawn rather than the raw wire sample it is
+    // still catching up to. For the PathArc model the arc-length answer is used unchanged (it is exact
+    // and cheaper); for the dead-reckoned models the supplied position is what gets projected.
+    public double ReconstructElevationAt(int id, double now, Vec2 at)
+    {
+        var state = _peds[id];
+
+        if (state.Path is not { Count: > 0 } path || state.PathZ is not { Count: > 0 })
+        {
+            return 0.0;
+        }
+
+        if (state.Model == PedDrModel.PathArc)
+        {
+            return PathArcMotion.ElevationAt(path, state.PathZ, state.PathStartTime, state.Speed, now);
+        }
+
+        // FreeKinematic / Stationary: the pose is dead-reckoned off the last sample and is deliberately
+        // not on the polyline, so project the position the caller is actually rendering.
+        return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
     }
 
     // LIVE-POC-1: the ActivityTimeline model carries more than a position -- heading, animation tag,

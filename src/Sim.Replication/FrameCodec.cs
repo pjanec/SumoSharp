@@ -45,6 +45,21 @@ public static class FrameCodec
     public const byte KindPedFreeKinematic = 3;
     public const byte KindPathArc = 4;
 
+    // C4 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.6): the z-carrying PathArc frame. A NEW KIND rather
+    // than a wider kind 4 or a `Version` bump, for two measured reasons:
+    //
+    //   1. `ReadHeader` reads the version byte but NEVER VALIDATES it, so widening kind 4's point stride
+    //      would make every previously-written payload silently misparse into garbage instead of failing
+    //      loudly. A distinct kind byte makes the two structurally distinguishable and lets one reader
+    //      accept both.
+    //   2. `Version` is global across all four frame kinds, so bumping it to signal a PathArc change
+    //      would force lockstep upgrades of the vehicle, crowd and ped-kinematic frames, which have
+    //      nothing to do with elevation.
+    //
+    // Kind 4 is UNCHANGED, and the publisher still emits kind 4 whenever there is no elevation, so a
+    // 2-D net's bytes are byte-for-byte identical to before this existed.
+    public const byte KindPathArcZ = 5;
+
     public const int HeaderSize = 16;
     public const int VehicleRecordSize = 48;
     public const int CrowdRecordSize = 32;
@@ -239,10 +254,36 @@ public static class FrameCodec
     // + 8 * pointCount (x_cm i32, y_cm i32 per point).
     public static int PathArcRecordSize(int pointCount) => 14 + pointCount * 8;
 
+    // C4: the kind-5 record -- the IDENTICAL 14-byte header, then 12 B/point (x_cm, y_cm, z_cm), with z
+    // using the same int32-centimetre quantization as x and y (so it inherits the same ~1 cm precision
+    // and +-21474 km range; Swiss elevations of 199-1634 m sit trivially inside it). No new quantization
+    // scheme and no origin bookkeeping.
+    public static int PathArcZRecordSize(int pointCount) => 14 + pointCount * 12;
+
+    // True iff any record carries elevation. Decides the frame KIND: all-or-nothing per frame, so a
+    // reader never has to ask per record.
+    private static bool AnyElevation(ReadOnlySpan<PathArcRecord> recs)
+    {
+        for (var i = 0; i < recs.Length; i++)
+        {
+            if (recs[i].PathZ is { Count: > 0 })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static int PathArcFrameSize(ReadOnlySpan<PathArcRecord> recs)
     {
+        var withZ = AnyElevation(recs);
         var size = HeaderSize;
-        for (var i = 0; i < recs.Length; i++) size += PathArcRecordSize(recs[i].Path.Count);
+        for (var i = 0; i < recs.Length; i++)
+        {
+            size += withZ ? PathArcZRecordSize(recs[i].Path.Count) : PathArcRecordSize(recs[i].Path.Count);
+        }
+
         return size;
     }
 
@@ -251,7 +292,10 @@ public static class FrameCodec
         var size = PathArcFrameSize(recs);
         if (dst.Length < size) throw new ArgumentException("destination too small for the path-arc frame.", nameof(dst));
 
-        WriteHeader(dst, KindPathArc, step, time, recs.Length);
+        // Kind 4 unless SOMETHING in this frame has elevation. On a 2-D net this branch is never taken
+        // and every byte below is written exactly as it was before kind 5 existed.
+        var withZ = AnyElevation(recs);
+        WriteHeader(dst, withZ ? KindPathArcZ : KindPathArc, step, time, recs.Length);
         var o = HeaderSize;
         for (var i = 0; i < recs.Length; i++)
         {
@@ -261,10 +305,19 @@ public static class FrameCodec
             WriteF32(dst.Slice(o, 4), (float)r.StartTime); o += 4;
             var path = r.Path;
             BinaryPrimitives.WriteUInt16LittleEndian(dst.Slice(o, 2), (ushort)path.Count); o += 2;
+
+            // A record with no z inside a z-carrying frame writes zeros, keeping the frame's stride
+            // uniform -- the reader must never have to branch per record.
+            var pathZ = r.PathZ;
             for (var k = 0; k < path.Count; k++)
             {
                 BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(path[k].X)); o += 4;
                 BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(path[k].Y)); o += 4;
+                if (withZ)
+                {
+                    var z = pathZ is not null && k < pathZ.Count ? pathZ[k] : 0.0;
+                    BinaryPrimitives.WriteInt32LittleEndian(dst.Slice(o, 4), QuantizeCm32(z)); o += 4;
+                }
             }
         }
 
@@ -278,7 +331,17 @@ public static class FrameCodec
     public static PathArcRecord[] ReadPathArcFrame(ReadOnlySpan<byte> src)
     {
         var h = ReadHeader(src);
-        if (h.Kind != KindPathArc) throw new ArgumentException("not a path-arc frame.", nameof(src));
+
+        // Accepts BOTH kinds and strides by what the kind byte says, never by what the caller hopes.
+        // This is the discrimination the design calls load-bearing: because ReadHeader validates no
+        // version byte, reading a kind-4 payload with a 12-byte stride would not fail, it would return
+        // plausible garbage.
+        var withZ = h.Kind == KindPathArcZ;
+        if (h.Kind != KindPathArc && !withZ)
+        {
+            throw new ArgumentException("not a path-arc frame.", nameof(src));
+        }
+
         var result = new PathArcRecord[h.Count];
         var o = HeaderSize;
         for (var i = 0; i < h.Count; i++)
@@ -288,14 +351,21 @@ public static class FrameCodec
             var startTime = ReadF32(src.Slice(o, 4)); o += 4;
             var pointCount = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(o, 2)); o += 2;
             var points = new Vec2[pointCount];
+            var elevations = withZ ? new double[pointCount] : null;
             for (var k = 0; k < pointCount; k++)
             {
                 var x = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
                 var y = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
                 points[k] = new Vec2(x, y);
+                if (withZ)
+                {
+                    elevations![k] = DequantizeCm32(BinaryPrimitives.ReadInt32LittleEndian(src.Slice(o, 4))); o += 4;
+                }
             }
 
-            result[i] = new PathArcRecord(new VehicleHandle(index, 0), speed, startTime, points);
+            // A kind-4 frame yields PathZ == null -- "this stream carries no elevation" -- rather than
+            // an array of zeros a consumer could mistake for sea level.
+            result[i] = new PathArcRecord(new VehicleHandle(index, 0), speed, startTime, points, elevations);
         }
 
         return result;

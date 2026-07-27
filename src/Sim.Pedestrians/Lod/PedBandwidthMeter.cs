@@ -53,8 +53,15 @@ public sealed class PedBandwidthMeter
     public void RecordCrowdFrame(double time, int recordCount) =>
         Record(PedBandwidthTopic.CrowdFrame, time, FrameCodec.PedFreeKinematicFrameSize(recordCount));
 
-    public void RecordPathArc(double time, int pointCount) =>
-        Record(PedBandwidthTopic.PathArc, time, FrameCodec.HeaderSize + FrameCodec.PathArcRecordSize(pointCount));
+    public void RecordPathArc(double time, int pointCount, bool withElevation = false) =>
+        // C4: a z-carrying record is a kind-5 frame, 12 B/point instead of 8, so the meter must size it
+        // through the matching helper -- otherwise a 3-D net's ped traffic is silently under-reported.
+        Record(
+            PedBandwidthTopic.PathArc,
+            time,
+            FrameCodec.HeaderSize + (withElevation
+                ? FrameCodec.PathArcZRecordSize(pointCount)
+                : FrameCodec.PathArcRecordSize(pointCount)));
 
     public void RecordActivityTimeline(double time, int payloadBytes) =>
         Record(PedBandwidthTopic.ActivityTimeline, time, ActivityTimelineHandlePrefixBytes + payloadBytes);

@@ -104,10 +104,29 @@ public sealed class PedRemoteReconstructor
     // applying capped-correction smoothing to the position. Returns false if `id` has never been
     // observed on the wire (or has since despawned) -- there is nothing to render.
     public bool TryGetRenderPose(int id, out Vec2 pos, out bool visible, out string animTag)
+        => TryGetRenderPose(id, out pos, out _, out visible, out animTag);
+
+    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5b, -TASKS.md C5): the elevation-carrying sibling.
+    //
+    // ADDITIVE and non-breaking: the four-out-param overload above keeps its exact behaviour (it now
+    // delegates here and drops `z`), so all of its existing call sites compile and behave unedited.
+    //
+    // `z` is metres in the net's own vertical datum -- raw SUMO elevation, no geoid correction, no
+    // ground clamp, no offset -- sampled at the SMOOTHED render position, so it is consistent with the
+    // `pos` returned by the same call. That matters during a reconciliation catch-up, when the smoothed
+    // and raw positions differ: taking z at the raw sample would float the ped above or sink it into
+    // ground it has not visually reached.
+    //
+    // `z == 0.0` when the stream carries no elevation -- a 2-D net, a kind-4 publisher, or a lively
+    // (ActivityTimeline) ped, whose wire record has no elevation channel at all (see
+    // HeadlessIg.ReconstructElevation's KNOWN GAP note). Per the contract's §9.1 this is deliberately
+    // NOT distinguishable from "genuinely at 0 m"; a consumer needing to tell them apart checks the net.
+    public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag)
     {
         if (!_knownIds.Contains(id) || !_receiver.Ig.Knows(id))
         {
             pos = Vec2.Zero;
+            z = 0.0;
             visible = false;
             animTag = ActivityTimeline.IdleAnimTag;
             return false;
@@ -115,6 +134,7 @@ public sealed class PedRemoteReconstructor
 
         var sample = _receiver.Ig.ReconstructSample(id, RenderTime);
         pos = Smooth(id, sample.Pos);
+        z = _receiver.Ig.ReconstructElevationAt(id, RenderTime, pos);
         visible = sample.Visible;
         animTag = sample.AnimTag;
         return true;

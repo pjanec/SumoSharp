@@ -11,7 +11,15 @@ public abstract record PedEvent(int Id, double Time);
 // Emitted once per PathArc "leg": on spawn, and again on every demotion (with a fresh re-routed path).
 // The path is sent ONCE, never repeated per step -- exactly what makes the low-power population near-
 // free on the wire (docs/PEDESTRIAN-DESIGN.md §7 bandwidth math).
-public sealed record PathArcRecord(int Id, double Time, IReadOnlyList<Vec2> Path, double StartTime, double Speed)
+public sealed record PathArcRecord(
+    int Id,
+    double Time,
+    IReadOnlyList<Vec2> Path,
+    double StartTime,
+    double Speed,
+    // C4: per-vertex elevation for `Path`, index-aligned, null on a 2-D net. Defaulted so every
+    // existing construction site compiles unchanged and keeps emitting a z-less (kind 4) record.
+    IReadOnlyList<double>? PathZ = null)
     : PedEvent(Id, Time);
 
 // A DR-model switch on the lifecycle topic -- the promotion/demotion broadcast. The IG applies this at
@@ -60,9 +68,11 @@ public sealed class PedPublisher
     public IReadOnlyDictionary<int, int> ActivityTimelineRecordsSent => _activityTimelineRecordsSent;
     public IReadOnlyDictionary<int, int> HeartbeatsSent => _heartbeatsSent;
 
-    public void PublishPathArc(int id, IReadOnlyList<Vec2> path, double startTime, double speed, double time)
+    public void PublishPathArc(
+        int id, IReadOnlyList<Vec2> path, double startTime, double speed, double time,
+        IReadOnlyList<double>? pathZ = null)
     {
-        _events.Add(new PathArcRecord(id, time, path, startTime, speed));
+        _events.Add(new PathArcRecord(id, time, path, startTime, speed, pathZ));
         Increment(_pathArcRecordsSent, id);
     }
 

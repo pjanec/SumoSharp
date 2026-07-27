@@ -15,8 +15,8 @@ public enum PedRegime
 
 // One pedestrian's fully-reconstructed render pose, in GODOT coordinates (CoordinateTransform already
 // applied) -- the plain struct the Viewer glue turns into a MultiMesh per-instance transform. No Godot type
-// here (CityLib stays engine-agnostic); the ped analog of ReconstructedVehicle. The ped stack is 2-D, so
-// Y (Godot up) is the scene's ground datum -- 0 on the flat demo net.
+// here (CityLib stays engine-agnostic); the ped analog of ReconstructedVehicle. Y (Godot up) is the ped's
+// SURFACE ELEVATION recentered by the scene frame -- 0 on a flat net, the real road height on a 3-D one.
 public readonly struct ReconstructedPed
 {
     public ReconstructedPed(int id, float x, float y, float z, PedRegime regime, bool visible)
@@ -82,16 +82,20 @@ public sealed class PedReconstructor
         _scratch.Clear();
         foreach (var id in _reconstructor.KnownIds)
         {
-            if (!_reconstructor.TryGetRenderPose(id, out var pos, out var visible, out _) || !visible)
+            if (!_reconstructor.TryGetRenderPose(id, out var pos, out var z, out var visible, out _) || !visible)
             {
                 continue;
             }
 
-            // The ped stack is 2-D, so peds sit on the frame's GROUND DATUM. On the flat demo net that is
-            // Y = 0, exactly as before. On a georeferenced 3-D net it is the net's mid-elevation rather
-            // than the true local road surface -- per-pedestrian elevation is being added to the ped
-            // engine itself in a separate workstream, and this line is where it lands when it does.
-            var (gx, gy, gz) = _frame.GroundToGodot(pos.X, pos.Y, 0.0);
+            // Peds now HAVE elevation (engine tasks C1-C5), so they join road meshes, cars and lane paint
+            // on the ABSOLUTE path -- `ToGodot`, not the flat `GroundToGodot` ground datum this used while
+            // the ped stack was 2-D. It must go through the FRAME, never CoordinateTransform: the frame
+            // subtracts the scene's recenter origin, and its OriginZ half matters as much as the
+            // horizontal one -- a Geneva cut's ped z is a real ~370-400 m absolute elevation, so bypassing
+            // the frame would render peds ~380 m above the road even if the horizontal origin were zero.
+            //
+            // z is 0.0 on a 2-D net, where this is identical to the ground-datum call it replaces.
+            var (gx, gy, gz) = _frame.ToGodot(pos.X, pos.Y, z);
             var regime = _reconstructor.Ig.ModelOf(id) == PedDrModel.FreeKinematic
                 ? PedRegime.HighPower
                 : PedRegime.LowPower;

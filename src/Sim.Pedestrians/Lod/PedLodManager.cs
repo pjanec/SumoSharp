@@ -226,7 +226,9 @@ public sealed class PedLodManager
         };
 
         _peds.Add(id, entry);
-        _publisher.PublishPathArc(id, path, now, maxSpeed, now);
+        // C4: publish the path's elevation alongside it, so the remote surface reconstructs the same
+        // height the in-process one reports. Null on a 2-D net => a kind-4 frame => byte-identical wire.
+        _publisher.PublishPathArc(id, path, now, maxSpeed, now, ElevationChannelFor(path));
         return id;
     }
 
@@ -487,6 +489,28 @@ public sealed class PedLodManager
             e.PathZGeometry, e.PathZ, PositionOf(id, now));
     }
 
+    // C4: the elevation channel to publish with a PathArc leg -- null (rather than an all-zero array)
+    // on a 2-D net, which is what makes the publisher emit the original kind-4 frame and keeps the wire
+    // byte-identical there.
+    private IReadOnlyList<double>? ElevationChannelFor(IReadOnlyList<Vec2> path)
+    {
+        if (path.Count == 0)
+        {
+            return null;
+        }
+
+        var zs = _navigation.ElevationsAlong(path);
+        for (var i = 0; i < zs.Count; i++)
+        {
+            if (zs[i] != 0.0)
+            {
+                return zs;
+            }
+        }
+
+        return null;
+    }
+
     // The polyline a ped's elevation is resolved against: its `Path` for a PathArc or FreeKinematic ped,
     // and the concatenation of its timeline's Walk legs for a lively (ActivityTimeline) one, which is
     // where that ped's geometry actually lives. Pause/Dwell/Interact legs contribute no geometry -- they
@@ -681,7 +705,7 @@ public sealed class PedLodManager
             {
                 e.Model = PedDrModel.PathArc;
                 e.Path = newPath;
-                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now);
+                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now, ElevationChannelFor(newPath));
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.PathArc, now);
             }
         }
