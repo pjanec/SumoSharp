@@ -107,6 +107,11 @@ archive mirror through `apt` instead. Never rely on the SDK being pre-committed 
 pre-existing in the offline test loop — a fresh session gets it from the setup script, not
 from the repo.
 
+**If `dotnet` is missing on a fresh VM, run `apt-get update` BEFORE `apt-get install -y
+dotnet-sdk-8.0`.** Observed 2026-07: the image ships a stale package index, so the bare install
+404s on every `dotnet8` `.deb` (the indexed patch version has already been superseded on the
+mirror). `apt-get update && apt-get install -y dotnet-sdk-8.0` succeeds — takes ~2 min.
+
 **This environment is NOT network-limited, and SUMO is available.** SUMO 1.20.0 (matching
 `SUMO_VERSION`) is typically pre-installed at `/usr/local/bin/sumo` (with `netconvert` /
 `duarouter` / `sumo-gui` alongside); check with `sumo --version`, and if it is ever missing you
