@@ -31,13 +31,26 @@ jobs:
       # The determinism anchor must not move (single AND parallel plan).
       # History: 909605E965BFFE59 -> AA6143E74072CD4C (P2-H era vehicle-side work) ->
       # D96213B7BB4021A7 (the dense multi-lane car-overlap fix, 2b55f16, moved the highway-dense trajectory
-      # and the anchor was never refreshed, so main itself was red against this gate). Each value is verified
-      # deterministic (par == single) and SUMO-parity-green (Sim.ParityTests pass within tolerance); this is
-      # an exact self-consistency anchor, not a parity-vs-SUMO check. Reproduced identically on origin/main's
-      # current engine and this branch (== main after merge).
+      # and the anchor was never refreshed, so main itself was red against this gate) ->
+      # BF3794A4704BCD79 (the seven junction/overlap gates now default ON -- see below).
+      # Each value is verified deterministic (par == single) and SUMO-parity-green (Sim.ParityTests pass
+      # within tolerance); this is an exact self-consistency anchor, not a parity-vs-SUMO check.
+      #
+      # ⚠ WHY THE ANCHOR MOVED TO BF3794A4704BCD79, and why that is legitimate rather than someone bumping
+      # a number to make CI green. Seven behavioural gates (cont-turn predicate, isLeader entry-time
+      # ordering, internal-junction admission + its entry-order sub-gate, insertion follower-gap check,
+      # co-location symmetry break, lane-change arrival arbitration) changed from default-OFF to default-ON.
+      # The change was verified attributable by stashing ONLY the Engine defaults and re-running, which
+      # reproduced D96213B7BB4021A7 exactly. Determinism itself is unaffected: par == single still holds.
+      #
+      # Note what this anchor is and is not. Sim.Bench runs scenarios/_bench/highway-dense, which has NO
+      # SUMO reference, so a new hash here is a re-pinned tripwire, never a "verified correct" trajectory.
+      # The parity statement lives in the goldens -- and ALL 661 of them stayed byte-identical across this
+      # default flip, which is the actual evidence that the gates are faithful.
+      # See docs/F3-SESSION-LOG.md §9.119.
       - name: Determinism hash
         run: |
           out="$(dotnet run --project src/Sim.Bench -c Release --no-build)"
           echo "$out"
-          echo "$out" | grep -q "hashA=D96213B7BB4021A7" || { echo "::error::single-thread determinism hash moved"; exit 1; }
-          echo "$out" | grep -q "hashPar=D96213B7BB4021A7" || { echo "::error::parallel determinism hash moved"; exit 1; }
+          echo "$out" | grep -q "hashA=BF3794A4704BCD79" || { echo "::error::single-thread determinism hash moved"; exit 1; }
+          echo "$out" | grep -q "hashPar=BF3794A4704BCD79" || { echo "::error::parallel determinism hash moved"; exit 1; }

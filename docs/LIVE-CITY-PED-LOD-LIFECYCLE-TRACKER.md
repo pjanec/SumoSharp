@@ -4,6 +4,17 @@ At-a-glance status. Task IDs and success conditions live in `docs/LIVE-CITY-PED-
 in `docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md`. Tick a box only when its stated success condition is verified
 first-hand (re-run the gate / read the trace), never on a report.
 
+## Post-merge with main (PR#13, junction-gridlock + gates-default-ON)
+Merged `origin/main` in. New baselines (all re-verified on the merged tree): parity **755/4-skip (759)** with all
+661 goldens byte-identical, bench **`BF3794A4704BCD79`** (par==single; hash moved with PR#13's gates-ON, not us),
+`Sim.LiveCity.Tests` **50/50**, `Sim.Pedestrians.Tests` **277/277**. Conflicts were only in docs (resolved).
+Crowd realism follow-ups shipped after the core fixes: crosswalk diagonal **weave** (opposing streams keep their
+side), a **2-D waiting blob**, and per-ped **speed variation** (`SpeedVariationFrac`, demo 0.15) so moving groups
+spread. **Test-isolation fix:** disabled xunit parallelization for `Sim.LiveCity.Tests`
+(`TestParallelization.cs`) — main's PR#13 probes set process-global `LIVECITY_*` env vars without reset, which
+raced our throughput test's config (same config gave 431/707/718); the demo itself is healthy (707 arrivals at
+speed=0.15, ≫450 threshold), the flake was purely the env race. Green 3/3 after the fix.
+
 ## Stage 0 — baseline + repro (gates everything)
 - [x] T0.1 — iron-law baseline confirmed on the clean tree: parity 661/4-skip (657 pass), bench D96213B7BB4021A7 (par==single), LiveCity **43/43**, Pedestrians 272/272 (handoff/COORDINATION "27"/"25" are stale)
 - [x] T0.2 — `PedLodManager.DiagnosticSnapshot` (additive, read-only) — done; clean passthrough `LiveCitySim.PedLodDiagnostics` added (no reflection)

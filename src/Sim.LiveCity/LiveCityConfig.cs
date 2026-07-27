@@ -127,6 +127,25 @@ public sealed class LiveCityConfig
 
     public int CarSpawnPerStep { get; set; } = 5;
 
+    // A3 (docs/DENSITY-DIFF-HARNESS-DESIGN.md §1b): OPEN-LOOP inflow, in vehicles per SIMULATED SECOND.
+    // `null` (the default) keeps the demo's normal CLOSED-LOOP behaviour byte-identical.
+    //
+    // WHY THIS EXISTS -- it is not a convenience knob, it is the difference between being able and unable to
+    // measure junction discharge. The normal spawn loop is
+    //     for (s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)
+    // which inserts ONLY while occupancy is below the cap. That makes inflow a function of our own drain: if
+    // junctions discharge slowly we simply insert fewer cars, and resident count can never run away. A
+    // discharge deficit manifests as UNBOUNDED QUEUE GROWTH AT FIXED INFLOW, so a closed-loop model cannot
+    // exhibit the symptom at all -- and a comparison built on one reports "close to SUMO" no matter how
+    // narrow the drain actually is. That is exactly what happened: a closed-loop run reported 96% of SUMO's
+    // throughput while an open-loop experiment had SumoSharp climbing 258 -> 2623 resident cars over an hour
+    // and never reaching steady state, against vanilla SUMO plateauing at ~430.
+    //
+    // When set, `CarTargetConcurrent` is IGNORED (there is no cap -- that is the point) and insertions are
+    // paced by a fractional-credit accumulator so any real-valued rate is expressible, not just integer
+    // multiples of `CarSpawnPerStep / Dt`.
+    public double? CarInflowVehPerSec { get; set; }
+
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().
     public double Dt { get; set; } = 0.5;
 

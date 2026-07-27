@@ -35,17 +35,21 @@ See `docs/COORDINATION-livecity-realism-sessions.md` for the full three-way boun
 
 This is a **guarantee**, not best-effort tuning.
 
-## 2. Scope — three items that are ONE mechanism
+## 2. Scope — the API + the ped-side feed (the car→ped YIELD moved out)
+
+> **SCOPE CHANGE (2026-07):** **B-guard — the car→ped yield (a car STOPS/never-close-fast-passes a ped) — is
+> now owned by the separate `car-yields-ped` session** (`docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`), which owns
+> the `ComputeLateralEvasion` crowd-swerve gate + `CrowdLongitudinalConstraint`. That session has a committed
+> repro (`CrosswalkCrossingPedTests`). **This session must NOT re-touch the car→ped reaction** — coordinate on
+> the shared `WorldDisc`/`ExternalObstacle` seam only. Your scope is now B-api + C5:
 
 | Item | What | Prior brief |
 |---|---|---|
-| **B-guard** | High-realism-zone **world-space hard ped-safety guard**: a car inside the zone can never overlap or close-fast-pass a ped, computed in world space (NOT lane projection). | `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task B |
 | **B-api** | Retire the string-keyed public `ExternalObstacle` registration onto the neutral **`WorldDisc`/integer-handle** seam (the performance redesign the owner asked for). | AB-DESIGN §Task B "Fix design" |
 | **C5** | Feed live vehicles as world discs into the demo's ORCA crowd (**ped-avoids-car**), zone-bounded, so peds dodge stopped cars. | `LIVE-CITY-ARBITRARY-NET-DESIGN.md` §5.8; realism #5 |
 
-**Also inherit the overlap note:** realism **#4** (ORCA peds leaving the zone stay ORCA and wander
-off-route) overlaps B's "wandering ORCA" residual — coordinate, but it's primarily a `PedLodManager`
-demotion bug (task #25), not the collision guard.
+*(B-guard's world-space "never close-fast-pass a ped" guarantee is the car-yields-ped session's; if you ship
+B-api first, that session consumes your `WorldDisc` seam for its yield.)*
 
 ## 3. The substrate already exists — read it first [verified]
 
@@ -88,6 +92,17 @@ projects the ped disc onto the lane frame (`LaneProjection.Project`), which **mi
 crossing ped on a short/curved internal lane**, so the ped slips the gate and the car re-accelerates. The
 r=0.6 footprint inflate fixed head-on cases, not this diagonal-on-internal-lane one. → the fix must NOT
 rely on lane projection; use a **world-space** proximity test inside the zone.
+
+**Additional diagnosis (from Task A's crosswalk repro — `CrosswalkCrossingPedTests`, findings §F2 "Crosswalk
+scope"):** a car approaching a ped **walking across a crosswalk** does NOT stop for it — it does an
+**anticipatory dodge at full speed** (weaves around the crossing ped at ~5 m/s, `posLat`→1.4 m while
+Speed=5). That is `ComputeLateralEvasion`'s crowd-swerve (Q6 "prefer swerve over hard-stop") doing exactly
+what it was designed to do; it is NOT the Task-A stopped-wobble (which only occurs for a laterally-STATIC
+ped and is fixed). **The realistic behaviour — a car STOPS/yields for a ped crossing a crosswalk rather than
+weaving past at speed — is your hard ped-safety guard (B-guard):** a world-space "do not close-fast-pass a
+ped" cap must fire for the crossing ped and hold the car, overriding the swerve's prefer-to-dodge choice.
+Reuse `CrosswalkCrossingPedTests`' setup (a `CrowdSource` ped crossing `bridge-crossing-normal`'s lane) as a
+minimal unit repro for "car stops for a crossing ped".
 
 ## 5. Repro & verification diagnostics (already built)
 
