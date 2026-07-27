@@ -314,10 +314,13 @@ public class CrosswalkSignalComplianceTests
 
         var rng = new VehicleRng(livelinessRngSeed);
         var waitRng = new VehicleRng(waitRngSeed);
+        // Reflection needs the EXACT parameter count, so a defaulted parameter added to the production
+        // signature must be listed here too -- `elevationsAlong` is null, i.e. the flat behaviour this
+        // test has always exercised, so what it asserts is unchanged.
         var args = new object?[]
         {
             path, now, liveliness, maxSpeed, rng, weave, seed, globalSeed, halfWidthsAlong, crosswalkSignals,
-            waitSpreadRadius, waitRng,
+            waitSpreadRadius, waitRng, null,
         };
 
         return (ActivityTimeline)method.Invoke(null, args)!;
