@@ -154,3 +154,84 @@ required. No golden regenerated; `git status` shows no golden touched.
 point it at the real 168 MB `swiss_roads.net.xml` or a real Geneva cut outside this environment.
 **Success conditions:** runs against `georef_min` and prints non-zero cars, non-zero peds, and a
 median |pedZ − nearest carZ| ≤ 2 m; documented in the design's §6.
+
+---
+
+## Stage E — elevation follow-ups (added after the original handoff)
+
+Design references are sections of `EXTERNAL-NET-VIEWER-DESIGN.md`, not copies of them.
+
+### E1 — lane provenance through `IPedNavigation`
+**Design:** §4.1. **Files:** `src/Sim.Pedestrians/Navigation/INavigation.cs`,
+`.../RouteGraph/SumoRouteGraphNav.cs`, `.../Bake/{SumoNavMesh,BakedPolygon,WalkablePolygonBaker}.cs`,
+`.../PolylineElevation.cs`, `src/Sim.Pedestrians/Lod/PedLodManager.cs`,
+`src/Sim.Pedestrians/Demand/PedDemand.cs`.
+**Success conditions:**
+1. `FindPath` reports, per returned vertex, the provider-local surface id that produced it;
+   `surfaces.Count == path.Count` on every non-null result.
+2. On a synthetic stacked-deck net (a footbridge 12.5 m over the path beneath it), a route ALONG the
+   bridge reads 412.5 m at the shared plan-view crossing point and a route along the ground reads
+   400.0 m — both within 0.05 m. Without provenance both collapse onto one height.
+3. Every point at which a ped's path is reassigned or re-sliced either carries the provenance across
+   or nulls it explicitly (spawn, lively Walk legs, promotion, demotion/`ReanchorSurfaces`,
+   `RecoverRoute` fallbacks, the lively timeline's own geometry).
+4. Parity 775/0/4 and hash `BF3794A4704BCD79` unchanged.
+
+### E2 — elevation made MANDATORY (the 2-D siblings deleted)
+**Design:** §4.1, §4.1.1. **Files:** as E1, plus
+`src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs`, `src/Sim.Pedestrians.Nav.DotRecast/`,
+`src/Sim.Viz/`, `src/Sim.Viewer/`, `demos/City3D/CityLib/PedSimSource.cs`, and 13 test doubles.
+**Success conditions:**
+1. `IPedNavigation` has exactly two members, neither with a default body: the 3-arg `FindPath` and
+   the 2-arg `ElevationsAlong`. `SumoRouteGraphNav` exposes no 2-arg `FindPath` and no 1-arg
+   `ElevationsAlong`.
+2. `PedRemoteReconstructor` exposes exactly ONE `TryGetRenderPose`, whose third parameter is
+   `out double`. Asserted by reflection — a compile-time check cannot assert its own absence.
+3. `SumoNavMesh`'s blocked-set query is named `FindPathAvoiding`, so `FindPath(a, b, out _)` is
+   unambiguous.
+4. Every provider that answers flat does so with a hand-written body carrying a comment saying it is
+   a choice; none inherits flatness from an interface default.
+5. All of: `Traffic.sln`, `src/Sim.Viewer`, `src/Sim.PedDdsLoopback`, `src/Sim.Host.App`,
+   `tests/Sim.LiveCity.Tests`, `tests/Sim.Viewer{,.Motion}.Tests`, `demos/City3D/{CityLib,
+   CityLib.Tests,Viewer}` build clean in Release.
+6. Parity 775/0/4 and hash `BF3794A4704BCD79` unchanged.
+
+### E3 — `SumoNavMesh` given real provenance
+**Design:** §4.1 ("now a full provenance provider too"). **Files:**
+`src/Sim.Pedestrians/Navigation/Bake/{SumoNavMesh,BakedPolygon,WalkablePolygonBaker}.cs`.
+**Success conditions:**
+1. `SumoNavMesh.FindPath` attributes each waypoint to a `BakedPolygon` index; a portal vertex is
+   attributed to the polygon being ENTERED.
+2. The stacked-deck fixture from E1·SC2 passes against `SumoNavMesh` as well as
+   `SumoRouteGraphNav`, and every vertex of the under-bridge route names `ground_0`.
+3. A 2-D net still reads 0.0 at every vertex, provenance or not.
+
+### E4 — baked terrain field; grid and zones follow it
+**Design:** §7.2 (§7.2.1 mechanism, §7.2.2 grid, §7.2.3 zones, §7.2.4 determinism). **Files:**
+`demos/City3D/CityLib/{TerrainField,GroundGridBuilder,SumoGodotFrame,ZoneGroundBuilder}.cs`,
+`demos/City3D/Viewer/Main.cs`.
+**Success conditions:**
+1. A lane set with no `ShapeZ`, an empty lane set, and a lane set at one constant height all bake to
+   `TerrainField.Flat`, and `SumoGodotFrame.Identity` / `default` carry no field — so
+   `GroundToGodot` on them is bitwise the pre-terrain arithmetic.
+2. On `scenarios/_ped/georef_min`, `HeightAt(laneVertex)` reproduces that vertex's own `ShapeZ` to
+   **well under half the net's own relief**, over every lane vertex in the net. *(Measured: 0.326 m
+   worst over 693 vertices against 27.5 m of relief.)*
+3. Baking the same geometry twice is **bitwise** identical over a dense sample grid.
+4. A 300 km extent grows the cell rather than the lattice: `CountX`/`CountY ≤ MaxCornersPerAxis`.
+5. Every grid vertex sits exactly on `HeightAt(x, y) − OriginZ + GroundOffsetSumoZ` (< 1e-3 m); on a
+   ramp with 100 m of relief the grid's Y spread is > 80 m; on a flat frame every grid vertex shares
+   one Y and each line is a single segment.
+6. A 100 km extent caps the line count by growing the spacing; line positions are snapped to the
+   spacing so two overlapping bakes share their lines.
+7. On a terrain frame the zone tint subdivides (> 100 vertices for a 1000×400 m district), every
+   vertex — interior midpoints included — sits on the field (< 1e-3 m), the subdivision is bounded by
+   `MaxSubdivisionDepth`, sibling triangles share split-edge vertices, and `Area` is unchanged.
+8. On a flat frame the zone tint is the original 4-vertex / 2-triangle fan.
+9. Parity 775/0/4 and hash `BF3794A4704BCD79` unchanged — no engine file is touched.
+
+### E5 — visual sign-off on a GPU (NOT doable in this environment)
+**Design:** §7.2 as a whole. **Where:** a Windows desktop session with a GPU and the Geneva data.
+**Success conditions:** the checklist in `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`,
+signed off item by item with screenshots. Everything above is headless and asserts numbers; only a
+human on a GPU can confirm the scene *looks* right.

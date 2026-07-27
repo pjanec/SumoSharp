@@ -456,8 +456,10 @@ public partial class Main : Node3D
     // (harmless no-op toggle) wherever it wasn't built (e.g. `--peds`, `--scenario`).
     private Node3D? _poisNode;
 
-    // Infinite ground grid (built once in SetupOrbitCamera, recentered on the camera each frame in
-    // ApplyOrbitCamera so it reads as infinite). Runtime `G` key toggles it; default visible.
+    // Ground grid: BAKED once in SetupOrbitCamera over the scene bbox and draped over the frame's
+    // TerrainField (docs/EXTERNAL-NET-VIEWER-DESIGN.md §7.2.2). It is no longer recentered on the camera
+    // -- a translated mesh cannot follow terrain, which is the whole point of the bake, so the grid is
+    // finite and shows where the net is. Runtime `G` key toggles it; default visible.
     private MeshInstance3D? _gridNode;
 
     // The high-realism LC-realism zone highlight, drawn as ONE ground ring (docs/LIVE-CITY-CAMERA-
