@@ -165,57 +165,59 @@ the arm-14 wedge. **Session 4 fixed that** with gate 7: at 3x, trips **1583 → 
 stalls **469 → 17**, stall heads **57 → 7**, and the permanent 4890-step bay lock becomes a bounded 637-step
 delay (§9.114). A residual **9** bay stalls remain and are §6's open item.
 
-## 6. NEXT ACTION — trace `jyArm 2` against the SUMO oracle (do NOT hypothesise again)
+## 6. NEXT ACTION — fix LANE SELECTION (why 22% of our cars need a reroute rescue)
 
-### What is DONE
+### TRACE-1 is DONE, and it moved the target off junctions entirely
 
-Junction correctness: the arm-14 four-way circular wait is **fixed** (§9.110-114), its residual **attributed**
-(§9.117, bay-only wedges = 0), **all seven gates default ON** (§9.119) with all 661 goldens byte-identical.
-Instrumentation: the density diff harness — A1 three-column SUMO runner, A3 open-loop demand, B1 demand
-recorder, the head-of-queue probe, `scripts/sweep-inflow.sh`.
+Traced at 1.4 veh/s where both engines are steady (`DENSITY-DIFF-HARNESS-TRACKER.md`, "TRACE-1 RESULT").
 
-### The open problem, now precisely located
+| | n | mean delta vs SUMO | share of ALL excess time |
+| --- | --- | --- | --- |
+| **same route as SUMO** | **77.8%** | **+2.7 s** on 173.5 s = **+1.6%** (median **+0.0 s**) | **5.8%** |
+| **rerouted** | 22.2% | **+156.7 s** | **94.2%** |
 
-**Our junctions do not block — our cars roll slowly.** At 1.4 veh/s with *both* engines steady, our halting
-fraction is **33.3%** against SUMO's **33.7%** (identical), yet our trips take **247.7 s** to SUMO's
-**180.6 s** — so we move at **~8.0 m/s** where SUMO moves at **~11.0** (§9.127). Max sustainable inflow:
-**ours ≈1.4 veh/s, SUMO's 1.6–2.0** (§9.126). We do not degrade, we collapse.
+**When our cars drive SUMO's route, we are at parity.** Our junction and car-following core is not the
+problem. The deficit is that **22% of our cars end up on a detour** our engine chose and SUMO never takes.
 
-Attribution: `junctionYield` **30.4%** and `leaderFollow` **36.1%** of the samples where a *moving* car is
-held under its own lane's limit — and much of `leaderFollow` is plausibly downstream of the former.
-`MinorApproachArrivalSpeed` (a wrong change, §9.129) bought **+67%** throughput at 1.6 by touching exactly
-`jyArm 2`, which is the strongest evidence available that **the capacity is hiding in that arm under load**.
+**And the rescue is load-bearing — it cannot just be removed.** Both mechanisms are individually mandatory
+at 1.4 veh/s: trips **4448 → 2119** with `WrongLaneRerouteAtApproach` off, **→ 2126** with
+`DeadLaneDriveThrough` off, RUNAWAY either way.
 
-### THE NEXT STEP IS A TRACE, NOT A HYPOTHESIS
+### The root defect, and it is the task
 
-Seven reasoned-from-source interventions have now been refuted against one SUMO-oracle trace that succeeded
-(§9.130). Do this:
+**Our cars routinely fail to reach the lane their turn requires** — badly enough that two separate rescues
+are both mandatory, while SUMO needs neither on identical demand and identical routes. That is a
+**lane-selection / lane-change** defect, which is exactly why both `jyArm 2` hypotheses failed.
 
-1. Open-loop at **1.4 veh/s** (both steady — never diagnose inside our collapse), record demand with B1,
-   run SUMO with `--fcd-output` and ours with an equivalent dump.
-2. Pick **one** vehicle whose trip time is near our mean and **well above** SUMO's for the same id.
-3. Diff position/speed step by step. Find **where** the seconds are lost — which edge, which junction,
-   approach vs interior — and what our binder/`jyArm` says at exactly those steps.
-4. Only then name a mechanism, and only then change code.
+1. Instrument **why** the rescue fires: per event, the vehicle, the junction, the lane it is on vs the lane
+   its next connection requires, and how long it had to change. Related: `NEED-multilane-junction-passage.md`.
+2. Compare against SUMO on the same approach — SUMO's `getBestLanes` / strategic lane-change urgency is the
+   reference. **Trace before porting** (score on reasoned hypotheses is 0 for 2 here, 7 refuted overall).
+3. Only then change behaviour, and clear **both** surfaces (all 661 goldens **and** the open-loop discharge
+   test).
 
-**Any change must clear BOTH surfaces** (§7 lesson 1 and its converse, §9.130): all 661 goldens **and** the
-open-loop discharge test. A change that wins one and loses the other is refused, whichever way round.
+**Rung-5 note:** the rescue conceals the defect that causes it, so per the ladder the cure is the cause. But
+it may not be deleted first — today it is the only thing keeping the demo out of gridlock.
 
-### Do NOT re-attempt (each disproven, with the measurement)
+### ⚠️ RETRACTED: §9.127's "our cars roll ~27% slower"
 
-- `addBlockedLink` — **dead code** in 1.20.0 (§9.110).
-- Entry-time ordering for **non-bay** foes — **provably inert** (§9.115).
-- `InternalJunctionAdmissionGate` without its entry-order sub-gate — the 4890-step wedge.
-- Any **capacity** conclusion from **closed-loop** demand (§9.121).
-- **G1 `KeepClearHeldPropagation`** as a discharge fix — measured worse (§9.128).
-- **`MinorApproachArrivalSpeed`** — +67% and 14 broken goldens (§9.129). The *location* is right, the change
-  is not.
+Mean-driven and wrong as a population claim. **Median excess is +2.0 s and 43% of our cars are FASTER than
+SUMO's**; the worst 10% carry 73.6% of the excess. The halting-fraction equality (33.3% vs 33.7%) stands.
 
-### Hard constraint on any discharge fix
+### Do NOT re-attempt (each disproven, with its measurement)
+
+- `addBlockedLink` — dead code in 1.20.0 · entry-time ordering for **non-bay** foes — provably inert
+- `InternalJunctionAdmissionGate` without its entry-order sub-gate — the 4890-step wedge
+- Any **capacity** claim from **closed-loop** demand
+- **G1 `KeepClearHeldPropagation`** as a discharge fix — measured worse
+- **`MinorApproachArrivalSpeed`** — +67% and 14 broken goldens
+- **Removing either reroute rescue** — measured: instant gridlock
+- **Any junction-yield mechanism hunt** — the same-route population is already at +1.6%
+
+### Hard constraint
 
 SUMO's drain is partly wider because it **lets cars overlap inside junctions** — 26 junction collisions its
-own defaults do not even check for, on the exact lanes we wedge on (§9.122). That is ladder rung 3.
-**Target SUMO's flow, never SUMO's method.**
+own defaults do not check for. Ladder rung 3. **Target SUMO's flow, never SUMO's method.**
 
 ## 7. LESSONS / TRAPS (these cost real time — read before investigating)
 
@@ -1610,21 +1612,19 @@ an **owner decision**, with a genuine trade to weigh (see §9.54).
 > `Sim.Pedestrians.Tests` **272/272**, `Sim.Bench` **`BF3794A4704BCD79`** par == single (⚠ re-pinned — was
 > `D96213B7BB4021A7` before the defaults flip; attribution verified).
 >
-> ### YOUR TASK — §6: trace `jyArm 2` against the SUMO oracle
-> **Junction correctness is done** (arm-14 wedge fixed, residual attributed, seven gates default ON, 661
-> goldens byte-identical). **The open problem is that our cars ROLL SLOWLY, not that junctions block:** at
-> 1.4 veh/s with both engines steady our halting fraction is 33.3% vs SUMO's 33.7% — identical — yet our
-> trips take 247.7 s to SUMO's 180.6 s, i.e. ~8.0 m/s moving vs ~11.0. Max sustainable inflow: ours ≈1.4,
-> SUMO's 1.6–2.0.
+> ### YOUR TASK — §6: fix LANE SELECTION, not junctions
+> **TRACE-1 is done and it moved the target.** At 1.4 veh/s, the 77.8% of our cars that drive SUMO's route
+> are at **parity (+1.6%, median +0.0 s)**. The whole deficit is the **22.2% our engine REROUTES**, at
+> +156.7 s each = **94.2% of all excess time**. Our junction/car-following core is fine.
 >
-> **Do not propose a mechanism from reading the source.** Seven such interventions have been refuted here
-> against one SUMO-oracle trace that worked. Trace one vehicle at 1.4 veh/s (never inside our collapse),
-> find where the seconds go, then name a mechanism. `jyArm 2` is the strongest lead: a *wrong* change to it
-> bought +67% throughput at 1.6.
+> **The rescue is load-bearing** — disabling either `WrongLaneRerouteAtApproach` or `DeadLaneDriveThrough`
+> takes trips 4448 → ~2120 and goes RUNAWAY. So the root defect is that **our cars fail to reach the lane
+> their turn requires**, badly enough that two rescues are both mandatory while SUMO needs neither on
+> identical demand. That is a **lane-selection** problem. Instrument why the rescue fires, compare against
+> SUMO's `getBestLanes` / strategic urgency, and **trace before porting** — 7 reasoned-from-source
+> hypotheses have been refuted here against 2 traces that worked.
 >
-> **Any change must clear BOTH surfaces** — all 661 goldens AND the open-loop discharge test. One change
-> this session broke 14 goldens while transforming the demo; another passed every golden while making the
-> demo worse.
+> **Any change must clear BOTH surfaces** — all 661 goldens AND the open-loop discharge test.
 >
 > ### NON-NEGOTIABLES — every one of these cost real time here
 > 1. **Measure before building.** Five hypotheses were refuted by measurement this session, and **two
@@ -1672,8 +1672,9 @@ admission gate blocked on **bare foe-lane occupancy**, which is symmetric, so a 
 four cars motionless for **4890 steps**. SUMO never uses bare occupancy on the driving path — it filters
 foe-lane candidates through `isLeader(...) || inTheWay()`, whose tie-break chain is total precisely to avoid
 this. Restoring that ordering took the longest lock to **637 steps**. The branch's own carried hypothesis
-(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open** is that our cars **roll slowly** — not that junctions block. At matched inflow with both
-engines steady we stop exactly as much as SUMO (33.3% vs 33.7%) yet take 37% longer per trip, so our
-sustainable ceiling is ~1.4 veh/s against SUMO's 1.6–2.0. The lead is `jyArm 2`, where a *wrong* change bought
-+67% throughput and broke 14 goldens. **Next step is a per-vehicle SUMO-oracle trace, not another hypothesis:
-seven reasoned-from-source interventions have now been refuted against one trace that worked.**
+(`addBlockedLink`) was **falsified by one grep**: it is dead code in 1.20.0. **What is open is LANE SELECTION.** TRACE-1 settled it: the 77.8% of our cars that drive SUMO's route are at
+**parity** (+1.6%, median +0.0 s); the entire deficit is the **22.2% our engine reroutes**, costing +156.7 s
+each and carrying **94.2%** of all excess time. Rerouting is a **load-bearing rescue** — removing either
+mechanism gridlocks the demo instantly — so the root defect is that our cars fail to reach the lane their turn
+requires, while SUMO needs no such rescue on identical demand. **The junction core is not the problem**, which
+is why both `jyArm` hypotheses failed.

@@ -350,6 +350,80 @@ Both were reasoned from source and both died to measurement. That is the third a
 what five reasoned-from-the-code interventions could not."* **The next attempt must start from a per-vehicle
 SUMO-vs-us trace inside `jyArm 2`, not from another reading of the source.**
 
+---
+
+## ⭐⭐⭐⭐ TRACE-1 RESULT: the deficit is OUR REROUTING, and our junction core is at PARITY
+
+Done as §6 prescribed — trace, do not hypothesise — at **1.4 veh/s** where both engines are steady.
+Required a join key: `LiveCitySim.RecordedIdByHandle` maps our `VehicleHandle` to the id the recorded
+`.rou.xml` gives SUMO, captured at the one instant both identities exist. Without it "our slowest car" and
+"SUMO's car of that name" are different cars.
+
+### The single-vehicle trace that broke it open
+
+`rec392`: ours **366 s**, SUMO **169 s**. Its per-step dump said `junctionYield` bound it for only **14.5 s
+of 366** — 4%. The time went to `leaderFollow` (queue shadow) and one near-stationary lane. Then the routes:
+
+| | edges | path |
+| --- | --- | --- |
+| SUMO (the route we handed it) | **5** | `d_3_2 → d_4_2 → d_4_3 → d_4_4 → d_4_5 → d_5_5` |
+| **ours (realised)** | **9** | `d_3_2 → d_4_2 → **d_5_2 → d_6_2 → d_6_3 → d_5_3 → d_5_4** → d_4_4 → d_4_5 → d_5_5` |
+
+**It drove a different, longer road.** Not slower driving — a detour.
+
+### Population split, and it is decisive
+
+| | n | mean delta | share of ALL excess time |
+| --- | --- | --- | --- |
+| **same route as SUMO** | **3454 (77.8%)** | **+2.7 s** on 173.5 s = **+1.6%**, median **+0.0 s** | **5.8%** |
+| **rerouted** | 986 (22.2%) | **+156.7 s**, median +111 s | **94.2%** |
+
+**When we drive SUMO's route we are at parity.** The entire measured deficit is the 22% of cars our engine
+reroutes and SUMO (handed a fixed route file) cannot.
+
+### ❗ BUT REROUTING IS NOT THE BUG — IT IS A LOAD-BEARING RESCUE
+
+The obvious next move — turn it off — was measured, and it is catastrophic. Both mechanisms are
+**individually** mandatory:
+
+| 1.4 veh/s | trips | verdict |
+| --- | --- | --- |
+| both rescues ON (shipped) | **4448** | STEADY |
+| `WrongLaneRerouteAtApproach` OFF | **2119** | RUNAWAY (+76.8%) |
+| `DeadLaneDriveThrough` OFF | **2126** | RUNAWAY (+88.3%) |
+
+### ⇒ THE ROOT DEFECT, NAMED
+
+**Our cars routinely fail to reach the lane their turn requires, badly enough that two separate rescues are
+both mandatory — and SUMO needs neither on the identical demand and identical routes.** The rescue reroutes
+them onto detours costing +156.7 s each, which is 94% of our excess trip time, which inflates residency,
+which is what lowers our sustainable-inflow ceiling to 1.4 against SUMO's 1.6–2.0.
+
+**This is a LANE-SELECTION / LANE-CHANGE defect, not a junction-yield one** — which is precisely why both
+`jyArm 2` hypotheses failed. Related: `NEED-multilane-junction-passage.md`.
+
+It is also **rung-5 shaped**: a rescue that conceals the defect causing it. Per the ladder the cure is the
+cause, not the rescue — but note the rescues cannot simply be removed, because today they are the only thing
+keeping the demo out of gridlock.
+
+### ⚠️ RETRACTS §9.127's "our cars roll ~27% slower"
+
+That came from **means** — mean trip duration and mean halting fraction. The delta distribution is heavily
+skewed: **median +2.0 s, 43% of our cars FASTER than SUMO's, worst 10% carrying 73.6% of all excess.** A mean
+is a poor summary of that, and it painted a uniform population penalty where the truth is a minority of
+badly-detoured cars. The halting-fraction equality (33.3% vs 33.7%) stands and is now better explained:
+most of our cars really are behaving like SUMO's.
+
+### Two measurement traps caught inside this analysis
+
+1. **`jyArm` is only causal when `binder == 10`.** Otherwise it reports the tightest *non-binding*
+   junction-yield arm. Read carelessly it would have "confirmed" `cautiousApproach` on a car that
+   `junctionYield` never bound.
+2. **My first same-vs-diverged split was wrong** (25 m threshold ⇒ "95% diverged"). The realised-distance
+   metric carries a systematic **−60 m** offset because it does not count internal-junction lanes. The
+   distribution is **bimodal with an empty +25..100 m gap**, so the honest threshold is +100 m ⇒ **22.2%**.
+   Found by plotting the distribution instead of trusting the first number.
+
 ## Known-answer anchors (an instrument that misses these is wrong, not interesting)
 
 | Anchor | Expected | Source |

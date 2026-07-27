@@ -18,6 +18,13 @@ string? outPath = null;
 // occupancy cap. Required for any discharge/capacity measurement -- closed-loop inflow self-throttles.
 double? inflow = null;
 string? seriesPath = null;
+// TRACE-1 phase 1: per-vehicle trip times keyed by the recorded SUMO id, so they join directly against
+// SUMO's own tripinfo.xml and the worst-loss vehicle can be PICKED rather than guessed at.
+string? tripsPath = null;
+// TRACE-1 phase 2: full per-step detail for ONE vehicle (by recorded id). Deliberately one vehicle --
+// dumping all of them at 7200 steps x ~300 resident is ~2M rows for a question about one car.
+string? traceVeh = null;
+string? tracePath = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -38,6 +45,15 @@ for (var i = 0; i < args.Length; i++)
         case "--series" when i + 1 < args.Length:
             seriesPath = args[++i];
             break;
+        case "--trips" when i + 1 < args.Length:
+            tripsPath = args[++i];
+            break;
+        case "--trace-veh" when i + 1 < args.Length:
+            traceVeh = args[++i];
+            break;
+        case "--trace" when i + 1 < args.Length:
+            tracePath = args[++i];
+            break;
         default:
             Console.Error.WriteLine($"Sim.DensityDiff: unrecognized argument '{args[i]}'.");
             return 2;
@@ -51,6 +67,10 @@ if (outPath is null)
     Console.Error.WriteLine("  --inflow  OPEN-LOOP mode: fixed inflow, occupancy cap IGNORED (design §1b).");
     Console.Error.WriteLine("            Required for discharge/capacity work; --cars is ignored when set.");
     Console.Error.WriteLine("  --series  write step,resident,arrived CSV (the runaway-vs-steady-state series).");
+    Console.Error.WriteLine("  --trips   write per-vehicle depart/arrive/duration CSV keyed by the recorded");
+    Console.Error.WriteLine("            SUMO id -- joins straight onto SUMO's tripinfo.xml (TRACE-1 phase 1).");
+    Console.Error.WriteLine("  --trace-veh ID --trace FILE   per-step dump for ONE vehicle: lane, pos, speed,");
+    Console.Error.WriteLine("            binder and junction-yield arm (TRACE-1 phase 2).");
     return 2;
 }
 
@@ -58,6 +78,15 @@ var repoRoot = FindRepoRoot();
 var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
 cfg.CarTargetConcurrent = cars; // direct property set -- no LIVECITY_CARS env var touched, nothing leaks.
 cfg.CarInflowVehPerSec = inflow; // null => unchanged closed-loop demo behaviour.
+
+// TRACE-1 follow-up A/B. Our engine reroutes mid-trip; SUMO, handed a fixed route file, cannot. Measured at
+// 1.4 veh/s: 22.2% of our cars end up on a materially different path and carry 94.2% of ALL excess trip
+// time (+156.7s each), while the 77.8% that keep SUMO's route are at parity (+2.7s on 173.5s = +1.6%).
+// This switch turns both reroute mechanisms off so that claim can be tested directly rather than inferred.
+// Separated, because turning both off at once cannot say WHICH rescue is load-bearing.
+if (Environment.GetEnvironmentVariable("DENSITYDIFF_NOWRONGLANEREROUTE") == "1") { cfg.WrongLaneRerouteAtApproach = false; }
+if (Environment.GetEnvironmentVariable("DENSITYDIFF_NODEADLANE") == "1") { cfg.DeadLaneDriveThrough = false; }
+Console.WriteLine($"  rescues: WrongLaneRerouteAtApproach={cfg.WrongLaneRerouteAtApproach} DeadLaneDriveThrough={cfg.DeadLaneDriveThrough}");
 
 // G1 A/B: the driver sets the gate EXPLICITLY (never leaving it to the ambient shell), because these
 // LIVECITY_* vars are process-global and an inherited value would silently contaminate the column this run
@@ -101,9 +130,71 @@ var movingSlow = 0;
 var slowBinders = new System.Collections.Generic.Dictionary<byte, int>();
 var sampleEvery = Math.Max(1, (int)Math.Round(60.0 / cfg.Dt));
 
+// TRACE-1 phase 1: first/last step each vehicle is present. Departure and arrival are inferred from
+// presence in the authoritative witness rather than from an event, because the engine exposes no
+// per-vehicle arrival hook -- a vehicle that stops appearing has either arrived or been removed, and at
+// these densities with teleports at 0 the second case does not occur. Keyed by the RECORDED SUMO id.
+var firstSeen = new System.Collections.Generic.Dictionary<string, double>();
+var lastSeen = new System.Collections.Generic.Dictionary<string, double>();
+
+// TRACE-1's decisive control: the REALISED path, not the planned one. Our engine reroutes mid-trip
+// (GAP-1 dead-lane reroute, WrongLaneRerouteAtApproach) while SUMO simply follows the recorded route, so a
+// rerouted car drives a DIFFERENT and usually LONGER path. Comparing its trip time against SUMO's is then
+// meaningless -- it is not slower driving, it is a longer journey. Measured on rec392: we drove 9 edges
+// where SUMO drove the recorded 5. Until this is quantified, no per-vehicle or mean duration comparison
+// can be trusted, which is exactly the "reroutes: NOT MEASURED" caveat from B1/SC4.
+var realisedEdges = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>>();
+var realisedMetres = new System.Collections.Generic.Dictionary<string, double>();
+var traceRows = new System.Collections.Generic.List<string>();
+
 for (var s = 0; s < steps; s++)
 {
     sim.Step();
+    if (tripsPath is not null || traceVeh is not null)
+    {
+        var nowSec = (s + 1) * cfg.Dt;
+        foreach (var w in sim.WitnessAuthoritative())
+        {
+            if (!sim.RecordedIdByHandle.TryGetValue(w.Handle, out var rid))
+            {
+                continue;
+            }
+
+            if (!firstSeen.ContainsKey(rid)) { firstSeen[rid] = nowSec; }
+            lastSeen[rid] = nowSec;
+
+            var laneId = w.LaneId ?? string.Empty;
+            if (laneId.Length > 0 && laneId[0] != ':')
+            {
+                var cut = laneId.LastIndexOf('_');
+                var edgeId = cut > 0 ? laneId[..cut] : laneId;
+                if (!realisedEdges.TryGetValue(rid, out var seq))
+                {
+                    seq = new System.Collections.Generic.List<string>();
+                    realisedEdges[rid] = seq;
+                    realisedMetres[rid] = 0.0;
+                }
+
+                if (seq.Count == 0 || seq[^1] != edgeId)
+                {
+                    seq.Add(edgeId);
+                    if (sim.Network.LanesById.TryGetValue(laneId, out var trLane))
+                    {
+                        realisedMetres[rid] += trLane.Length;
+                    }
+                }
+            }
+
+            if (traceVeh is not null && rid == traceVeh)
+            {
+                // The two diagnostic bytes are the whole point of tracing OUR side rather than just
+                // diffing positions: `Binder` names which constraint set this car's speed this step, and
+                // `JyArm` sub-names it inside JunctionYieldConstraint (2 == cautiousApproach, the suspect).
+                traceRows.Add(string.Create(CultureInfo.InvariantCulture,
+                    $"{nowSec:F1},{w.LaneId},{w.Pos:F3},{w.Speed:F3},{w.Binder},{w.JyArm},{w.NextMouthGap:F2}"));
+            }
+        }
+    }
     if ((s + 1) % sampleEvery == 0)
     {
         // Also record how many of the resident cars are HALTING. The halting FRACTION is directly
@@ -265,6 +356,35 @@ if (seriesPath is not null)
         sw.WriteLine($"{sec.ToString("F1", CultureInfo.InvariantCulture)},{res},{arr},{halt}");
     }
     Console.WriteLine($"  series -> '{seriesPath}'");
+}
+
+if (tripsPath is not null)
+{
+    using var tw = new StreamWriter(tripsPath);
+    tw.WriteLine("# demand_model=" + demandModel + (inflow is null ? "" : $" inflow_veh_per_s={inflow.Value.ToString("R", CultureInfo.InvariantCulture)}"));
+    tw.WriteLine("veh_id,first_seen_s,last_seen_s,duration_s,completed,realised_edges,realised_metres");
+    foreach (var kv in firstSeen)
+    {
+        var last = lastSeen[kv.Key];
+        // "completed" == stopped being present before the horizon. A car still resident at the end has a
+        // TRUNCATED duration and must be excluded from any mean, or the horizon censors the slowest cars
+        // out of the statistic -- which would bias exactly the population TRACE-1 is hunting.
+        var completed = last < steps * cfg.Dt - (cfg.Dt / 2);
+        var nEdges = realisedEdges.TryGetValue(kv.Key, out var seq2) ? seq2.Count : 0;
+        var metres = realisedMetres.TryGetValue(kv.Key, out var m2) ? m2 : 0.0;
+        tw.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"{kv.Key},{kv.Value:F1},{last:F1},{last - kv.Value:F1},{(completed ? 1 : 0)},{nEdges},{metres:F1}"));
+    }
+    Console.WriteLine($"  trips -> '{tripsPath}' ({firstSeen.Count} vehicles seen)");
+}
+
+if (tracePath is not null && traceVeh is not null)
+{
+    using var vw = new StreamWriter(tracePath);
+    vw.WriteLine($"# ours, veh={traceVeh}, demand_model={demandModel}");
+    vw.WriteLine("sim_seconds,lane,pos,speed,binder,jy_arm,next_mouth_gap");
+    foreach (var row in traceRows) { vw.WriteLine(row); }
+    Console.WriteLine($"  trace -> '{tracePath}' ({traceRows.Count} steps for {traceVeh})");
 }
 
 Console.WriteLine();

@@ -91,6 +91,11 @@ public sealed class LiveCitySim : IDisposable
     private readonly IDemandRecordSink? _recordDemandSink;
     private readonly Sim.Ingest.NetworkRouter? _demandRouter;
     private long _recordVehCounter;
+
+    // TRACE-1 (docs/F3-SESSION-LOG.md §6): handle -> the id this vehicle carries in the recorded SUMO
+    // `.rou.xml`. Populated only while a demand sink is attached, so it costs nothing in a normal run.
+    // Without it the two engines' per-vehicle records cannot be joined at all.
+    public readonly Dictionary<VehicleHandle, string> RecordedIdByHandle = new();
     // The recorded file's own vType id -- independent of Engine's internal `__vtype0` id (never
     // exposed back to the caller), since the emitted .rou.xml only needs its `type=` attribute to
     // match the `<vType id=...>` it also emits, not Engine's internal bookkeeping.
@@ -703,7 +708,7 @@ public sealed class LiveCitySim : IDisposable
                 if (fromId == toId) continue;
                 try
                 {
-                    _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
+                    var spawnedHandle = _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
                     SpawnLog?.Add((_now, fromId, toId));
                     live++;
 
@@ -720,8 +725,17 @@ public sealed class LiveCitySim : IDisposable
                         if (routeEdges is not null && routeEdges.Count > 0)
                         {
                             _recordVehCounter++;
+                            var recordedId = "rec" + _recordVehCounter.ToString(CultureInfo.InvariantCulture);
+
+                            // TRACE-1 join key. The recorded `.rou.xml` id is what SUMO will call this
+                            // vehicle, but on our side the same car is a VehicleHandle -- with no mapping
+                            // between them, an engine-vs-SUMO per-vehicle diff is impossible, because
+                            // "our slowest car" and "SUMO's car of the same name" would be different cars.
+                            // Captured here, at the one instant both identities exist.
+                            RecordedIdByHandle[spawnedHandle] = recordedId;
+
                             _recordDemandSink.RecordVehicle(
-                                "rec" + _recordVehCounter.ToString(CultureInfo.InvariantCulture),
+                                recordedId,
                                 _now,
                                 "best", // departBestLane: true above -- SUMO's departLane="best".
                                 departPos: 5.0,

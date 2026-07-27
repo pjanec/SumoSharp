@@ -149,18 +149,18 @@ core junction work**; F4b deferred until F3 fixed.
 
 ## Junction DISCHARGE / max-density (session: F3 junction / density) — active
 
-**MEASURED, not estimated.** Max sustainable open-loop inflow: **ours ≈1.4 veh/s, SUMO's 1.6–2.0**. And at
-1.4, where *both* engines are steady, our halting fraction is **33.3%** against SUMO's **33.7%** — identical —
-yet our trips take **247.7 s** to SUMO's **180.6 s**. Same stopping, same routes ⇒ **our cars ROLL at ~8.0 m/s
-where SUMO rolls at ~11.0.** The problem is *not* junctions blocking; it is uniformly slower progress, which
-inflates residency ~25% at every inflow and then tips into **collapse** (trips 4448 → 2938 → 1681) where SUMO
-stays steady.
+**TRACE-1 SETTLED IT, and the target is NOT junctions.** At 1.4 veh/s (both engines steady, identical
+demand), the **77.8%** of our cars that drive SUMO's route are at **parity — +2.7 s on 173.5 s (+1.6%),
+median +0.0 s**. The entire deficit is the **22.2% our engine REROUTES**, at **+156.7 s each = 94.2% of all
+excess trip time**. Our junction and car-following core is fine.
 
-Detail — read in this order:
-`docs/F3-SESSION-LOG.md` **§6** (next action) and **§9.125-130** (how this was established) ·
-`docs/DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` (the harness; TRACKER carries every measured table) ·
-`docs/reports/density-inflow-sweep.txt` (the sweep) ·
-`docs/CONSTRAINT-high-realism-artefact-ladder.md` (**binding** — what we may not copy from SUMO).
+**But rerouting is a load-bearing RESCUE, not the bug**: disabling either `WrongLaneRerouteAtApproach` or
+`DeadLaneDriveThrough` takes trips **4448 → ~2120** and goes RUNAWAY. So the root defect is that **our cars
+routinely fail to reach the lane their turn requires** — badly enough that two rescues are both mandatory,
+while SUMO needs neither on the identical demand and identical routes. **This is a LANE-SELECTION defect.**
+
+Consequence for capacity: max sustainable inflow ours **≈1.4 veh/s** vs SUMO's **1.6–2.0**, and we collapse
+rather than degrade (trips 4448 → 2938 → 1681 across the ceiling).
 
 ### DONE
 - [x] **A1** three-column SUMO runner (`scripts/run-density-diff.sh`) — S-default / S-honest, cheat isolation
@@ -169,14 +169,17 @@ Detail — read in this order:
       what made discharge measurable at all.
 - [x] **B1** demand recorder → SUMO `.rou.xml`, so both engines see identical cars.
 
-### NEXT — and it is a TRACE, not a hypothesis
-- [ ] **TRACE-1 — per-vehicle SUMO-vs-us diff inside `jyArm 2`.** Open-loop at **1.4 veh/s** (both steady;
-      never diagnose inside our collapse), same recorded demand, `--fcd-output` on the SUMO side and an
-      equivalent dump on ours. Pick one vehicle whose trip is near our mean and well above SUMO's, diff
-      step-by-step, and find **where** the seconds are lost — which edge, which junction, approach vs
-      interior — together with our binder / `jyArm` at exactly those steps. **Only then name a mechanism.**
-      Rationale: **seven** reasoned-from-source interventions have now been refuted here against **one**
-      SUMO-oracle trace that found a real cause in minutes.
+### NEXT — LANE SELECTION (TRACE-1 named it; instrument before porting)
+- [ ] **LANE-1 — why does the reroute rescue fire on 22% of trips?** Instrument each event: the vehicle, the
+      junction, the lane it is on vs the lane its next connection requires, and how much distance/time it had
+      to change lanes. SUMO needs no such rescue on identical demand, so every event is a lane-change our
+      engine failed to complete. Related: `NEED-multilane-junction-passage.md`.
+- [ ] **LANE-2 — compare against SUMO's lane choice** (`getBestLanes`, strategic lane-change urgency) on the
+      same approaches. **Trace before porting**: 7 reasoned-from-source hypotheses refuted vs 2 traces that
+      worked.
+- [ ] **LANE-3 — only then change behaviour**, clearing BOTH surfaces (661 goldens AND the open-loop
+      discharge test). The rescues may NOT be deleted first — today they are the only thing keeping the demo
+      out of gridlock (rung-5: the rescue conceals its own cause, but removing it first just gridlocks).
 - [ ] **B2/B3** our global metrics + per-junction discharge in SUMO's schema (crossings per 60 s, queue,
       internal occupancy) — needed to turn TRACE-1's single-vehicle finding into a population claim.
 - [ ] **C1/C2/C3** gap decomposition, sweep, ranked work list.
@@ -197,6 +200,10 @@ Detail — read in this order:
 - [x] ~~entry-time ordering for non-bay foes~~ — provably inert.
 - [x] ~~any capacity claim from **closed-loop** demand~~ — retracted "96% of SUMO"; the demo's spawn loop
       self-throttles and cannot express a deficit.
+- [x] ~~"our cars roll ~27% slower"~~ — **retracted**, mean-driven. Median excess is **+2.0 s** and **43% of
+      our cars are FASTER** than SUMO's; the worst 10% carry 73.6% of the excess.
+- [x] ~~removing either reroute rescue~~ — measured: instant gridlock (4448 → ~2120, RUNAWAY).
+- [x] ~~hunting a junction-yield mechanism~~ — the same-route population is already at **+1.6%**.
 
 ### ⚠ TWO HARD CONSTRAINTS ON EVERY ITEM ABOVE
 
