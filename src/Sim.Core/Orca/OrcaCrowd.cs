@@ -816,9 +816,14 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
     // for any crowd that never calls Remove, since `_slotAlive` is then all-true.
     public int QueryNear(double x, double y, double radius, Span<WorldDisc> into)
     {
+        // NOTE the loop runs to _count even once `into` is full: the span keeps the NEAREST agents (see
+        // ICrowdFootprintSource.QueryNear's contract and WorldDiscQuery), so a late slot holding a close
+        // agent must still be able to displace an early slot holding a distant one. The previous
+        // `n < into.Length` early exit is exactly the bug that made a car blind to the pedestrian in front
+        // of it at demo density.
         var rSq = radius * radius;
         var n = 0;
-        for (var i = 0; i < _count && n < into.Length; i++)
+        for (var i = 0; i < _count; i++)
         {
             if (!_slotAlive[i])
             {
@@ -832,7 +837,10 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
                 continue;
             }
 
-            into[n++] = new WorldDisc(_position[i].X, _position[i].Y, _velocity[i].X, _velocity[i].Y, _radius[i]);
+            n = WorldDiscQuery.InsertNearest(
+                into, n,
+                new WorldDisc(_position[i].X, _position[i].Y, _velocity[i].X, _velocity[i].Y, _radius[i]),
+                x, y);
         }
 
         return n;

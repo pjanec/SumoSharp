@@ -5271,6 +5271,14 @@ public sealed partial class Engine : IEngine
         // header comment for the parity argument and the deliberate omissions.
         dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
         dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
+
+        // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
+        // safety guard -- anticipatory yield to a ped whose PREDICTED track crosses ego's corridor, plus a
+        // world-space "never close AND fast" proximity cap. +Infinity (inert) unless a CrowdSource is
+        // attached AND the yield zone is on AND ego is inside it -- none of which a golden or the bench
+        // does, so byte-identical. Strictly a Math.Min term: it can only slow ego, never speed it up.
+        // NB binder id 16: 14/15 were taken by the F3 junction constraints above when that work merged.
+        dc = CrowdYieldConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 16; vPos = Math.Min(vPos, dc);
         // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
         // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
         // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
@@ -9736,6 +9744,25 @@ public sealed partial class Engine : IEngine
     // 256 covers realistic demo densities with headroom (40 B/disc -> 10 KB stackalloc, safe). PARITY-INERT:
     // every crowd query is gated on CrowdSource != null, which is null for every committed golden and the
     // bench, so this buffer is never even allocated on the parity path -- byte-identical.
+    // How many crowd discs one QueryNear may hand back. This is a FIDELITY/COST knob, NOT a correctness
+    // threshold -- and the difference matters, because it used to be the latter.
+    //
+    // Raised 16 -> 256 on main (f9c837c) because at density the 16-slot buffer truncated the in-path disc
+    // and cars drove THROUGH pedestrians. That fixed the symptom by making truncation RARE; it could not
+    // make truncation SAFE, because the implementations dropped whichever discs they happened to enumerate
+    // last (measured: median 39 / max 131 discs near a car at 10x ped density -- already half of 256).
+    // ICrowdFootprintSource.QueryNear now guarantees the NEAREST survive (WorldDiscQuery), so truncation
+    // degrades gracefully: what is lost is always the farthest, which is what these constraints care about
+    // least. Measured at 800 peds, 600 steps, demo A/B (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §8.2):
+    //
+    //   MaxCrowdDiscs   16    32    64   256      <- in-zone close-fast-passes, guarded arm
+    //                   22    21    14    14
+    //   HEAD-ON (car driving AT a ped)   0     0     0     0
+    //
+    // i.e. the SAFETY property (zero head-on) holds at every size including the original 16 -- that comes
+    // from the nearest-first contract, not from this number -- while the total count keeps improving up to
+    // 64, above which nothing changes at this density. Wall time is flat across the whole range. 256 is
+    // kept for headroom at the 10x density f9c837c measured; 64 would be measurably identical at 800 peds.
     private const int MaxCrowdDiscs = 256;
 
     private double CrowdLongitudinalConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
@@ -9805,6 +9832,170 @@ public sealed partial class Engine : IEngine
             predIsCacc: false,
             levelOfService: v.LevelOfService,
             ballistic: _config!.Ballistic);
+    }
+
+    // Task B-guard L2 (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
+    // safety guard -- the term that makes "a car never passes a ped at close distance and high speed" a
+    // GUARANTEE rather than an emergent behaviour. Sibling of CrowdLongitudinalConstraint (binder 13),
+    // folded into the same Math.Min chain (binder 16 -- 14/15 belong to the F3 junction constraints), so it can only ever make ego SLOWER
+    // -- it cannot break any bound the rest of the fold established.
+    //
+    // Two terms, both from ONE QueryNear sweep:
+    //
+    //  (a) ANTICIPATORY IN-PATH YIELD. Binder 13 is reactive: it brakes only while the ped's CURRENT
+    //      lateral position overlaps ego's CURRENT footprint, and it releases the instant ego swerves off
+    //      that overlap. Here the ped's lateral track is projected forward to ego's arrival (predLat =
+    //      latOff + latVel*tte) and tested against a corridor around the LANE CENTRE, not ego's current
+    //      offset. Two concrete gains, both measured, NEITHER of them "brakes sooner" (this shares
+    //      binder 13's FollowSpeedFor Krauss curve, so on a given geometry the two bind at the same tick):
+    //        * COVERAGE. Binder 13 samples a single instant, so a 5 m/s car at a coarse step can walk
+    //          clean over a crossing ped without the overlap ever being sampled -- CrowdYieldZoneTests
+    //          pins three geometries where binder 13 fires ZERO times and the un-guarded car holds
+    //          5.00 m/s straight through the crossing.
+    //        * STICKINESS. A lane-centred corridor does not release when ego is off-centre for some other
+    //          reason (mid-lane-change, a give-way shift), where binder 13 does.
+    //
+    //      Stability (the "velocity-0 over-brake" lesson -- GateOrcaPedsOnCrossing cost 15% throughput):
+    //      ped VELOCITY is preserved everywhere (predLat uses latVel; the virtual leader carries the ped's
+    //      own longitudinal speed), so ego yields to where the ped WILL be and releases as soon as its
+    //      corridor track is clear. The only ego feedback is through tte, and it is monotone in the SAFE
+    //      direction -- a slower ego looks FURTHER ahead, so braking can never make ego decide the ped has
+    //      cleared, which is what would otherwise oscillate. CrowdYieldRefSpeed floors the look-ahead so a
+    //      STOPPED ego still anticipates, over a bounded distance rather than forever.
+    //
+    //  (b) WORLD-SPACE PROXIMITY CAP -- the hard backstop. Exact rectangle-to-disc clearance in ego's own
+    //      world body frame (heading from PositionAtOffset's naviDegree), NOT a lane-membership test, per
+    //      the owner's world-space framing. Caps ego at CrowdYieldCreepSpeed within CrowdYieldNearDistance
+    //      and relaxes linearly beyond it, so whatever the lateral logic does, a CLOSE pass is a SLOW pass.
+    //      Discs fully behind ego's rear bumper are dropped -- a ped already passed must not trail-brake
+    //      ego. FinalizeSpeed's own vMin clamp bounds the resulting deceleration at emergencyDecel, so a
+    //      raw cap can never teleport speed to zero.
+    //
+    // +Infinity (inert) unless a CrowdSource is attached AND the yield zone is on AND ego is inside it --
+    // no golden or bench does any of the three, so byte-identical. Reads only the frozen snapshot and ego's
+    // own state; writes nothing -> order-independent and parallel-safe like every other constraint.
+    private double CrowdYieldConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
+    {
+        if (CrowdSource is null || _crowdYieldZoneRadius <= 0.0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var lane = _network!.LanesByHandle[v.LaneHandle];
+        var egoHalf = v.VType.Width * 0.5;
+        var (egoX, egoY, egoAngleDeg) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+        if (!InCrowdYieldZone(egoX, egoY))
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Same neighbourhood radius as CrowdLongitudinalConstraint, so the two terms see the same agents.
+        var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * v.VType.Length + 5.0;
+        // MaxCrowdDiscs (256, raised from 16 on main): the two fixes for the same symptom are
+        // complementary -- a bigger buffer makes truncation RARE, and WorldDiscQuery's nearest-first
+        // contract makes it CORRECT when it still happens (measured 131 discs near a car at 10x ped
+        // density, so 256 is comfortable but not a proof).
+        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxCrowdDiscs];
+        var got = CrowdSource.QueryNear(egoX, egoY, radius, discs);
+
+        var proximityCap = double.PositiveInfinity;
+        var nearestBack = double.PositiveInfinity;
+        var nearestSpeed = 0.0;
+        var found = false;
+
+        for (var d = 0; d < got; d++)
+        {
+            var disc = discs[d];
+
+            // ---- (b) world-space proximity cap -------------------------------------------------
+            // Exact body-rectangle-to-disc distance in ego's own world frame -- not a lane-membership
+            // test, so it means the same thing on a curved lane or an internal junction lane.
+            var (along, lateral) = VehicleFootprint.ToBodyFrame(egoX, egoY, egoAngleDeg, disc.X, disc.Y);
+            if (along + disc.Radius >= -v.VType.Length)   // skip agents fully behind ego's rear bumper
+            {
+                var clearance = VehicleFootprint.ClearanceFromBodyFrame(
+                    along, lateral, v.VType.Length, v.VType.Width, disc.Radius);
+
+                // A cap ego cannot physically REACH in time is not a guarantee: braking is bounded by
+                // decel, so a cap keyed only on the CURRENT clearance is always met one step late (the
+                // demo showed exactly one such transient sample -- a car at 2.70 m/s and 1.36 m while
+                // braking at its emergency limit toward the creep speed). So the cap is evaluated on the
+                // WORSE of the current clearance and the clearance ego will have CrowdYieldCapHorizon
+                // seconds from now -- ego carried forward along its own heading, the agent along its own
+                // velocity. Ego's advance uses max(speed, CrowdYieldRefSpeed), i.e. it is monotone
+                // INCREASING in speed: going faster looks further ahead and caps harder, which is the
+                // stable direction (braking never un-triggers the cap and re-accelerates ego into a ped).
+                var (discVAlong, discVLateral) = VehicleFootprint.VectorToBodyFrame(egoAngleDeg, disc.Vx, disc.Vy);
+                var egoAdvance = Math.Max(v.Kinematics.Speed, CrowdYieldRefSpeed) * CrowdYieldCapHorizon;
+                var predictedClearance = VehicleFootprint.ClearanceFromBodyFrame(
+                    along - egoAdvance + (discVAlong * CrowdYieldCapHorizon),
+                    lateral + (discVLateral * CrowdYieldCapHorizon),
+                    v.VType.Length, v.VType.Width, disc.Radius);
+
+                proximityCap = Math.Min(proximityCap, ProximitySpeedCap(Math.Min(clearance, predictedClearance)));
+            }
+
+            // ---- (a) anticipatory in-path yield ------------------------------------------------
+            var (offset, latOff, _) = LaneProjection.Project(lane.Shape, disc.X, disc.Y);
+            var back = offset - disc.Radius;                 // near (longitudinal) edge of the agent
+            if (back < v.Kinematics.Pos)
+            {
+                continue;                                    // not ahead of ego
+            }
+
+            var (lon, latVel) = LaneFrameVelocity(lane, offset, disc.Vx, disc.Vy);
+
+            // Time until ego reaches the agent, looked ahead as if ego were doing at least
+            // CrowdYieldRefSpeed and capped at the shared SwervePredictionHorizon.
+            var tte = Math.Min(
+                Math.Max(back - v.Kinematics.Pos, 0.0) / Math.Max(v.Kinematics.Speed, CrowdYieldRefSpeed),
+                SwervePredictionHorizon);
+            var predLat = latOff + (latVel * tte);
+
+            // Does the agent's lateral track over [now, arrival] intersect ego's safety corridor? The
+            // third clause catches an agent that traverses the WHOLE corridor within tte.
+            var corridor = egoHalf + disc.Radius + CrowdYieldLateralMargin;
+            var inPath = Math.Abs(latOff) < corridor
+                || Math.Abs(predLat) < corridor
+                || (latOff < 0.0) != (predLat < 0.0);
+            if (!inPath)
+            {
+                continue;
+            }
+
+            if (back < nearestBack)
+            {
+                nearestBack = back;
+                nearestSpeed = Math.Max(0.0, lon);           // approaching agent -> treat as stopped (conservative)
+                found = true;
+            }
+        }
+
+        if (!found)
+        {
+            return proximityCap;
+        }
+
+        var gap = nearestBack - v.VType.MinGap - v.Kinematics.Pos;
+        var follow = FollowSpeedFor(
+            v.VType,
+            egoSpeed: v.Kinematics.Speed,
+            gap: gap,
+            predSpeed: nearestSpeed,
+            predMaxDecel: v.VType.Decel,
+            laneVehicleMaxSpeed: laneVehicleMaxSpeed,
+            dt: _config!.StepLength,
+            time: time,
+            accControlMode: ref v.AccControlMode,
+            accLastUpdateTime: ref v.AccLastUpdateTime,
+            caccControlMode: ref v.CaccControlMode,
+            egoAcceleration: v.Acceleration,
+            hasPred: true,
+            predIsCacc: false,
+            levelOfService: v.LevelOfService,
+            ballistic: _config!.Ballistic);
+
+        return Math.Min(proximityCap, follow);
     }
 
     // B6 emergency lateral-evasion tuning. Not a SUMO-parity behaviour (SUMO's sublane model does
@@ -10360,9 +10551,17 @@ public sealed partial class Engine : IEngine
         // lane and synthesised as an ExternalObstacle, so the entire B6 selection + swerve machinery
         // (predicted lateral, vacating-side, spill-to-adjacent-lane) applies unchanged. Uses the neutral
         // world-disc seam + LaneProjection, NOT the string obstacle store.
+        // Ego's own CENTRED world position, resolved once when a crowd is attached: used both by the
+        // crowd scan below and by the Task B-guard zone test further down. Declared here (rather than
+        // inside the scan) purely so both readers share the one PositionAtOffset call; unread and
+        // unwritten when CrowdSource is null, so byte-identical on every golden.
+        var egoWorldX = 0.0;
+        var egoWorldY = 0.0;
         if (CrowdSource is not null)
         {
             var (egoWX, egoWY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, 0.0);
+            egoWorldX = egoWX;
+            egoWorldY = egoWY;
             var crowdLookahead = v.Kinematics.Speed * SwervePredictionHorizon + v.VType.Length + v.VType.MinGap + 5.0;
             Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxCrowdDiscs];
             var got = CrowdSource.QueryNear(egoWX, egoWY, crowdLookahead, discs);
@@ -10440,6 +10639,30 @@ public sealed partial class Engine : IEngine
         // (SuppressHeldCrowdSwerve, default false) inside the CrowdSource-gated branch -> doubly unreachable
         // on every parity path, so byte-identical.
         if (SuppressHeldCrowdSwerve && threatIsCrowd && v.BindingConstraint == 13 && Math.Abs(th.LatSpeed) < 1e-9)
+        {
+            return DriftToward(curLat, 0.0, maxStep);
+        }
+
+        // Task B-guard L1 (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.1): inside the high-realism zone a
+        // car must not WEAVE PAST a pedestrian in its path -- it must yield. This is the generalisation of
+        // Task A's held-static gate above from "a ped I have already stopped for" to "any ped in my path,
+        // in-zone", and it is exactly what the crossing-ped repro needs: with the swerve preferred, ego
+        // dodged to posLat 1.41 at 5 m/s, took ONE tick of crowd brake, then recentred and passed the
+        // still-in-lane ped with 0.70 m of clearance at 3.90 m/s.
+        //
+        // The threat set this gate sees is already precisely "a lane-CENTRED ego would hit this agent's
+        // PREDICTED lateral position" (the FootprintsOverlap test in the crowd scan above), i.e. "a ped in
+        // my path" -- a kerb/sidewalk ped never reaches here, so the gate cannot stall a car for someone
+        // standing clear of the lane. Refusing the dodge keeps ego laterally overlapping the ped, which
+        // keeps CrowdLongitudinalConstraint (binder 13) and CrowdYieldConstraint (binder 16) engaged, so
+        // ego brakes, holds behind it, and resumes the moment it clears. A ped walking ALONG the lane is
+        // still followed as a MOVING leader by those constraints (its own longitudinal speed, not a dead
+        // stop), so this is a yield, not a deadlock.
+        //
+        // Recentring is not a manoeuvre, so LateralManoeuvre stays false -- same convention as Task A.
+        // Zone radius is 0 by default and this arm needs threatIsCrowd (=> CrowdSource != null), so it is
+        // doubly unreachable on every parity path.
+        if (threatIsCrowd && InCrowdYieldZone(egoWorldX, egoWorldY))
         {
             return DriftToward(curLat, 0.0, maxStep);
         }
@@ -12492,6 +12715,69 @@ public sealed partial class Engine : IEngine
     // lane-changes are unaffected. Enforces "lateral motion only with forward motion" for the held case.
     // Set by LiveCitySim.
     public bool SuppressHeldCrowdSwerve { get; set; }
+
+    // ---------------------------------------------------------------------------------------
+    // Task B-guard: cars YIELD to pedestrians in their path inside a high-realism zone
+    // (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md; owner rule, LIVE-CITY-REALISM-AB-DESIGN.md §Task B:
+    // "in the high-realism zone a car must NEVER crash into a ped, nor pass one at close distance /
+    // high speed"). Realism knob, NOT a SUMO behaviour.
+    //
+    // Radius <= 0 (the default) => the whole guard is off => byte-identical to every golden and the
+    // bench. It is triply inert on a parity path: nothing there calls SetCrowdYieldZone, every branch
+    // it gates also requires CrowdSource != null (which no golden/bench attaches), and L1 additionally
+    // sits inside the crowd-threat arm of ComputeLateralEvasion.
+    //
+    // The engine tests ego's OWN world position against the zone (a pure function of frozen per-ego
+    // state + three scalars), so it stays order-independent / parallel-safe and needs no per-vehicle
+    // per-step host push -- unlike SetLowRealismLaneChange. LiveCitySim points it at the camera-driven
+    // LC realism zone, so the yield region is exactly the one the viewer highlights.
+    // ---------------------------------------------------------------------------------------
+    private double _crowdYieldZoneX;
+    private double _crowdYieldZoneY;
+    private double _crowdYieldZoneRadius;
+
+    public double CrowdYieldZoneX => _crowdYieldZoneX;
+    public double CrowdYieldZoneY => _crowdYieldZoneY;
+    public double CrowdYieldZoneRadius => _crowdYieldZoneRadius;
+
+    public void SetCrowdYieldZone(double centreX, double centreY, double radius)
+    {
+        _crowdYieldZoneX = centreX;
+        _crowdYieldZoneY = centreY;
+        _crowdYieldZoneRadius = radius;
+    }
+
+    // Inside the yield zone? Always false while the zone is off (radius <= 0), which is the parity
+    // default. Closed disc (a point exactly on the boundary is inside), so the predicate is a pure
+    // function with no epsilon-dependent edge.
+    private bool InCrowdYieldZone(double worldX, double worldY)
+    {
+        if (_crowdYieldZoneRadius <= 0.0)
+        {
+            return false;
+        }
+
+        var dx = worldX - _crowdYieldZoneX;
+        var dy = worldY - _crowdYieldZoneY;
+        return (dx * dx) + (dy * dy) <= _crowdYieldZoneRadius * _crowdYieldZoneRadius;
+    }
+
+    // Task B-guard tuning (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §5). Not SUMO defaults.
+    private const double CrowdYieldLateralMargin = 0.30;   // m added to (egoHalf + pedRadius) for the yield corridor
+    private const double CrowdYieldRefSpeed = 2.0;         // m/s look-ahead floor so a STOPPED ego still anticipates
+    private const double CrowdYieldNearDistance = 1.5;     // m: inside this world clearance, creep only
+    private const double CrowdYieldCreepSpeed = 1.5;       // m/s: the speed a car may pass a ped at, at touching distance
+    private const double CrowdYieldProximityGain = 3.0;    // 1/s cap slope; unbinds beyond ~2.7 m for a 5 m/s car
+    private const double CrowdYieldCapHorizon = 1.0;       // s the proximity cap looks ahead (see its call site)
+
+    // The Task B-guard speed cap as a function of world clearance to a pedestrian: a full STOP at contact,
+    // ramping to the creep speed at CrowdYieldNearDistance, then relaxing linearly so it stops binding
+    // entirely a couple of metres out. Continuous at both knees. The stop-at-contact arm matters: a car
+    // whose body is already touching a person must not keep rolling through them at walking pace.
+    private static double ProximitySpeedCap(double clearance) =>
+        clearance <= 0.0 ? 0.0
+        : clearance < CrowdYieldNearDistance ? CrowdYieldCreepSpeed * (clearance / CrowdYieldNearDistance)
+        : CrowdYieldCreepSpeed + ((clearance - CrowdYieldNearDistance) * CrowdYieldProximityGain);
 
     // F3 junction physical-occupancy gate (docs/F3-JUNCTION-OVERLAP-DESIGN.md). DEFAULT false = OFF =
     // byte-identical to every golden; the whole new path is behind this flag, so parity is untouched.

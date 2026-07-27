@@ -35,5 +35,13 @@ public interface ICrowdFootprintSource
 {
     // Fill `into` with movers whose centre is within `radius` of (x, y). Returns the count written.
     // Reads FROZEN start-of-step state only (the caller relies on it being side-effect-free).
+    //
+    // WHEN MORE MOVERS ARE IN RANGE THAN FIT, THE NEAREST ONES WIN, ordered nearest-first, ties broken by
+    // enumeration order (stable). This is load-bearing, not a nicety: every consumer passes a small fixed
+    // span, so "which ones survive truncation" decides whether a vehicle can see the pedestrian directly
+    // in front of it. Filling in enumeration order until full -- the original behaviour -- made a car at
+    // demo density blind to the pedestrian it was about to hit, because sixteen irrelevant ones forty
+    // metres away happened to be enumerated first. Implementations MUST use WorldDiscQuery.InsertNearest
+    // (or match it exactly); CrowdQueryNearTests pins the contract for each one.
     int QueryNear(double x, double y, double radius, Span<WorldDisc> into);
 }

@@ -4,10 +4,11 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **755/4** with all 661 goldens byte-identical;
-`Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **50/50**
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **775/4** with all 661 goldens byte-identical
+(755/4 before the car-yields-ped branch, which adds exactly 20 tests and perturbs none);
+`Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **53/53**
 (⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
-you will test stale code). `Sim.Pedestrians.Tests` = **272/272**.
+you will test stale code). `Sim.Pedestrians.Tests` = **277/277**.
 
 > **The bench hash moved with PR #13** (`D96213B7BB4021A7` → `BF3794A4704BCD79`) because the seven
 > junction/overlap gates now default **ON**. Verified attributable by stashing only the `Engine` defaults and
@@ -22,7 +23,7 @@ you will test stale code). `Sim.Pedestrians.Tests` = **272/272**.
 | Session | Branch | Status | Scope / tracker |
 |---|---|---|---|
 | realism-A/B | `claude/task-a-held-crowd-swerve` | **A DONE — MERGED to main** (PR #12) | Task A (stopped-car lateral wobble): targeted redo `Engine.SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression), guarded by F4a. Crosswalk scope verified (`CrosswalkCrossingPedTests`). Parity 664/4, bench `D96213B7BB4021A7`, LiveCity 45/45 |
-| car-yields-ped | `claude/car-yields-crossing-ped` | **to be started** | **car→ped YIELD (Task B-guard)**: a car STOPS for a ped crossing/in its path instead of weaving past at ~5 m/s. Edits `ComputeLateralEvasion` crowd-swerve gate + `CrowdLongitudinalConstraint`. Repro committed: `CrosswalkCrossingPedTests`. Clear of the two running sessions (§coordination). Brief: **`docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`** |
+| car-yields-ped | `claude/live-city-car-yields-ped-i4rczr` | **DONE — PR open to main** | **car→ped YIELD (Task B-guard)** delivered + the `QueryNear` nearest-first fix it uncovered. Demo @800 peds: in-zone close-fast-passes **203 → 14**, of which car-driving-AT-a-ped (HEAD-ON) **11 → 0**; throughput unchanged; parity 775/4, bench `BF3794A4704BCD79`, LiveCity 53/53. Docs: **`LIVE-CITY-CAR-YIELDS-PED-{DESIGN,TASKS,TRACKER}.md`** (open items in the TRACKER's "Still worth doing") |
 | ped–vehicle avoidance | `claude/livecity-ped-vehicle-avoidance` | to be started | car↔ped coupling **minus the yield**: B-api (`ExternalObstacle`→`WorldDisc`) + #5/C5 (car→ped disc feed) · `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md`. (B-guard → car-yields-ped; #4 → ped-LOD-lifecycle.) |
 | ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle-bylitj` | **STARTED** | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored) + #6 (idle clustering). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side surface**. Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`** |
 | F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **MERGED to main (PR #13)** | junction overlap + gridlock + **junction DISCHARGE**. Seven junction/overlap gates now default **ON**; the arm-14 four-way circular wait is fixed; the density-diff harness (vs *honest* SUMO) is in. Discharge is measured but NOT fixed — next step is a per-vehicle SUMO-oracle trace, see `F3-SESSION-LOG.md` §6. Docs: `F3-SESSION-LOG.md` · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` |
@@ -73,6 +74,13 @@ bench **`BF3794A4704BCD79`**, par==single):
   131 crowd discs in range, so the old `stackalloc[16]` truncated the in-path disc ~90% of the time → cars
   drove *through* peds. Parity-inert (gated on `CrowdSource != null`). **The B / ped–vehicle sessions depend on
   this** — their crossing/ORCA reactions rely on the crowd query not truncating at density.
+  **Superseded as the safety mechanism by the car-yields-ped branch**, which made
+  `ICrowdFootprintSource.QueryNear` return the *nearest* movers rather than an arbitrary enumeration-order
+  subset (all three implementations, via `WorldDiscQuery`). Measured: the safety property (zero cars driving
+  AT a ped) holds at **every** buffer size including the original 16 — it comes from the contract, not the
+  number — while the buffer stays a fidelity knob that saturates at 64 for 800 peds. So this is now
+  headroom, not the thing standing between the demo and cars driving through people. Sweep + reasoning:
+  `docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md` §8, §8.2.
 - [x] **Viewer click-to-identify** — `ScenePayload.VehIds` emitted by `VizReplayBuilder` (from
   `IReplicationSource.Names`) + amber ring in `template.js`. Click a car → its `__vehN` id (matches trace
   names). Was inert before (payload emitted no `vehIds`).
@@ -125,13 +133,20 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   "Crosswalk scope"): the wobble is the *static/stopped-mid-crossing* ped case → **fixed**; a *moving*
   crossing ped never floats a stopped car (fix inert). The distinct "car weaves around a crossing ped at
   speed instead of stopping" is NOT the wobble → routed to **B** below.
-- [ ] **B — car close-fast-passes / weaves around ORCA peds instead of stopping** *(ped–vehicle avoidance session — to be started)*.
-  High-realism-zone world-space hard ped-safety guard (car-stops-before-ped, NOT lane-projection based) +
-  unify the string `ExternalObstacle` dodge/stop onto the `WorldDisc` seam. **Also owns** the crosswalk
-  residual from Task A's repro: a car **anticipatorily dodges a crossing ped at ~5 m/s** rather than yielding
-  (crowd-swerve's "prefer swerve over hard-stop", `ComputeLateralEvasion`) — the hard guard must override it.
-  Minimal unit repro: `CrosswalkCrossingPedTests`' crossing-ped setup. Briefs: AB-DESIGN §Task B,
-  `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` §4.
+- [x] **B-guard — car close-fast-passes / weaves around ORCA peds instead of stopping — DONE**
+  *(car-yields-ped session)*. Three pieces, all behind a world-space yield zone (`Engine.SetCrowdYieldZone`,
+  radius 0 = off, wired to the camera-driven LC-realism zone): **L1** suppresses the crowd swerve in-zone so
+  a car holds behind a ped in its path instead of weaving past it; **L2** `CrowdYieldConstraint` (**binder
+  16**) adds an anticipatory yield against the ped's *predicted* corridor track — which catches conflicts
+  binder 13's current-overlap sample structurally misses — plus a world-space proximity cap (stop at
+  contact, creep below 1.5 m) evaluated on the *predicted* clearance so it is reachable under braking.
+  Repro (`CrosswalkCrossingPedTests`): 0.70 m clearance @ 3.90 m/s → 2.00 m @ 3.67 m/s, zero weave, holds
+  while the ped is in the lane, back at maxSpeed one tick after it clears. Demo @800 peds
+  (`DemoPedYieldInvariantTests`): in-zone close-fast-passes **203 → 14**, HEAD-ON **11 → 0**, arrivals
+  unchanged, `DenseFlow…NoGridlock` green. Detail + the open items:
+  **`docs/LIVE-CITY-CAR-YIELDS-PED-{DESIGN,TASKS,TRACKER}.md`**.
+  **Still open from the original B scope** (→ ped–vehicle avoidance session): **B-api**, unifying the string
+  `ExternalObstacle` dodge/stop onto the `WorldDisc` seam — deliberately not folded in (own parity surface).
 - [x] **Realism #3 — low-power peds DISAPPEAR on promotion** — FIXED (ped-LOD-lifecycle). Root: the promoted
   ped had `Model=FreeKinematic` on the wire but no pose sample yet (origin-snap → culled), and the crowd frame
   was fragmented by heartbeats interleaved among the samples (receiver kept only the last fragment → frozen
@@ -154,6 +169,58 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   avoidance or a later dedicated session)*. N ped `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones` API, re-point
   the C5 disc-feed bound at the zone union, optional bit-identical `OrcaCrowd` disc index (the one `Sim.Core`
   touch, must stay parity-inert). Handoff: `docs/LIVE-CITY-MULTI-CAMERA-REALISM-ZONES-HANDOFF.md`.
+
+### Opened by the car-yields-ped session (measured; see that TRACKER's "Still worth doing" for the evidence)
+- [ ] **Out-of-zone cars are BLIND to pedestrians.** `CrowdSource = Composite(HighPowerFootprints,
+  CrossingOccupancy)` and peds promote to HighPower only inside the LC-realism zone, so outside it a car
+  sees a ped only if that ped is on a crossing. Measured cross-tab @800 peds: every `HighPower` event
+  in-zone, every `LowPowerWalking`/`Paused` event out-of-zone; arming the yield **net-wide** as a probe arm
+  barely helped (3739 → 3458) because the cars have no data. This is a **ped-LOD feed** decision with a real
+  perf cost, not a car-yield change — it bounds how far any car-side ped safety work can go. *(unallocated;
+  natural fit = ped-LOD-lifecycle or ped–vehicle)*
+- [ ] **`OrcaCrowd.QueryNear` is a full scan** since the nearest-first contract removed its early exit.
+  **MEASURED — it does NOT scale badly, and an earlier note here saying it would was wrong.** The scan is
+  over the crowd the car can actually see, which is `HighPowerFootprints` = the **promoted** population
+  only, and `OrcaCrowd.Count` is a slot high-water mark. Measured (200 steps, warm):
+
+  | total peds | promoted (live) | slots scanned | ms/step (160 cars) |
+  |---|---|---|---|
+  | 800 | 7 | 67 | 12.1 |
+  | 1600 | 38 | 132 | 15.6 |
+  | 3200 | 123 | 275 | 35.0 |
+
+  Doubling CARS is invisible in wall time (160 → 320 cars: 12.1 → 12.4 ms at 800 peds; 35.0 → 34.6 at
+  3200), so the O(cars × agents) term is below the noise floor — the growth with ped count is the
+  **ped-side ORCA/LOD** cost, not this scan. At dt=0.5 s, 35 ms/step is ~15× inside the real-time budget.
+  **Do not "optimise" this now: at 67–275 slots a 121-cell grid lookup plus the order-preserving sort
+  would very likely be SLOWER than the linear scan.** Revisit only when one of these lands, and measure
+  first:
+    * **much larger / multiple realism zones** (W4) — promoted count scales with zone area, and the owner's
+      standing requirement is "honor the zone radius, no matter perf";
+    * **feeding low-power peds to the car side** (the "out-of-zone cars are blind" item above) — that makes
+      `CrowdSource` the WHOLE population, at which point the scan really is O(total peds) per car and the
+      grid becomes necessary. **These two items are coupled: fixing the blindness is what makes this
+      urgent.**
+
+  If it is done, the existing `UseSpatialHash` grid (already ON for the demo crowd in `PedLodManager`, and
+  rebuilt every `Step`, so it is already paid for) is the vehicle — but it is **not a flag flip**:
+  `GridCandidates` is agent-indexed with a hard-coded 3×3 ring sized for `NeighbourDist = 15 m`, whereas
+  `QueryNear`'s radius reaches ~66 m (an 11×11 ring); the grid is rebuilt BEFORE the crowd commits its
+  move while the engine queries AFTER, so a query must inflate the ring by `maxSpeed × dt` or it
+  reintroduces exactly the silent-miss class the nearest-first contract just removed; and the candidate
+  list must stay sorted ascending by index, as `GridCandidates` already does, to keep the nearest-k
+  tie-break (enumeration order) deterministic.
+- [ ] **`MaxCrowdDiscs` 256 → 64** — measured identical at 800 peds for 4× less stack per call site, and
+  with the nearest-first contract the degradation is graceful. Kept at 256 only for the 10×-density headroom
+  f9c837c measured. Low priority (wall time is flat across 16…256).
+- [ ] **One home for the vehicle-pose convention.** `Sim.Ingest/VehicleObb.cs` (box↔box) states — correctly
+  — that the naviDegree + front-bumper conventions must have exactly ONE implementation, beside the
+  `LaneGeometry` that defines them. `Sim.Core/VehicleFootprint.cs` (box↔disc, added by car-yields-ped) is a
+  second encoding of the same two conventions in a different assembly. Correct and rotation-tested today;
+  consolidate before a third appears.
+- [ ] **Stale brief:** `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 cites `--live-city-orcatrace` /
+  `--live-city-cartrace`, which no longer exist in `src/Sim.Viz/Program.cs` (removed by the T1–T3 viz
+  refactor). Any handoff pointing at them needs the same correction.
 
 ## Demo integrity (from the 2026-07 replay review — realism-A/B session)
 Full evidence + root causes: **`docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md`** (F1–F4). **Resume/handoff state:

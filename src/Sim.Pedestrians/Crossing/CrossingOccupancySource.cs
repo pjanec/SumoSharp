@@ -135,6 +135,9 @@ public sealed class CrossingOccupancySource : ICrowdFootprintSource
             return 0; // fast path: nothing is on a crossing -> the vehicle pays ~nothing
         }
 
+        // Keeps the NEAREST occupied-crossing discs when more are in range than fit -- see
+        // ICrowdFootprintSource.QueryNear's contract. (No early exit once `into` is full: a later, closer
+        // crossing must still displace an earlier, farther one.)
         var n = 0;
         for (var i = 0; i < _occupiedCount; i++)
         {
@@ -144,12 +147,7 @@ public sealed class CrossingOccupancySource : ICrowdFootprintSource
             var dy = d.Y - y;
             if (dx * dx + dy * dy <= rr * rr)
             {
-                if (n >= into.Length)
-                {
-                    break;
-                }
-
-                into[n++] = d;
+                n = Sim.Core.Bridge.WorldDiscQuery.InsertNearest(into, n, d, x, y);
             }
         }
 
