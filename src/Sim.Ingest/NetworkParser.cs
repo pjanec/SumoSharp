@@ -207,12 +207,235 @@ public static class NetworkParser
             }
         }
 
+        // F3/cont-turn (docs/NEED-contturn-stuck-in-junction.md): "which junction does this internal
+        // lane belong to", for EVERY internal lane -- the port of SUMO's MSLane::isInternal()
+        // (sumo/src/microsim/MSLane.cpp:2498 -> MSEdge::isInternal(), MSEdge.h:264), which is a LANE
+        // PROPERTY true for every internal lane of every STAGE of a junction.
+        //
+        // `LinkByInternalLane` above CANNOT answer this: it is keyed off `Junction.IntLanes`, and
+        // netconvert writes only the LINK-CONTROLLING lane there -- for a `cont` turn (one split by an
+        // internal junction) it emits the SECOND-stage lane and omits the first
+        // (NWWriter_SUMO.cpp:634-649: `haveVia ? viaID + "_0" : getInternalLaneID()`). So a vehicle on
+        // the FIRST-stage lane (e.g. :C_3_0, with only :C_16_0 in intLanes) is invisible to any
+        // "am I inside the junction" test written against IntLanes -- see the NEED doc for the
+        // 95-step mid-junction freeze that caused.
+        //
+        // Recovering the first-stage lanes needs no new parsing: for a cont turn the link's own
+        // connection STARTS on the first-stage internal edge (`<connection from=":C_3" to="CE"
+        // via=":C_16_0"/>`), so walking `Connection.From` backwards while it is an internal (':')
+        // edge enumerates every earlier stage. The walk is bounded (guard 8, as in the pool's
+        // via-chain walk) and terminates as soon as `From` is a normal edge.
+        // F3/isLeader T2.1: `LinkIndexByInternalLane` and `EntryConnectionByLink` are built by the
+        // SAME back-walk as `junctionByInternalLane` above -- it already visits exactly the lanes
+        // (both cont stages) these two new maps need, so this extends that traversal rather than
+        // adding a second one (per the design doc's explicit instruction).
+        //
+        // `entryConnection` starts as `link.Connection` (correct already for a non-cont link, whose
+        // `Connection` IS the entry hop) and is overwritten by each `previousHop` found while
+        // walking back through internal stages; the LAST such overwrite -- the hop whose `From` is
+        // finally a normal edge -- is SUMO's `getCorrespondingEntryLink()` result
+        // (MSLink.cpp:1331-1339: "walks back while laneBefore->isInternal()").
+        var junctionByInternalLane = new Dictionary<string, Junction>(StringComparer.Ordinal);
+        var linkIndexByInternalLane = new Dictionary<string, (Junction Junction, int LinkIndex)>(StringComparer.Ordinal);
+        var entryConnectionByLink = new Dictionary<(string JunctionId, int LinkIndex), Connection>();
+        foreach (var junction in junctions)
+        {
+            foreach (var link in junction.Links)
+            {
+                junctionByInternalLane[link.InternalLaneId] = junction;
+                linkIndexByInternalLane[link.InternalLaneId] = (junction, link.Index);
+
+                var entryConnection = link.Connection;
+
+                var fromEdgeId = link.Connection.From;
+                for (var guard = 0; guard < 8 && fromEdgeId.Length > 0 && fromEdgeId[0] == ':'; guard++)
+                {
+                    if (!edgesById.TryGetValue(fromEdgeId, out var internalEdge))
+                    {
+                        break;
+                    }
+
+                    foreach (var lane in internalEdge.Lanes)
+                    {
+                        junctionByInternalLane[lane.Id] = junction;
+                        linkIndexByInternalLane[lane.Id] = (junction, link.Index);
+                    }
+
+                    // Step one stage further back: the connection whose `via` lands on this edge.
+                    Connection? previousHop = null;
+                    foreach (var c in connections)
+                    {
+                        if (c.Via is { } via
+                            && lanesById.TryGetValue(via, out var viaLane)
+                            && string.Equals(viaLane.EdgeId, fromEdgeId, StringComparison.Ordinal))
+                        {
+                            previousHop = c;
+                            break;
+                        }
+                    }
+
+                    if (previousHop is null)
+                    {
+                        break;
+                    }
+
+                    entryConnection = previousHop;
+                    fromEdgeId = previousHop.From;
+                }
+
+                entryConnectionByLink[(junction.Id, link.Index)] = entryConnection;
+            }
+        }
+
         // D2: LaneHandleById mirrors lanesById's keys 1:1 (every lane got exactly one handle
         // above), just projecting Id -> Handle instead of Id -> Lane.
         var laneHandleById = new Dictionary<string, int>(lanesById.Count, StringComparer.Ordinal);
         foreach (var lane in lanesByHandle)
         {
             laneHandleById[lane.Id] = lane.Handle;
+        }
+
+        // F3/internal-junction-foes T3.1 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §4, §7 T3.1; ported
+        // from MSInternalJunction.cpp's `postloadInit`, lines ~60-95). A second, SEPARATE pass over
+        // every `<junction>` element -- `type="internal"` junctions parse into `InternalJunction`
+        // here regardless of their (always empty) `<request>` set, rather than through
+        // `ParseJunction`'s bail-out above (which would otherwise discard them).
+        var internalJunctions = new List<InternalJunction>();
+        var internalJunctionByBayLane = new Dictionary<string, InternalJunction>(StringComparer.Ordinal);
+        var internalLaneFoes = new Dictionary<string, IReadOnlyList<int>>(StringComparer.Ordinal);
+
+        foreach (var junctionEl in root.Elements("junction"))
+        {
+            if (junctionEl.Attribute("type")?.Value != "internal")
+            {
+                continue;
+            }
+
+            var internalId = RequireAttribute(junctionEl, "id");
+            var incLanesAttr = junctionEl.Attribute("incLanes")?.Value ?? string.Empty;
+            var incLanes = incLanesAttr.Length == 0
+                ? new List<string>()
+                : incLanesAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+            var candidateIntLanesAttr = junctionEl.Attribute("intLanes")?.Value ?? string.Empty;
+            var candidateIntLanes = candidateIntLanesAttr.Length == 0
+                ? new List<string>()
+                : candidateIntLanesAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+            var internalJunction = new InternalJunction(internalId, incLanes, candidateIntLanes);
+            internalJunctions.Add(internalJunction);
+
+            // MSInternalJunction.cpp:60-61: "the first lane in the list of incoming lanes is
+            // special. It defines the link that needs to do all the checking for this internal
+            // junction" -- keyed on IncLanes[0] ONLY (last-wins on a duplicate key is a non-issue:
+            // no committed net has two internal junctions sharing the same checker lane).
+            if (incLanes.Count > 0)
+            {
+                internalJunctionByBayLane[incLanes[0]] = internalJunction;
+            }
+
+            // MSInternalJunction.cpp:62-70: resolve the parent (real) junction and `ownLinkIndex` --
+            // the special lane's OWN link index at the parent, exactly what `LinkIndexByInternalLane`
+            // (T2.1) already maps both cont stages to. SUMO returns early (no foes at all) when the
+            // parent has no right-of-way logic (`traffic_light_unregulated`, MSInternalJunction.cpp:
+            // 64-65) -- mirrored here by simply leaving `internalLaneFoes` unset for this junction id
+            // when the special lane doesn't resolve to a parent link + matching `<request>` row.
+            if (incLanes.Count == 0
+                || !linkIndexByInternalLane.TryGetValue(incLanes[0], out var own))
+            {
+                continue;
+            }
+
+            var ownLinkIndex = own.LinkIndex;
+            var parentJunction = own.Junction;
+
+            JunctionRequest? ownRequest = null;
+            foreach (var r in parentJunction.Requests)
+            {
+                if (r.Index == ownLinkIndex)
+                {
+                    ownRequest = r;
+                    break;
+                }
+            }
+
+            if (ownRequest is null)
+            {
+                continue;
+            }
+
+            // MSInternalJunction.cpp:66-90 `postloadInit`'s outer loop, the two-branch rule (design
+            // §1's correction): for each candidate `lane` in this internal junction's OWN
+            // `IntLanes`, look at the candidate's OWN outgoing link.
+            //   - `link->getViaLane() != nullptr` (candidate leads to another internal lane, i.e. it
+            //     is itself a cont turn's STAGE-1 bay of a DIFFERENT internal junction): conditional
+            //     add of the candidate itself (`response.test(foeIndex)`), UNCONDITIONAL add of its
+            //     stage-2 lane (`link->getViaLane()`).
+            //   - otherwise (a PLAIN internal lane): UNCONDITIONAL add of the candidate itself.
+            //
+            // A candidate "leads to another internal lane" iff it is NOT itself the link-controlling
+            // (final-stage) lane for its own link index -- i.e. `LinkIndexByInternalLane[candidate]`
+            // resolves to a link index `i` at the SAME parent junction whose `IntLanes[i] != candidate`
+            // (design §3a's exact shape, applied here to a FOE candidate rather than to ego).
+            var foeLaneIdsOrdered = new List<string>();
+            var foeLaneIdSeen = new HashSet<string>(StringComparer.Ordinal);
+
+            void AddFoeIfAbsent(string laneId)
+            {
+                if (foeLaneIdSeen.Add(laneId))
+                {
+                    foeLaneIdsOrdered.Add(laneId);
+                }
+            }
+
+            foreach (var candidate in candidateIntLanes)
+            {
+                var isBay = false;
+                var candLinkIndex = -1;
+
+                if (linkIndexByInternalLane.TryGetValue(candidate, out var cand)
+                    && ReferenceEquals(cand.Junction, parentJunction)
+                    && cand.LinkIndex >= 0
+                    && cand.LinkIndex < parentJunction.IntLanes.Count
+                    && parentJunction.IntLanes[cand.LinkIndex] != candidate)
+                {
+                    isBay = true;
+                    candLinkIndex = cand.LinkIndex;
+                }
+
+                if (isBay)
+                {
+                    // MSInternalJunction.cpp:78: `response.test(foeIndex)` -- ownRequest IS
+                    // `response` (the parent's `Requests[ownLinkIndex]`); `candLinkIndex` IS
+                    // `foeIndex` (`lane->getIncomingLanes()[0].viaLink->getIndex()`, i.e. the
+                    // candidate's own entry link index at the parent -- exactly what
+                    // `LinkIndexByInternalLane` already resolves for a cont bay).
+                    if (ownRequest.RespondsTo(candLinkIndex))
+                    {
+                        AddFoeIfAbsent(candidate);
+                    }
+
+                    // MSInternalJunction.cpp:83-86 `addIfAbsent(myInternalLaneFoes,
+                    // link->getViaLane())`: the candidate's stage-2 lane is ALWAYS a foe, regardless
+                    // of the response test above.
+                    AddFoeIfAbsent(parentJunction.IntLanes[candLinkIndex]);
+                }
+                else
+                {
+                    // MSInternalJunction.cpp:87-89 `addIfAbsent(myInternalLaneFoes, lane)`.
+                    AddFoeIfAbsent(candidate);
+                }
+            }
+
+            var foeHandles = new List<int>(foeLaneIdsOrdered.Count);
+            foreach (var foeLaneId in foeLaneIdsOrdered)
+            {
+                if (laneHandleById.TryGetValue(foeLaneId, out var handle))
+                {
+                    foeHandles.Add(handle);
+                }
+            }
+
+            internalLaneFoes[internalId] = foeHandles;
         }
 
         return new NetworkModel(
@@ -227,7 +450,13 @@ public static class NetworkParser
             junctionsById,
             linkByInternalLane,
             lanesByHandle,
-            laneHandleById);
+            laneHandleById,
+            junctionByInternalLane,
+            linkIndexByInternalLane,
+            entryConnectionByLink,
+            internalJunctions,
+            internalJunctionByBayLane,
+            internalLaneFoes);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert
