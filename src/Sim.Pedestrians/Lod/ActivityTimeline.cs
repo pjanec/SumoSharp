@@ -59,7 +59,15 @@ public abstract record ActivitySegment(ActivitySegmentKind Kind, double Duration
 // half-width (parallel to `Path`) the deterministic lateral weave clamps to. NULL == weave OFF: the pose is
 // exactly the centreline (byte-identical to pre-weave PathArc), which is why every existing caller/timeline
 // is unaffected until it opts in by supplying widths (W2 sources them from PedLane.Width/2).
-public sealed record WalkSegment(IReadOnlyList<Vec2> Path, double Speed, IReadOnlyList<double>? HalfWidths = null)
+public sealed record WalkSegment(
+    IReadOnlyList<Vec2> Path,
+    double Speed,
+    IReadOnlyList<double>? HalfWidths = null,
+    // Per-vertex surface elevation, index-aligned with `Path`, null on a 2-D net. Carried alongside
+    // `HalfWidths` and treated exactly like it: OUTPUT-ONLY, read at the render seam and by no steering,
+    // ORCA or timing decision -- `ComputeDuration` below deliberately still uses the 2-D path length, so
+    // a graded leg takes the same time it always did and no trajectory moves.
+    IReadOnlyList<double>? Elevations = null)
     : ActivitySegment(ActivitySegmentKind.Walk, ComputeDuration(Path, Speed))
 {
     private static double ComputeDuration(IReadOnlyList<Vec2> path, double speed) =>

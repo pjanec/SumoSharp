@@ -352,7 +352,8 @@ public sealed class PedDemand
             var timeline = BuildLivelyTimeline(
                 path, now, liveliness, pedSpeed, ref livelinessRng,
                 _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
-                _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng);
+                _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng,
+                ElevationsOrNull);
             _lodManager.AddPedLively(id, timeline, pedSpeed, _config.Radius, now);
         }
         else
@@ -381,16 +382,42 @@ public sealed class PedDemand
     // values are always adjacent in the stream regardless of how many other candidates land). Accepted
     // candidates are then sorted by fraction so they always splice into the route in along-route
     // order, independent of draw order.
+    // The elevation sampler handed to BuildLivelyTimeline: the nav's channel, or NULL when it is flat.
+    // Collapsing all-zeros to null is what keeps a 2-D net's WalkSegments (and therefore its timeline
+    // wire bytes, beyond the single flag byte) identical to before elevation existed.
+    private IReadOnlyList<double>? ElevationsOrNull(IReadOnlyList<Vec2> pts)
+    {
+        if (pts.Count == 0)
+        {
+            return null;
+        }
+
+        var zs = _navigation.ElevationsAlong(pts);
+        for (var i = 0; i < zs.Count; i++)
+        {
+            if (zs[i] != 0.0)
+            {
+                return zs;
+            }
+        }
+
+        return null;
+    }
+
     private static ActivityTimeline BuildLivelyTimeline(
         IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng,
         bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
-        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ref VehicleRng waitRng)
+        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>?>? elevationsAlong = null)
     {
         // W2: each Walk leg's per-vertex half-width, sampled from the navmesh for that exact (possibly
         // pause-split) sub-path -- so an interpolated split point gets the width of the polygon it lands in.
         // Weave off => null widths => the WalkSegment weave is inactive (pose stays on the centreline).
+        // Elevation rides every Walk leg regardless of the weave flag -- it is a render channel, not a
+        // weave input -- and is sampled for that exact (possibly pause-split) sub-path, so an
+        // interpolated split point gets the height of the surface it actually lands on.
         WalkSegment MakeWalk(IReadOnlyList<Vec2> pts) =>
-            weave ? new WalkSegment(pts, maxSpeed, halfWidthsAlong(pts)) : new WalkSegment(pts, maxSpeed);
+            new(pts, maxSpeed, weave ? halfWidthsAlong(pts) : null, elevationsAlong?.Invoke(pts));
 
         var pauses = new List<(double Fraction, double Duration)>();
         for (var i = 0; i < liveliness.MaxPausesPerTrip; i++)
@@ -636,7 +663,7 @@ public sealed class PedDemand
                 var crossPts = new List<Vec2> { blobPoint, path[i + 1] };
                 result.Add(w.HalfWidths != null
                     ? new WalkSegment(crossPts, speed, halfWidthsAlong(crossPts))
-                    : new WalkSegment(crossPts, speed)); // diagonal cross
+                    : new WalkSegment(crossPts, speed)); // diagonal cross (weave-only helper, no z channel)
                 t += (path[i + 1] - blobPoint).Abs / speed;
 
                 segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex

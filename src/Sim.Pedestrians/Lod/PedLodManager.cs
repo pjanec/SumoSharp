@@ -692,7 +692,7 @@ public sealed class PedLodManager
                 var widths = _navigation.HalfWidthsAlong(newPath);
                 var resume = new ActivityTimeline(
                     now,
-                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths) },
+                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths, ElevationChannelFor(newPath)) },
                     e.WeaveSeed, e.WeaveGlobalSeed);
 
                 e.Model = PedDrModel.ActivityTimeline;

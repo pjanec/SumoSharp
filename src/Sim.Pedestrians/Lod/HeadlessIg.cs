@@ -109,13 +109,11 @@ public sealed class HeadlessIg
     // evaluator, so the reconstructed z and the reconstructed pos cannot disagree, and the remote
     // surface lands on the same number the in-process one does.
     //
-    // KNOWN GAP -- LIVELY PEDS GET NO WIRE ELEVATION. A ped in the ActivityTimeline model is published
-    // as an `ActivityTimelineRecord`, never as a PathArc, and `ActivityTimelineWire`'s encoding carries
-    // no elevation channel. The W1 decision extended the PathArc record only, so on this surface such a
-    // ped reports 0.0 no matter how 3-D the net is. This is a limitation of the frozen wire design, not
-    // of this implementation: closing it needs a second wire-format change (a per-WalkSegment elevation
-    // channel in ActivityTimelineWire), which is deliberately NOT taken unilaterally here. The
-    // IN-PROCESS surface (LiveCitySim.Sample) is unaffected and reports real elevation for these peds.
+    // A LIVELY (ActivityTimeline) ped is published as a timeline, never as a PathArc, so its elevation
+    // rides the per-WalkSegment channel `ActivityTimelineWire` now carries (the follow-up to W1, which
+    // had extended the PathArc record only and therefore left the lively population -- most of the
+    // live-city scene -- flat on this surface). Resolved by projecting the reconstructed pose onto the
+    // timeline's own walk geometry, the same way the server does for the same model.
     //
     // 0.0 whenever the stream carries no elevation -- a kind-4 publisher, or a 2-D net. Per §9.1 that is
     // deliberately indistinguishable from "genuinely at 0 m"; a consumer needing to tell them apart
@@ -131,6 +129,11 @@ public sealed class HeadlessIg
     {
         var state = _peds[id];
 
+        if (state.Model == PedDrModel.ActivityTimeline && state.Timeline is { } timeline)
+        {
+            return TimelineElevationAt(timeline, at);
+        }
+
         if (state.Path is not { Count: > 0 } path || state.PathZ is not { Count: > 0 })
         {
             return 0.0;
@@ -144,6 +147,65 @@ public sealed class HeadlessIg
         // FreeKinematic / Stationary: the pose is dead-reckoned off the last sample and is deliberately
         // not on the polyline, so project the position the caller is actually rendering.
         return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
+    }
+
+    // Elevation along a timeline's Walk legs: pick the leg whose polyline the pose is nearest to, then
+    // read the height off that leg's own channel. Walking the legs (rather than assuming the first) is
+    // what keeps a multi-leg timeline -- a route split by kerb pauses, or a Walk-Pause-Walk trip --
+    // correct at every point of it. Legs with no channel (a 2-D net) contribute nothing, so such a
+    // timeline yields 0.0 exactly as before.
+    private static double TimelineElevationAt(ActivityTimeline timeline, Vec2 at)
+    {
+        var best = double.PositiveInfinity;
+        var bestZ = 0.0;
+
+        foreach (var segment in timeline.Segments)
+        {
+            if (segment is not WalkSegment { Path.Count: > 0 } walk
+                || walk.Elevations is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            var d2 = NearestDistanceSquared(walk.Path, at);
+            if (d2 < best)
+            {
+                best = d2;
+                bestZ = Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(walk.Path, walk.Elevations, at);
+            }
+        }
+
+        return bestZ;
+    }
+
+    private static double NearestDistanceSquared(IReadOnlyList<Vec2> shape, Vec2 p)
+    {
+        if (shape.Count == 1)
+        {
+            return (p - shape[0]).Abs * (p - shape[0]).Abs;
+        }
+
+        var best = double.PositiveInfinity;
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var a = shape[i];
+            var b = shape[i + 1];
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var len2 = (dx * dx) + (dy * dy);
+            var t = len2 > 0.0
+                ? Math.Clamp((((p.X - a.X) * dx) + ((p.Y - a.Y) * dy)) / len2, 0.0, 1.0)
+                : 0.0;
+            var qx = a.X + (t * dx);
+            var qy = a.Y + (t * dy);
+            var d2 = ((p.X - qx) * (p.X - qx)) + ((p.Y - qy) * (p.Y - qy));
+            if (d2 < best)
+            {
+                best = d2;
+            }
+        }
+
+        return best;
     }
 
     // LIVE-POC-1: the ActivityTimeline model carries more than a position -- heading, animation tag,

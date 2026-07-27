@@ -146,18 +146,18 @@ public class PedRemoteElevationTests
         _output.WriteLine($"C5.SC4 worst |wireZ - inProcessZ| over {samples} samples: {worst:F4} m");
     }
 
-    // ---- the documented gap, asserted so it cannot be forgotten -------------------------------------
+    // ---- lively peds: the follow-up that closed W1's gap ---------------------------------------------
 
     [Fact]
-    public void ALivelyPedsWireRecord_CarriesNoElevation_TheKnownGap()
+    public void ALivelyPedsTimeline_CarriesElevationOverTheWire()
     {
-        // A ped in the ActivityTimeline model is published as an ActivityTimelineRecord, and that wire
-        // format has no elevation channel -- the W1 decision extended the PathArc record only. So the
-        // REMOTE surface reports 0.0 for such a ped however 3-D the net is, while the IN-PROCESS surface
-        // reports its real height. Asserted here rather than left as a surprise: if someone later extends
-        // ActivityTimelineWire, this test fails and points at the note to delete.
+        // A ped in the ActivityTimeline model is published as a timeline, never as a PathArc. W1 extended
+        // the PathArc record only, which left the ENTIRE lively population -- most of the live-city
+        // scene -- flat on this surface. ActivityTimelineWire now carries a per-WalkSegment elevation
+        // channel, so it reconstructs like everyone else.
         var (bus, publisher, wire) = NewWire();
-        var timeline = new ActivityTimeline(0.0, new ActivitySegment[] { new WalkSegment(Ramp, 1.0) });
+        var timeline = new ActivityTimeline(
+            0.0, new ActivitySegment[] { new WalkSegment(Ramp, 1.0, null, RampZ) });
         publisher.PublishActivityTimeline(id: 1, timeline, time: 0.0);
         // The switch event is what puts the IG into the timeline model -- exactly what PedLodManager
         // publishes alongside the timeline. Without it the IG stays in PathArc with no path and
@@ -166,10 +166,70 @@ public class PedRemoteElevationTests
         wire.Publish(publisher.Events);
 
         var recon = new PedRemoteReconstructor(bus.Source, playoutDelaySeconds: 0.0);
+
+        for (var t = 10.0; t <= 90.0; t += 10.0)
+        {
+            recon.Pump(t);
+            Assert.True(recon.TryGetRenderPose(1, out var pos, out var z, out _, out _));
+            Assert.NotEqual(Vec2.Zero, pos);
+
+            // 1 m/s along a 100 m ramp rising 370 -> 380: the exact height at t is 370 + t/10. The
+            // timeline wire is lossless (full doubles, unlike PathArc's cm quantization), so this is
+            // tight rather than within a centimetre.
+            var expected = 370.0 + (t / 10.0);
+            Assert.True(Math.Abs(z - expected) <= 0.001, $"t={t}: expected {expected:F3}, got {z:F3}");
+        }
+    }
+
+    [Fact]
+    public void ALivelyPedOnAFlatNet_StillReconstructsZeroElevation()
+    {
+        // The 2-D regression for the same path: no channel on the WalkSegment => 0.0, exactly as before
+        // the timeline wire learned about elevation.
+        var (bus, publisher, wire) = NewWire();
+        var timeline = new ActivityTimeline(0.0, new ActivitySegment[] { new WalkSegment(Ramp, 1.0) });
+        publisher.PublishActivityTimeline(id: 1, timeline, time: 0.0);
+        publisher.PublishSwitch(id: 1, PedDrModel.PathArc, PedDrModel.ActivityTimeline, time: 0.0);
+        wire.Publish(publisher.Events);
+
+        var recon = new PedRemoteReconstructor(bus.Source, playoutDelaySeconds: 0.0);
         recon.Pump(20.0);
 
         Assert.True(recon.TryGetRenderPose(1, out var pos, out var z, out _, out _));
-        Assert.NotEqual(Vec2.Zero, pos); // the POSITION reconstructs fine
-        Assert.Equal(0.0, z);            // ...the elevation does not exist on this wire format
+        Assert.NotEqual(Vec2.Zero, pos);
+        Assert.Equal(0.0, z);
+    }
+
+    [Fact]
+    public void AMultiLegTimeline_ReadsElevationFromTheLegThePedIsActuallyOn()
+    {
+        // A route split by a kerb pause is two Walk legs at different heights. Reading the first leg's
+        // channel for the whole trip would be wrong for the second half, so the leg is selected by
+        // proximity to the reconstructed pose.
+        var legA = new[] { new Vec2(0, 0), new Vec2(10, 0) };
+        var legAz = new[] { 100.0, 100.0 };
+        var legB = new[] { new Vec2(10, 0), new Vec2(20, 0) };
+        var legBz = new[] { 200.0, 200.0 };
+
+        var (bus, publisher, wire) = NewWire();
+        var timeline = new ActivityTimeline(0.0, new ActivitySegment[]
+        {
+            new WalkSegment(legA, 1.0, null, legAz),
+            new PauseSegment(2.0, "wait"),
+            new WalkSegment(legB, 1.0, null, legBz),
+        });
+        publisher.PublishActivityTimeline(id: 1, timeline, time: 0.0);
+        publisher.PublishSwitch(id: 1, PedDrModel.PathArc, PedDrModel.ActivityTimeline, time: 0.0);
+        wire.Publish(publisher.Events);
+
+        var recon = new PedRemoteReconstructor(bus.Source, playoutDelaySeconds: 0.0);
+
+        recon.Pump(3.0); // on leg A
+        Assert.True(recon.TryGetRenderPose(1, out _, out var zA, out _, out _));
+        Assert.Equal(100.0, zA, 3);
+
+        recon.Pump(18.0); // past the pause, well onto leg B
+        Assert.True(recon.TryGetRenderPose(1, out _, out var zB, out _, out _));
+        Assert.Equal(200.0, zB, 3);
     }
 }
