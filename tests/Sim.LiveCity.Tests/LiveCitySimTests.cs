@@ -382,4 +382,57 @@ public class LiveCitySimTests
             trajectoryDiffers || simOn.CarYieldObservations != simOff.CarYieldObservations,
             $"expected yield ON/OFF to differ: onObs={simOn.CarYieldObservations} offObs={simOff.CarYieldObservations} trajectoryDiffers={trajectoryDiffers}");
     }
+
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1: the demo net enumerates >=1 TL-controlled
+    // pedestrian crossing, every sampled state is a valid SUMO TL link-state char, and at least one
+    // crossing's state CHANGES over the run -- proving SampleCrossingSignals() is a live per-call
+    // projection (Engine.TlLinkStateChar over CurrentTime), not a frozen constant snapshot taken once
+    // at load.
+    [Fact]
+    public void SampleCrossingSignals_OverAFewMinutes_EnumeratesControlledCrossingsAndTheyChangeState()
+    {
+        using var sim = new LiveCitySim(MakeConfig(yield: true));
+
+        // SUMO/TrafficLightState's full link-state alphabet (MSLink state chars): major/minor green,
+        // yellow, red, "stop"/"minor-stop", off (blinking/unregulated). See TrafficLightState.cs and
+        // ActuatedTrafficLightLogic.cs's own char switches for the subset this codebase actively uses.
+        const string validStateChars = "rygGsuoO-";
+
+        var distinctStatesByLane = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<char>>();
+
+        for (var i = 0; i < 400; i++)
+        {
+            sim.Step();
+
+            var crossings = sim.SampleCrossingSignals();
+            if (i == 0)
+            {
+                Assert.True(crossings.Count >= 1, $"expected >=1 TL-controlled crossing on the demo net, got {crossings.Count}");
+            }
+
+            foreach (var (laneHandle, state) in crossings)
+            {
+                Assert.True(validStateChars.IndexOf(state) >= 0, $"lane {laneHandle}: unexpected TL state char '{state}'");
+
+                if (!distinctStatesByLane.TryGetValue(laneHandle, out var set))
+                {
+                    set = new System.Collections.Generic.HashSet<char>();
+                    distinctStatesByLane[laneHandle] = set;
+                }
+
+                set.Add(state);
+            }
+        }
+
+        var maxDistinct = 0;
+        foreach (var set in distinctStatesByLane.Values)
+        {
+            if (set.Count > maxDistinct)
+            {
+                maxDistinct = set.Count;
+            }
+        }
+
+        Assert.True(maxDistinct >= 2, $"expected at least one controlled crossing to change state over the run, max distinct states seen on any lane = {maxDistinct}");
+    }
 }
