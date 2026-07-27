@@ -8,6 +8,62 @@ yet-briefed roadmap items are tracked (as one-liners) in `TASKS-TODO.md`.
 
 ---
 
+## Car yields to pedestrians in its path (Task B-guard) — DONE ✅ (2026-07-27)
+
+Session `claude/live-city-car-yields-ped-i4rczr`. Full detail:
+**`docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md`** (mechanism, parity argument, measurements),
+`-TASKS.md` (work breakdown + success conditions), `-TRACKER.md` (checklist, corrections, open items).
+
+**The defect.** A car meeting a pedestrian walking across its lane did not stop for it: it wove around the
+ped at full speed (`posLat` 0 → 1.41 while Speed = 5), took one tick of crowd brake, snapped back to the
+centreline and passed with **0.70 m of body-to-ped clearance at 3.90 m/s**, while the ped was still inside
+the lane. At demo density it was worse: cars *accelerated* through encounters (2.46 → 6.36 m/s as clearance
+fell to 0.67 m) and one drove straight through a pedestrian's body at 5.30 m/s.
+
+**Shipped.** Three pieces, all behind a world-space yield zone (`Engine.SetCrowdYieldZone`, radius 0 = off
+by default, wired by `LiveCitySim` to the camera-driven LC-realism zone, `LiveCityConfig.PedYieldEnabled`):
+* **L1** — in `ComputeLateralEvasion`, do not prefer the swerve for a crowd threat in-zone. Generalises Task
+  A's held+static gate to any ped in ego's path, so the car holds behind it and recentres.
+* **L2** — `CrowdYieldConstraint` (**binder 16**): an anticipatory in-path yield against the ped's PREDICTED
+  corridor track (catches conflicts binder 13's current-overlap sample structurally misses — three such
+  geometries are pinned where binder 13 fires *zero* times and the un-guarded car holds 5.00 m/s through the
+  crossing), plus a world-space proximity cap (stop at contact, creep below 1.5 m) evaluated on the worse of
+  current and 1 s-predicted clearance so the cap is reachable under braking.
+* **`VehicleFootprint`** — the world-space rectangle↔disc clearance primitive both the constraint and its
+  tests use (rotation-invariance tested, not just axis-aligned).
+
+**Then, uncovered while explaining the residual: `QueryNear` returned an arbitrary subset.** All three
+`ICrowdFootprintSource` implementations filled the caller's span in enumeration order and stopped when full
+— `OrcaCrowd` by agent SLOT (a close ped in a high slot was invisible), `CompositeFootprintSource` by
+CONCATENATION (once the ORCA crowd saturated the span, `CrossingOccupancySource` got **zero** slots),
+`CrossingOccupancySource` likewise. Fixed by tightening the interface contract to "the NEAREST win,
+nearest-first, ties by enumeration order" and routing all three through one shared zero-alloc accumulator,
+`Sim.Core.Bridge.WorldDiscQuery.InsertNearest`. This SUPERSEDES `MaxCrowdDiscs` 16→256 (f9c837c) as the
+safety mechanism: measured across buffer sizes 16/32/64/256, zero cars drive AT a ped at **every** size,
+including the original 16 — the safety comes from the contract; the buffer is now a fidelity knob that
+saturates at 64 (design §8.2).
+
+**Measured.** Repro (`CrosswalkCrossingPedTests`): 0.70 m @ 3.90 m/s → **2.00 m @ 3.67 m/s**, zero weave,
+holds while the ped is in the lane, back at maxSpeed one tick after it clears. Demo @800 peds / 600 steps
+(`DemoPedYieldInvariantTests`): in-zone close-fast-passes **203 → 14**, of which car-driving-AT-a-ped
+**11 → 0**; arrivals 169 → 165; `DenseFlow…NoGridlock` green. Gates: parity **775/4** (= main's 755/4 plus
+exactly the 20 tests added, none of main's perturbed), bench **`BF3794A4704BCD79`** par == single,
+`Sim.LiveCity.Tests` **53/53**, `Sim.Pedestrians.Tests` **277/277**.
+
+**Corrections recorded rather than quietly dropped** (full text in the TRACKER): two of the session's own
+success conditions were wrong as written and were replaced by the measurements that disproved them; and the
+first demo-scale proof was **underpowered** — at 160 peds it read "7 → 0, the guard eliminates
+close-fast-passes", which was false for the demo. Re-run at the real 800-ped density it was 200 → 70, and
+only the `QueryNear` fix took the sharp metric to zero. The committed test now runs at real density.
+
+**Still open** (with evidence, in the TRACKER's "Still worth doing", mirrored into `TASKS-TODO.md`): C5
+(peds don't avoid cars — *all* 14 remaining in-zone events are ABEAM, a ped walking into a stopped/creeping
+car); B-api; out-of-zone cars being blind to pedestrians (a ped-LOD feed decision, measured); the
+`QueryNear` full scan vs the existing spatial hash; `MaxCrowdDiscs` 256 → 64; one home for the vehicle-pose
+convention (`VehicleObb` vs `VehicleFootprint`).
+
+---
+
 ## Arbitrary road-net import (RouteGraph pedestrians) — DONE ✅ (2026-07-25)
 
 Load `LiveCitySim` on an arbitrary, already-prepared SUMO road-net (folder) with pedestrians **routed** on

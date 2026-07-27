@@ -74,16 +74,74 @@ report.
   passes". Re-run at the demo's real 800-ped density over 600 steps: **200 -> 70 (-65%), not zero.** The
   committed test now runs at the real density and asserts a >= 40% cut instead of zero.
 
-## Remaining defects this session did NOT fix (measured, with the reason)
-- **`OrcaCrowd.QueryNear` is now a full scan** (no early exit -- a late slot holding a close agent must be
-  able to displace an early slot holding a distant one). Measured cost: ~28 s -> ~31 s per 600-step
-  800-ped arm (~10%). `OrcaCrowd` already has an opt-in spatial hash (`UseSpatialHash`); wiring `QueryNear`
-  onto it removes the scan and is the obvious next step if that 10% ever matters.
-- **Out-of-zone cars cannot see pedestrians at all**, so no yield-zone radius helps them. The car feed is
-  `Composite(HighPowerFootprints, CrossingOccupancy)` and peds promote to HighPower only inside the
-  LC-realism zone. Measured cross-tab: every `HighPower` event is in-zone, every `LowPowerWalking`/`Paused`
-  event is out-of-zone. A third probe arm with the yield armed NET-WIDE confirmed it barely helps
-  (net-wide 3739 -> 3458). This is a ped-LOD feed question. (Mitigating context: ~85% of net-wide events
-  are `offside` -- ped beside the road, not in the car's path -- i.e. largely not defects.)
-- **Peds do not avoid cars** (C5, owned by the ped-vehicle session), so a ped can still walk into a
-  stopped/creeping car. The car side no longer approaches fast.
+## Documents produced by this session
+| doc | what it is |
+|---|---|
+| `LIVE-CITY-CAR-YIELDS-PED-DESIGN.md` | the mechanism of record: repro (§1), root cause (§2), the three pieces (§3), parity argument (§4), constants (§5), measured results (§6), out-of-scope (§7), and the `QueryNear` follow-up + the contract-vs-knob analysis (§8, §8.1, §8.2) |
+| `LIVE-CITY-CAR-YIELDS-PED-TASKS.md` | the work breakdown with per-task success conditions, including the two conditions that were **wrong as written** and the measurements that replaced them |
+| `LIVE-CITY-CAR-YIELDS-PED-TRACKER.md` | this file — checklist, measurements log, corrections, and the open items below |
+| `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` | the incoming brief (pre-existing; §7's diagnostic list is stale — see below) |
+
+## Code and tests this session owns
+| file | role |
+|---|---|
+| `src/Sim.Core/Engine.cs` | `SetCrowdYieldZone`/`InCrowdYieldZone` + tuning consts + `ProximitySpeedCap` (realism-knob block); L1 gate in `ComputeLateralEvasion`; `CrowdYieldConstraint` (binder **16**) + its fold line |
+| `src/Sim.Core/VehicleFootprint.cs` | world-space rectangle↔disc clearance primitive (new) |
+| `src/Sim.Core/Bridge/WorldDiscQuery.cs` | shared nearest-first bounded accumulator (new) |
+| `src/Sim.Core/Bridge/WorldDisc.cs` | `ICrowdFootprintSource.QueryNear` contract tightened |
+| `src/Sim.Core/Bridge/CompositeFootprintSource.cs`, `src/Sim.Core/Orca/OrcaCrowd.cs`, `src/Sim.Pedestrians/Crossing/CrossingOccupancySource.cs` | nearest-first `QueryNear` |
+| `src/Sim.LiveCity/LiveCityConfig.cs`, `LiveCitySim.cs` | `PedYieldEnabled` knob; yield zone armed on and following the LC-realism zone; `PedYieldZone{X,Y,Radius}` read-backs |
+| `tests/Sim.ParityTests/CrowdYieldZoneTests.cs` | zone gate, world-space primitive, binder-16 non-vacuity (new, 13 cases) |
+| `tests/Sim.ParityTests/CrowdQueryNearTests.cs` | nearest-first contract for all three sources (new, 4 cases; written as failing repros) |
+| `tests/Sim.ParityTests/CrosswalkCrossingPedTests.cs` | + 2 yield tests (defect characterisation + the contract) |
+| `tests/Sim.LiveCity.Tests/DemoPedYieldInvariantTests.cs` | demo-scale A/B at 800 peds (new) |
+| `tests/Sim.LiveCity.Tests/PedYieldZoneWiringTests.cs` | host wiring: armed, follows the camera, opt-out holds (new) |
+
+---
+
+## Still worth doing (measured, with the reason — not speculation)
+
+**Owned elsewhere, unchanged by this session:**
+1. **C5 — pedestrians do not avoid cars** *(ped–vehicle avoidance session; = TASKS-TODO "Realism #5")*. This
+   is what the **entire** residual is now made of: all 14 remaining in-zone events are **ABEAM** (a ped
+   walking into the side of a stopped or creeping car), zero are HEAD-ON. The car side no longer approaches
+   fast; the other half of the interaction is untouched.
+2. **B-api — retire the string `ExternalObstacle` onto `WorldDisc`** *(ped–vehicle avoidance session;
+   handoff §8 Q4)*. Deliberately not folded in here: it is an API refactor with its own parity surface, and
+   this session stayed car-yield-only.
+
+**New, found by this session, not owned by anyone yet:**
+3. **Out-of-zone cars cannot see pedestrians at all.** `CrowdSource = Composite(HighPowerFootprints,
+   CrossingOccupancy)`, and peds promote to HighPower only inside the LC-realism zone, so outside it a car
+   sees a ped only if that ped is walking on a crossing. Measured cross-tab at 800 peds: **every** `HighPower`
+   event is in-zone, **every** `LowPowerWalking`/`Paused` event is out-of-zone. Arming the yield **net-wide**
+   was measured as a third probe arm and barely helped (3739 → 3458) — the cars have no data to react to.
+   Fixing it is a **ped-LOD feed** decision with a real perf cost at 800+ peds, not a car-yield change.
+   Mitigating context: ~85% of net-wide events are `offside` (ped beside the road, not in the car's path),
+   i.e. largely ordinary traffic on a net with kerbside footways rather than defects.
+4. **`OrcaCrowd.QueryNear` is now a full scan.** The nearest-first contract removed the early exit (a late
+   slot holding a close agent must be able to displace an early slot holding a distant one), so it is
+   O(agents) per vehicle per constraint per step. Measured **flat** at 800 peds (27–28 s per 600-step arm,
+   unchanged), so this is not currently a problem — but it will scale badly. `OrcaCrowd` already has an
+   opt-in uniform spatial hash (`UseSpatialHash`, rebuilt in `Step`) used by the ORCA neighbour gather;
+   wiring `QueryNear` onto it is the clean removal.
+5. **`MaxCrowdDiscs` could drop 256 → 64.** Measured identical at 800 peds (see design §8.2) for 4× less
+   stack per call site (10 KB → 2.5 KB), and with the nearest-first contract the degradation is graceful.
+   Kept at 256 only to preserve the headroom f9c837c measured at 10× ped density. Low priority either way —
+   wall time is flat across 16…256.
+6. **One home for the vehicle-pose convention.** `Sim.Ingest/VehicleObb.cs` (box↔box) states, correctly,
+   that the naviDegree + front-bumper conventions must have *exactly one* implementation living beside
+   `LaneGeometry` which defines them. `Sim.Core/VehicleFootprint.cs` (box↔disc) is a second encoding of the
+   same two conventions, in a different assembly. It is currently correct and rotation-tested, but the two
+   should be consolidated before a third appears.
+7. **The demo close-fast-pass metric over-counts.** The raw net-wide number treats "ped standing 1.4 m from
+   a passing car" the same as "car driving at a ped". The committed test already reports the sharp HEAD-ON
+   sub-metric separately; if anyone starts using the net-wide figure as a KPI it should be split properly
+   (ahead-in-corridor vs abeam vs offside) rather than quoted whole.
+
+**Stale documentation found:**
+8. **`LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 references diagnostics that no longer exist.**
+   `--live-city-orcatrace` and `--live-city-cartrace` are gone from `src/Sim.Viz/Program.cs` (the T1–T3 viz
+   refactor). This session built the demo-scale check as a committed test instead
+   (`DemoPedYieldInvariantTests`), which is deterministic and CI-runnable; the handoff text was not edited
+   because it is the incoming brief, a historical record.

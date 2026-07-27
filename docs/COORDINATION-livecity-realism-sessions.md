@@ -7,7 +7,9 @@ sessions edit the same mechanism. Keep this short; update it when a boundary mov
 **755 pass / 4 skip (759 total)** with all **661 goldens byte-identical**; `Sim.Bench` hash
 **`BF3794A4704BCD79`** (par==single — moved from `D96213B7BB4021A7` when the seven junction gates defaulted ON,
 PR#13; re-pinned tripwire, no SUMO reference); `dotnet test tests/Sim.LiveCity.Tests` all green (run WITHOUT
-`--no-build` — it is not in `Traffic.sln`; **50/50** post-PR#13); `tests/Sim.Pedestrians.Tests` all green (277
+`--no-build` — it is not in `Traffic.sln`; **50/50** post-PR#13, **53/53** once car-yields-ped merges);
+`tests/Sim.ParityTests` becomes **775/4** once car-yields-ped merges (+20 tests, none of main's perturbed);
+`tests/Sim.Pedestrians.Tests` all green (277
 on the ped-LOD-lifecycle branch); no `System.Random`; demo/goldens byte-identical (new behaviour gated on
 `CrowdSource != null` or a demo-only flag no golden sets); netstandard2.1 + `LiveCitySim` consumer contract
 preserved.
@@ -19,7 +21,7 @@ preserved.
 | Session | Branch | Owns | Brief |
 |---|---|---|---|
 | **realism-A/B** | `claude/livecity-realism-fixes-vr4k4b` | **Task A** — stopped-car lateral wobble → **DONE**: demo-gated `SuppressHeldCrowdSwerve` (held static-ped crowd-swerve suppression in `ComputeLateralEvasion`; the earlier blanket `FreezeLateralWhenStopped` clamp was reverted+removed). | `LIVE-CITY-REALISM-AB-DESIGN.md` §Task A |
-| **car-yields-ped** | `claude/car-yields-crossing-ped` *(to be started)* | **car→ped YIELD (Task B-guard)**: a car STOPS for a ped crossing/standing in its path instead of weaving past at speed. Edits `ComputeLateralEvasion` (crowd-swerve prefer-gate ~9253–9310) + `CrowdLongitudinalConstraint` (~8582). Repro committed: `CrosswalkCrossingPedTests`. | `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` |
+| **car-yields-ped** | `claude/live-city-car-yields-ped-i4rczr` — **DONE, PR open to main** | **car→ped YIELD (Task B-guard)** delivered: `Engine.SetCrowdYieldZone` + L1 crowd-swerve suppression in `ComputeLateralEvasion` + `CrowdYieldConstraint` (**binder 16** — 14/15 are PR#13's junction constraints) + `VehicleFootprint`. **Also fixed, and this is a SHARED SEAM every session touches:** `ICrowdFootprintSource.QueryNear` now returns the **nearest** movers, not an arbitrary enumeration-order subset (`OrcaCrowd`, `CompositeFootprintSource`, `CrossingOccupancySource`, all via `Sim.Core.Bridge.WorldDiscQuery`). Demo @800 peds: cars-driving-AT-a-ped **11 → 0**. | `LIVE-CITY-CAR-YIELDS-PED-{DESIGN,TASKS,TRACKER}.md` |
 | **ped–vehicle avoidance** | `claude/livecity-ped-vehicle-avoidance` *(to be started)* | **car↔ped coupling minus the yield**: B-api (`ExternalObstacle` string→`WorldDisc`/handle) + **C5** (ped-avoids-car disc feed, realism #5). *(B-guard moved to car-yields-ped — the car→ped yield is that session's mechanism; #4 moved to ped-LOD-lifecycle.)* | `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` |
 | **ped-LOD-lifecycle** | `claude/livecity-ped-lod-lifecycle-bylitj` *(STARTED — parallel-safe)* | **ped LOD promote/demote switching** (low↔high power): #3 promote handoff (ped vanishes), #4 demote trigger + route restore (wandering ORCA), #6 idle clustering / randomize destinations. Edit surface `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot). Only *produces* `ICrowdFootprintSource`; consumes nothing car-side. | `LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md` |
 | **F3 junction overlap** | `claude/f3-junction-overlap-handoff-okf5nu` *(STARTED)* | pre-existing junction car–car overlap (into-occupied / keep-clear) + F4b zero-overlap invariant. Edits `Engine.cs` **junction** methods (`JunctionYieldConstraint` ~6642–7134, `AdaptToJunctionLeader`, `KeepClear`). | `F3-JUNCTION-OVERLAP-HANDOFF.md` |
@@ -31,6 +33,12 @@ preserved.
 - **realism-A/B — DONE & MERGED (Task A).** Its `SuppressHeldCrowdSwerve` gate + the lateral commit apply
   (~9604) are on `main`; the car-yields-ped session inherits and widens the crowd-swerve gate (below). Other
   sessions still don't touch `ComputeSublaneLateral`/`ComputeRvoLateral` (~8654–8712).
+- **NEW SHARED CONTRACT (car-yields-ped, affects everyone consuming the crowd seam):**
+  `ICrowdFootprintSource.QueryNear` must fill the caller's span with the **NEAREST** movers, ordered
+  nearest-first, ties broken by enumeration order — use `Sim.Core.Bridge.WorldDiscQuery.InsertNearest`.
+  Any NEW `ICrowdFootprintSource` implementation must honour it or a vehicle can be blind to the pedestrian
+  directly in front of it at density. `Engine.MaxCrowdDiscs` (256) is now a fidelity knob on top of that
+  contract, not the safety mechanism — see `LIVE-CITY-CAR-YIELDS-PED-DESIGN.md` §8.2.
 - **car-yields-ped owns → others don't touch:** the `ComputeLateralEvasion` **crowd-swerve prefer-gate**
   (~9253–9310) + the `SuppressHeldCrowdSwerve` flag/gate (~9270, inherited from Task A), `CrowdLongitudinalConstraint`
   (~8582), the B6 swerve (~9198). (i.e. the entire car→ped longitudinal/lateral reaction.)
