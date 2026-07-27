@@ -9,6 +9,14 @@ BIG/Spectacle session, verbatim). This document does not restate it — it says 
 Baseline for this work: `main` @ `791d3e6` (the exact commit the handoff was written against, so its
 quoted line numbers are valid).
 
+**Real validation data is available** (received 2026-07-27, `geneve.7z`, 248 MB unpacked, held
+**ephemerally** in the session scratchpad — never committed, see §6):
+`common/swiss_roads.net.xml` (161 MB, the exact full-Switzerland net named in the handoff's
+definition-of-done), `geneve/tools/geneve.net.xml` (44 MB Geneva cut), and four real
+`geneve_*.sumocfg` files. Every measurement below marked **[measured]** was taken on these files, not
+on a proxy. This dissolves most of what §7 originally listed as unverifiable — and it corrected the
+design in one place (§0/C4).
+
 ---
 
 ## §0 — Scope, and three corrections to the handoff
@@ -21,6 +29,15 @@ of its stated mechanisms is not implementable as written.
 | C1 | net path is hardcoded; add `NetPath`/`RoutePath` + `ForSumocfg` | **Correct.** `LiveCitySim.cs:143`, `:473`; `LiveCityConfig` has only `DatasetDir` | Implement as asked (§2), plus a dir probe for `scenario.net.xml` so `ForDataset(cutDir)` also works |
 | C2 | add a `TryGetRenderPose(..., out double z, ...)` overload that projects onto the nearest ped lane and calls `ElevationAtOffset` | **Not implementable as written.** `PedRemoteReconstructor` is constructed from an `IPedReplicationSource` alone (`PedRemoteReconstructor.cs:104`) — it holds **no `PedNetwork` and no `NetworkModel`**. It has no geometry to project onto. Worse, `Sim.Pedestrians.csproj` states outright that the project **must never reference `Sim.Ingest`**, where `NetworkModel`/`LaneGeometry` live | The overload needs an **injected elevation seam** — abstraction in `Sim.Pedestrians`, implementation in `Sim.LiveCity` (the only project that already sees both models). §3 |
 | C3 | "keep `Step()` reading these off the by-reference `cfg` each tick (**it does today**)" for `CarTargetConcurrent`, `CarSpawnPerStep`, `PedPopulationCap`, `PedSpawnRatePerSecond` | **Half true.** The *car* knobs are read live off `_cfg` every step (`:734`, `:743`). The *ped* knobs are **copied once into a fresh `PedDemandConfig` in the constructor** (`:277-278`) and never re-read | BIG's pedestrian slider would silently do nothing. A third change is required. §4 |
+
+**C4 — found by the real data, after the first draft of this design.** The draft said `ForSumocfg`
+should scrape spawn edges from `RouteFiles[0]`. On the real `geneve_Medium.sumocfg` that is
+**`common/vType.config.xml`** — a file with **107 `<vType>` elements and zero routes** [measured]. The
+actual route files sit at positions 4 and 5 of a six-entry list (`gen_flow_medium.rou.xml`: 600 routes,
+`routes_K1000.rou.xml`: 1000 routes). Taking `[0]` would scrape nothing, silently fall through to
+derive-from-net, and lose the real demand's edge set. Corrected in §2.3: scrape the **union of all**
+route files. This is exactly the kind of error that reading one real input catches and no amount of
+reasoning does (CLAUDE.md measurement discipline #2).
 
 Also corrected: the handoff's "no change to `PedNetworkParser`" holds and is the right call — elevation
 comes from the vehicle-side model, so `ParseShape` keeps dropping the 3rd coordinate (§3.3).
@@ -78,8 +95,15 @@ Each of these was read, not assumed. They are the load-bearing facts for §2–�
 Two nullable properties on `LiveCityConfig`, defaulting to `null` so every existing caller is unchanged:
 
 ```csharp
-public string? NetPath   { get; set; }   // explicit net file; null => probe DatasetDir (§2.2)
-public string? RoutePath { get; set; }   // explicit route file; null => DatasetDir/scenario.rou.xml
+public string? NetPath { get; set; }     // explicit net file; null => probe DatasetDir (§2.2)
+
+// SUMO's <route-files> is a LIST, and on real configs the first entry is often a vType file with no
+// routes at all (§0/C4). So the knob is plural and every entry is scraped.
+public IReadOnlyList<string>? RoutePaths { get; set; }
+
+// Single-file shorthand for the common case and for the name the handoff asked for. Setting it is
+// equivalent to setting RoutePaths to a one-element list; RoutePaths wins if both are set.
+public string? RoutePath { get; set; }
 ```
 
 ### §2.2 Resolution rules
@@ -95,8 +119,10 @@ all three consumers from §1.1. Precedence, in order:
 4. Otherwise fall back to `net.xml` anyway, so the thrown error message names the conventional file.
 
 Rule 2 before rule 3 is what keeps the demo byte-identical: `scenarios/_ped/demo_city/box/` contains
-`net.xml`, so it never reaches the probe. Route path is the same shape with one candidate
-(`scenario.rou.xml`) and no probe, since §1.3 already makes absence harmless.
+`net.xml`, so it never reaches the probe. Route resolution is `RoutePaths ?? [RoutePath] ??
+[DatasetDir/scenario.rou.xml]`, with no probe, since §1.3 already makes absence harmless. The ctor
+scrapes **each** resolved route file and unions the drivable-edge sets, so a vType-only entry
+contributes nothing instead of shadowing the real routes (§0/C4).
 
 Deliberately *not* done: globbing `*.net.xml`. A dir with two nets would resolve unpredictably; two
 fixed names are explicit and diagnosable.
@@ -109,13 +135,15 @@ public static LiveCityConfig ForSumocfg(string sumocfgPath)
 
 - Parse with the existing `ScenarioConfigParser.Parse` (§1.4) — no new XML reader.
 - `DatasetDir = Path.GetDirectoryName(Path.GetFullPath(sumocfgPath))`.
-- For `NetFile` and `RouteFiles[0]`: `Path.IsPathRooted(p) ? p : Path.Combine(sumocfgDir, p)`. This is
-  SUMO's documented rule and covers both emitters the handoff names (`preprocess.py` absolute,
-  demo-city relative) with one expression.
+- For `NetFile` and **every** entry of `RouteFiles`: `Path.IsPathRooted(p) ? p :
+  Path.Combine(sumocfgDir, p)`. This is SUMO's documented rule and covers both emitters the handoff
+  names (`preprocess.py` absolute, demo-city relative) with one expression. The real Geneva configs use
+  **relative** paths [measured], so both branches are genuinely exercised by available data.
 - `NetFile` absent ⇒ leave `NetPath` null ⇒ §2.2 probes the directory. Non-throwing and predictable.
-- `RouteFiles` empty ⇒ leave `RoutePath` null ⇒ §1.3's derive-from-net fallback. **Only `RouteFiles[0]`
-  is used**; the scrape's sole job is seeding spawn edges, and live-city self-generates demand rather
-  than replaying the route file. Documented as a limitation, not silently truncated.
+- `RouteFiles` empty ⇒ leave `RoutePaths` null ⇒ §1.3's derive-from-net fallback.
+- **All** route files go into `RoutePaths`, in config order (§0/C4). `ScenarioConfigParser.ParseFileList`
+  already splits on `,`/space/tab/newline and trims, so the real configs' multi-line, tab-indented
+  `<route-files value="…">` block parses correctly with **no parser change** [measured].
 - Otherwise identical to `ForDataset`: `WithEnvOverrides`, `NavMode = RouteGraph`, `RegionPlan = true`.
   Implemented by *calling* `ForDataset(sumocfgDir)` and then setting the two paths, so the two factories
   cannot drift.
@@ -166,8 +194,21 @@ grid, then the existing `LaneGeometry.ElevationAtOffset`.
 2. Else, if **any** lane in `model.LanesById` has `ShapeZ != null`, index all of them. This is the
    degraded case where netconvert emitted 2-D `crossing`/`walkingarea` shapes but the road lanes are
    3-D: a ped on a crossing then samples the road surface beside it, which is the right answer to within
-   a road width. Whether the real Swiss nets take this branch is **unknown and must be measured** (§8/R1)
-   — it is the single largest open question in this design.
+   a road width.
+
+   **[measured] The real nets take branch 1, unambiguously.** On both `geneve.net.xml` and
+   `swiss_roads.net.xml`, **100 % of ped-lane ids resolve in `NetworkModel.LanesById` and 100 % carry
+   `ShapeZ`** — zero missing, zero 2-D, in all three categories:
+
+   | net | sidewalks | crossings | walkingareas | all with `ShapeZ` / missing |
+   |---|---|---|---|---|
+   | `geneve.net.xml` (44 MB) | 2 201 | 221 | 2 179 | **4 601 / 0** |
+   | `swiss_roads.net.xml` (161 MB) | 13 811 | 735 | 13 537 | **28 083 / 0** |
+
+   So the handoff's shared-id-space claim is fully verified on production data, and branch 2 is a
+   defensive path that real Swiss nets never take. Branch 1 is also the memory-bounded one: it indexes
+   **98 897 segments (30 % of all Z-carrying segments) for Geneva** and **860 276 (52 %) for
+   Switzerland**, versus 328 793 / 1 645 061 for branch 2.
 3. Else the net is 2-D: the source is not constructed at all. Callers hold `null` and report `z = 0.0`.
    **Every committed scenario, including the demo and all goldens, takes this branch** — zero index, zero
    allocation, zero per-frame cost, bit-identical output.
@@ -250,6 +291,20 @@ makes that timing well-defined.
 
 ## §5 — Coordinate-frame contract (what we must *not* do)
 
+**[measured] The handoff's coordinate claims are confirmed verbatim on the real files.** Both nets carry
+byte-identical `<location>` georeferencing — the cut preserves the full net's absolute UTM offset exactly,
+with only `convBoundary` shrinking:
+
+```
+swiss_roads.net.xml  netOffset="-388091.80,-5257586.90"  convBoundary="-118546.05,-185472.68,161214.07,22405.38"
+geneve.net.xml       netOffset="-388091.80,-5257586.90"  convBoundary="-118546.05,-151908.12,36965.80,-39548.18"
+both                 projParameter="+proj=utm +zone=32 +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+```
+
+Elevation is real and large: **199.48 – 1633.77 m (span 1434 m)** across Switzerland, **324.39 –
+1062.24 m (span 738 m)** in the Geneva cut. This is the quantitative case for Change 2 — placing peds at
+`z = 0` would put them **hundreds of metres to 1.6 km** below the terrain, exactly as the handoff warned.
+
 The handoff asks us to keep several things true. They are true today and this design touches none of
 them; recorded here so a later change cannot break them silently:
 
@@ -263,11 +318,40 @@ them; recorded here so a later change cannot break them silently:
 
 ---
 
-## §6 — Validation data: a synthetic georeferenced 3-D pedestrian net
+## §6 — Validation data: two tiers
 
-No committed net can exercise any of this (§1.12), and the real 168 MB Swiss net is not present in this
-repo. So we generate one, following the **`scenarios/_ped/roadnet_min` precedent exactly**: a committed
-*input* fixture, not a parity golden, with its generation recipe recorded in `provenance.txt`.
+The real dataset arrived after the first draft, so validation is now **two-tier**. Both tiers are
+needed: the real nets are the ground truth, but they are 205 MB of third-party data and **cannot be
+committed** (CLAUDE.md's committed-vs-ephemeral split; a fresh VM must pass `dotnet test` with neither
+SUMO nor this dataset present).
+
+### §6.1 Tier 1 — the real nets, opt-in via an environment variable
+
+The dataset lives in the session scratchpad only. Tests that use it are **gated and skipped by default**:
+
+```
+SUMOSHARP_GENEVA_DIR=<dir containing common/ and geneve/>
+```
+
+Absent ⇒ those tests `Skip` with a message naming the variable. Present ⇒ they run against
+`common/swiss_roads.net.xml`, `geneve/tools/geneve.net.xml`, and `geneve_Medium.sumocfg`. This is the
+same discipline `dotnet test` already uses for SUMO: never a hard dependency, always available when the
+inputs are. **No part of the offline gate may depend on this variable.**
+
+Tier 1 is what proves the handoff's definition-of-done items 1–3 for real. It is also the only surface
+that can answer the scale questions (§7).
+
+### §6.2 Tier 2 — a small committed synthetic fixture
+
+Still required, because Tier 1 is unavailable on a fresh clone and cannot guard against regressions in
+CI. It follows the **`scenarios/_ped/roadnet_min` precedent exactly**: a committed *input* fixture, not a
+parity golden, with its generation recipe recorded in `provenance.txt`. Its job is narrower now — a fast,
+always-run regression of the same code paths Tier 1 validates at scale, plus the analytic elevation
+checks that a real net cannot give (no known closed-form z).
+
+Its parameters are chosen to **match the measured real-net properties** from §3.2/§5, so the two tiers
+exercise the same branches: UTM32N `projParameter`, non-zero absolute `netOffset`, 3-D shapes on
+sidewalks *and* crossings *and* walkingareas (branch 1), elevations in a Swiss-like band.
 
 New: `scenarios/_ped/roadnet_geo3d/`
 
@@ -303,33 +387,60 @@ is no reason to accept the skew.)
 
 ---
 
-## §7 — What cannot be validated in this repo
+## §7 — Scale: measured, and a warning for BIG
 
-The handoff's definition-of-done names loading `swiss_roads.net.xml` (168 MB). That file lives in the BIG
-dist repo and is not here, so **we cannot honestly claim it loads.** What we can do:
+The real nets parse **today**, with existing APIs and no feature code — but the cost is substantial and
+BIG needs to know it before wiring a UI. All figures below are **[measured]** in this session (Release,
+this VM):
 
-- Prove correctness on the §6 fixture (small, georeferenced, 3-D, pedestrian-equipped).
-- Bound the *scale* behaviour with a proxy: a large `netgenerate` grid, generated ephemerally (**not**
-  committed — CLAUDE.md's committed-vs-ephemeral split), loaded through `NetPath` with the parse time and
-  peak working set reported. This bounds "does a big net load at all" without pretending to be the real
-  net. Note that the ctor parses the net **twice** (§1.1: `NetworkParser` + `PedNetworkParser`), which is
-  the dominant cost and is pre-existing behaviour, not something this change introduces.
-- State plainly in the tracker that the real-net load is **BIG-side verification**, and give them the
-  one-line harness to run it.
+| pass | Geneva cut (44 MB) | Switzerland (161 MB) |
+|---|---|---|
+| 1. `NetworkParser.Parse` | 9.2 s | **67.7 s** |
+| 2. `PedNetworkParser.Load` | 1.2 s | 6.5 s |
+| 3+4. `CrosswalkSignalSchedule.FromNet` | 1.3 s | *(~5 s, scaled)* |
+| **total ctor net I/O** | **≈ 11.6 s** | **≈ 80 s** |
+| lanes / edges | 53 229 / 41 933 | 175 465 / 141 571 |
+| peak working set | 572 MB | **1 652 MB** |
+
+Findings that matter:
+
+- **The `LiveCitySim` ctor makes FOUR full passes over the net file**, not two as the first draft assumed:
+  `NetworkParser.Parse`, `PedNetworkParser.Load`, and `CrosswalkSignalSchedule.FromNet` — which is itself
+  two passes (`CrossingTlReader.LoadPrograms` + `LoadCrossingLinks`,
+  `CrosswalkSignalSchedule.cs:48-49`). All four are **pre-existing** behaviour that this change neither
+  introduces nor worsens.
+- **Pass 1 dominates at ~85 % of the total.** Collapsing passes 2–4 would buy little; a single-pass
+  refactor of `NetworkParser` would be the only meaningful win, and that touches the parity-critical
+  ingest path. **Explicitly out of scope here** — it is a separate, gated piece of work, not a rider on
+  an additive change.
+- **Recommendation for BIG:** load a **cut box**, not full Switzerland. 80 s and 1.65 GB is tolerable as a
+  one-off startup cost but not as anything a user waits on repeatedly; the Geneva cut at ~12 s is
+  workable, and a smaller `preprocess.py` box will be faster still. If full Switzerland is genuinely
+  needed, it wants a load-time progress indicator and a warm cache, both BIG-side concerns.
+
+What still **cannot** be verified here: nothing in the handoff's definition-of-done. Items 1–3 are all
+reachable with the Tier-1 data (§6.1). The remaining honest gap is only that a `preprocess.py`-produced
+cut and an *absolute*-path `.sumocfg` are not among the received files — the real configs use relative
+paths — so the absolute branch stays covered by a synthesised temp-dir config (§2.3, B2·SC2).
 
 ---
 
 ## §8 — Risks
 
-- **R1 (largest).** netconvert may emit 2-D `crossing`/`walkingarea` shapes even from 3-D nodes, in
-  which case the §3.2 branch-2 path (index all Z-carrying lanes) is the one that runs on real Swiss
-  nets. The design already handles it, but the branch taken must be *measured* on the §6 fixture and
-  recorded — not assumed. This is exactly the "trace, don't reason" rule from CLAUDE.md's measurement
-  discipline.
-- **R2.** Index memory on a full-Switzerland net if branch 2 is taken (all lanes, not just ped lanes).
-  Mitigated by ped-lane-only indexing in the expected case; quantified by the §7 proxy.
-- **R3.** `Sample()` gains a per-ped geometric query on the frame path. Zero on 2-D nets by construction
-  (null source), but must be measured on the 3-D fixture at a realistic ped count.
+- **R1 — CLOSED by measurement.** "netconvert may emit 2-D crossing/walkingarea shapes" does not happen
+  on the real nets: 100 % of ped lanes in both files carry `ShapeZ` (§3.2 table). Branch 1 is the live
+  path; branch 2 survives only as a defensive fallback. No longer the design's largest open question.
+- **R2 — CLOSED by measurement.** Branch-1 index size is 98 897 segments (Geneva) / 860 276
+  (Switzerland). At ~16 B per segment reference that is single-digit to ~14 MB of index — negligible
+  beside the 572 MB / 1.65 GB the parsed net itself already costs (§7).
+- **R3 — OPEN.** `Sample()` gains a per-ped geometric query on the frame path. Zero on 2-D nets by
+  construction (null source), but must be measured on a 3-D net at a realistic ped count (C4·SC4). This
+  is now the largest genuinely open question in the design.
+- **R6 — OPEN (informational, not ours to fix).** Full-Switzerland load is ~80 s / 1.65 GB across four
+  pre-existing net passes (§7). Not caused by this change and explicitly out of scope, but BIG must be
+  told before it builds a UI around it.
+- **R7.** The Tier-1 (real-data) tests must be **skip-by-default**. If `SUMOSHARP_GENEVA_DIR` ever
+  becomes a hard dependency, `dotnet test` breaks on every fresh VM. Assert the skip path explicitly.
 - **R4.** `tests/Sim.LiveCity.Tests` is **not in `Traffic.sln`** (CLAUDE.md measurement-discipline #9),
   so `dotnet test Traffic.sln` will not build it. Every task touching it must build that csproj
   explicitly or it measures stale code.

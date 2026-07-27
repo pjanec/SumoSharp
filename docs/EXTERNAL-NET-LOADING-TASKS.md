@@ -25,6 +25,10 @@ Toolchain on this VM (re-provision on a fresh session — both are ephemeral):
 **Every task below is additive.** No existing signature changes, no existing default changes. If any task
 cannot meet that bar, STOP and report rather than widening it.
 
+**Real-data tests are opt-in (design §6.1, §8/R7).** Tier-1 tests read `SUMOSHARP_GENEVA_DIR` and
+**skip** when it is unset. Nothing in the standing gate may depend on it — a fresh VM has neither SUMO
+nor this dataset and must still be 775/0/4.
+
 ---
 
 ## Stage A — Validation data (must land first; everything else is validated against it)
@@ -47,9 +51,11 @@ not a parity golden"** (mirror `scenarios/_ped/roadnet_min/provenance.txt`'s wor
 2. ≥1 lane shape has **3 coordinates per vertex**; the parsed `Lane.ShapeZ` is non-null for ≥1 lane and
    spans a range of **≥ 3 m** across the net (i.e. there is real relief, not a constant plane).
 3. `PedNetworkParser.Load` yields **≥1 sidewalk, ≥1 crossing, ≥1 walkingarea**.
-4. **Measured and recorded in `provenance.txt` and the tracker (design §8/R1 — measure, do not assume):**
-   how many of the ped-lane ids (sidewalk/crossing/walkingarea) resolve in `NetworkModel.LanesById` with
-   `ShapeZ != null`. This determines which §3.2 branch real 3-D nets take. Report the counts per category.
+4. **The fixture must reproduce the measured real-net property (design §3.2):** 100 % of its ped-lane ids
+   resolve in `NetworkModel.LanesById` **with `ShapeZ != null`**, in all three categories — i.e. it
+   selects §3.2 **branch 1**, as `geneve.net.xml` and `swiss_roads.net.xml` both do. If netconvert
+   produces 2-D crossings here while the real nets have 3-D ones, the fixture is **not representative**:
+   fix the recipe (or note the divergence loudly) rather than weakening the assertion.
 5. Total committed size of the directory **< 1 MB** (it is a fixture, not a benchmark net).
 6. Standing gate unchanged (no `src/` change in this task).
 
@@ -92,22 +98,29 @@ path).
    explicitly and green.
 
 ### B2 — `LiveCityConfig.ForSumocfg`
-**Design:** §2.3. **Depends on:** B1.
+**Design:** §2.3, §0/C4. **Depends on:** B1.
 **Touches:** `src/Sim.LiveCity/LiveCityConfig.cs` only. Reuses `Sim.Ingest.ScenarioConfigParser` — **do
-not write a new XML parser** (design §1.4).
+not write a new XML parser** (design §1.4), and do not modify `ParseFileList` (it already handles the
+real configs' multi-line lists).
 
 **Success conditions:**
-1. `ForSumocfg(fixture/relative.sumocfg)` ⇒ `NetPath` and `RoutePath` are absolute, exist on disk, and
-   resolve to the fixture's files; `DatasetDir` == the sumocfg's own directory.
+1. `ForSumocfg(fixture/relative.sumocfg)` ⇒ `NetPath` and every `RoutePaths` entry are absolute, exist on
+   disk, and resolve to the fixture's files; `DatasetDir` == the sumocfg's own directory.
 2. **Absolute-path case:** the test writes a `.sumocfg` into a temp dir whose `<net-file>` is an
    **absolute** path to the fixture net ⇒ resolves to that path unchanged (not double-combined with the
    temp dir). Both emitters from the handoff are then covered.
 3. A `.sumocfg` with **no `<input>` section** ⇒ `NetPath` stays null and construction still succeeds via
    the `DatasetDir` probe (§2.3's non-throwing rule), rather than throwing.
-4. Field-for-field, `ForSumocfg` matches `ForDataset` on every knob except `NetPath`/`RoutePath`
+4. Field-for-field, `ForSumocfg` matches `ForDataset` on every knob except `NetPath`/`RoutePath(s)`
    (assert by reflection over the public properties, so a later-added knob cannot silently drift).
 5. `new LiveCitySim(ForSumocfg(...))` steps 100 times and `Sample()` returns **> 0 cars**.
-6. Standing gate unchanged.
+6. **The §0/C4 regression — the reason this design was corrected.** A `.sumocfg` whose `<route-files>`
+   lists a vType-only file **first** and the real route file **second** (the exact shape of
+   `geneve_Medium.sumocfg`) ⇒ `RoutePaths` has **both** entries in order, and the scraped spawn-edge set
+   is non-empty and equal to the set scraped from the real route file alone. A `RouteFiles[0]`
+   implementation must **fail** this. Build the fixture config to mirror the real one — six entries,
+   three vType files first.
+7. Standing gate unchanged.
 
 ---
 
@@ -206,29 +219,54 @@ knobs at one fixed point at the top of `Step()`).
 
 ---
 
-## Stage E — Scale proxy & close-out
+## Stage E — Real-net validation (Tier 1) & close-out
 
-### E1 — Large-net load proxy (honest, non-committed)
-**Design:** §7. **Depends on:** B1.
-**Touches:** a dev-side script under `scripts/` only. The generated net is **ephemeral and must not be
-committed** (CLAUDE.md committed-vs-ephemeral split).
+### E1 — Opt-in real-data test gate
+**Design:** §6.1, §8/R7. **Depends on:** nothing.
+**Touches:** a small test helper in `tests/Sim.LiveCity.Tests` resolving `SUMOSHARP_GENEVA_DIR`.
 **Success conditions:**
-1. Script generates a large `netgenerate` grid (target ≥ 50 MB), loads it via `NetPath`, steps 100 times,
-   and prints: net file size, `NetworkParser` parse time, `PedNetworkParser` parse time, total ctor time,
-   peak working set, and peak cars/peds.
-2. Output is recorded in the tracker with the explicit caveat that this is a **proxy**, not
-   `swiss_roads.net.xml` (168 MB), which is not present in this repo.
-3. `.gitignore` (or the script's temp dir) keeps the generated net out of the index — verify with
-   `git status --short` after a run.
-4. Standing gate unchanged (no `src/` change).
+1. Helper returns the three real inputs (`common/swiss_roads.net.xml`, `geneve/tools/geneve.net.xml`,
+   `geneve_Medium.sumocfg`) when the var is set and all exist; otherwise signals skip.
+2. **With the var unset**, the Tier-1 tests report **Skipped** (not passed, not failed) and the message
+   names `SUMOSHARP_GENEVA_DIR`. A vacuous "passes because it did nothing" is a task failure.
+3. Standing gate unchanged **with the var unset** — the fresh-VM invariant.
 
-### E2 — Close-out
+### E2 — Real Geneva cut: end-to-end load through the new API
+**Design:** §6.1, §7. **Depends on:** B1, B2, C4, E1. **Gated** on `SUMOSHARP_GENEVA_DIR`.
+**Success conditions** (on `geneve/tools/geneve.net.xml`, 44 MB — use the *cut*, not Switzerland, so the
+test stays ~15 s):
+1. `ForSumocfg(geneve_Medium.sumocfg)` ⇒ resolves `common/swiss_roads.net.xml` and all six route files
+   relative to the sumocfg dir; every path exists on disk.
+2. `NetPath` = the Geneva cut ⇒ `new LiveCitySim(cfg)` succeeds; `PedestriansEnabled` and
+   `CrossingsEnabled` both **true**; lanes == **53 229**, sidewalks == **2 201**, crossings == **221**,
+   walkingareas == **2 179** (the measured figures — a drift here means an ingest regression).
+3. `PedElevation` is **non-null** and selects **branch 1**; step until ≥20 peds are live ⇒ every
+   `LiveCityPed.Z` lies within **324.39 – 1062.24 m** (the measured range) and none is 0.
+4. Ped↔car cross-check: max |pedZ − carZ| over pairs within 10 m is **≤ 2.0 m**. Report the max.
+5. Cars spawn and move: `Sample()` returns > 0 cars, and `ArrivedTotal` > 0 within 600 steps.
+6. Standing gate unchanged with the var unset.
+
+### E3 — Full Switzerland: load-and-scale confirmation
+**Design:** §7, §8/R6. **Depends on:** E2. **Gated**, and marked long-running (~2 min).
+**Success conditions** (on `common/swiss_roads.net.xml`, 161 MB):
+1. `new LiveCitySim(cfg)` with `NetPath` set to it **succeeds** — this is handoff definition-of-done
+   item 1, on the real file. lanes == **175 465**, sidewalks == **13 811**, crossings == **735**,
+   walkingareas == **13 537**.
+2. Reported and recorded in the tracker: total ctor wall time and peak working set. Flag if either
+   exceeds the measured baseline (**≈ 80 s / ≈ 1.65 GB**) by > 25 % — that would mean this change added
+   cost to the load path, which it must not.
+3. `PedElevation` selects branch 1 with **28 083** indexed ped lanes; a sampled ped z falls within
+   **199.48 – 1633.77 m**.
+4. Standing gate unchanged with the var unset.
+
+### E4 — Close-out
 **Depends on:** all of the above.
 **Success conditions:**
 1. Final gate re-run and quoted: parity **775/0/4**, hash **`BF3794A4704BCD79`** (single == parallel),
-   `tests/Sim.LiveCity.Tests` + `tests/Sim.Pedestrians.Tests` green.
-2. A short **BIG-side handoff-back** section in the tracker: the exact new API surface, the fixture path,
-   the one-line harness for BIG to run against the real `swiss_roads.net.xml`, and a plain statement of
-   what was **not** verified here (design §7).
+   `tests/Sim.LiveCity.Tests` + `tests/Sim.Pedestrians.Tests` green, **and** the Tier-1 suite green with
+   `SUMOSHARP_GENEVA_DIR` set.
+2. A short **BIG-side handoff-back** section in the tracker: the exact new API surface, the §0/C3 and
+   §0/C4 corrections they need to know about, the §7 load-time warning with numbers and the
+   cut-box-not-full-Switzerland recommendation, and a plain statement of what was not verified.
 3. Every unchecked box in the tracker either ticked with first-hand evidence or explicitly listed as
    deferred with a reason. No box ticked on an implementor's report alone (CLAUDE.md orchestration loop).
