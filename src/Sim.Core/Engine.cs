@@ -2228,6 +2228,32 @@ public sealed partial class Engine : IEngine
         return false;
     }
 
+    // F3/isLeader T2.2 DIAGNOSTIC ONLY, for JunctionEntryTimeTests -- NEVER read by any simulation
+    // logic (parity-neutral, same "never consumed" discipline as StrandedOffRouteThisStep above).
+    // Stage 1 (this task) writes VehicleRuntime's three junction timestamps but consumes them
+    // NOWHERE in engine behaviour; this accessor exists solely so an external test can OBSERVE that
+    // write without the engine itself gaining a new read surface (IsLeader, the actual consumer, is
+    // T2.3). Linear scan over ActiveVehicles() by vehicle id -- diagnostic-only, not hot-path.
+    public bool TryGetJunctionEntryTimesForTest(
+        string vehicleId, out string laneId, out long entryTime, out long entryTimeNeverYield, out long conflictEntryTime)
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (v.Def.Id == vehicleId)
+            {
+                laneId = v.LaneId;
+                entryTime = v.JunctionEntryTime;
+                entryTimeNeverYield = v.JunctionEntryTimeNeverYield;
+                conflictEntryTime = v.JunctionConflictEntryTime;
+                return true;
+            }
+        }
+
+        laneId = string.Empty;
+        entryTime = entryTimeNeverYield = conflictEntryTime = long.MaxValue;
+        return false;
+    }
+
     // DR2 (issue #3): the per-vehicle accessor form of the DrModels column -- the shape SUMOSHARP-API §16
     // names ("DrModel Engine.GetDrModel(VehicleHandle) returning FreeKinematic while swerving"). Same
     // regime the DrModels column carries; use the column for bulk (10k) publishing, this for random
@@ -3638,6 +3664,7 @@ public sealed partial class Engine : IEngine
         // GAP-3 follow-up: skip IsParked -- a parked vehicle is off the lane (MSVehicleTransfer),
         // so it must not act as the insertion leader either (gated, byte-identical elsewhere).
         VehicleRuntime? leader = null;
+        VehicleRuntime? follower = null;   // H-INS: nearest vehicle BEHIND insertPos -- see below.
         foreach (var other in ActiveVehicles())
         {
             if (other.IsParked || other.LaneHandle != laneHandle)
@@ -3648,6 +3675,26 @@ public sealed partial class Engine : IEngine
             if (other.Kinematics.Pos >= insertPos && (leader is null || other.Kinematics.Pos < leader.Kinematics.Pos))
             {
                 leader = other;
+            }
+
+            // H-INS fix (docs/NEED-same-step-double-placement-colocation.md): the loop above only ever
+            // considers a vehicle AT OR AHEAD of `insertPos` (`Pos >= insertPos`), so a vehicle sitting
+            // just BEHIND the insertion point was never examined at all -- and inserting in front of it
+            // buries the new vehicle's REAR inside the existing vehicle's body. Measured in the live-city
+            // demo: a car departing at a fixed offset (~5.65 / 6.95 / 8.90 m) landing on top of a car
+            // already queued near the lane start, which then stays byte-identical to it (identical lane,
+            // pos and speed) for tens of steps because Krauss applies identical forces to a perfectly
+            // symmetric pair.
+            //
+            // SUMO checks this and REFUSES the insertion. MSLane::isInsertionSuccess runs a FOLLOWER pass
+            // after the leader pass (MSLane.cpp, `getFollowersOnConsecutive(aVehicle,
+            // aVehicle->getBackPositionOnLane(), false)`) and bails when `followers[i].second < 0` under
+            // `InsertionCheck::COLLISION` -- and `insertionChecks` defaults to `InsertionCheck::ALL`
+            // (SUMOVehicleParameter.cpp:60), so this is SUMO's DEFAULT behaviour, not an option. Porting
+            // it therefore INCREASES faithfulness rather than deviating.
+            if (other.Kinematics.Pos < insertPos && (follower is null || other.Kinematics.Pos > follower.Kinematics.Pos))
+            {
+                follower = other;
             }
         }
 
@@ -3678,6 +3725,29 @@ public sealed partial class Engine : IEngine
             : isMaxSpeed
                 ? KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType)
                 : v.Def.DepartSpeed.Literal;
+
+        // H-INS (docs/NEED-same-step-double-placement-colocation.md): SUMO's FOLLOWER pass in
+        // MSLane::isInsertionSuccess, restricted to its pure-overlap arm. SUMO bails when
+        // `followers[i].second < 0` under `InsertionCheck::COLLISION`, where that gap is measured
+        // body-to-body -- follower FRONT to ego BACK, with no minGap term (minGap lives in
+        // `backGapNeeded`, the separate FOLLOWER_GAP arm). `insertionChecks` defaults to
+        // `InsertionCheck::ALL` (SUMOVehicleParameter.cpp:60), so refusing here is SUMO's own default.
+        //
+        // DELIBERATELY NOT PORTED: the `followers[i].second < backGapNeeded` (FOLLOWER_GAP) arm, which
+        // additionally refuses an insertion whose rear gap is merely *uncomfortable* rather than
+        // overlapping. That would refuse many more insertions and change throughput well beyond the
+        // measured defect; this arm targets exactly the body interpenetration that violates
+        // docs/CONSTRAINT-high-realism-artefact-ladder.md rung 3. Recorded as a scoped omission.
+        if (InsertionFollowerGapCheck && follower is not null)
+        {
+            var egoBackPos = insertPos - v.VType.Length;
+            var rearGap = egoBackPos - follower.Kinematics.Pos;
+            if (rearGap < 0)
+            {
+                // The new vehicle's rear would be inside the follower's body. SUMO does not insert.
+                return false;
+            }
+        }
 
         if (leader is not null)
         {
@@ -3823,6 +3893,12 @@ public sealed partial class Engine : IEngine
         _laneSeqPool.AddRange(poolSeq);
         _laneSeqArrival.AddRange(arrivalSeq);
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: a freshly inserted vehicle is not on any junction -- reset all three
+        // timestamps to SUMOTime_MAX so a RECYCLED VehicleRuntime instance never inherits a stale
+        // entry time from whatever vehicle previously occupied this slot.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
 
         v.Inserted = true;
         return true;
@@ -5070,10 +5146,18 @@ public sealed partial class Engine : IEngine
         // by sim logic; assigned to v.BindingConstraint (a diagnostic field) only on the real plan pass.
         // Ids: 1 leaderFollow, 2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge,
         // 6 stopLine, 7 redLight, 8 railSignal, 9 railCrossing, 10 junctionYield, 11 keepClear,
-        // 12 obstacle, 13 crowd.
+        // 12 obstacle, 13 crowd, 14 internalJunctionAdmission.
         byte binder = 0;
         double dc;
-        if (!prePass) v.JunctionYieldFoeSpeed = -1f; // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds
+        // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds.
+        // T1.8 (docs/NEED-stale-binder-diagnostics-under-reuseintent.md): written on BOTH passes, not
+        // just the real one. These diagnostics must describe *the pass whose Intent is actually used*.
+        // The pre-pass runs first and the real pass overwrites it, so for a normal vehicle the value is
+        // unchanged; but a fusion-eligible vehicle (`ReuseIntent`) NEVER gets a real pass -- PlanMovements
+        // skips it and keeps the pre-pass Intent -- so a `!prePass` guard left these fields frozen at
+        // whatever the last real pass wrote, sometimes for tens of seconds. See the NEED doc: that
+        // staleness produced a confident, wrong root-cause attribution.
+        v.JunctionYieldFoeSpeed = -1f;
 
         // Leader car-following (MSCFModel_Krauss.cpp followSpeed -> MSCFModel.cpp
         // maximumSafeFollowSpeed): the REAL formula our resolved carFollowModel="Krauss"
@@ -5181,13 +5265,24 @@ public sealed partial class Engine : IEngine
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
         dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 13; vPos = Math.Min(vPos, dc);
 
+        // F3/internal-junction-foes T3.2: cont-turn stage-1 BAY admission gate (design §3). +infinity
+        // (non-binding) whenever InternalJunctionAdmissionGate is off (the default) -- see the
+        // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
+        // header comment for the parity argument and the deliberate omissions.
+        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
+        dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
+
         // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
         // safety guard -- anticipatory yield to a ped whose PREDICTED track crosses ego's corridor, plus a
         // world-space "never close AND fast" proximity cap. +Infinity (inert) unless a CrowdSource is
         // attached AND the yield zone is on AND ego is inside it -- none of which a golden or the bench
         // does, so byte-identical. Strictly a Math.Min term: it can only slow ego, never speed it up.
-        dc = CrowdYieldConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
-        if (!prePass) v.BindingConstraint = binder; // diagnostic (#15): argmin of the fold, never read by sim
+        // NB binder id 16: 14/15 were taken by the F3 junction constraints above when that work merged.
+        dc = CrowdYieldConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 16; vPos = Math.Min(vPos, dc);
+        // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
+        // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
+        // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
+        v.BindingConstraint = binder;
 
         // P2G-2 (cooperative LC): consume any speed-advice a blocked lane-changer wrote LAST step's LC
         // phase (informFollower "make room"). +Infinity == none, so byte-identical when CoordinatedLaneChange
@@ -5686,7 +5781,8 @@ public sealed partial class Engine : IEngine
             var target = _network!.LanesByHandle[targetHandle];
             var neighLead = neighbors.GetNeighborLeader(v, targetHandle);
             var neighFollow = neighbors.GetNeighborFollower(v, targetHandle);
-            if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt))
+            if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt)
+                && !LaneChangeSlotContested(v, targetHandle, neighbors))
             {
                 RecordLaneChangeCommit(0, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (EV give-way vacate)
                 CommitLaneChange(v, targetHandle, target.Id);
@@ -6715,7 +6811,32 @@ public sealed partial class Engine : IEngine
         var approachLane = egoLinkSeqIndex >= 1
             ? _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]]
             : null;
+        // "Ego is on THE LINK-CONTROLLING internal lane" -- i.e. the lane that owns this <request> row
+        // and whose geometry every lane-relative computation below is expressed in. Keep using this
+        // (and ONLY this) wherever the arithmetic mixes ego's Pos with `egoLane`, e.g.
+        // AdaptToJunctionLeader's `seen`: on a cont turn ego can be inside the junction on the
+        // FIRST-stage lane, where `egoLane.Length - v.Kinematics.Pos` would subtract a position measured
+        // on a DIFFERENT lane.
         var egoOnInternal = v.LaneId == egoInternalLaneId;
+
+        // "Ego is physically inside THIS junction" -- the faithful port of SUMO's
+        // `myLane->isInternal() && myLane->getEdge().getToJunction() == link->getJunction()`
+        // (sumo/src/microsim/MSVehicle.cpp:7348, via MSLane::isInternal() MSLane.cpp:2498 ->
+        // MSEdge::isInternal() MSEdge.h:264). TRUE for every internal lane of every STAGE of the
+        // junction, which `egoOnInternal` above is NOT: netconvert writes only the link-controlling lane
+        // into `intLanes` (NWWriter_SUMO.cpp:634-649), so on a `cont` turn a vehicle on the first-stage
+        // lane makes `egoOnInternal` false while it sits squarely in the middle of the junction.
+        //
+        // These two were previously conflated, which let arms gated on "not yet on the junction" fire
+        // MID-JUNCTION. Measured consequence: a car frozen for 95 consecutive steps on a first-stage
+        // lane with no leader and no blocked exit. See docs/NEED-contturn-stuck-in-junction.md and
+        // ContTurnInternalLaneOwnershipTests.
+        // Behind ContTurnInsideJunctionGate (default OFF) -- with the flag off this collapses to
+        // `egoOnInternal` and every use below takes its original path, byte-identical by construction.
+        // The flag exists because the CORRECTED predicate, though provably right (see
+        // ContTurnInternalLaneOwnershipTests), regresses a saturated-grid diagnostic: see the flag's comment.
+        var egoInsideJunction = egoOnInternal
+            || (ContTurnInsideJunctionGate && _network.IsInternalLaneOfJunction(v.LaneId, junction));
 
         // Low-density teleport fix (docs/SUMOSHARP-LOWDENSITY-TELEPORT-DESIGN.md mechanism A): does
         // ego's junction link hold a protected-green traffic signal (SUMO havePriority())? When it
@@ -6801,7 +6922,10 @@ public sealed partial class Engine : IEngine
         // count but regressed two saturated-grid stress tests (WillPassSaturationDiagTests,
         // RungHDp2g2CoordinatedLaneChangeTests) to gridlock, so it is deliberately NOT applied there.
         // Those two call sites keep the pre-existing (still cont-unaware, still imperfect) formula.
-        if (!prePass && v.JunctionCycleHold && !egoOnInternal && approachLane is not null)
+        // F3/cont-turn D3: `!egoInsideJunction`, not `!egoOnInternal` -- this is a STOP-LINE hold
+        // (it brakes to `egoDistToEntry`), so it must not apply to an ego already committed inside the
+        // junction, whose entry is BEHIND it. Same defect as the cautious-approach and merge PHASE 0 arms.
+        if (!prePass && v.JunctionCycleHold && !egoInsideJunction && approachLane is not null)
         {
             constraint = Math.Min(
                 constraint,
@@ -6836,7 +6960,14 @@ public sealed partial class Engine : IEngine
         // TL-controlled link the static matrix is NOT the RoW authority -- a protected-green ('G')
         // link IS major (havePriority) regardless of geometric conflicts, so `egoHasSignalPriority`
         // suppresses this minor cautious-approach exactly as SUMO's `!havePriority()` gate does.
-        if (!egoOnInternal && approachLane is not null && request.Response.Contains('1') && !egoHasSignalPriority)
+        // F3/cont-turn: gated on `!egoInsideJunction`, NOT `!egoOnInternal`. The precondition this arm
+        // states two comments up -- "once it has entered its internal lane the link is behind it" -- is a
+        // statement about being INSIDE THE JUNCTION, which is SUMO's `myLane->isInternal()` test, not
+        // "is ego on the link-controlling lane". With `!egoOnInternal` this arm kept braking a car that
+        // was already mid-junction on a cont turn's first-stage lane (the 95-step freeze in
+        // docs/NEED-contturn-stuck-in-junction.md). Inert for every single-stage turn, where the two
+        // predicates are identical by construction.
+        if (!egoInsideJunction && approachLane is not null && request.Response.Contains('1') && !egoHasSignalPriority)
         {
             // NLHandler.cpp:1413: a link with no explicit `visibility` attribute defaults its
             // foe-visibility distance to 4.5 (for non-ZIPPER links) -- this net specifies none.
@@ -6887,16 +7018,93 @@ public sealed partial class Engine : IEngine
                 laneStopOffset = Math.Max(PositionEps, laneStopOffset);
                 var stopDist = Math.Max(0.0, seen - laneStopOffset);
 
-                constraint = Math.Min(
-                    constraint,
-                    StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+                if (MinorApproachArrivalSpeed)
+                {
+                    // SUMO does NOT plan a stop at the stop line here. MSVehicle.cpp:2806-2810, whose own
+                    // comment reads "vehicle decelerates just enough to be able to stop if necessary and
+                    // THEN ACCELERATES":
+                    //
+                    //   maxSpeedAtVisibilityDist = maximumSafeStopSpeed(visibilityDistance, maxDecel, ...)
+                    //   maxArrivalSpeed          = estimateSpeedAfterDistance(visibilityDistance,
+                    //                                  maxSpeedAtVisibilityDist, maxAccel)
+                    //   arrivalSpeed             = MIN2(vLinkPass, maxArrivalSpeed)
+                    //
+                    // The target is a NONZERO arrival speed, and -- the load-bearing difference -- it is a
+                    // CONSTANT, independent of how far away the junction is. Our stop-at-the-line form below
+                    // decays as sqrt(2*decel*seen), i.e. toward ZERO as the car reaches the line:
+                    //
+                    //   seen   20 m   15 m   10 m    7 m    5 m   4.6 m
+                    //   ours  13.42  11.62   9.49   7.94   6.71   6.43   m/s   (decays to 0 at the line)
+                    //   SUMO   7.99   7.99   7.99   7.99   7.99   7.99   m/s   (flat)
+                    //
+                    // So we are *weaker* than SUMO far out and much *stronger* close in -- we crawl through
+                    // every minor link where SUMO rolls through at ~8 m/s. This net has **1091** minor
+                    // connections, and `jyArm 2` (cautiousApproach) accounts for 30.4% of the samples where
+                    // a MOVING car is held under its own lane's limit, against a measured mean moving speed
+                    // of 7.99 m/s for us vs 10.96 m/s for SUMO (docs/DENSITY-DIFF-HARNESS-TRACKER.md).
+                    //
+                    // `estimateSpeedAfterDistance` is MSCFModel.cpp:765-769:
+                    //   MIN2(maxSpeed, sqrt(MAX2(0, 2*dist*accel + v*v)))
+                    var maxSpeedAtVisibilityDist =
+                        KraussModel.MaximumSafeStopSpeed(visibilityDistance, v.VType.Decel, headway: 0.0, dt);
+                    var maxArrivalSpeed = Math.Min(
+                        v.VType.MaxSpeed,
+                        Math.Sqrt(Math.Max(
+                            0.0,
+                            (2.0 * visibilityDistance * v.VType.Accel)
+                                + (maxSpeedAtVisibilityDist * maxSpeedAtVisibilityDist))));
+
+                    // MIN2(vLinkPass, maxArrivalSpeed): `laneVehicleMaxSpeed` is our vLinkPass analogue.
+                    constraint = Math.Min(constraint, Math.Min(laneVehicleMaxSpeed, maxArrivalSpeed));
+                }
+                else
+                {
+                    constraint = Math.Min(
+                        constraint,
+                        StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
+                }
+
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 2; } // diag: cautiousApproach
             }
         }
 
         for (var j = 0; j < junction.IntLanes.Count; j++)
         {
-            if (j == egoLink.Index || !request.RespondsTo(j))
+            if (j == egoLink.Index)
+            {
+                continue;
+            }
+
+            // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §2/§3): SUMO keeps TWO foe sets per link, built
+            // from TWO different <request> bitstrings, used for two DIFFERENT jobs
+            // (MSRightOfWayJunction.cpp:92-146):
+            //
+            //   myFoeLinks <- RESPONSE -> opened()/blockedByFoe()/hasApproachingFoe(): right-of-way
+            //                             arbitration, i.e. "links I must YIELD to".
+            //   myFoeLanes <- FOES     -> MSLink::getLeaderInfo (MSLink.cpp:1373): lanes that
+            //                             PHYSICALLY conflict, irrespective of who yields.
+            //
+            // getLeaderInfo walks myFoeLanes (the PHYSICAL set); MSVehicle::checkLinkLeader then adapts
+            // on `isLeader(...) || it->inTheWay()` (MSVehicle.cpp:3429). The `|| inTheWay()` is
+            // load-bearing: a foe whose footprint is ON ego's crossing point constrains ego even when
+            // ego holds right-of-way, and getLeaderInfo's "foe won't pass" skip is explicitly
+            // overridden by inTheWay (MSLink.cpp:1498-1509).
+            //
+            // This loop used to be gated on RespondsTo alone, collapsing SUMO's two sets into one.
+            // That made AdaptToJunctionLeader -- our ONLY occupancy-reactive arm -- unreachable for a
+            // foe ego does not yield to, so a major/green ego drove straight through a car physically
+            // sitting on a crossing internal lane. Split the gate the way SUMO does: ARBITRATION stays
+            // on RespondsTo (approaching-foe yield, sameTarget merge, external-agent), OCCUPANCY moves
+            // to FoeWith (the on-junction AdaptToJunctionLeader arm). This is the same reasoning
+            // already applied to egoHasSignalPriority above (see the EgoLinkHasSignalPriority comment):
+            // car-following safety is not subject to priority.
+            // Behind JunctionPhysicalOccupancyGate (default OFF): with the flag off `physicalFoe` is
+            // always false, so this reduces EXACTLY to the pre-F3 `!request.RespondsTo(j) => continue`
+            // and every downstream `respondsTo`/`physicalFoe` branch takes its original path --
+            // byte-identical by construction.
+            var respondsTo = request.RespondsTo(j);
+            var physicalFoe = JunctionPhysicalOccupancyGate && request.FoeWith(j);
+            if (!respondsTo && !physicalFoe)
             {
                 continue;
             }
@@ -6917,6 +7125,14 @@ public sealed partial class Engine : IEngine
 
             if (conflict is null)
             {
+                // F3: ARBITRATION arm -- RespondsTo-gated, so its reachability is unchanged by the
+                // FoeWith widening above (a FoeWith-only foe must not invent a merge yield SUMO does
+                // not perform; that would deepen the NEED-multilane-junction-passage over-yield).
+                if (!respondsTo)
+                {
+                    continue;
+                }
+
                 // C4-iv: no geometric CROSSING is recorded for this foe link -- but a sameTarget
                 // MERGE (ego's link and the foe's link feed the SAME downstream lane) still
                 // requires ego to follow-yield to the merging foe. Own arm; +infinity when not a
@@ -6925,7 +7141,8 @@ public sealed partial class Engine : IEngine
                     constraint,
                     SameTargetMergeConstraint(
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
-                        j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority));
+                        j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority,
+                        egoInsideJunction));
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 3; } // diag: sameTargetMerge
                 continue;
             }
@@ -6951,9 +7168,14 @@ public sealed partial class Engine : IEngine
             // approaching-foe formula while the agent occupies the lane. Once ego itself has
             // already been granted entry (egoOnInternal) it is no longer gated, identical to the
             // SUMO-foe approaching branch's own egoOnInternal short-circuit.
-            if (ExternalAgentOnFoeLane(foeInternalLaneId, time))
+            // F3: ARBITRATION arm -- RespondsTo-gated (see the loop head). An external agent on a
+            // link ego merely physically conflicts with must not trigger the approaching-foe stop-line
+            // formula; only the occupancy arm below is widened to FoeWith.
+            if (respondsTo && ExternalAgentOnFoeLane(foeInternalLaneId, time))
             {
-                var extConstraint = egoOnInternal
+                // F3/cont-turn D3: same commitment test as the SUMO-foe arms -- an ego already inside the
+                // junction is past its entry and cannot be held at it.
+                var extConstraint = egoInsideJunction
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
@@ -6969,6 +7191,14 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
+            // Port of MSLink.cpp:1601 -- `if (leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker)`.
+            // A foe standing at least IgnoreJunctionBlockerSeconds is skipped entirely, so it constrains
+            // nobody (SUMO emits no LinkLeader for it). Inert at the default -1, exactly as in SUMO.
+            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds)
+            {
+                continue;
+            }
+
             var foeInternalSeqIndex = IndexOfLaneHandle(foe, foeInternalLaneHandle);
 
             double thisConstraint;
@@ -6976,6 +7206,109 @@ public sealed partial class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 thisArm = 5;
+
+                // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c): for a foe ego merely PHYSICALLY conflicts
+                // with (FoeWith) but does NOT yield to (no RespondsTo bit), SUMO does not brake for the
+                // foe's mere presence on the lane -- it brakes only when the foe is `inTheWay`
+                // (MSLink.cpp:1440-1443), a deliberately NARROW predicate:
+                //
+                //   inTheWay = !pastTheCrossingPoint && distToCrossing > 0 && enteredTheCrossingPoint
+                //
+                // `enteredTheCrossingPoint` (`leaderBackDist < leader->getLength()`) is the load-bearing
+                // term: the foe must have actually REACHED the conflict point, not merely be somewhere
+                // on the conflicting lane. Without it BOTH cars of a mutual physical conflict yield to
+                // each other and the junction deadlocks -- measured: 5 gridlock diagnostics failed
+                // (dense drainage 290 -> 235 arrivals, saturated grid 304 stuck, 70 spurious teleports)
+                // while all 661 goldens stayed byte-identical.
+                //
+                // RespondsTo foes are deliberately NOT subject to this test: they keep the exact
+                // pre-F3 path (presence alone suffices), so existing parity is bit-for-bit unchanged and
+                // the narrowing applies only to the newly-reachable FoeWith-only case.
+                // F3 second half of the port: SUMO's isLeader() (MSVehicle.cpp:7343-7483) decides whether
+                // ego must treat this occupant as a leader at all. Its FIRST clause is the deadlock-critical
+                // one (MSVehicle.cpp:7348-7351):
+                //
+                //   if (!myLane->isInternal() || myLane->getEdge().getToJunction() != link->getJunction()) {
+                //       // if this vehicle is not yet on the junction, every vehicle is a leader
+                //       return true;
+                //   }
+                //
+                // i.e. a car that has NOT yet entered the junction always yields (it stops OUTSIDE), and
+                // once ego is already ON the junction the decision falls to entry-time ordering
+                // (`return egoET > foeET` -- whoever entered FIRST does not yield, so it can clear).
+                //
+                // `egoOnInternal` is exactly SUMO's `myLane->isInternal()` for this junction, so gating on
+                // !egoOnInternal implements the first clause faithfully AND is conservative for the second:
+                // a car already on the junction is never braked by this arm, so it always retains the
+                // ability to clear. That is precisely the failure this replaces -- braking mid-junction
+                // stranded cars inside the conflict area where they became new obstacles (measured: F3
+                // overlaps 8 -> 33, stopped cars/frame ~19.7 -> ~26.2, 3 gridlock diagnostics red).
+                //
+                // Full entry-time ordering (myJunctionEntryTime / myJunctionConflictEntryTime and the
+                // speed-then-id tie-break) is still NOT ported; it is only needed to let a first-entrant
+                // yield-free case be distinguished from a second-entrant one for cars already on the
+                // junction, and this gate sidesteps that by never braking them at all.
+                //
+                // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a): behind `JunctionIsLeaderGate`
+                // (default OFF), the paragraph above is superseded -- entry-time ordering IS now
+                // available (T2.3/T2.4a), so this becomes SUMO's OWN `isLeader(...) || inTheWay()`
+                // disjunction (MSVehicle.cpp:3429), applied UNIFORMLY to both the RespondsTo and the
+                // FoeWith-only foe (neither short-circuits on `respondsTo` at all -- unlike the flag-off
+                // `else` below, which keeps the pre-existing expression CHARACTER-FOR-CHARACTER so
+                // byte-identical-with-the-flag-off is a property of the code shape, not a measurement).
+                if (JunctionIsLeaderGate)
+                {
+                    var foeLaneForGap = _network!.LanesByHandle[foe.LaneHandle];
+
+                    // Same seen/distToCrossing/leaderBackDist derivation FoeIsInTheWay/
+                    // AdaptToJunctionLeader each already compute inline (MSVehicle.cpp:3428/3473) --
+                    // duplicated here rather than shared, since T2.4a's `GapForIsLeader` takes the
+                    // already-derived scalars (design §3b), not the vehicle/lane inputs, and those two
+                    // methods deliberately keep their own independent derivations (see their headers).
+                    var seenForGap = egoOnInternal
+                        ? egoLane.Length - v.Kinematics.Pos
+                        : (approachLane!.Length - v.Kinematics.Pos) + egoLane.Length;
+                    var distToCrossingForGap = seenForGap - conflict.EgoLengthBehindCrossing;
+                    var foeDistToCrossingForGap = foeLaneForGap.Length - conflict.FoeLengthBehindCrossing;
+                    var leaderBackForGap = foe.Kinematics.Pos - foe.VType.Length;
+                    var leaderBackDistForGap = foeDistToCrossingForGap - leaderBackForGap;
+
+                    var gapForIsLeader = GapForIsLeader(
+                        _network, egoLane, foeLaneForGap,
+                        distToCrossingForGap, leaderBackDistForGap, conflict.FoeConflictSize, v.VType.MinGap);
+
+                    // `ego.LaneId`/`foe.LaneId` are each vehicle's OWN ACTUAL current lane (`v.LaneId`/
+                    // `foe.LaneId`, NOT `egoLane`/`foeLaneForGap`) -- IsLeader's clause 1 needs the
+                    // REAL current lane to answer "has this vehicle even entered THIS junction yet"
+                    // (design §1); `egoLane` is the LINK's own crossing lane, which may still be only
+                    // APPROACHED, not yet occupied.
+                    var egoCandidate = new JunctionLeaderCandidate(
+                        v.LaneId, v.Def.Id, v.Kinematics.Speed,
+                        v.JunctionEntryTime, v.JunctionEntryTimeNeverYield, v.JunctionConflictEntryTime,
+                        v.VType.MinGap, v.VType.Accel, v.VType.Decel, v.VType.Tau, v.VType.Length);
+                    var foeCandidate = new JunctionLeaderCandidate(
+                        foe.LaneId, foe.Def.Id, foe.Kinematics.Speed,
+                        foe.JunctionEntryTime, foe.JunctionEntryTimeNeverYield, foe.JunctionConflictEntryTime,
+                        foe.VType.MinGap, foe.VType.Accel, foe.VType.Decel, foe.VType.Tau, foe.VType.Length);
+
+                    // `this._network` (NOT the T2.4a call's `_network!` local usage above only for the
+                    // gap helper) -- IsLeader needs the SAME parsed `NetworkModel`/`Junction` instance
+                    // `junction`/`egoLink` already came from, since `IsInternalLaneOfJunction` compares
+                    // by REFERENCE (T2.3's own doc comment).
+                    var isLeader = IsLeader(_network!, junction, egoLink, egoCandidate, foeCandidate, gapForIsLeader, dt, time);
+
+                    if (!(isLeader || FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
+                    {
+                        continue;
+                    }
+                }
+                else if (!respondsTo
+                    && (egoOnInternal
+                        || !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
+                {
+                    continue;
+                }
+
                 // On-junction: MSVehicle::adaptToJunctionLeader.
                 // Rung ER2: an emergency vehicle with jmIgnoreJunctionFoeProb IGNORES the
                 // on-junction link-leader (MSVehicle.cpp:3430 -- checkLinkLeaderCurrentAndParallel's
@@ -6985,8 +7318,14 @@ public sealed partial class Engine : IEngine
                     ? double.PositiveInfinity
                     : AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
-            else if (foeInternalSeqIndex > foe.LaneSeqIndex)
+            else if (respondsTo && foeInternalSeqIndex > foe.LaneSeqIndex)
             {
+                // F3: ARBITRATION arm -- RespondsTo-gated (see the loop head). SUMO decides whether an
+                // APPROACHING foe blocks ego via opened()/blockedByFoe() over myFoeLinks (the RESPONSE
+                // set), never over myFoeLanes. Widening this arm to FoeWith would invent yields SUMO
+                // does not perform and would deepen NEED-multilane-junction-passage's over-yield
+                // deadlock. Only the on-junction OCCUPANCY arm above is widened.
+                //
                 // Approaching (foe hasn't reached its own internal lane yet): the stop-line
                 // yield only guards ENTRY onto ego's own internal lane -- once ego has already
                 // been granted entry (egoOnInternal), it is no longer gated by this foe's
@@ -7023,7 +7362,8 @@ public sealed partial class Engine : IEngine
                 // KeepClearConstraint as the predicate: finite -> the foe is keepClear-held -> ego
                 // (the crossing vehicle) proceeds. Inert for every scenario without a downstream jam
                 // (KeepClearConstraint is +infinity there), so only scenario 38 is affected.
-                var foeWillNotPass = !egoOnInternal && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
+                // F3/cont-turn D3: "am I still approaching?" -> egoInsideJunction.
+                var foeWillNotPass = !egoInsideJunction && FoeKeepClearBlocked(foe, allVehicles, dt, actionStepLengthSecs);
 
                 // C4-viii (the willPass gate -- the dense-grid saturation fix): `foe.WillPass` (cached by
                 // Engine.ComputeWillPass from the frozen start-of-step snapshot) is true iff the foe's
@@ -7113,7 +7453,14 @@ public sealed partial class Engine : IEngine
                 // into a foe physically on the crossing. Pure snapshot read of WaitingTime -> evaluates the
                 // same in the pre-pass and the real pass.
                 var impatientTimeout = JunctionYieldTimeoutSeconds > 0.0 && v.WaitingTime >= JunctionYieldTimeoutSeconds;
-                var takesCrossingYield = !(egoOnInternal || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
+                // F3/cont-turn D3 (docs/NEED-stuck-reroute-blind-inside-junctions.md): the
+                // "already granted entry" term is `egoInsideJunction`, NOT `egoOnInternal`. This arm brakes
+                // to `approachLane.Length - Pos`; on a cont turn `approachLane` IS the first-stage internal
+                // lane the ego is standing on, so for an ego at its far end that target is ~0.1 m away --
+                // a permanent standstill, re-applied every step, until the 120 s teleport threshold. That is
+                // the ">120 s yield wait" where real SUMO's equivalent stall resolves in ~10 s, and the
+                // teleports it produced are literally classified `Yield`.
+                var takesCrossingYield = !(egoInsideJunction || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -7137,13 +7484,13 @@ public sealed partial class Engine : IEngine
             }
 
             constraint = Math.Min(constraint, thisConstraint);
-            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; if (!prePass) v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
+            // T1.8: foe speed recorded on BOTH passes (see the JunctionYieldFoeSpeed reset comment).
+            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
         }
 
-        if (!prePass)
-        {
-            v.JunctionYieldArm = (byte)(jyArm | (egoHasSignalPriority ? 0x80 : 0)); // diag (#15)
-        }
+        // T1.8: written on BOTH passes so a ReuseIntent vehicle reports the arm that actually bound this
+        // step rather than one carried over from its last real pass. See the JunctionYieldFoeSpeed reset.
+        v.JunctionYieldArm = (byte)(jyArm | (egoHasSignalPriority ? 0x80 : 0)); // diag (#15)
 
         return constraint;
     }
@@ -7298,6 +7645,275 @@ public sealed partial class Engine : IEngine
         return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
     }
 
+    // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§3a; ported from
+    // MSInternalJunction.cpp's postloadInit AS CONSUMED via the bay link's foe lanes --
+    // MSLink::setRequestInformation(ownLinkIndex, hasFoes=true, isCont=false, myInternalLinkFoes,
+    // myInternalLaneFoes, ...), the `myFoeLanes` HALF of that split ONLY. See
+    // InternalJunctionAdmissionGate's own header comment for the full omissions list (design §5).
+    //
+    // Gated on InternalJunctionAdmissionGate (default OFF): +infinity unconditionally when off, so
+    // this is a no-op Min term -- every golden stays byte-identical BY CONSTRUCTION (design §6.1).
+    //
+    // WHAT: ego is on a cont turn's STAGE-1 BAY lane of some internal junction `IJ` iff (design
+    // §3a) `LinkIndexByInternalLane` resolves ego's OWN lane to link index `i` at parent junction
+    // `J`, `J.Requests[i].Cont` is true, AND `J.IntLanes[i] != ego's own lane` (ego's lane is NOT
+    // the link-controlling/final stage-2 lane for that index -- if it were, ego would already be
+    // past the bay). `InternalJunctionByBayLane` (keyed on ego's lane id, T3.1) then resolves `IJ`
+    // itself, and `InternalLaneFoes[IJ.Id]` (T3.1, the two-branch rule) is the foe-lane set.
+    //
+    // "Occupied" is a PHYSICAL PRESENCE scan -- FindCrossFoeVehicle's shape (a plain lane-handle
+    // membership test over ActiveVehicles()), NOT an approach/WillPass test. SUMO's own comment on
+    // this half of the split: "only respect vehicles before internal junctions if they have
+    // priority" for the CONDITIONAL (bay) branch of the two-branch rule, but once a candidate makes
+    // it into `InternalLaneFoes` at all (T3.1 already resolved conditional vs unconditional), its
+    // occupancy is always respected here -- there is no further approach/WillPass refinement (that
+    // is `myInternalLinkFoes`, the omitted half).
+    //
+    // If occupied, ego is held at the END of its own (bay) lane -- the same StopSpeedFor-at-lane-end
+    // shape every other stop-line arm uses (KeepClearConstraint immediately above, the crossing-yield
+    // arm in JunctionYieldConstraint, etc).
+    // Fix 2's arm. Returns 0 (a full stop for this step) when EGO is the designated yielder of an
+    // already-overlapping same-lane pair, else +infinity (inert under Math.Min).
+    //
+    // WHO YIELDS -- deterministic and order-independent, which is mandatory (CLAUDE.md: results must not
+    // depend on thread order):
+    //   1. the vehicle that is BEHIND yields (smaller Pos) -- the physically sensible choice, and it lets
+    //      the leader pull clear;
+    //   2. on an exact positional tie -- the perfectly-symmetric case this exists for -- the vehicle with
+    //      the lexicographically GREATER id yields, by `string.CompareOrdinal`. NEVER `EntityIndex` or any
+    //      array position, which would make the outcome depend on iteration order.
+    // Both rules are antisymmetric, so exactly one of a pair yields and the other proceeds.
+    private double ColocationSymmetryBreakConstraint(VehicleRuntime v, LaneNeighborQuery neighbors)
+    {
+        if (!ColocationSymmetryBreak || v.IsParked)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var egoFront = v.Kinematics.Pos;
+        var egoBack = egoFront - v.VType.Length;
+
+        // PERF: scan only EGO'S OWN LANE's pos-sorted bucket, never ActiveVehicles(). The first version
+        // iterated every active vehicle for every vehicle every step -- O(N^2) on the hot plan path, which
+        // is fine at the demo's ~160 vehicles (~25k iterations/step) and ruinous at city scale. Only
+        // same-lane vehicles can body-overlap ego, so the bucket is not merely a speed-up but the exact
+        // candidate set. Same source `IsTargetLaneOverlapped` uses.
+        var sameLane = neighbors.OnLane(v.LaneHandle);
+        for (var idx = 0; idx < sameLane.Count; idx++)
+        {
+            var other = sameLane[idx];
+            if (ReferenceEquals(other, v) || other.IsParked)
+            {
+                continue;
+            }
+
+            // Body overlap on the SAME lane, in BOTH dimensions.
+            //
+            // ⚠ THE LONGITUDINAL TEST ALONE IS WRONG, and it broke five goldens when first written that
+            // way (RungP22SublaneSideBySide, RungD3CooperativeOvertake, RungD2ReturnGap,
+            // RungOV3OvertakeExecution, RungRvoMultiNeighbor -- every one a LATERAL PASSING scenario).
+            // Under the sublane/lateral model two vehicles legitimately share a lane side by side: their
+            // longitudinal [back, front] intervals overlap while they are laterally separated and never
+            // touch. Testing only the longitudinal interval flags those as collisions and brakes a
+            // perfectly good overtake. (Same error class as this branch's OBB axis bug: a 1-D test of a
+            // 2-D condition -- docs/F3-SESSION-LOG.md §4.5b.)
+            //
+            // Strict inequalities throughout, so merely TOUCHING is not an overlap -- that is what keeps
+            // this inert during ordinary tight car-following.
+            var otherFront = other.Kinematics.Pos;
+            var otherBack = otherFront - other.VType.Length;
+            if (egoBack >= otherFront || otherBack >= egoFront)
+            {
+                continue;   // longitudinally clear
+            }
+
+            var lateralSeparation = Math.Abs(v.Kinematics.LatOffset - other.Kinematics.LatOffset);
+            var lateralTouchDistance = (v.VType.Width + other.VType.Width) / 2.0;
+            if (lateralSeparation >= lateralTouchDistance)
+            {
+                continue;   // side by side, laterally clear -- a legitimate lateral pass, NOT a collision
+            }
+
+            var egoYields = egoFront < otherFront
+                || (egoFront == otherFront && string.CompareOrdinal(v.Def.Id, other.Def.Id) > 0);
+
+            if (egoYields)
+            {
+                // Hold ego for this step so the other vehicle pulls clear. Once the bodies separate the
+                // predicate goes false and ordinary car-following resumes with no further intervention.
+                return 0.0;
+            }
+        }
+
+        return double.PositiveInfinity;
+    }
+
+    private double InternalJunctionAdmissionConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (!InternalJunctionAdmissionGate)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (_network!.LinkIndexByInternalLane is null
+            || _network.InternalJunctionByBayLane is null
+            || _network.InternalLaneFoes is null)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (!_network.LinkIndexByInternalLane.TryGetValue(v.LaneId, out var own))
+        {
+            // Ego is not on any internal lane (of any junction, any cont stage) at all.
+            return double.PositiveInfinity;
+        }
+
+        var (junction, linkIndex) = own;
+
+        JunctionRequest? request = null;
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == linkIndex)
+            {
+                request = r;
+                break;
+            }
+        }
+
+        if (request is null || !request.Cont)
+        {
+            // Not a cont link -- ego is on a plain internal lane (or this lookup is otherwise
+            // inapplicable), so there is no bay to hold it in.
+            return double.PositiveInfinity;
+        }
+
+        if (linkIndex < 0 || linkIndex >= junction.IntLanes.Count || junction.IntLanes[linkIndex] == v.LaneId)
+        {
+            // Ego's own lane IS the link-controlling (stage-2) lane for this index -- it has
+            // already left the bay, so this arm no longer applies (§3a's exact "!=" test).
+            return double.PositiveInfinity;
+        }
+
+        if (!_network.InternalJunctionByBayLane.TryGetValue(v.LaneId, out var internalJunction)
+            || !_network.InternalLaneFoes.TryGetValue(internalJunction.Id, out var foeLaneHandles)
+            || foeLaneHandles.Count == 0)
+        {
+            // Either ego's bay lane is not any internal junction's checker lane (shouldn't happen
+            // once the Cont+"!=" test above passed, but guarded), or SUMO's own early return applies
+            // (no parent right-of-way logic for this internal junction, design §4's "absent" case).
+            return double.PositiveInfinity;
+        }
+
+        // ==> WHY THIS IS NOT A BARE OCCUPANCY TEST (see docs/F3-SESSION-LOG.md §9.111-113).
+        // `myInternalLaneFoes` becomes `MSLink::myFoeLanes`, and on the DRIVING path SUMO reads that set
+        // only through `MSLink::getLeaderInfo`, whose candidates are then filtered at
+        // `MSVehicle.cpp:3429` by `isLeader(link, leader, gap) || it->inTheWay()`. The one bare-occupancy
+        // reader of `myFoeLanes` -- `hasApproachingFoe` (`MSLink.cpp:1070`) -- is reachable ONLY from
+        // insertion (`MSLane.cpp:1077`), lane-change abort (`unsafeLinkAhead`, which skips internal
+        // edges) and TraCI. So bare occupancy is NOT an admission rule, and using it as one is symmetric,
+        // which deadlocks: it wedged four cars in four cont bays of one junction for 857+ steps.
+        var blocked = false;
+
+        for (var i = 0; i < foeLaneHandles.Count && !blocked; i++)
+        {
+            var foeLaneHandle = foeLaneHandles[i];
+            var onFoeLane = _neighborQuery!.OnLane(foeLaneHandle);
+            if (onFoeLane.Count == 0)
+            {
+                continue;
+            }
+
+            // Is this foe lane itself a cont BAY? `InternalJunctionByBayLane` IS the set of internal-
+            // junction checker lanes, so membership is exactly that question.
+            //
+            // It matters because `inTheWay` (`MSLink.cpp:1437-1441`) requires
+            // `(!foeExitLink->isInternalJunctionLink() || foeIsBicycleTurn)`, and a bay's exit link IS
+            // the internal-junction link. So for a BAY foe `inTheWay` is STRUCTURALLY FALSE and the
+            // disjunction at :3429 collapses to `isLeader` alone -- entry-time ordering with a total
+            // tie-break. For a foe on a plain stage-2 / internal lane `inTheWay` CAN fire, so that case
+            // keeps the unconditional block: it is the genuinely-occupied one and must not be relaxed.
+            JunctionRequest? foeRequest = null;
+            var foeLaneIsBay = false;
+            if (InternalJunctionAdmissionEntryOrder
+                && _network.InternalJunctionByBayLane.ContainsKey(_network.LanesByHandle[foeLaneHandle].Id)
+                && _network.LinkIndexByInternalLane.TryGetValue(_network.LanesByHandle[foeLaneHandle].Id, out var foeOwn)
+                && ReferenceEquals(foeOwn.Junction, junction))
+            {
+                foeLaneIsBay = true;
+                foreach (var r in junction.Requests)
+                {
+                    if (r.Index == foeOwn.LinkIndex)
+                    {
+                        foeRequest = r;
+                        break;
+                    }
+                }
+            }
+
+            for (var j = 0; j < onFoeLane.Count; j++)
+            {
+                var other = onFoeLane[j];
+                if (ReferenceEquals(other, v) || other.IsParked)
+                {
+                    continue;
+                }
+
+                if (foeLaneIsBay && !EgoYieldsToBayFoe(v, other, linkIndex, foeRequest))
+                {
+                    // Ego is the LEADER of this bay-vs-bay pair, so SUMO would not adapt to it.
+                    continue;
+                }
+
+                blocked = true;
+                break;
+            }
+        }
+
+        if (!blocked)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Hold ego at the end of its own bay lane -- v.LaneHandle IS the bay lane here (the
+        // Cont+"!=" test above already established ego is standing on it, not on stage 2).
+        var bayLane = _network.LanesByHandle[v.LaneHandle];
+        var stopDist = bayLane.Length - v.Kinematics.Pos - PositionEps;
+        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+    }
+
+    // Arm 14's ordering, ported from `MSVehicle::isLeader`'s foe-on-internal-lane branch
+    // (`MSVehicle.cpp:7356-7473`) for the ONE configuration arm 14 can be in: ego standing on a cont bay
+    // of `junction`, foe standing on another cont bay of the SAME junction. `true` == ego must yield
+    // (SUMO's `isLeader` returns "the foe IS a leader for me").
+    //
+    // THE LOAD-BEARING DETAIL: a vehicle that entered on a *cont* link never got a
+    // `JunctionConflictEntryTime` -- `AssignJunctionEntryTimestamps` skips it when `r.Cont`, mirroring
+    // `isConflictEntryLink`'s `!myAmCont` (`MSLink.cpp:1295`). So a bay car's conflict time is
+    // `long.MaxValue` while its plain `JunctionEntryTime` is finite. That asymmetry is what makes each
+    // branch below come out differently, and it is why the DEFAULT pairing deadlocks:
+    //
+    //   defaults (:7357)          egoET = ego.Conflict (MAX), foeET = foe.Entry (finite)
+    //                             => MAX > finite => ego yields ... and so does the foe, symmetrically.
+    //   response && response2     BOTH switch to Conflict (MAX == MAX) => tie => speed, then ID.
+    //     (:7437, comment reads "in a mutual conflict scenario, use entry time to avoid deadlock")
+    //                             => strictly ONE of any pair yields. THE CYCLE BREAKER.
+    //   !response                 not reachable here: a BAY lane only enters the foe set through
+    //                             NetworkParser's response-gated branch, so `response` is true by
+    //                             construction (the unconditional branch contributes STAGE-2 lanes).
+    //
+    // So the only distinction to make is whether the foe responds to us as well.
+    private static bool EgoYieldsToBayFoe(
+        VehicleRuntime ego, VehicleRuntime foe, int egoLinkIndex, JunctionRequest? foeRequest)
+    {
+        var response2 = foeRequest is not null && foeRequest.RespondsTo(egoLinkIndex);
+
+        var egoEt = ego.JunctionConflictEntryTime;
+        var foeEt = response2 ? foe.JunctionConflictEntryTime : foe.JunctionEntryTime;
+
+        return IsLeaderByEntryOrder(
+            egoEt, foeEt, ego.Kinematics.Speed, foe.Kinematics.Speed, ego.Def.Id, foe.Def.Id);
+    }
+
     // C5 follow-on (willPass): is `foe` keepClear-BLOCKED at its upcoming junction entry -- i.e. its
     // own downstream exit is jammed, so checkRewindLinkLanes would clear its request and it will NOT
     // enter the junction? Reuses KeepClearConstraint (finite result == blocked). +infinity (not
@@ -7356,7 +7972,28 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
-            if (last.Kinematics.Speed < KraussModel.HaltingSpeed)
+            // G1 (docs/NEED-checkrewindlinklanes-partial-port.md): SUMO's forward pass sets
+            // `foundStopped` from `last->myHaveToWaitOnNextLink || last->isStopped()`
+            // (MSVehicle.cpp:5126) -- a car that merely CANNOT PROCEED propagates blockage backward,
+            // not only one that has already halted. We ported the `isStopped()` half only.
+            //
+            // WHY THAT MATTERS FOR DISCHARGE: in a saturating grid the blockage is a FORMING queue, not
+            // an already-halted one. Missing the first half means we admit cars into a junction interior
+            // that SUMO would hold at the entry -- and a car that then stops inside the intersection
+            // blocks the conflict area for every stream crossing it, which narrows the drain for
+            // everyone. Measured: four cars stopped on `:d_5_3_10_1`, and at a fixed inflow SUMO holds
+            // ~306 resident cars in equilibrium where we climb past 528 (F3-SESSION-LOG.md §9.121-124).
+            //
+            // ⚠ DELIBERATE ONE-STEP LAG. SUMO reads `myHaveToWaitOnNextLink` in the SAME step, because
+            // its planMove is sequential. Our plan phase is parallel over a frozen start-of-step
+            // snapshot, so reading another vehicle's THIS-step decision would be order-dependent and
+            // therefore non-deterministic -- exactly the class of bug the parity discipline exists to
+            // prevent. `HeldAtLinkLastStep` is written in the COMMIT phase, after all planning, so every
+            // reader in the plan phase sees the same previous-step value regardless of thread order.
+            // This is the "timing of structural mutations" deviation CLAUDE.md permits, and it is the
+            // only deviation here: the predicate itself is SUMO's.
+            var cannotProceed = KeepClearHeldPropagation && last.HeldAtLinkLastStep;
+            if (last.Kinematics.Speed < KraussModel.HaltingSpeed || cannotProceed)
             {
                 foundStopped = true;
                 var lastBrakeGap = KraussModel.BrakeGap(last.Kinematics.Speed, last.VType.Decel, headwayTime: 0.0, dt);
@@ -7508,7 +8145,14 @@ public sealed partial class Engine : IEngine
     private double SameTargetMergeConstraint(
         VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
         bool egoOnInternal, Lane? approachLane, double egoDistToEntry, int foeLinkIndex, ActiveVehicleQuery allVehicles,
-        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false)
+        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false,
+        // T1.9 (docs/NEED-contturn-stuck-in-junction.md): "ego is physically inside this junction", the
+        // faithful port of SUMO's MSLane::isInternal() -- true on EVERY stage of a cont turn, unlike
+        // `egoOnInternal` which is equality against the LINK-CONTROLLING lane only. Used ONLY for the
+        // PHASE 0 commitment GATE below. `egoOnInternal` is deliberately still used for the lane-relative
+        // `distToMerge` arithmetic, which is expressed in `egoInternalLane`'s frame and would mix lanes if
+        // widened. Defaults to egoOnInternal's old meaning at the single call site when the flag is off.
+        bool egoInsideJunction = false)
     {
         if (approachLane is null && !egoOnInternal)
         {
@@ -7566,7 +8210,14 @@ public sealed partial class Engine : IEngine
         // this arrival-time stop-line yield -- the signal already resolved the merge conflict (the
         // conflicting merger is red). Only PHASE 0 (the stop-line yield) is gated; PHASE 1 below
         // (following a foe already on its merging internal lane) is car-following and stays active.
-        if (!egoOnInternal
+        // T1.9: gated on `!egoInsideJunction`, NOT `!egoOnInternal`. This arm's own comment above says
+        // "Once ego is on its internal lane it is committed and no longer gated" -- that is a statement
+        // about being INSIDE THE JUNCTION (SUMO's myLane->isInternal()), and PHASE 0 is a STOP-LINE yield,
+        // so applying it to a committed ego brakes it toward an entry that is already BEHIND it. On a cont
+        // turn `egoOnInternal` is false while ego sits on the first-stage lane, which is exactly how
+        // __veh127 froze for 95 steps on :d_3_4_5_0 with nothing ahead of it (binder 10 / arm 3
+        // sameTargetMerge, confirmed only after the T1.8 stale-diagnostic fix made the arm visible).
+        if (!egoInsideJunction
             && !egoHasSignalPriority
             && foeMerging is not null
             && foeMerging.LaneId != foeInternalLaneId
@@ -7938,6 +8589,471 @@ public sealed partial class Engine : IEngine
     // `foe` is already confirmed to be ON its own internal lane (foe.LaneId equals the
     // conflict's foe internal lane, i.e. `_network.LanesByHandle[foe.LaneHandle]` below IS that
     // lane) by JunctionYieldConstraint before calling in.
+    // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c): MSLink::getLeaderInfo's `inTheWay` predicate
+    // (sumo/src/microsim/MSLink.cpp:1440-1443) -- "the foe's footprint is ON my conflict point right
+    // now", as opposed to the foe merely being somewhere on a lane that conflicts with mine.
+    //
+    //   const bool pastTheCrossingPoint    = leaderBackDist + foeCrossingWidth + sagitta < 0;
+    //   const bool enteredTheCrossingPoint = leaderBackDist < leader->getVehicleType().getLength();
+    //   const bool inTheWay = ((!pastTheCrossingPoint && distToCrossing > 0) || ...)
+    //                          && enteredTheCrossingPoint && ...;
+    //
+    // Only the plain crossing-internal-lane case is reachable here, so the `sameTarget` alternative
+    // (a merge -- handled by SameTargetMergeConstraint, and never carrying a JunctionConflict record)
+    // and the bidi/opposite-direction disjunct are structurally false and omitted. DEVIATION
+    // (deliberate, as in AdaptToJunctionLeader): the `sagitta` curvature-slack term needs
+    // MSLink::myRadius, which JunctionConflict does not carry, so it is omitted.
+    //
+    // Used ONLY to gate the newly-reachable FoeWith-without-RespondsTo occupancy case; a RespondsTo
+    // foe keeps the pre-F3 presence-only path, which is why existing parity is unchanged.
+    private bool FoeIsInTheWay(
+        VehicleRuntime ego,
+        Lane egoLane,
+        Lane? approachLane,
+        bool egoOnInternal,
+        JunctionConflict conflict,
+        VehicleRuntime foe)
+    {
+        var foeLane = _network!.LanesByHandle[foe.LaneHandle];
+
+        // Same `seen`/distToCrossing derivation as AdaptToJunctionLeader (MSVehicle.cpp:3428/3473).
+        var seen = egoOnInternal
+            ? egoLane.Length - ego.Kinematics.Pos
+            : (approachLane!.Length - ego.Kinematics.Pos) + egoLane.Length;
+
+        var distToCrossing = seen - conflict.EgoLengthBehindCrossing;
+        var foeDistToCrossing = foeLane.Length - conflict.FoeLengthBehindCrossing;
+
+        var leaderBack = foe.Kinematics.Pos - foe.VType.Length;
+        var leaderBackDist = foeDistToCrossing - leaderBack;
+
+        var pastTheCrossingPoint = leaderBackDist + conflict.FoeConflictSize < 0;
+        var enteredTheCrossingPoint = leaderBackDist < foe.VType.Length;
+
+        return !pastTheCrossingPoint && distToCrossing > 0 && enteredTheCrossingPoint;
+    }
+
+    // F3/isLeader T2.3 (docs/F3-ISLEADER-PORT-DESIGN.md, docs/F3-ISLEADER-PORT-TASKS.md T2.3): the
+    // per-side inputs `IsLeader` needs from EITHER "this" (ego) or `veh` (foe) in
+    // MSVehicle::isLeader (MSVehicle.cpp:7343-7483). Deliberately NOT `VehicleRuntime` -- that type
+    // is `internal` to Sim.Core (an ECS runtime record), so it cannot appear in any test-callable
+    // public surface in a different assembly (Sim.ParityTests). This is a public, minimal
+    // projection instead: id (tie-break, design §4), current lane (the two "not fully on this
+    // junction" guard clauses, design §1), speed, the three entry-time stamps (design §2), and --
+    // read only off the FOE argument, for attempt 1's brakeGap sub-branch (MSVehicle.cpp:7383-7388)
+    // -- its own car-following/geometry quantities. Ego's role never reads MaxAccel/MaxDecel/
+    // HeadwayTime/Length (SUMO reads `getVehicleType().getMinGap()` -- EGO's OWN minGap -- via
+    // `MinGap` instead, separately from the foe's four); a caller may leave them at 0 for the ego
+    // argument. T2.4's caller constructs one of these per side straight from a `VehicleRuntime v`:
+    // `new JunctionLeaderCandidate(v.LaneId, v.Def.Id, v.Kinematics.Speed, v.JunctionEntryTime,
+    // v.JunctionEntryTimeNeverYield, v.JunctionConflictEntryTime, v.VType.MinGap, v.VType.Accel,
+    // v.VType.Decel, v.VType.Tau, v.VType.Length)`.
+    public readonly record struct JunctionLeaderCandidate(
+        string LaneId,
+        string Id,
+        double Speed,
+        long EntryTime,
+        long EntryTimeNeverYield,
+        long ConflictEntryTime,
+        double MinGap = 0.0,
+        double MaxAccel = 0.0,
+        double MaxDecel = 0.0,
+        double HeadwayTime = 0.0,
+        double Length = 0.0);
+
+    // F3/isLeader T2.3: port of MSVehicle::isLeader(link, veh, gap) (MSVehicle.cpp:7343-7483) --
+    // decides whether EGO must treat FOE as a leader (brake for it), consumed by SUMO as
+    // `isLeader(...) || inTheWay()` (MSVehicle.cpp:3429; our `FoeIsInTheWay` above already ports
+    // the second disjunct). NOT WIRED IN (T2.4 wires arm 5): nothing in Step() calls this, so this
+    // method is parity-inert by construction -- it exists to be directly unit-tested
+    // (JunctionIsLeaderTests) without building a running scenario.
+    //
+    // `network` is an EXPLICIT parameter (not `this._network`) so a caller can supply a `Junction`/
+    // `JunctionLink` obtained from its OWN `NetworkParser.Parse(...)` call and have every topology
+    // lookup below (`IsInternalLaneOfJunction`, `LinkIndexByInternalLane`, `EntryConnectionByLink`)
+    // resolve consistently against THAT SAME parsed instance -- `IsInternalLaneOfJunction` compares
+    // by REFERENCE, so mixing a `junction` from one parse with a `network` from another would
+    // silently break every lookup. Only the LIVE traffic-light char (`TlLinkStateChar`, for the
+    // actuated-program fallback) still reads `this._network`/`this._actuatedLogics` -- that lookup
+    // is by TL id (a string), not by object identity, so it is correct as long as THIS Engine has
+    // separately loaded (LoadScenario/LoadNetwork) a network parsed from the SAME net file `network`
+    // came from; the TWO NetworkModel instances need not be reference-identical, only value-identical
+    // for the tlLogic programs they carry.
+    //
+    // `gap` is the SAME already-minGap-reduced quantity `MSLink::getLeaderInfo` computes at the real
+    // call site (MSLink.cpp:1647: `distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth`)
+    // -- T2.4's caller must pass that, not a raw distance. `evalTime` is the instant the entry
+    // connections' live state chars are sampled at.
+    public bool IsLeader(
+        NetworkModel network, Junction junction, JunctionLink egoLink,
+        JunctionLeaderCandidate ego, JunctionLeaderCandidate foe,
+        double gap, double dt, double evalTime)
+    {
+        // MSVehicle.cpp:7348-7351: ego not yet on THIS junction (or on a different junction's
+        // internal lane) -> every foe is a leader. The conservative default that makes the whole
+        // mechanism safe (a car that hasn't entered yet always stops OUTSIDE).
+        if (!network.IsInternalLaneOfJunction(ego.LaneId, junction))
+        {
+            return true;
+        }
+
+        // MSVehicle.cpp:7352-7355 (blueLight): SKIPPED -- no blue-light device exists in this engine
+        // (design doc §7), structurally unreachable.
+
+        // MSVehicle.cpp:7357-7358 and the two trailing `else` arms at :7475/:7479: foe must be on an
+        // internal lane of the SAME junction, or it is only PARTIALLY on the junction and is
+        // unconditionally a leader. Design doc §1's verified To/From-asymmetry note: one predicate,
+        // `IsInternalLaneOfJunction`, is correct for BOTH ego and foe (netconvert sets an internal
+        // edge's From/To junction to the SAME real junction for every stage of a cont turn), so both
+        // trailing `else` arms collapse to this single check.
+        if (!network.IsInternalLaneOfJunction(foe.LaneId, junction))
+        {
+            return true;
+        }
+
+        // Default pair (MSVehicle.cpp:7359-7360).
+        var egoEntryTime = ego.ConflictEntryTime;
+        var foeEntryTime = foe.EntryTime;
+
+        if (network.LinkIndexByInternalLane is not { } linkIndexByInternalLane
+            || !linkIndexByInternalLane.TryGetValue(foe.LaneId, out var foeLinkEntry)
+            || network.EntryConnectionByLink is not { } entryConnectionByLink
+            || !entryConnectionByLink.TryGetValue((junction.Id, egoLink.Index), out var entryConn)
+            || !entryConnectionByLink.TryGetValue((junction.Id, foeLinkEntry.LinkIndex), out var foeEntryConn))
+        {
+            // Cannot happen for a real net (both maps are built by the SAME back-walk that just
+            // proved `foe.LaneId` is an internal lane of `junction`, design doc §2c) -- defensive
+            // only, conservative fallback.
+            return true;
+        }
+
+        var foeLinkIndex = foeLinkEntry.LinkIndex;
+
+        // MSVehicle.cpp:7362-7368: same source lane -> ego and foe are queueing behind one another
+        // on the SAME incoming lane, not conflicting -- design doc §3(a): the "normal predecessor
+        // lane" of a junction link is its EntryConnectionByLink entry's (From, FromLane).
+        if (entryConn.From == foeEntryConn.From && entryConn.FromLane == foeEntryConn.FromLane)
+        {
+            // MSVehicle.cpp:7364-7365. The nested `isExitLinkAfterInternalJunction() &&
+            // ...isIndirect()` sub-case (:7366-7367) applies only to INDIRECT (bicycle-style
+            // two-stage) left turns and is OMITTED (design doc §7) -- no committed net contains one
+            // (IndirectLinkGuardTests below).
+            egoEntryTime = ego.EntryTimeNeverYield;
+            foeEntryTime = foe.EntryTimeNeverYield;
+        }
+        else
+        {
+            var egoRequest = FindJunctionRequest(junction, egoLink.Index);
+            var foeRequest = FindJunctionRequest(junction, foeLinkIndex);
+            if (egoRequest is null || foeRequest is null)
+            {
+                return true; // defensive: no <request> row for this link -> conservative leader.
+            }
+
+            var entryState = EntryLinkStateChar(entryConn, evalTime);
+            var foeEntryState = EntryLinkStateChar(foeEntryConn, evalTime);
+
+            var (response, response2) = ResponseFor(
+                entryState, foeEntryState, ego.Speed, foe.Speed, gap,
+                foe.MaxAccel, foe.MaxDecel, foe.HeadwayTime, foe.Length, ego.MinGap,
+                egoRequest, egoLink.Index, foeRequest, foeLinkIndex, dt);
+
+            if (!response)
+            {
+                // MSVehicle.cpp:7433-7436: ego has right of way -> entry time doesn't matter.
+                foeEntryTime = foe.ConflictEntryTime;
+                egoEntryTime = ego.EntryTime;
+            }
+            else if (response2)
+            {
+                // MSVehicle.cpp:7437-7440 (`response && response2`, `response` already true in this
+                // `else if`): mutual conflict -> use CONFLICT entry time for BOTH, to avoid deadlock.
+                // Design doc §0a: this is the branch that resolves the one measured deadlock.
+                foeEntryTime = foe.ConflictEntryTime;
+                egoEntryTime = ego.ConflictEntryTime;
+            }
+            // else (response && !response2): neither adjustment applies; the default pair stands.
+        }
+
+        return IsLeaderByEntryOrder(egoEntryTime, foeEntryTime, ego.Speed, foe.Speed, ego.Id, foe.Id);
+    }
+
+    // F3/isLeader T2.3 (design doc §4): SUMO's tie-break chain, VERBATIM from MSVehicle.cpp:
+    // 7443-7472. Deliberately STATIC and free of any Engine/network state so it is directly
+    // unit-testable in complete isolation (JunctionIsLeaderTests) -- exactly the "separately
+    // callable" shape docs/F3-ISLEADER-PORT-TASKS.md T2.3 calls for. CLAUDE.md rule 5 / design doc
+    // §4: the id compare is `string.CompareOrdinal` (byte-wise, locale-independent) -- NEVER
+    // `string.Compare` (culture-sensitive) and NEVER `EntityIndex`/any array position (order-
+    // independence).
+    public static bool IsLeaderByEntryOrder(
+        long egoEntryTime, long foeEntryTime, double egoSpeed, double foeSpeed, string egoId, string foeId)
+    {
+        if (egoEntryTime == foeEntryTime)
+        {
+            // MSVehicle.cpp:7444-7464: try speed as a tie-breaker first, then id.
+            return egoSpeed == foeSpeed
+                ? string.CompareOrdinal(egoId, foeId) < 0
+                : egoSpeed < foeSpeed;
+        }
+
+        // MSVehicle.cpp:7465-7473: entered later -> yield (`egoET > foeET`).
+        return egoEntryTime > foeEntryTime;
+    }
+
+    // F3/isLeader T2.3 (design doc §3a): the four right-of-way "response" attempts SUMO tries in
+    // order (MSVehicle.cpp:7370-7418), each producing BOTH ego's response to foe AND foe's response
+    // to ego. `entryState`/`foeEntryState` are the LIVE state chars of the two links' CORRESPONDING
+    // ENTRY connections (SUMO's `getCorrespondingEntryLink()`, MSLink.cpp:1331-1339) -- i.e.
+    // `NetworkModel.EntryConnectionByLink`, NEVER `JunctionLink.Connection` (which for a `cont` link
+    // is the WRONG, second, hop -- design doc §2a facts 2/3; docs/NEED-linkstatechar-cont-entry-link.md).
+    //
+    // `gap` is ego's already-minGap-reduced gap to the foe (MSLink::getLeaderInfo, MSLink.cpp:1647).
+    // The `foe*` parameters are the FOE's own car-following/vType quantities
+    // (`getMaxAccel`/`getMaxDecel`/`getHeadwayTime`/`getLength`) and `egoMinGap` is EGO's OWN minGap
+    // (`this->getVehicleType().getMinGap()`, called from inside EGO's own `isLeader`) -- attempt 1's
+    // brakeGap sub-branch re-derives a positive `foeGap` from the minGap-reduced `gap`, VERBATIM
+    // (MSVehicle.cpp:7386-7388's `-2 * minGap`, not "simplified").
+    //
+    // Deliberately STATIC and state-char-driven (not reading any TL/engine state itself) so it is
+    // directly unit-testable: the case-selection tests resolve REAL state chars (via
+    // `TrafficLightState.GetLinkState` for a static program, or `Engine.TryGetTlLinkState` for an
+    // actuated one) at the exact simulation second each phase class is active, then call this.
+    //
+    // Attempt 1 (the `haveRed` branch) is MANDATORY, not stageable: design doc §0a proves it is the
+    // ONLY arm that ever executes for the one confirmed deadlock (junction 2336 never shows both of
+    // its conflicting links non-red at once, `JunctionIsLeaderTests` pins this with 0-of-12 phases).
+    public static (bool Response, bool Response2) ResponseFor(
+        char entryState, char foeEntryState,
+        double egoSpeed, double foeSpeed, double gap,
+        double foeMaxAccel, double foeMaxDecel, double foeHeadwayTime, double foeLength, double egoMinGap,
+        JunctionRequest egoRequest, int egoLinkIndex, JunctionRequest foeRequest, int foeLinkIndex,
+        double dt)
+    {
+        bool response;
+        bool response2;
+
+        if (HaveRed(entryState) || HaveRed(foeEntryState))
+        {
+            // Attempt 1 (MSVehicle.cpp:7379-7406): either link red -- ensures a vehicle stuck on the
+            // intersection may exit.
+            if (!HaveRed(foeEntryState) && foeSpeed > KraussModel.HaltingSpeed && gap < 0)
+            {
+                // MSVehicle.cpp:7381-7401: foe might be oncoming and moving -- don't drive unless
+                // the foe can still brake safely before the conflict.
+                var foeNextSpeed = foeSpeed + KraussModel.Accel2Speed(foeMaxAccel, dt);
+                var foeBrakeGap = KraussModel.BrakeGap(foeNextSpeed, foeMaxDecel, foeHeadwayTime, dt);
+                // MSVehicle.cpp:7386-7388: `gap` was already reduced by EGO's minGap in
+                // MSLink::getLeaderInfo (enlarging the negative gap), so `-2 *` points the
+                // reconstruction back the right direction -- reproduced VERBATIM.
+                var foeGap = -gap - foeLength - (2.0 * egoMinGap);
+                if (foeGap < foeBrakeGap)
+                {
+                    response = true;
+                    response2 = false;
+                }
+                else
+                {
+                    response = false;
+                    response2 = true;
+                }
+            }
+            else
+            {
+                // MSVehicle.cpp:7402-7406: brake for the stuck foe (the branch taken whenever the
+                // foe is stopped/near-stopped -- design doc §0a's measured deadlock case).
+                response = HaveRed(foeEntryState);
+                response2 = HaveRed(entryState);
+            }
+        }
+        else if (HavePriority(entryState) != HavePriority(foeEntryState))
+        {
+            // Attempt 2 (MSVehicle.cpp:7407-7409): priorities differ.
+            response = !HavePriority(entryState);
+            response2 = !HavePriority(foeEntryState);
+        }
+        else if (HaveYellow(entryState) && HaveYellow(foeEntryState))
+        {
+            // Attempt 3 (MSVehicle.cpp:7410-7413): both yellow -- the faster vehicle keeps moving.
+            response = foeSpeed >= egoSpeed;
+            response2 = egoSpeed >= foeSpeed;
+        }
+        else
+        {
+            // Attempt 4 (MSVehicle.cpp:7414-7417): fallback -- the netconvert response matrix
+            // (reached for pedestrian crossings and any case the first three attempts don't resolve).
+            response = egoRequest.RespondsTo(foeLinkIndex);
+            response2 = foeRequest.RespondsTo(egoLinkIndex);
+        }
+
+        return (response, response2);
+    }
+
+    // SUMO MSLink::haveRed()/havePriority()/haveYellow() state-char classification (MSLink.h:
+    // 437-454) -- ported once here since ResponseFor's first three attempts all test these three
+    // predicates on the two links' entry connections. 'u' (LINKSTATE_TL_REDYELLOW) counts as red,
+    // matching MSLink::haveRed() exactly (SUMOXMLDefinitions.h:1695-1701).
+    private static bool HaveRed(char state) => state is 'r' or 'u';
+    private static bool HavePriority(char state) => state is >= 'A' and <= 'Z';
+    private static bool HaveYellow(char state) => state is 'y' or 'Y';
+
+    // F3/isLeader T2.3: the live right-of-way state char of an ENTRY connection -- like the
+    // pre-existing `LinkStateChar` (used by `ClassifyTeleportKind`) but taking the `Connection`
+    // directly rather than a `JunctionLink`, so it can be handed `EntryConnectionByLink`'s result,
+    // which for a `cont` link is the FIRST hop (the only one carrying a live tl/linkIndex -- design
+    // doc §2a fact 3). `LinkStateChar` itself reads `link.Connection`, which is the WRONG (second)
+    // hop for a cont link -- a pre-existing, separately-filed defect
+    // (docs/NEED-linkstatechar-cont-entry-link.md) this sidesteps by construction rather than fixes.
+    private char EntryLinkStateChar(Connection entryConn, double evalTime)
+    {
+        if (entryConn.Tl is { } tl && entryConn.LinkIndex is { } li && _network!.TlLogicsById.ContainsKey(tl))
+        {
+            return TlLinkStateChar(tl, li, evalTime);
+        }
+
+        return entryConn.State is { Length: > 0 } s ? s[0] : 'M';
+    }
+
+    // F3/isLeader T2.3: find the <request> row for a given link index -- manual loop (D4 style,
+    // matching JunctionYieldConstraint's own `JunctionRequest? request = null; foreach (...)`)
+    // rather than a LINQ `.FirstOrDefault` closure, since `junction.Requests` carries no index-keyed
+    // dictionary of its own.
+    private static JunctionRequest? FindJunctionRequest(Junction junction, int linkIndex)
+    {
+        foreach (var r in junction.Requests)
+        {
+            if (r.Index == linkIndex)
+            {
+                return r;
+            }
+        }
+
+        return null;
+    }
+
+    // F3/isLeader T2.4a (docs/F3-ISLEADER-PORT-DESIGN.md §3b -- read it in full, including BOTH
+    // traps, before touching this): the `gap` `IsLeader`'s attempt-1 `brakeGap` sub-branch needs
+    // (MSVehicle.cpp:3429 passes `MSLink::getLeaderInfo`'s `gap` straight through). Ported verbatim
+    // from `MSLink::getLeaderInfo` (MSLink.cpp:1376-1653), specialised to arm 5's shape exactly as
+    // the design doc's mapping table lays out: `distToCrossing`/`leaderBackDist` are the SAME
+    // quantities `FoeIsInTheWay`/`AdaptToJunctionLeader` already derive (passed in, not
+    // recomputed); `sameTarget` is structurally false here (a merge never carries a
+    // `JunctionConflict` record -- `AdaptToJunctionLeader`'s own comment), so `leaderBackDist2 ==
+    // leaderBackDist` and the `sameTarget` disjuncts of `crossingWidth`/`contLane`'s `!isOpposite`
+    // guard collapse away; `isOpposite` and `ignoreIndirectBicycleTurn` are likewise structurally
+    // false (no opposite-direction driving on these nets; no indirect links in any of the 134
+    // committed nets -- `JunctionIsLeaderTests.NoCommittedNet_ContainsAnIndirectConnection`).
+    //
+    // NOT WIRED IN YET (T2.4b wires arm 5): nothing calls this, so this method is parity-inert by
+    // construction, exactly like T2.3's `IsLeader`.
+    //
+    // ⚠ TRAP 1 (design §3b, point 1): `sameSource` HERE uses `getLogicalPredecessorLane()` -- ONE
+    // hop back (MSLane.cpp:3077-3099: the immediate incoming lane, via whichever <connection>'s
+    // `via` lands on this lane) -- NOT `getNormalPredecessorLane()` (MSLane.cpp:3102-3109, which
+    // RECURSES through every internal stage to the first NORMAL lane). `IsLeader`'s OWN
+    // same-source test (design §3(a), case (a)) uses the NORMAL predecessor
+    // (`EntryConnectionByLink`'s fully-recursed `(From, FromLane)`). These are DIFFERENT predicates
+    // that happen to share the English phrase "same source" -- do NOT collapse them into one
+    // helper. For a cont link's stage-2 (controlling) lane the two disagree BY CONSTRUCTION: its
+    // logical predecessor is the stage-1 (bay) internal lane, while its normal predecessor is the
+    // true incoming NORMAL lane two-plus hops back -- `GapForIsLeaderTests` exercises exactly this
+    // disagreement on real net data (junction 2336, links 17/18's stage-2 lanes: same normal
+    // source `2417` lane 1, but DIFFERENT stage-1 bays, so logical says NOT-same-source while the
+    // normal-predecessor test `IsLeader` itself uses would say same-source).
+    //
+    // ⚠ TRAP 2 (design §3b, point 2): `contLane` is NOT cosmetic. It fires when the FOE currently
+    // occupies a lane whose own onward <connection> still leads through ANOTHER internal lane
+    // (i.e. the foe is on the STAGE-1 bay of a still-unfinished cont turn, not yet through the
+    // internal junction) -- MSLink.cpp:1384-1385's `foeExitLink->getViaLaneOrLane()->getEdge().
+    // isInternal()`, gated by `!(isInternalJunctionLink() || isExitLinkAfterInternalJunction())`
+    // applied to EGO's OWN link. In this engine's abstraction (ego/foe are always examined from
+    // their CURRENT/controlling lane, never mid-multi-stage as a live MSLink instance) `this` is
+    // always ego's own exit link, for which `isInternalJunctionLink()` is structurally false (an
+    // exit link's target is never internal) and `isExitLinkAfterInternalJunction()` reduces to
+    // "is EGO's own lane itself a stage-2+ continuation" -- i.e. its OWN logical predecessor is
+    // internal. With `gap = -DBL_MAX` when `contLane && !sameSource`, attempt 1's `brakeGap`
+    // sub-branch computes a huge positive `foeGap`, so the foe is NEVER judged able to brake safely
+    // -- ego yields unconditionally. The plain formula could instead return a POSITIVE gap for the
+    // very same geometric inputs (nothing about `distToCrossing`/`leaderBackDist`/`foeConflictSize`
+    // forces it negative), which is a DIFFERENT answer at attempt 1's `gap < 0` precondition.
+    //
+    // `egoLane`/`foeLane` are the vehicles' own CURRENT lanes (matching `FoeIsInTheWay`'s
+    // `egoLane`/`_network.LanesByHandle[foe.LaneHandle]`); `foeConflictSize` is the RAW
+    // `conflict.FoeConflictSize` (pre-`sameSource` zeroing -- this method applies that zeroing
+    // itself, per the mapping table).
+    public static double GapForIsLeader(
+        NetworkModel network,
+        Lane egoLane,
+        Lane foeLane,
+        double distToCrossing,
+        double leaderBackDist,
+        double foeConflictSize,
+        double egoMinGap)
+    {
+        var sameSource =
+            LogicalPredecessorKey(network, egoLane.Id) is { } egoPred
+            && LogicalPredecessorKey(network, foeLane.Id) is { } foePred
+            && egoPred.EdgeId == foePred.EdgeId
+            && egoPred.LaneIndex == foePred.LaneIndex;
+
+        // MSLink.cpp:1382: foeCrossingWidth = (sameTarget || sameSource) ? 0 : foeConflictSize.
+        // `sameTarget` structurally false here (see header comment).
+        var foeCrossingWidth = sameSource ? 0.0 : foeConflictSize;
+
+        // MSLink.cpp:1384-1385: contLane = foeExitLink->getViaLaneOrLane()->getEdge().isInternal()
+        // && !(isInternalJunctionLink() || isExitLinkAfterInternalJunction()) -- see TRAP 2 above
+        // for why the second clause reduces to "is ego's OWN lane a stage-2+ continuation" in this
+        // engine's abstraction.
+        var egoIsContSuccessor =
+            LogicalPredecessorKey(network, egoLane.Id) is { } egoOwnPred && IsInternalEdgeId(egoOwnPred.EdgeId);
+
+        var foeExitTargetIsInternal = false;
+        if (network.ConnectionsByFromEdgeLane.TryGetValue((foeLane.EdgeId, foeLane.Index), out var foeExitCandidates)
+            && foeExitCandidates.Count > 0)
+        {
+            var foeExit = foeExitCandidates[0];
+            var viaOrToEdge = foeExit.Via is { } via && network.LanesById.TryGetValue(via, out var viaLane)
+                ? viaLane.EdgeId
+                : foeExit.To;
+            foeExitTargetIsInternal = IsInternalEdgeId(viaOrToEdge);
+        }
+
+        var contLane = foeExitTargetIsInternal && !egoIsContSuccessor;
+
+        // MSLink.cpp:1622-1623/1647 (isOpposite/ignoreIndirectBicycleTurn structurally false here,
+        // see header comment):
+        //   if (contLane && !sameSource) gap = -DBL_MAX;
+        //   else gap = distToCrossing - egoMinGap - leaderBackDist2 - foeCrossingWidth;
+        if (contLane && !sameSource)
+        {
+            return -double.MaxValue;
+        }
+
+        return distToCrossing - egoMinGap - leaderBackDist - foeCrossingWidth;
+    }
+
+    // F3/isLeader T2.4a: `MSLane::getLogicalPredecessorLane()` (MSLane.cpp:3077-3099) -- the ONE
+    // incoming lane immediately before `laneId`, found as the (unique, per the
+    // `getIncomingLanes().size() != 1` invariant MSLink::setRequestInformation asserts,
+    // MSLink.cpp:247-249) top-level <connection> whose `via` lands on `laneId`. Returns the
+    // predecessor's (edge id, lane index) -- NOT a resolved `Lane`, since every caller here only
+    // needs equality/edge-internal-ness, never the lane's own geometry. `null` when no connection's
+    // `via` equals `laneId` (laneId is not an internal lane, or is one with no recorded entry --
+    // defensive only; every internal lane in a real net has exactly one).
+    private static (string EdgeId, int LaneIndex)? LogicalPredecessorKey(NetworkModel network, string laneId)
+    {
+        foreach (var c in network.Connections)
+        {
+            if (c.Via == laneId)
+            {
+                return (c.From, c.FromLane);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsInternalEdgeId(string edgeId) => edgeId.Length > 0 && edgeId[0] == ':';
+
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
         Lane egoLane,
@@ -7966,6 +9082,50 @@ public sealed partial class Engine : IEngine
         var leaderBack = foe.Kinematics.Pos - foe.VType.Length;
         var leaderBackDist = foeDistToCrossing - leaderBack;
         var foeCrossingWidth = conflict.FoeConflictSize;
+
+        // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3b): MSLink::getLeaderInfo's GEOMETRIC skip
+        // conditions. These were previously unnecessary because this arm was only ever reached for a
+        // foe ego YIELDS to; now that it also runs for a merely physically-conflicting foe (the FoeWith
+        // widening in JunctionYieldConstraint's foe loop) they are mandatory, because without them a
+        // conflict point ego has ALREADY CLEARED would brake ego to a standstill in the middle of the
+        // junction:
+        //
+        //   distToCrossing < 0  =>  gap < 0  =>  the else-branch below calls StopSpeedFor with a
+        //   NEGATIVE stop distance (seen - egoLane.Length - eps), i.e. an emergency stop for a
+        //   conflict that is behind ego. That is a new deadlock, and exactly the over-yield direction
+        //   NEED-multilane-junction-passage.md warns about.
+        //
+        // Skip #1 (MSLink.cpp:1398) -- ego is past this crossing point:
+        //   if (distToCrossing + crossingWidth < 0 && !sameTarget) continue;
+        // Foe-side (MSLink.cpp:1633, `pastTheCrossingPoint`) -- the foe has fully vacated it:
+        //   pastTheCrossingPoint = leaderBackDist + foeCrossingWidth < 0  =>  not a leader.
+        //
+        // `sameTarget` is structurally false here: a sameTarget MERGE never produces a
+        // JunctionConflict record (NetworkParser.cs builds a MergeConflict instead and that case is
+        // handled by SameTargetMergeConstraint), so the `&& !sameTarget` guard is satisfied by
+        // construction. DEVIATION (deliberate, recorded): SUMO adds a `sagitta` curvature-slack term
+        // derived from MSLink::myRadius, which JunctionConflict does not carry; it is omitted, matching
+        // the existing scope of this port.
+        // Gated on JunctionPhysicalOccupancyGate (default OFF). These guards are SUMO-faithful and are
+        // REQUIRED by the widened FoeWith path, but they are NOT parity-inert on their own: they replace a
+        // hard brake with +infinity for a RespondsTo foe whose conflict point ego has already passed. Every
+        // golden stayed byte-identical (no committed fixture reaches that state), which is exactly why the
+        // first measurement wrongly called them inert -- the live-city DEMO is not a golden scenario, and
+        // leaving them unconditional moved it measurably (front-anchor overlap events 61 -> 94, F3 bucket
+        // 8 -> 27). Keeping them behind the flag makes "flag off" a true no-op EVERYWHERE, not just across
+        // the golden suite. Un-gate them only together with the rest of the port (see the flag's comment).
+        if (JunctionPhysicalOccupancyGate)
+        {
+            if (distToCrossing + conflict.EgoConflictSize < 0)
+            {
+                return double.PositiveInfinity;
+            }
+
+            if (leaderBackDist + foeCrossingWidth < 0)
+            {
+                return double.PositiveInfinity;
+            }
+        }
 
         var gap = distToCrossing - ego.VType.MinGap - leaderBackDist - foeCrossingWidth;
 
@@ -8576,6 +9736,16 @@ public sealed partial class Engine : IEngine
     // Gated on CrowdSource != null -> +Infinity (inert) for every scenario without a coupling attached,
     // so byte-identical (no committed golden sets CrowdSource). Uses the neutral world-disc seam +
     // LaneProjection, NOT the string ExternalObstacle store.
+    // Crowd-disc query buffer size. QueryNear writes at most this many discs into the ego's stackalloc span;
+    // if MORE crowd agents sit within the query radius, the surplus is silently dropped -- and with it the
+    // in-path agent the car must brake/swerve for, so at high crowd density a car sails through a pedestrian
+    // it never "saw" (measured on the realism-fixes branch: at 10x live-city ped density a car has a median
+    // 39 / max 131 crowd discs in range, so the old cap of 16 truncated the in-path disc ~90% of the time).
+    // 256 covers realistic demo densities with headroom (40 B/disc -> 10 KB stackalloc, safe). PARITY-INERT:
+    // every crowd query is gated on CrowdSource != null, which is null for every committed golden and the
+    // bench, so this buffer is never even allocated on the parity path -- byte-identical.
+    private const int MaxCrowdDiscs = 256;
+
     private double CrowdLongitudinalConstraint(VehicleRuntime v, double time, double laneVehicleMaxSpeed)
     {
         if (CrowdSource is null)
@@ -8588,7 +9758,7 @@ public sealed partial class Engine : IEngine
         var (egoX, egoY, _) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
         var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * v.VType.Length + 5.0;
 
-        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxCrowdDiscs];
         var got = CrowdSource.QueryNear(egoX, egoY, radius, discs);
 
         var nearestBack = double.PositiveInfinity;
@@ -8648,7 +9818,7 @@ public sealed partial class Engine : IEngine
     // Task B-guard L2 (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
     // safety guard -- the term that makes "a car never passes a ped at close distance and high speed" a
     // GUARANTEE rather than an emergent behaviour. Sibling of CrowdLongitudinalConstraint (binder 13),
-    // folded into the same Math.Min chain right after it (binder 14), so it can only ever make ego SLOWER
+    // folded into the same Math.Min chain (binder 16 -- 14/15 belong to the F3 junction constraints), so it can only ever make ego SLOWER
     // -- it cannot break any bound the rest of the fold established.
     //
     // Two terms, both from ONE QueryNear sweep:
@@ -8702,7 +9872,11 @@ public sealed partial class Engine : IEngine
 
         // Same neighbourhood radius as CrowdLongitudinalConstraint, so the two terms see the same agents.
         var radius = v.Kinematics.Speed * 3.0 + v.VType.MinGap + 2.0 * v.VType.Length + 5.0;
-        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+        // MaxCrowdDiscs (256, raised from 16 on main): the two fixes for the same symptom are
+        // complementary -- a bigger buffer makes truncation RARE, and WorldDiscQuery's nearest-first
+        // contract makes it CORRECT when it still happens (measured 131 discs near a car at 10x ped
+        // density, so 256 is comfortable but not a proof).
+        Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxCrowdDiscs];
         var got = CrowdSource.QueryNear(egoX, egoY, radius, discs);
 
         var proximityCap = double.PositiveInfinity;
@@ -9370,7 +10544,7 @@ public sealed partial class Engine : IEngine
             egoWorldX = egoWX;
             egoWorldY = egoWY;
             var crowdLookahead = v.Kinematics.Speed * SwervePredictionHorizon + v.VType.Length + v.VType.MinGap + 5.0;
-            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[16];
+            Span<Sim.Core.Bridge.WorldDisc> discs = stackalloc Sim.Core.Bridge.WorldDisc[MaxCrowdDiscs];
             var got = CrowdSource.QueryNear(egoWX, egoWY, crowdLookahead, discs);
             for (var d = 0; d < got; d++)
             {
@@ -9461,7 +10635,7 @@ public sealed partial class Engine : IEngine
         // PREDICTED lateral position" (the FootprintsOverlap test in the crowd scan above), i.e. "a ped in
         // my path" -- a kerb/sidewalk ped never reaches here, so the gate cannot stall a car for someone
         // standing clear of the lane. Refusing the dodge keeps ego laterally overlapping the ped, which
-        // keeps CrowdLongitudinalConstraint (binder 13) and CrowdYieldConstraint (binder 14) engaged, so
+        // keeps CrowdLongitudinalConstraint (binder 13) and CrowdYieldConstraint (binder 16) engaged, so
         // ego brakes, holds behind it, and resumes the moment it clears. A ped walking ALONG the lane is
         // still followed as a MOVING leader by those constraints (its own longitudinal speed, not a dead
         // stop), so this is a yield, not a deadlock.
@@ -9742,6 +10916,18 @@ public sealed partial class Engine : IEngine
             // FOLLOWING step's Plan phase (see VehicleRuntime.Acceleration's own header comment).
             // Written for every vehicle, unconditionally -- read by nothing except CACC.
             v.Acceleration = (v.Intent.NewSpeed - oldSpeed) / dt;
+
+            // G1 (docs/NEED-checkrewindlinklanes-partial-port.md): our stand-in for
+            // `MSVehicle::myHaveToWaitOnNextLink` -- "chose the WAIT branch at the next link". Written HERE,
+            // in the commit phase, for exactly the reason `v.Acceleration` immediately above is: a reader in
+            // the Plan phase must see a stable PREVIOUS-step value, because the plan phase runs in parallel
+            // over a frozen snapshot and reading a this-step decision would be thread-order dependent.
+            //
+            // The binder set is the link-WAIT arms only. Excluded on purpose: 1/2 (car-following -- SUMO's
+            // `adaptToLeader` does not set the flag), 3/4 (speed limits), 5 (dead-lane merge brake), 12/13
+            // (obstacle/crowd), 15 (colocation break). None of those is a vehicle holding at a link.
+            v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14;
+
             v.Kinematics.Speed = v.Intent.NewSpeed;
 
             // C4-ii: waiting-time accumulation (MSVehicle::updateWaitingTime, MSVehicle.cpp:4081-4088).
@@ -10071,6 +11257,19 @@ public sealed partial class Engine : IEngine
                 // so this is byte-identical to reading _laneSeqPool. D3: direct pool-slice read.
                 v.LaneHandle = _laneSeqArrival[v.LaneSeqStart + v.LaneSeqIndex];
                 v.LaneId = _network.LanesByHandle[v.LaneHandle].Id;
+
+                // F3/isLeader T2.2 (design doc §2, §2b; MSVehicle.cpp:4354-4368): the three per-
+                // vehicle junction timestamps, assigned at this exact hop (SUMO's `enterLaneAtMove`,
+                // called for EVERY lane-boundary crossing, including internal-internal cont hops).
+                // `oldJunction`/`newJunction` are J(l) = the owning Junction of the lane just left /
+                // just entered (null when the lane is not internal to any junction) --
+                // NetworkModel.JunctionByInternalLane, the same lookup ContTurnInternalLaneOwnership
+                // relies on for `IsInternalLaneOfJunction`. The three independent `if`s below mirror
+                // SUMO's own three independent `if`s (MSVehicle.cpp:4354-4368) -- entry and
+                // conflict-entry BOTH fire for a non-cont entry link; only Stage 1 is done here
+                // (nothing reads these fields yet -- IsLeader is T2.3).
+                AssignJunctionEntryTimestamps(v, currentLane.Id, v.LaneId);
+
                 // #15 CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): a lane change is a
                 // lateral move within ONE edge -- the vehicle just crossed a junction onto its exit lane,
                 // so any in-progress continuous maneuver on the edge just left is finalized/moot. Clear it
@@ -10097,6 +11296,86 @@ public sealed partial class Engine : IEngine
             // current lane having no connection to the next route edge (a dead lane), which no golden
             // vehicle is ever on. See TryRerouteStuckDeadLane.
             TryRerouteStuckDeadLane(v, dt);
+    }
+
+    // F3/isLeader T2.2 (docs/F3-ISLEADER-PORT-DESIGN.md §2, §2b). Assigns VehicleRuntime's three
+    // junction timestamps at ONE lane-boundary hop (`oldLaneId` just left, `newLaneId` just entered),
+    // ported from SUMO's three independent `if`s at MSVehicle.cpp:4354-4368 (`enterLaneAtMove`):
+    //
+    //     if (link->isEntryLink())         { ET = ETN = now; }
+    //     if (link->isConflictEntryLink()) { CET = now; ET = ETN; }   // "renew yielded request"
+    //     if (link->isExitLink())          { ET = ETN = CET = SUMOTime_MAX; }
+    //
+    // `isEntryLink`/`isConflictEntryLink`/`isExitLink` are LINK properties in SUMO (MSLink.cpp:
+    // 1283-1305), each purely a function of whether the lane BEFORE / AFTER the hop is internal. We
+    // have no MSLink object, but the SAME hop classification is fully determined by J(old)/J(new) --
+    // the owning Junction of the old/new lane (null when the lane is not internal to any junction),
+    // resolved via `NetworkModel.JunctionByInternalLane` -- per the design doc §2b table:
+    //
+    //   J(old)=null, J(new)=J   -> entry link      (ET=ETN=now; CET=now too, UNLESS the entry is the
+    //                                                first stage of a `cont` turn -- MSLink.cpp:1295's
+    //                                                `!myAmCont` guard)
+    //   J(old)=J,    J(new)=J   -> internal->internal (a cont turn's second stage): CET=now, ET=ETN
+    //   J(old)=J,    J(new)=null -> exit link       (ET=ETN=CET=SUMOTime_MAX)
+    //   J(old)=null, J(new)=null -> not a junction hop: no-op
+    //
+    // Cont-ness of the entry hop is read from `Junction.Requests[i].Cont` (SUMO's `myAmCont`), where
+    // `i` is `newLaneId`'s link index via the new `LinkIndexByInternalLane` map (T2.1) -- BOTH stages
+    // of a cont turn resolve to the SAME link index (design doc §2c fact 1), so this works whether
+    // `newLaneId` is a cont turn's first-stage lane or an ordinary single-stage link's only lane.
+    //
+    // STAGE 1: written here, read by NOTHING yet (IsLeader is T2.3). Called once per lane-boundary
+    // hop from ExecuteMoveVehicle, which writes only `v`'s own fields -- safe under region-parallel
+    // ExecuteMoves (design doc §5c), the same discipline as RouteDistanceTraveled/WaitingTime.
+    private void AssignJunctionEntryTimestamps(VehicleRuntime v, string oldLaneId, string newLaneId)
+    {
+        var byInternalLane = _network!.JunctionByInternalLane;
+        var oldJunction = byInternalLane is not null && byInternalLane.TryGetValue(oldLaneId, out var jOld) ? jOld : null;
+        var newJunction = byInternalLane is not null && byInternalLane.TryGetValue(newLaneId, out var jNew) ? jNew : null;
+
+        if (oldJunction is null && newJunction is not null)
+        {
+            // Entry link (MSLink::isEntryLink: internalLane != null && internalLaneBefore == null).
+            v.JunctionEntryTime = _elapsedSteps;
+            v.JunctionEntryTimeNeverYield = _elapsedSteps;
+
+            // isConflictEntryLink = !myAmCont && (isEntryLink || ...) -- fires here too UNLESS this
+            // entry is a cont turn's first stage (MSLink.cpp:1292-1296).
+            var isCont = false;
+            var linkIndexByInternalLane = _network.LinkIndexByInternalLane;
+            if (linkIndexByInternalLane is not null && linkIndexByInternalLane.TryGetValue(newLaneId, out var li))
+            {
+                foreach (var r in li.Junction.Requests)
+                {
+                    if (r.Index == li.LinkIndex)
+                    {
+                        isCont = r.Cont;
+                        break;
+                    }
+                }
+            }
+
+            if (!isCont)
+            {
+                v.JunctionConflictEntryTime = _elapsedSteps;
+            }
+        }
+        else if (oldJunction is not null && newJunction is not null && ReferenceEquals(oldJunction, newJunction))
+        {
+            // Internal->internal hop within the SAME junction -- a cont turn's second stage
+            // (MSLink.cpp:1295's `internalLaneBefore != null && internalLane != null` disjunct; this
+            // hop's own MSLink is never itself `cont`, so `!myAmCont` is always true here).
+            v.JunctionConflictEntryTime = _elapsedSteps;
+            v.JunctionEntryTime = v.JunctionEntryTimeNeverYield; // "renew yielded request" (:4361).
+        }
+
+        if (oldJunction is not null && newJunction is null)
+        {
+            // Exit link (MSLink::isExitLink: internalLaneBefore != null && internalLane == null).
+            v.JunctionEntryTime = long.MaxValue;
+            v.JunctionEntryTimeNeverYield = long.MaxValue;
+            v.JunctionConflictEntryTime = long.MaxValue;
+        }
     }
 
     // GAP-1: reroute a vehicle that is STALLED on a dead lane (its current lane cannot reach its next
@@ -10285,6 +11564,11 @@ public sealed partial class Engine : IEngine
         v.LaneSeqStart = start;
         v.LaneSeqLen = pool.Length;
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: reset per the task's blanket "every LaneSeqIndex=0 site" rule, so a
+        // recycled VehicleRuntime slot never inherits a stale entry time.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         // The remaining route's lane assignment changed -> the keep-right stayOnBest memo may be
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
@@ -10537,6 +11821,11 @@ public sealed partial class Engine : IEngine
         v.LaneSeqStart = start;
         v.LaneSeqLen = pool.Length;
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: reset per the task's blanket "every LaneSeqIndex=0 site" rule, so a
+        // recycled VehicleRuntime slot never inherits a stale entry time.
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         v.KeepRightStayCacheLane = -1;
         MarkStrandReason(1); // rerouteOK -- dead-lane reroute succeeded, NOT stranded
         return true;
@@ -10884,6 +12173,7 @@ public sealed partial class Engine : IEngine
                 // accumulator keeps building and retries once the spot is no longer occupied). Gated on
                 // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
+                    && !LaneChangeSlotContested(v, leftLane.Handle, postMoveNeighbors)
                     && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (speed-gain left)
@@ -11163,6 +12453,7 @@ public sealed partial class Engine : IEngine
             // both off there) -> byte-identical.
             if ((!CooperativeLcFor(v) || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
                 && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
+                && !LaneChangeSlotContested(v, rightLane.Handle, neighbors)
                 // #15 into-occupied: keep-right is discretionary -- don't return to the right lane by cutting
                 // in tight ahead of a STOPPED follower there; ego stays put and keeps flowing. Inert on goldens.
                 // #15 per-area LOD: only in a HIGH-realism area (CooperativeLcFor) -- low realism = cheap swap.
@@ -11468,6 +12759,285 @@ public sealed partial class Engine : IEngine
         clearance <= 0.0 ? 0.0
         : clearance < CrowdYieldNearDistance ? CrowdYieldCreepSpeed * (clearance / CrowdYieldNearDistance)
         : CrowdYieldCreepSpeed + ((clearance - CrowdYieldNearDistance) * CrowdYieldProximityGain);
+
+    // F3 junction physical-occupancy gate (docs/F3-JUNCTION-OVERLAP-DESIGN.md). DEFAULT false = OFF =
+    // byte-identical to every golden; the whole new path is behind this flag, so parity is untouched.
+    //
+    // WHAT IT DOES when on: restores SUMO's TWO-foe-set split. SUMO builds myFoeLinks from the RESPONSE
+    // bitstring (right-of-way arbitration) and myFoeLanes from the FOES bitstring (physical conflict),
+    // and MSVehicle::checkLinkLeader adapts on `isLeader(...) || inTheWay()` (MSVehicle.cpp:3429) -- so
+    // a foe physically ON ego's conflict point constrains ego even when ego holds right-of-way. We had
+    // collapsed both sets into RespondsTo, making our only occupancy-reactive arm
+    // (AdaptToJunctionLeader) unreachable for a non-yielded foe: a major/green car drove straight
+    // through a car sitting on a crossing internal lane.
+    //
+    // WHY IT IS OFF BY DEFAULT -- THE PORT IS INCOMPLETE AND, AS IT STANDS, COUNTERPRODUCTIVE.
+    // DO NOT ENABLE THIS UNTIL SUMO's `isLeader()` IS PORTED. Measured with the flag forced on:
+    //   * 3 gridlock diagnostics regress: willpass-saturation 0 -> 290 stuck, dense-LC saturated grid
+    //     -> 250 stuck, synthetic-junction2 3 yield-teleports vs a ceiling of 2.
+    //   * the demo's crossing-internal-lane overlap -- the thing this is meant to REMOVE -- gets WORSE:
+    //     8 -> 33 events, worst penetration 3.035 m -> 3.385 m, stopped cars/frame ~19.7 -> ~26.2.
+    // Reason: braking for an occupied conflict point WITHOUT symmetry-breaking does not avoid the
+    // overlap, it strands cars INSIDE the junction, where each becomes a fresh obstacle for every
+    // crossing stream. A yield that cannot resolve is worse than no yield.
+    //
+    // The missing piece is `isLeader()` (MSVehicle.cpp:7343-7483), which breaks the symmetry of a mutual
+    // physical conflict by junction ENTRY TIME (then speed, then vehicle id) so that exactly ONE of the
+    // two cars yields and the conflict actually clears. It needs new per-vehicle junction entry-time
+    // state. See docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c/§3d.
+    public bool JunctionPhysicalOccupancyGate { get; set; }
+
+    // F3/cont-turn "am I inside the junction" predicate fix (docs/NEED-contturn-stuck-in-junction.md).
+    // DEFAULT false = OFF = byte-identical (with it off, `egoInsideJunction` collapses to
+    // `egoOnInternal` and every gate takes its original path).
+    //
+    // WHAT IT FIXES (a CONFIRMED mis-port, pinned by ContTurnInternalLaneOwnershipTests): SUMO's
+    // "am I on the junction" test is a LANE PROPERTY -- MSLane::isInternal() (MSLane.cpp:2498) ->
+    // MSEdge::isInternal() (MSEdge.h:264) -- true for every internal lane of every STAGE, used that way
+    // in MSVehicle::isLeader's opening guard (MSVehicle.cpp:7348). We substituted equality against the
+    // LINK-CONTROLLING lane, which netconvert alone populates into `intLanes`
+    // (NWWriter_SUMO.cpp:634-649). On a `cont` turn that makes the predicate FALSE while the car sits
+    // mid-junction on the first-stage lane, so the cautious-approach arm brakes it there -- measured as
+    // a 95-step freeze with no leader and no blocked exit.
+    //
+    // WHAT IT NOW COVERS (two gates, both mis-gated by the same defect):
+    //   1. JunctionYieldConstraint's cautious-approach arm.
+    //   2. SameTargetMergeConstraint's PHASE 0 stop-line arrival-time yield -- the ACTUAL cause of the
+    //      95-step mid-junction freeze. PHASE 0 is a STOP-LINE yield, so applying it to an ego already
+    //      committed inside the junction brakes it toward an entry that is BEHIND it. Only visible after
+    //      the T1.8 stale-diagnostic fix; the stale value had blamed the cautious-approach arm.
+    // `egoOnInternal` is deliberately still used for lane-relative arithmetic (AdaptToJunctionLeader's
+    // `seen`, the merge arm's `distToMerge`) -- widening it there would mix positions across lanes.
+    //
+    // MEASURED with the flag ON: the freeze is GONE (__veh127's 95-step and __veh140's 75-step stalls both
+    // disappear; total vehicle-steps stopped on an internal lane in the demo drop 206 -> 39, -81%), and the
+    // earlier saturated-grid regression is GONE TOO (willpass-saturation stuck 28 -> 0, arrivals 411 -> 411
+    // unchanged) -- that regression was an artefact of gating only ONE of the two arms.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT -- one remaining blocker: with it on,
+    // LowDensityTeleportTests.SyntheticJunction2_TlPriorityVehiclesDoNotSpuriouslyTeleport fires
+    // 5 teleports (jam=0, yield=5) against a ceiling of 2 (vanilla SUMO is 0). ALL 661 goldens remain
+    // byte-identical. That single scenario is the last thing between this and default-on; see
+    // docs/F3-SESSION-LOG.md T1.10.
+    public bool ContTurnInsideJunctionGate { get; set; } = true;
+
+    // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a, §6; docs/F3-ISLEADER-PORT-TASKS.md
+    // T2.4b). DEFAULT false = OFF = byte-identical to every golden BY CONSTRUCTION: with the flag
+    // off, arm 5's gate expression is the pre-existing one, unchanged character-for-character (see
+    // JunctionYieldConstraint's foe loop).
+    //
+    // WHAT IT DOES when on: replaces arm 5's presence-only test for a RespondsTo foe, and the
+    // narrow `FoeIsInTheWay` test for a FoeWith-only foe, with SUMO's OWN disjunction
+    // (`isLeader(...) || inTheWay()`, MSVehicle.cpp:3429) applied UNIFORMLY to both -- i.e. ego
+    // brakes for this on-junction occupant iff EITHER `IsLeader` (T2.3: entry-time ordering, then
+    // speed, then id) says the foe has priority-by-entry-order, OR `FoeIsInTheWay` (the physical-
+    // occupancy predicate) says the foe's footprint is on ego's own crossing point right now.
+    //
+    // WHY THIS EXISTS (docs/NEED-arm5-mutual-junction-deadlock.md; design doc §0): two cars on
+    // mutually-responding crossing internal lanes of one junction can end up car-following EACH
+    // OTHER via arm 5, which (until now) had no right-of-way notion and no escape -- measured at
+    // 121/121 steps, speed exactly 0.000, resolved only by the 120 s teleport.
+    // `IsLeaderByEntryOrder`'s tie-break chain makes the symmetric (mutual-yield) state
+    // STRUCTURALLY UNREACHABLE for the measured pair (design §0a): both vehicles always compare the
+    // SAME two numbers in OPPOSITE senses, so exactly one yields, never both.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT: this is the first time `IsLeader`/`GapForIsLeader` are
+    // actually CALLED (T2.3/T2.4a were parity-inert by construction, nothing read their output) --
+    // per design §6, flag-ON behaviour is measured, not assumed, against all four parity surfaces
+    // (goldens, bench hash, the five gridlock diagnostics, live-city overlap buckets) before any
+    // default changes. Flipping this default is an owner decision (design §6.4), not a test
+    // outcome.
+    // H-INS fix (docs/NEED-same-step-double-placement-colocation.md): port of the pure-overlap arm of
+    // MSLane::isInsertionSuccess's FOLLOWER pass -- refuse an insertion whose REAR would land inside a
+    // vehicle already sitting just behind the depart position. Our leader scan only ever looked AHEAD
+    // (`Pos >= insertPos`), so this case was unchecked and produced measured body interpenetration in the
+    // live-city demo (a car departing at ~5.65 m on top of a car queued at the lane start, then holding a
+    // byte-identical pose with it for tens of steps).
+    //
+    // SUMO does this BY DEFAULT (`insertionChecks` = `InsertionCheck::ALL`, SUMOVehicleParameter.cpp:60),
+    // so enabling it is a faithfulness INCREASE. Default OFF only until the golden/diagnostic measurement
+    // is in, per the standing rule that a behavioural change ships flag-gated until measured
+    // (docs/F3-SESSION-LOG.md §7 Lesson 1: goldens alone are not sufficient evidence).
+    public bool InsertionFollowerGapCheck { get; set; } = true;
+
+    // Fix 2 (docs/NEED-same-step-double-placement-colocation.md): break the SYMMETRY of an
+    // already-overlapping same-lane pair so it can separate instead of persisting.
+    //
+    // WHY IT IS NEEDED. Once two vehicles hold an identical (lane, pos, speed), Krauss applies IDENTICAL
+    // forces to both forever -- nothing in the model can separate them. Measured in the demo: the longest
+    // same-lane overlap episode runs 79 steps (~40 s at dt=0.5) and 14 episodes exceed 10 steps.
+    //
+    // ⚠ DELIBERATE DEVIATION FROM SUMO, and the only one on this branch. SUMO has no such mechanism
+    // because it cannot reach this state -- it places vehicles sequentially, so two can never claim one
+    // slot in a step. We can, because the plan phase is parallel over a frozen snapshot (the "timing of
+    // structural mutations" deviation CLAUDE.md permits). So this recovers from a state SUMO never
+    // produces, rather than changing behaviour SUMO defines.
+    //
+    // WHY IT IS PARITY-SAFE BY CONSTRUCTION: it fires ONLY when two same-lane bodies already physically
+    // overlap (gap < 0), which never happens in a golden -- goldens come from SUMO, which does not
+    // interpenetrate. So it is inert wherever the engine is behaving.
+    //
+    // WHY IT IS LADDER-COMPLIANT (docs/CONSTRAINT-high-realism-artefact-ladder.md): the trigger is
+    // MEASURED PHYSICAL OVERLAP, never a timer -- so it cannot fire on a rung-5 "stuck for no obvious
+    // reason" car and conceal that car's real defect. And it neither teleports (rung 4) nor passes cars
+    // through each other (rung 2): it SEPARATES them, which is strictly better than both.
+    //
+    // ⚠ IT DOES NOT FIX ONSET. It shortens episodes; it prevents none. Judge it on EPISODE count, never on
+    // event count, or a rising onset rate will hide behind a falling event count -- see
+    // LongHorizonGridlockDiagTests.SameLaneEpisodeStats.
+    // G1 of the checkRewindLinkLanes port (docs/NEED-checkrewindlinklanes-partial-port.md): also propagate
+    // junction blockage backward from a vehicle that merely CANNOT PROCEED, not only one already halted --
+    // SUMO's `last->myHaveToWaitOnNextLink || last->isStopped()` (MSVehicle.cpp:5126); we had the second
+    // disjunct only. The NEED doc ranks this G1 as "highest impact" of its four gaps.
+    //
+    // DEFAULT OFF until measured, per the standing discipline -- and here the measurement that matters is
+    // NOT the goldens (they cannot contain a saturated junction at all, F3-SESSION-LOG.md §9.119) but the
+    // OPEN-LOOP discharge test: at a fixed inflow where SUMO holds equilibrium, does our resident count stop
+    // running away? See DENSITY-DIFF-HARNESS-DESIGN.md §1b for why closed-loop numbers cannot answer that.
+    public bool KeepClearHeldPropagation { get; set; } = false;
+
+    // ❌ REFUTED AS A FAITHFUL PORT -- KEPT ONLY AS A SIGNPOST. DO NOT ENABLE.
+    //
+    // The idea: replace the minor-link stop-at-the-stop-line plan with SUMO's nonzero ARRIVAL SPEED target
+    // (MSVehicle.cpp:2806-2810, whose comment reads "decelerates just enough to be able to stop if necessary
+    // and then accelerates"). Our cap decays as sqrt(2*decel*seen) toward zero at the line; that formula is a
+    // CONSTANT ~7.99 m/s. With 1091 minor connections in the demo net, and `jyArm 2` accounting for 30.4% of
+    // the samples where a MOVING car is held under its lane limit, it looked like the whole deficit.
+    //
+    // MEASURED CAPACITY EFFECT -- LARGE AND REAL. Open-loop at 1.6 veh/s, the inflow where we collapse and
+    // SUMO stays steady: completed trips **2938 -> 4919 (+67%)**, verdict **RUNAWAY -> STEADY**, halting
+    // fraction 79.9% -> 29.7%. The collapse simply stopped happening.
+    //
+    // AND YET IT IS WRONG. With it on, **14+ goldens fail** -- RungC5WillPass, RungC4i/iii/iv/v/vi,
+    // Rung9b, RungC3OnRampMerge, RungER2, ContTurnSequence, DenseFlowDeadLaneDrain and more. The goldens ARE
+    // SUMO's own output, so they settle it: SUMO's realised behaviour on a minor approach matches our
+    // stop-at-the-line form, not this arrival-speed cap. `arrivalSpeed` in that SUMO branch is metadata
+    // feeding the DriveProcessItem's arrival TIME and junction arbitration -- it is not the vehicle's
+    // step speed, which is what this change wrongly made it.
+    //
+    // WHY IT IS KEPT rather than deleted: the +67% is the single largest capacity signal measured on this
+    // branch, and it localises where the capacity is hiding -- inside this arm's behaviour under load, in
+    // conditions no golden covers. Whatever the real fix is, it lives here. But it must be a change the
+    // goldens accept; this one is not. See docs/DENSITY-DIFF-HARNESS-TRACKER.md.
+    public bool MinorApproachArrivalSpeed { get; set; } = false;
+
+    public bool ColocationSymmetryBreak { get; set; } = true;
+
+    // Fix 3 (docs/NEED-same-step-double-placement-colocation.md): SAME-STEP lane-change arrival
+    // arbitration -- prevent the ONSET that fixes 1 and 2 could only mitigate.
+    //
+    // THE GAP. `IsTargetLaneOverlapped` already blocks a change into a slot an EXISTING occupant of the
+    // target lane holds. It cannot see a vehicle on a DIFFERENT source lane changing into the SAME slot in
+    // the SAME step: neither vehicle is an occupant of the target lane in the frozen start-of-step
+    // snapshot, so both correctly see an empty slot and both take it. Measured onset of the demo's longest
+    // overlap episodes: `…4_1 → …4_2` and `…4_3 → …4_2` both landing at pos 27.83, spd 16.67.
+    //
+    // WHY THIS IS NEEDED ON TOP OF FIX 2. The symmetry break cannot separate a pair that is BOTH stopped --
+    // the winner has no room to pull clear either -- so the residual longest episode stayed at 75 steps.
+    // Only preventing the onset removes it.
+    //
+    // WHY SUMO DOES NOT NEED IT: `MSLaneChanger` processes vehicles SEQUENTIALLY, so the second vehicle
+    // sees the first already committed. Our plan phase is parallel over a frozen snapshot -- the "timing of
+    // structural mutations" deviation CLAUDE.md permits -- so the arbitration has to be explicit.
+    //
+    // THE COMPETITOR SET, chosen to stay snapshot-only (no intent pre-pass, so no new phase ordering):
+    // for ego on lane i changing to target lane t, the only vehicle that can claim ego's slot on t in this
+    // same step from ANOTHER lane is one on the lane BEYOND t (i.e. t's far-side neighbour). A vehicle
+    // already ON t is handled by IsTargetLaneOverlapped; one on ego's OWN lane cannot body-overlap ego
+    // without already overlapping it. Tie-break: the lexicographically smaller ordinal id wins the slot,
+    // so exactly one of the pair changes. Deliberately CONSERVATIVE -- it yields to a far-lane vehicle that
+    // merely COULD claim the slot, without knowing whether it intends to; the cost is at most a one-step
+    // delay for the id-loser, and only while the two are exactly alongside.
+    // MEASURED BENEFICIAL -- but ONLY as part of the full gate package. Correcting an earlier verdict on
+    // this very flag that said "measured inert": that measurement ran against a STALE BUILD
+    // (`dotnet build -c Release` builds Traffic.sln, which does NOT contain Sim.LiveCity.Tests, so the
+    // demo ran without this code compiled in). With a correct build, over the demo hour:
+    //     arbitration OFF -> ON :  same-lane events 386 -> 327,  episodes 84 -> 72,
+    //                              longest episode 75 -> 64 steps,  total overlaps 1546 -> 1408
+    //
+    // ⚠ DO NOT ENABLE IT ALONE. With the junction gates OFF and only this on, the demo is far WORSE than
+    // baseline (13308 same-lane events, longest episode 3046 steps, 402 completed trips vs 1295): deferring
+    // lane changes in a city that is already gridlocking starves it further. It is beneficial only in
+    // combination with the junction + insertion + symmetry-break gates.
+    public bool LaneChangeArrivalArbitration { get; set; } = true;
+
+    public bool JunctionIsLeaderGate { get; set; } = true;
+
+    // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3, §6; docs/
+    // F3-ISLEADER-PORT-TRACKER.md T3.2). DEFAULT false = OFF = byte-identical to every golden BY
+    // CONSTRUCTION: with the flag off, InternalJunctionAdmissionConstraint (Engine.cs) returns
+    // +infinity unconditionally, so the Math.Min fold in ComputeMoveIntent is unaffected -- see
+    // that method's own header comment.
+    //
+    // WHAT IT DOES when on: ports MSInternalJunction::postloadInit's SECOND-STAGE admission check
+    // (sumo/src/microsim/MSInternalJunction.cpp) -- a vehicle standing on a cont turn's STAGE-1
+    // BAY lane must not advance onto stage 2 while any lane in that internal junction's
+    // (precomputed, T3.1) InternalLaneFoes set is PHYSICALLY OCCUPIED by another vehicle. It is
+    // held at the end of the bay lane instead (a StopSpeedFor arm, exactly like every other
+    // stop-line constraint).
+    //
+    // WHY THIS EXISTS (docs/NEED-internal-junction-second-stage-admission.md): the `isLeader` port
+    // (T2.4b/JunctionIsLeaderGate immediately above) arbitrates who goes first among vehicles
+    // legitimately ALREADY inside a junction; it does not stop a vehicle from being admitted into a
+    // physical conflict area it was never allowed into in the first place. Measured root cause of
+    // the veh 95 / 102 deadlock: veh 95 advances from its bay (`:2336_18_0`) onto cont stage 2
+    // (`:2336_42_0`) while veh 102 sits on `:2336_3_0`, an UNCONDITIONAL foe of that internal
+    // junction (design §1) -- SUMO would never have admitted veh 95 there.
+    //
+    // DELIBERATE OMISSIONS (design §5, each a guarded no-op, not silently dropped): this arm ports
+    // ONLY the `myFoeLanes` (physical-occupancy) half of `postloadInit`'s foe split.
+    // `myInternalLinkFoes` (approach-gating a foe still on its way in, not yet physically present)
+    // + the mutual `addBlockedLink` registration are NOT ported -- a second, independent behaviour
+    // with much larger blast radius; bundling it here would make this change's measurement
+    // uninterpretable. `indirectBicycleTurn` is NOT ported -- 0 of 134 committed nets contain an
+    // indirect connection (IndirectLinkGuard test). The EXIT link's foe-lane attachment
+    // (`hasFoes=false`, constraining leaving stage 2 rather than entering it) is NOT ported -- not
+    // the measured defect. Walking-area foe exits are NOT ported -- no walking areas in the
+    // affected nets.
+    //
+    // WHY IT IS STILL OFF BY DEFAULT: flag-ON behaviour is measured, not assumed, against all four
+    // parity surfaces (goldens, bench hash, the five gridlock diagnostics, live-city overlap
+    // buckets) before any default changes -- the same standing discipline as JunctionIsLeaderGate
+    // immediately above. Flipping this default is a T3.3 owner decision, not a test outcome.
+    public bool InternalJunctionAdmissionGate { get; set; } = true;
+
+    // Sub-gate of InternalJunctionAdmissionGate (INERT unless that one is also on): restores the
+    // `isLeader` ORDERING that SUMO applies to a bay-vs-bay foe, instead of blocking on bare foe-lane
+    // occupancy. See `EgoYieldsToBayFoe` for the port and docs/F3-SESSION-LOG.md §9.110-113 for why.
+    //
+    // WHY IT EXISTS AS A SEPARATE FLAG: the admission gate as first shipped uses bare occupancy, which
+    // is SYMMETRIC -- and a symmetric yield predicate over a cycle of mutually-responding streams has no
+    // fixed point but "everyone waits forever". Measured: four vehicles wedged in the four cont bays of
+    // junction `d_5_4` at pos 4.91 for 857+ steps, 48.1% of all stall HEADS at 3x demo density. SUMO
+    // itself names this failure mode in the branch this restores ("in a mutual conflict scenario, use
+    // entry time to avoid deadlock", MSVehicle.cpp:7437).
+    //
+    // Kept separate rather than folded in so the A/B has exactly ONE variable: with this OFF the
+    // admission gate reproduces its previously-measured behaviour bit for bit, so every earlier
+    // measurement in the log remains reproducible and this one is attributable.
+    public bool InternalJunctionAdmissionEntryOrder { get; set; } = true;
+
+    // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
+    // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never
+    // ignore)". SUMO maps -1 to SUMOTime::max() (MSFrame.cpp:1043-1044) so the consuming check
+    // `leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker` (MSLink.cpp:1601) is always true and the
+    // foe is NEVER skipped. So the mechanism is OFF by default in SUMO too, and -1 here is byte-identical.
+    //
+    // What it does when enabled: a foe that has been standing at least this long stops constraining anyone --
+    // in SUMO the foe simply produces no LinkLeader entry, so ego is free to proceed through it.
+    //
+    // WHY THIS EXISTS HERE (docs/NEED-arm5-mutual-junction-deadlock.md): two cars on crossing internal lanes
+    // of one junction can end up car-following EACH OTHER via arm 5 (AdaptToJunctionLeader), which has no
+    // right-of-way notion and no escape -- measured at 121/121 steps, speed exactly 0.000, resolved only by
+    // the 120 s teleport. Setting this to e.g. 5 breaks that stalemate.
+    //
+    // IMPORTANT, and previously mis-stated in the NEED doc: SUMO does NOT release such a pair by default.
+    // It avoids the state forming at all via isLeader() entry-time ordering (MSVehicle.cpp:7348-7483), which
+    // we have not ported. The hardcoded JUNCTION_BLOCKAGE_TIME (5 s, MSVehicle.cpp:119/:3487) is a DIFFERENT
+    // mechanism -- it revokes a request to ENTER behind a long-waiting leader, it does not free a car already
+    // inside. So enabling this knob is a deliberate, SUMO-OPTIONAL deviation from SUMO's DEFAULT behaviour,
+    // not a substitute for isLeader(). It is the pragmatic floor; isLeader() remains the faithful fix.
+    public double IgnoreJunctionBlockerSeconds { get; set; } = -1.0;
 
     // Realism knob (NOT a SUMO default; 0 = off = byte-identical to every golden, so parity is untouched).
     // docs/LIVE-CITY-15-INTO-OCCUPIED-DESIGN.md: the "into-occupied" cut-in fix. IsTargetLaneSafe is a
@@ -11971,6 +13541,62 @@ public sealed partial class Engine : IEngine
     // leader/follower lookup misses. Reads only the frozen snapshot + immutable network; ego's fields
     // otherwise. Inert (returns false) when the target lane carries no body-overlapping occupant -- every
     // committed golden at a change, so byte-identical.
+    // Fix 3's predicate: true when ego must DEFER its change into `targetLaneHandle` this step because a
+    // vehicle on the lane BEYOND the target could claim the same slot and wins the ordinal-id tie-break.
+    // Reads only the frozen snapshot and immutable network; writes nothing. Returns false (inert) when the
+    // flag is off, when the far lane does not exist, or when no far-lane vehicle overlaps ego's slot.
+    private bool LaneChangeSlotContested(VehicleRuntime ego, int targetLaneHandle, LaneNeighborQuery neighbors)
+    {
+        if (!LaneChangeArrivalArbitration)
+        {
+            return false;
+        }
+
+
+        var egoLane = _network!.LanesByHandle[ego.LaneHandle];
+        var targetLane = _network.LanesByHandle[targetLaneHandle];
+
+        // The lane BEYOND the target, i.e. continuing in the same lateral direction ego is moving.
+        // targetLane.Index > egoLane.Index => ego moves left => the far lane is the target's LeftNeighbor.
+        var farHandle = targetLane.Index > egoLane.Index ? targetLane.LeftNeighbor : targetLane.RightNeighbor;
+        if (farHandle < 0)
+        {
+            return false;
+        }
+
+        var egoFront = ego.Kinematics.Pos;
+        var egoBack = egoFront - ego.VType.Length;
+
+        var competitors = neighbors.OnLane(farHandle);
+        for (var i = 0; i < competitors.Count; i++)
+        {
+            var c = competitors[i];
+            if (ReferenceEquals(c, ego) || c.IsParked)
+            {
+                continue;
+            }
+
+            var cFront = c.Kinematics.Pos;
+            var cBack = cFront - c.VType.Length;
+
+            // Would the two bodies occupy the same slot on the target lane? Strict, so a bumper-to-bumper
+            // touch does not contest.
+            if (cBack >= egoFront || egoBack >= cFront)
+            {
+                continue;
+            }
+
+            // Ordinal id tie-break -- NEVER EntityIndex (order-independence, CLAUDE.md). Smaller id wins
+            // the slot, so exactly one of the pair defers.
+            if (string.CompareOrdinal(ego.Def.Id, c.Def.Id) > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool IsTargetLaneOverlapped(VehicleRuntime ego, int targetLaneHandle, LaneNeighborQuery neighbors, double dt)
     {
         var occupants = neighbors.OnLane(targetLaneHandle);
@@ -12566,6 +14192,12 @@ public sealed partial class Engine : IEngine
         _laneSeqPool.AddRange(poolSeq);
         _laneSeqArrival.AddRange(arrivalSeq);
         v.LaneSeqIndex = 0;
+        // F3/isLeader T2.2: a teleport physically relocates the vehicle onto a new lane out of thin
+        // air -- reset all three junction timestamps to SUMOTime_MAX so it starts fresh, exactly like
+        // a new insertion (and so a recycled VehicleRuntime slot never inherits a stale entry time).
+        v.JunctionEntryTime = long.MaxValue;
+        v.JunctionEntryTimeNeverYield = long.MaxValue;
+        v.JunctionConflictEntryTime = long.MaxValue;
         // The vehicle is moving again -> clear the mid-teleport flag and the stale waiting-time
         // (ExecuteMoves would reset it this step anyway since speed>HaltingSpeed, but a junction
         // waiting-time reader must never see the pre-teleport 121s).

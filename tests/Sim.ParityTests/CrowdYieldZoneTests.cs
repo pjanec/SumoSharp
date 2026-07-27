@@ -16,11 +16,11 @@ namespace Sim.ParityTests;
 //      trajectory, tick-for-tick. This is the parity argument in executable form;
 //   2. the WORLD-SPACE clearance primitive (VehicleFootprint) is correct for an arbitrary heading, not
 //      just an axis-aligned one -- the owner's requirement is a world-space guard, not a lane test;
-//   3. the ANTICIPATORY yield term (binder 14) catches conflicts binder 13 STRUCTURALLY CANNOT see.
+//   3. the ANTICIPATORY yield term (binder 16) catches conflicts binder 13 STRUCTURALLY CANNOT see.
 //      Binder 13 (CrowdLongitudinalConstraint) brakes only while the ped's CURRENT lateral position
 //      overlaps ego's CURRENT footprint; at a 1 s step a 5 m/s car can step clean over a crossing ped
 //      without ever registering that overlap. Measured on the fixture below: with the zone OFF the car
-//      holds 5.00 m/s for the whole crossing and never reacts at all; with it ON, binder 14 binds and
+//      holds 5.00 m/s for the whole crossing and never reacts at all; with it ON, binder 16 binds and
 //      the car slows. That is the non-vacuity proof for the new constraint's predictive term.
 public class CrowdYieldZoneTests
 {
@@ -163,21 +163,21 @@ public class CrowdYieldZoneTests
         // OFF: binder 13 never binds and the car never slows below its cruising maxSpeed once up to
         // speed. If this ever stops being true the test below is no longer testing what it claims.
         Assert.DoesNotContain(off, t => t.Binder == 13);
-        Assert.DoesNotContain(off, t => t.Binder == 14);
+        Assert.DoesNotContain(off, t => t.Binder == 16);
         for (var i = 1; i < off.Count; i++)
         {
             Assert.Equal(5.0, off[i].Speed, precision: 9);
         }
 
         // ON: the new anticipatory constraint binds (binder 14) and the car actually slows for the ped.
-        Assert.Contains(on, t => t.Binder == 14);
+        Assert.Contains(on, t => t.Binder == 16);
 
         // Compare from t=1 onward: t=0 is the departure tick (still accelerating from 0) in BOTH arms, so
         // including it would let this pass without the guard doing anything at all.
         var minOn = double.PositiveInfinity;
         for (var i = 1; i < on.Count; i++) minOn = Math.Min(minOn, on[i].Speed);
         _out.WriteLine($"pedStartY={pedStartY:F1}: OFF holds 5.00 m/s from t=1 on (binder 13 never fires); " +
-                       $"ON dips to {minOn:F2} m/s under binder 14");
+                       $"ON dips to {minOn:F2} m/s under binder 16");
         Assert.True(minOn < 4.99,
             $"expected the yield zone to slow the car for the crossing ped; min speed from t=1 was {minOn:F2} m/s");
 

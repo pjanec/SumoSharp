@@ -34,6 +34,7 @@ internal static class VizReplayBuilder
         var pedDelay = PedRemoteReconstructor.DefaultPlayoutDelaySeconds;
 
         var slotByHandle = new System.Collections.Generic.Dictionary<uint, int>();
+        var nameByHandle = new System.Collections.Generic.Dictionary<uint, string>();  // slot id for click-to-identify
         var frames = new System.Collections.Generic.List<FramePayload>();
         var discsKeyedPerFrame = new System.Collections.Generic.List<System.Collections.Generic.List<(string Key, double[] Disc)>>();
         var lastTauByHandle = new System.Collections.Generic.Dictionary<uint, double>();
@@ -62,7 +63,12 @@ internal static class VizReplayBuilder
                     lastTauByHandle[handle.Index] = tau;
                     if (!result.Ok) continue;
                     if (!In(result.CenterX, result.CenterY)) continue;
-                    if (!slotByHandle.ContainsKey(handle.Index)) slotByHandle[handle.Index] = slotByHandle.Count;
+                    if (!slotByHandle.ContainsKey(handle.Index))
+                    {
+                        slotByHandle[handle.Index] = slotByHandle.Count;
+                        nameByHandle[handle.Index] = source.VehicleSource.Names.TryGetValue(handle, out var nm) && nm.Length > 0
+                            ? nm : ("v" + handle.Index);
+                    }
                     poses.Add((handle.Index, result.CenterX, result.CenterY, result.HeadingDeg, dims.Item1, dims.Item2));
                 }
 
@@ -94,6 +100,10 @@ internal static class VizReplayBuilder
         SceneGen.NormalizeVehicleSlots(frames, slotByHandle.Count);
         SceneGen.AssignStableDiscSlots(frames, discsKeyedPerFrame);
 
+        // Per-slot vehicle ids for click-to-identify (template.js): aligned with the V-array slots.
+        var vehIds = new string[slotByHandle.Count];
+        foreach (var kv in slotByHandle) vehIds[kv.Value] = nameByHandle.TryGetValue(kv.Key, out var nm) ? nm : ("v" + kv.Key);
+
         return new ScenePayload(
             opts.Name,
             opts.Desc,
@@ -102,6 +112,7 @@ internal static class VizReplayBuilder
             new double[] { 5.0, 1.8 },
             renderDt,
             frames.ToArray(),
-            UseDataHeading: true);
+            UseDataHeading: true,
+            VehIds: vehIds);
     }
 }

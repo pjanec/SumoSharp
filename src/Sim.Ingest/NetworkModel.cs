@@ -222,6 +222,30 @@ public sealed record LaneContinuation(
     int BestLaneOffset,
     double Length);
 
+// F3/internal-junction-foes T3.1 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §4): a parsed
+// `<junction type="internal">` -- ported from `MSInternalJunction` (sumo/src/microsim/
+// MSInternalJunction.cpp/.h). SUMO gives every internal junction its OWN `incLanes`/`intLanes`
+// pair, DISTINCT from the real (parent) junction's own attributes of the same name: `IncLanes`
+// lists the lane(s) that physically enter this internal junction's crossing area (its first
+// entry is the "special"/checker lane -- MSInternalJunction.cpp:60-61: "the first lane in the
+// list of incoming lanes is special. It defines the link that needs to do all the checking for
+// this internal junction"); `IntLanes` lists the OTHER internal lanes that cross that checker's
+// path inside this junction's small interior (the candidate set `postloadInit`'s outer loop
+// walks, MSInternalJunction.cpp:66-90).
+//
+// These parse with ZERO `<request>` child rows (every one of the 251 internal junctions in
+// synthetic-junction2/grid.net.xml has none) -- `ParseJunction`'s own `Junction` record depends
+// on a nonempty `<request>` set to build `Links`/`Requests`/`Conflicts`, so internal junctions
+// are parsed into THIS separate record instead, not routed through that bail-out.
+//
+// T3.1 is parse-time data only: nothing in `Sim.Core` reads `InternalJunction`,
+// `NetworkModel.InternalJunctionByBayLane`, or `NetworkModel.InternalLaneFoes` yet (that is
+// T3.2's admission arm) -- parity-inert by construction.
+public sealed record InternalJunction(
+    string Id,
+    IReadOnlyList<string> IncLanes,
+    IReadOnlyList<string> IntLanes);
+
 public sealed record NetworkModel(
     IReadOnlyList<Edge> Edges,
     IReadOnlyDictionary<string, Edge> EdgesById,
@@ -238,8 +262,90 @@ public sealed record NetworkModel(
     // resolution point for I/O-boundary callers (e.g. AddObstacle(laneId,...) resolving its
     // handle once at call time, not per step).
     IReadOnlyList<Lane> LanesByHandle,
-    IReadOnlyDictionary<string, int> LaneHandleById)
+    IReadOnlyDictionary<string, int> LaneHandleById,
+    // F3/cont-turn: the owning junction of EVERY internal lane, including the FIRST-stage lanes of a
+    // `cont` turn that netconvert omits from `intLanes` (see the build comment in NetworkParser and
+    // docs/NEED-contturn-stuck-in-junction.md). This is the port of SUMO's MSLane::isInternal()
+    // (MSLane.cpp:2498 -> MSEdge::isInternal(), MSEdge.h:264) -- a LANE property, true for every
+    // internal lane of every stage -- as opposed to `LinkByInternalLane`, which is keyed off
+    // `IntLanes` and therefore knows only LINK-CONTROLLING lanes. Use this to answer "is this vehicle
+    // inside junction J"; use LinkByInternalLane to answer "which link does this lane control".
+    //
+    // Defaulted so existing NetworkModel construction sites (tests that build a model by hand) keep
+    // compiling; an empty map degrades to the old IntLanes-only behaviour rather than misreporting.
+    IReadOnlyDictionary<string, Junction>? JunctionByInternalLane = null,
+    // F3/isLeader T2.1: every internal lane of a junction, BOTH stages of a `cont` turn, mapped to
+    // its owning junction link index -- i.e. `JunctionByInternalLane` plus the link index that lane
+    // controls (SUMO has no equivalent named lookup; this is the per-lane companion to
+    // `Junction.IntLanes[i]`, generalised to also cover the first-stage `cont` lane that
+    // `IntLanes` omits). Built by the SAME back-walk that builds `JunctionByInternalLane`
+    // (NetworkParser.cs) -- both cont stages resolve to the SAME link index, since they are one
+    // physical turn movement split across an internal junction (design doc §2c fact 1).
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no lookup available"
+    // (nothing reads this yet -- Stage 1 is parity-inert by construction).
+    IReadOnlyDictionary<string, (Junction Junction, int LinkIndex)>? LinkIndexByInternalLane = null,
+    // F3/isLeader T2.1: SUMO's `MSLink::getCorrespondingEntryLink()` (MSLink.cpp:1331-1339) --
+    // for a junction link index `i`, the top-level <connection> that actually ENTERS the junction
+    // (carries the live `tl`/`linkIndex`/right-of-way `state`), as opposed to
+    // `Junction.Links[i].Connection`, which for a `cont` link is the SECOND hop (state 'm', no
+    // `tl`/`linkIndex` -- design doc §2a fact 2/3). For a non-cont link the two coincide exactly
+    // (`Junction.Links[i].Connection` already IS the entry connection).
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no lookup
+    // available" (nothing reads this yet).
+    IReadOnlyDictionary<(string JunctionId, int LinkIndex), Connection>? EntryConnectionByLink = null,
+    // F3/internal-junction-foes T3.1 (design §4): every `<junction type="internal">` in the net,
+    // parsed regardless of its (always empty) `<request>` set -- see `InternalJunction`'s own doc
+    // comment for why this is a separate record from `Junction`.
+    //
+    // Defaulted so existing construction sites keep compiling; null/empty degrades to "no internal
+    // junctions known" -- inert for every scenario that predates this task (nothing reads it yet).
+    IReadOnlyList<InternalJunction>? InternalJunctions = null,
+    // F3/internal-junction-foes T3.1 (design §4, MSInternalJunction.cpp:60-61): the checker mapping
+    // -- keyed on the FIRST entry of an internal junction's OWN `IncLanes` (the "special" lane that
+    // "defines the link that needs to do all the checking for this internal junction"), NOT on any
+    // later `IncLanes` entry. A bay lane resolves the internal junction it feeds via this map.
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no lookup
+    // available".
+    IReadOnlyDictionary<string, InternalJunction>? InternalJunctionByBayLane = null,
+    // F3/internal-junction-foes T3.1 (design §1, MSInternalJunction.cpp:66-90 `postloadInit`): the
+    // internal junction's own foe-lane set (`myInternalLaneFoes`), as dense `Lane.Handle`s, keyed by
+    // `InternalJunction.Id`. Built by the two-branch rule (design §1's correction of the earlier,
+    // wrong single-branch NEED-doc sketch):
+    //   - a candidate `IntLanes` entry that does NOT itself lead into another internal lane (a
+    //     PLAIN internal lane) is ALWAYS a foe;
+    //   - a candidate that DOES lead into another internal lane (a cont turn's STAGE-1 bay) is a foe
+    //     ONLY IF the parent (real) junction's `Requests[ownLinkIndex]` responds to the candidate's
+    //     own link index (`response.test(foeIndex)`, MSInternalJunction.cpp:78); its STAGE-2 lane is
+    //     ALWAYS added regardless of that test (MSInternalJunction.cpp:83-86 `addIfAbsent`).
+    // `indirectBicycleTurn` (MSInternalJunction.cpp:78's `||` alternative) is a GUARDED OMISSION: no
+    // committed net has an indirect connection (see `JunctionIsLeaderTests.
+    // NoCommittedNet_ContainsAnIndirectConnection`).
+    //
+    // Absent for an internal junction whose "special" lane does not resolve to a real parent link +
+    // matching `<request>` row (SUMO's own early return for a `traffic_light_unregulated` parent,
+    // MSInternalJunction.cpp:64-65 `parent == nullptr`) -- that internal junction still appears in
+    // `InternalJunctions`/`InternalJunctionByBayLane`, just with no foe set computed.
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no foes known" --
+    // T3.2 (not this task) is the first and only reader.
+    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLaneFoes = null)
 {
+    // F3/cont-turn: SUMO's `myLane->isInternal() && myLane->getEdge().getToJunction() == junction`
+    // (the guard opening MSVehicle::isLeader, sumo/src/microsim/MSVehicle.cpp:7348). True when
+    // `laneId` is an internal lane of `junction` -- at ANY stage of a multi-stage (`cont`) turn.
+    //
+    // Do NOT substitute `laneId == someLink.InternalLaneId` for this: that is only the
+    // link-controlling (last-stage) lane, so it answers FALSE for a vehicle physically sitting on a
+    // cont turn's first-stage lane. That substitution is the confirmed defect this method exists to
+    // remove.
+    public bool IsInternalLaneOfJunction(string laneId, Junction junction) =>
+        JunctionByInternalLane is { } map
+        && map.TryGetValue(laneId, out var owner)
+        && ReferenceEquals(owner, junction);
+
     // Rung 10: find the (at most one, in this rung's scope) TL-controlled connection leaving a
     // given lane -- i.e. the connection a vehicle currently on this lane would use to exit it,
     // irrespective of which specific destination edge its route picks (this scenario has only

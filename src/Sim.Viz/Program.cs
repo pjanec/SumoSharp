@@ -1,3 +1,4 @@
+using System.Globalization;
 using Sim.Core;
 using Sim.Harness;
 using Sim.Ingest;
@@ -47,6 +48,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --ped-dense-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city-demo <outPath>   (FAITHFUL: real LiveCitySim + LiveCityConfig)");
+            Console.Error.WriteLine("       Sim.Viz --live-city-pedtrace <outPath.csv> [steps]   (headless per-ped LOD lifecycle trace)");
             Console.Error.WriteLine("       Sim.Viz --engine-replay <scenarioDir> <outPath>   (REAL deterministic engine run, DR-smoothed)");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
@@ -73,6 +75,7 @@ internal static class Program
             "--ped-dense-city" => RunPedDenseCity(args),
             "--live-city" => RunLiveCity(args),
             "--live-city-demo" => RunLiveCityDemo(args),
+            "--live-city-pedtrace" => RunLiveCityPedTrace(args),
             "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
@@ -284,6 +287,14 @@ internal static class Program
         }
 
         var outPath = args[1];
+        // Optional sim-step count (default 160 = 80 s at Dt=0.5). Pass more for a longer replay, e.g. 400
+        // for ~200 s so the ped LOD lifecycle (promote/demote, idle spread) plays out over a full span.
+        var demoSteps = 160;
+        if (args.Length > 2 && int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ds) && ds > 0)
+        {
+            demoSteps = ds;
+        }
+
         using var source = new LiveCitySource(RepoRoot());
         var opts = new VizReplayOptions(
             "Live-city DEMO (faithful, DR-smoothed): cars + peds, real LiveCityConfig",
@@ -293,7 +304,8 @@ internal static class Program
             + "DrClock + KinematicReconstructor (center + emitted heading + upcoming-lane look-ahead: "
             + "continuous junction arcs, no facet-snaps), peds via PedRemoteReconstructor (analytic playout, "
             + "no tick kink). Grey = low-power ped, orange = promoted full-ORCA, yellow = paused; boxes = "
-            + "cars. A fix verified in this replay transfers directly to the demo.");
+            + "cars. A fix verified in this replay transfers directly to the demo.",
+            Steps: demoSteps);
         var scene = VizReplayBuilder.Build(source, opts);
         var payload = new ReplayData(new[] { scene });
         if (!WriteHtml(payload, scene.Name, outPath))
@@ -378,6 +390,179 @@ internal static class Program
         Console.WriteLine(
             $"  FAITHFUL(real LiveCitySim): near-collision(car within 2.5m of a ped ON a crossing)={nearCollision} "
             + $"over pedOnCrossingSamples={pedOnCrossingSamples}; minCarSpeedNearOccupiedCrossing={minStr} m/s");
+        return 0;
+    }
+
+    // Headless per-ped LOD lifecycle trace (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md investigation):
+    // diagnostic-only, ADDITIVE. Builds the REAL LiveCitySim (same LiveCityConfig.ForRepoRoot
+    // construction RunLiveCityDemo/LiveCitySource use -- honors LIVECITY_PEDS via that config), steps it,
+    // pumps a PedRemoteReconstructor over its ped wire (sim.PedSource), and for every ped in
+    // PedLodManager.DiagnosticSnapshot cross-references the server-authoritative LOD state against what
+    // the wire has reconstructed -- one CSV row per (step, ped). Never touches parity/goldens; not part
+    // of `dotnet test`.
+    private static int RunLiveCityPedTrace(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --live-city-pedtrace requires an output CSV path");
+            return 2;
+        }
+
+        var outPath = args[1];
+        var steps = 400;
+        if (args.Length > 2 && int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var stepsArg))
+        {
+            steps = stepsArg;
+        }
+
+        // Optional "moving" mode (#4a repro): sweep the LC-realism zone around the pocket centre on a
+        // circle each step (simulating a camera-Follow that pans across the scene), so peds are promoted
+        // as the bubble passes and LEFT BEHIND as it moves on -- the case that exercises the demote dwell /
+        // OutsideSince reset the static-zone trace does not. Radius held constant (SetLcRealismZone only
+        // moves the source when the radius is unchanged); centre steps deterministically off `step`.
+        var movingZone = false;
+        foreach (var a in args)
+        {
+            if (string.Equals(a, "moving", StringComparison.Ordinal)) { movingZone = true; break; }
+        }
+
+        // Same construction as LiveCitySource.cs: LiveCityConfig.ForRepoRoot reads LIVECITY_PEDS itself.
+        var cfg = Sim.LiveCity.LiveCityConfig.ForRepoRoot(RepoRoot());
+        using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+
+        // Sweep geometry for moving mode: a circle of this radius around the pocket centre, one full loop
+        // over the run, at the pocket's own promote radius (SetLcRealismZone sets demote = radius * 1.3).
+        const double sweepRadius = 80.0;
+        var zoneRadius = sim.HighRealismPromoteRadius;
+        var pocketCx = sim.HighRealismPocketX;
+        var pocketCy = sim.HighRealismPocketY;
+
+        // Server-authoritative per-ped LOD state via the additive read-only passthrough (LiveCitySim
+        // .PedLodDiagnostics -> PedLodManager.DiagnosticSnapshot).
+        var reconstructor = new Sim.Pedestrians.Lod.PedRemoteReconstructor(sim.PedSource);
+
+        var rows = 0;
+        var distinctPeds = new HashSet<int>();
+        var lastModel = new Dictionary<int, Sim.Pedestrians.Lod.PedDrModel>();
+        var promotions = 0;
+        var demotions = 0;
+        var wireMismatches = 0;
+
+        using var writer = new StreamWriter(outPath);
+        writer.WriteLine(
+            "step,now,id,model,highIndexValid,stateEnteredAt,outsideSince,routeVertexCount,srvX,srvY,"
+            + "distFromZone,wireKnown,wireVisible,wireX,wireY,wireSrvDist,regime,animTag");
+
+        for (var step = 0; step < steps; step++)
+        {
+            if (movingZone)
+            {
+                // Push the zone BEFORE Step (mirrors the viewer's Follow/Locked push), sweeping the centre
+                // one full circle over the run so peds fall out of the demote radius as it moves away.
+                var theta = 2.0 * Math.PI * step / Math.Max(1, steps);
+                sim.SetLcRealismZone(
+                    pocketCx + sweepRadius * Math.Cos(theta),
+                    pocketCy + sweepRadius * Math.Sin(theta),
+                    zoneRadius);
+            }
+
+            sim.Step();
+            reconstructor.Pump(sim.Time);
+
+            var sample = sim.Sample();
+            var byId = new Dictionary<int, (Sim.LiveCity.PedRegime Regime, string AnimTag, Sim.Core.Orca.Vec2 Pos)>(sample.Peds.Count);
+            foreach (var p in sample.Peds)
+            {
+                byId[p.Id] = (p.Regime, p.AnimTag, new Sim.Core.Orca.Vec2(p.X, p.Y));
+            }
+
+            {
+                foreach (var d in sim.PedLodDiagnostics(sim.Time))
+                {
+                    distinctPeds.Add(d.Id);
+
+                    var wasFreeKinematic = lastModel.TryGetValue(d.Id, out var prevModel)
+                        && prevModel == Sim.Pedestrians.Lod.PedDrModel.FreeKinematic;
+                    var isFreeKinematic = d.Model == Sim.Pedestrians.Lod.PedDrModel.FreeKinematic;
+                    if (isFreeKinematic && !wasFreeKinematic && lastModel.ContainsKey(d.Id))
+                    {
+                        promotions++;
+                    }
+                    else if (!isFreeKinematic && wasFreeKinematic)
+                    {
+                        demotions++;
+                    }
+
+                    lastModel[d.Id] = d.Model;
+
+                    // Distance from the CURRENT zone centre (LcZone tracks SetLcRealismZone; == the static
+                    // pocket when the zone is never moved), so #4a's "ped left behind by a moving zone" is
+                    // measured against where the promotion bubble actually is this step.
+                    var dzx = d.Pos.X - sim.LcZoneX;
+                    var dzy = d.Pos.Y - sim.LcZoneY;
+                    var distFromZone = Math.Sqrt(dzx * dzx + dzy * dzy);
+
+                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out var wvis, out var wtag);
+                    string wireXStr, wireYStr, wireSrvDistStr, wireVisibleStr;
+                    if (wireKnown)
+                    {
+                        var wsx = wpos.X - d.Pos.X;
+                        var wsy = wpos.Y - d.Pos.Y;
+                        var wireSrvDist = Math.Sqrt(wsx * wsx + wsy * wsy);
+                        wireXStr = wpos.X.ToString(CultureInfo.InvariantCulture);
+                        wireYStr = wpos.Y.ToString(CultureInfo.InvariantCulture);
+                        wireSrvDistStr = wireSrvDist.ToString(CultureInfo.InvariantCulture);
+                        wireVisibleStr = wvis ? "1" : "0";
+
+                        if (isFreeKinematic && ((wvis && wireSrvDist > 10.0) || !wvis))
+                        {
+                            wireMismatches++;
+                        }
+                    }
+                    else
+                    {
+                        wireXStr = string.Empty;
+                        wireYStr = string.Empty;
+                        wireSrvDistStr = string.Empty;
+                        wireVisibleStr = string.Empty;
+                    }
+
+                    var regimeStr = string.Empty;
+                    var animTagStr = string.Empty;
+                    if (byId.TryGetValue(d.Id, out var s))
+                    {
+                        regimeStr = s.Regime.ToString();
+                        animTagStr = s.AnimTag;
+                    }
+
+                    writer.WriteLine(string.Join(",",
+                        step.ToString(CultureInfo.InvariantCulture),
+                        sim.Time.ToString(CultureInfo.InvariantCulture),
+                        d.Id.ToString(CultureInfo.InvariantCulture),
+                        d.Model.ToString(),
+                        d.HighIndexValid ? "1" : "0",
+                        d.StateEnteredAt.ToString(CultureInfo.InvariantCulture),
+                        double.IsNaN(d.OutsideSince) ? string.Empty : d.OutsideSince.ToString(CultureInfo.InvariantCulture),
+                        d.RouteVertexCount.ToString(CultureInfo.InvariantCulture),
+                        d.Pos.X.ToString(CultureInfo.InvariantCulture),
+                        d.Pos.Y.ToString(CultureInfo.InvariantCulture),
+                        distFromZone.ToString(CultureInfo.InvariantCulture),
+                        wireKnown ? "1" : "0",
+                        wireVisibleStr,
+                        wireXStr,
+                        wireYStr,
+                        wireSrvDistStr,
+                        regimeStr,
+                        animTagStr));
+                    rows++;
+                }
+            }
+        }
+
+        writer.Flush();
+        Console.WriteLine(
+            $"wrote {outPath}  rows={rows} distinctPeds={distinctPeds.Count} promotions={promotions} "
+            + $"demotions={demotions} freeKinematicWireMismatches={wireMismatches}");
         return 0;
     }
 

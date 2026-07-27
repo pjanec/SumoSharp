@@ -125,7 +125,7 @@ threat at all, so the car is unaffected by kerb/sidewalk peds. A ped walking ALO
 trails it rather than deadlocking. Whether that costs throughput is **measured**, not assumed — see
 `DenseFlow…NoGridlock` and `carArrivedTotal` in the task list.
 
-### 3.2 L2 — `CrowdYieldConstraint` (new, binder 14): the *guarantee*
+### 3.2 L2 — `CrowdYieldConstraint` (new, binder 16): the *guarantee*
 
 A new constraint folded into `ComputeMoveIntent`'s `Math.Min` chain right after binder 13 — strictly more
 conservative, never faster, so it cannot break any existing bound. `+Infinity` (inert) unless
@@ -153,7 +153,7 @@ same tick. What it adds is *coverage*: binder 13 tests the ped's CURRENT lateral
 CURRENT footprint, so a 5 m/s car at a 1 s step can walk clean over a crossing ped without the overlap ever
 being sampled. `CrowdYieldZoneTests.CrossingPedBinder13Misses_ZoneOffDrivesThroughAtSpeed_ZoneOnYields`
 pins three such geometries: with the zone off the car holds **5.00 m/s for the entire crossing and binder 13
-never fires once**; with it on, binder 14 binds and the car yields. It is also *sticky* — the corridor is
+never fires once**; with it on, binder 16 binds and the car yields. It is also *sticky* — the corridor is
 centred on the LANE, not on ego's current offset, so an off-centre ego (mid-lane-change, a give-way shift)
 does not release it the way binder 13 does.
 
@@ -212,7 +212,7 @@ would predict a pass ego will not actually make).
 Three independent gates, each alone sufficient:
 
 1. `CrowdSource == null` for every committed golden and for `Sim.Bench` — the whole crowd path (binder 13,
-   the crowd threat scan, and the new binder 14) short-circuits to `+Infinity` / `continue`.
+   the crowd threat scan, and the new binder 16) short-circuits to `+Infinity` / `continue`.
 2. `CrowdYieldZoneRadius <= 0` by default — nothing on a parity path calls `SetCrowdYieldZone`.
 3. L1 lives inside the `threatIsCrowd` branch, itself inside the `CrowdSource`-gated scan.
 

@@ -62,7 +62,7 @@ gate directly after Task A's held-static gate.
 
 ## Stage 3 — Engine: L2, the guarantee
 
-### CY-3 — `CrowdYieldConstraint` (binder 14) — anticipatory in-path yield
+### CY-3 — `CrowdYieldConstraint` (binder 16) — anticipatory in-path yield
 *Design ref:* §3.2(a). *Files:* `src/Sim.Core/Engine.cs` — new method beside
 `CrowdLongitudinalConstraint` (`:8572`) + the fold line in `ComputeMoveIntent` (`:5182`). *Depends:* CY-1
 
@@ -74,7 +74,7 @@ gate directly after Task A's held-static gate.
    step it binds at the same tick. Its real value is COVERAGE, which is what is asserted instead.) On a
    crossing geometry where binder 13 STRUCTURALLY cannot fire (a 5 m/s car steps clean over the ped in
    one tick), the zone-off arm must hold 5.00 m/s for the whole crossing with binder 13 never firing,
-   and the zone-on arm must bind binder 14 and slow. Three such geometries, all asserted.
+   and the zone-on arm must bind binder 16 and slow. Three such geometries, all asserted.
 3. The car **stops or creeps** (Speed < 0.5 m/s at some tick) while the ped is inside the lane
    (`-7.2 < pedY < 0`), and reaches full `maxSpeed` again within 4 ticks of the ped leaving the lane —
    yield, then no stall.

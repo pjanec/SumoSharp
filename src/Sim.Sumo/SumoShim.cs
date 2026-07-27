@@ -46,6 +46,31 @@ namespace Sim.Sumo;
 //                              (like every flag here) is parsed order-independently so it works before
 //                              or after `-c` -- e.g. a `SUMO_BINARY="dotnet sumosharp.dll
 //                              --max-parallelism 4"` prefix rides ahead of SumoData's `-c <cfg> ...`.
+//   --ignore-junction-blocker <TIME>
+//                              sets Engine.IgnoreJunctionBlockerSeconds (SUMO's own option,
+//                              MSFrame.cpp:370-371 / consumed at MSLink.cpp:1601). Same "Processing"
+//                              category as time-to-teleport, so the equivalent .sumocfg element is
+//                              <processing><ignore-junction-blocker value="TIME"/></processing>
+//                              (ScenarioConfig.IgnoreJunctionBlockerSeconds / ScenarioConfigParser).
+//                              This CLI flag wins over the cfg element when both are given, mirroring
+//                              how --end overrides the cfg's <end>. Default -1 (never ignore, SUMO's
+//                              own default; any value < 0 means the same thing, per MSFrame.cpp:1043-
+//                              1044 mapping it to SUMOTime::max()) -- byte-identical for every scenario
+//                              that specifies neither.
+//   SUMOSHARP_CONTTURNFIX=1 (env var, NOT a --flag)
+//                              sets Engine.ContTurnInsideJunctionGate. Not a SUMO option (see the
+//                              Engine property's own header comment); mirrors LiveCitySim.cs's
+//                              identical LIVECITY_CONTTURNFIX env var. Unset/anything-but-"1" => false,
+//                              the Engine default, so this is inert for every existing invocation.
+//   SUMOSHARP_ISLEADERFIX=1 (env var, NOT a --flag)
+//                              sets Engine.JunctionIsLeaderGate (docs/F3-ISLEADER-PORT-DESIGN.md
+//                              §5a). Not a SUMO option; unset/anything-but-"1" => false, the Engine
+//                              default, so this is inert for every existing invocation.
+//   SUMOSHARP_INTERNALJUNCTIONFIX=1 (env var, NOT a --flag)
+//                              sets Engine.InternalJunctionAdmissionGate
+//                              (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§6, T3.2). Not a SUMO
+//                              option; unset/anything-but-"1" => false, the Engine default, so
+//                              this is inert for every existing invocation.
 // Any OTHER flag is TOLERATED (a warning to stderr, not an abort) so minor extra flags SumoData
 // passes never break the run. Both `--flag value` and `--flag=value` forms are accepted.
 public static class SumoShim
@@ -80,6 +105,9 @@ public static class SumoShim
         string? tripinfoOut = null;
         // Perf knob (see class header): -1 == engine default (all cores). Set from --max-parallelism.
         var maxParallelism = -1;
+        // null == not given on the CLI => fall back to the cfg's <processing><ignore-junction-blocker>
+        // (ScenarioConfig.IgnoreJunctionBlockerSeconds, itself defaulting to -1 = never ignore).
+        double? ignoreJunctionBlockerOverride = null;
 
         try
         {
@@ -137,6 +165,11 @@ public static class SumoShim
                         // SUMO_BINARY prefix with no SumoData-side change. N<=0 keeps the all-cores
                         // default; the Engine setter maps any non-positive value back to -1.
                         maxParallelism = ParseInt(TakeValue(), flag);
+                        break;
+                    case "--ignore-junction-blocker":
+                        // SUMO's own option (see class header); ParseTime accepts a leading '-' so
+                        // "-1" (and any other negative TIME) round-trips through NumberStyles.Float.
+                        ignoreJunctionBlockerOverride = ParseTime(TakeValue(), flag);
                         break;
                     case "--no-step-log":
                         // Accept and ignore. SUMO passes `--no-step-log true`; the value (only when it
@@ -213,6 +246,32 @@ public static class SumoShim
         // the parallelism-invariance parity test asserts byte-identical output across values). Set
         // before the run; <=0 leaves the all-cores default (the setter maps non-positive to -1).
         engine.MaxParallelism = maxParallelism;
+        // CLI flag wins over the cfg's <processing><ignore-junction-blocker> element (same override
+        // precedence as --end over <end>); absent either way, Engine's own -1 default applies.
+        engine.IgnoreJunctionBlockerSeconds = ignoreJunctionBlockerOverride ?? config.IgnoreJunctionBlockerSeconds;
+        // Env-var test/measurement gate for Engine.ContTurnInsideJunctionGate -- NOT a SUMO option, so
+        // (like MaxParallelism above) it is deliberately NOT a `--flag` in the parsed-args table; it
+        // mirrors LiveCitySim.cs's own LIVECITY_CONTTURNFIX env var for the identical property, kept
+        // permanently (not a throwaway hack) so IgnoreJunctionBlockerTests can drive BOTH knobs through
+        // this one shim path and stay directly comparable to LowDensityTeleportTests. Unset/non-"1" =>
+        // false, the Engine default, so every existing shim invocation that never sets this env var is
+        // byte-identical to before. See docs/NEED-arm5-mutual-junction-deadlock.md.
+        engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("SUMOSHARP_CONTTURNFIX") == "1";
+        // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a/§6; docs/F3-ISLEADER-PORT-TASKS.md
+        // T2.4b): env-var test/measurement gate for Engine.JunctionIsLeaderGate -- NOT a SUMO option,
+        // so (mirroring SUMOSHARP_CONTTURNFIX immediately above) it is deliberately NOT a `--flag` in
+        // the parsed-args table. Kept permanently so an A/B can drive it through this SAME shim path
+        // (never mixed with a direct `engine.Run()` baseline -- log §7/§9.33's own standing lesson).
+        // Unset/non-"1" => false, the Engine default, so every existing shim invocation that never
+        // sets this env var is byte-identical to before.
+        engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("SUMOSHARP_ISLEADERFIX") == "1";
+        // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§6; docs/
+        // F3-ISLEADER-PORT-TRACKER.md T3.2): env-var test/measurement gate for
+        // Engine.InternalJunctionAdmissionGate -- NOT a SUMO option, so (mirroring
+        // SUMOSHARP_CONTTURNFIX/SUMOSHARP_ISLEADERFIX immediately above) it is deliberately NOT a
+        // `--flag` in the parsed-args table. Unset/non-"1" => false, the Engine default, so every
+        // existing shim invocation that never sets this env var is byte-identical to before.
+        engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("SUMOSHARP_INTERNALJUNCTIONFIX") == "1";
         try
         {
             engine.LoadScenario(cfgPath);

@@ -80,6 +80,22 @@ public sealed class LiveCitySim : IDisposable
     private readonly ReplicationPublisher? _recordPublisher;
     private bool _recordGeometryPublished;
 
+    // docs/DENSITY-DIFF-HARNESS-DESIGN.md §2, -TASKS.md B1: OPTIONAL demand-recorder tee -- mirrors
+    // `_recordVehSink`'s shape exactly (nullable, caller-owned sink; LiveCitySim knows nothing about
+    // files). `_demandRouter` is a SEPARATE Sim.Ingest.NetworkRouter instance, built once over the
+    // SAME NetworkModel Engine's own internal router uses, only when a sink is supplied -- Engine's
+    // `SpawnVehicle(type, fromEdge, toEdge, ...)` overload already resolves the identical Dijkstra
+    // shortest path internally but does not expose it, so this purely-additive duplicate call is the
+    // only way to recover the vehicle's actual edge route for recording without touching Engine.cs.
+    // It cannot diverge from what Engine inserted: same algorithm, same graph, same (fromId, toId).
+    private readonly IDemandRecordSink? _recordDemandSink;
+    private readonly Sim.Ingest.NetworkRouter? _demandRouter;
+    private long _recordVehCounter;
+    // The recorded file's own vType id -- independent of Engine's internal `__vtype0` id (never
+    // exposed back to the caller), since the emitted .rou.xml only needs its `type=` attribute to
+    // match the `<vType id=...>` it also emits, not Engine's internal bookkeeping.
+    private const string RecordVTypeId = "car";
+
     // The ped publish wire (mirrors CityLib/PedSimSource.cs).
     private readonly PedReplicationPublisher _pedWirePublisher;
     private readonly InMemoryPedReplicationBus _pedBus = new();
@@ -98,15 +114,25 @@ public sealed class LiveCitySim : IDisposable
     private readonly IPedReplicationSink? _recordPedSink;
     private readonly PedReplicationPublisher? _recordPedPublisher;
 
+    // A3 (design §1b): fractional insertion credit for OPEN-LOOP inflow. Carries the sub-vehicle remainder
+    // across steps so a rate like 1.7 veh/s is honoured exactly over time instead of truncating to 1/step.
+    // Untouched (and therefore inert) unless `CarInflowVehPerSec` is set.
+    private double _openLoopSpawnCredit;
+
     private double _now;
     private SimulationSnapshot _lastSnapshot = SimulationSnapshot.Empty;
 
-    public LiveCitySim(LiveCityConfig cfg, IReplicationSink? recordVehSink = null, IPedReplicationSink? recordPedSink = null)
+    public LiveCitySim(
+        LiveCityConfig cfg,
+        IReplicationSink? recordVehSink = null,
+        IPedReplicationSink? recordPedSink = null,
+        IDemandRecordSink? recordDemandSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
         _recordVehSink = recordVehSink;
         _recordPublisher = recordVehSink is not null ? new ReplicationPublisher() : null;
         _recordPedSink = recordPedSink;
+        _recordDemandSink = recordDemandSink;
         _x0 = cfg.X0; _y0 = cfg.Y0; _x1 = cfg.X1; _y1 = cfg.Y1;
 
         // docs/LIVE-CITY-VISUALS-NOTES.md "Shared foundation": load the static world-overlay scene
@@ -121,6 +147,10 @@ public sealed class LiveCitySim : IDisposable
         var model = NetworkParser.Parse(netPath);
         Network = model;
         LocalLanes = new NetworkLaneSource(model);
+
+        // B1: built only when a demand sink was supplied -- zero cost (no allocation, no adjacency
+        // build) on the "recorder off" path this task's SC1 requires to stay byte-identical.
+        _demandRouter = recordDemandSink is not null ? new Sim.Ingest.NetworkRouter(model) : null;
 
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6 (capability probe + graceful degrade): a malformed
         // ped-net (e.g. a crossing/walkingarea edge with no pedestrian lane, or an internal edge id
@@ -263,6 +293,8 @@ public sealed class LiveCitySim : IDisposable
                 },
                 EnableWeave = cfg.PedEnableWeave,
                 CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
+                CrosswalkWaitSpreadRadius = cfg.PedCrosswalkWaitSpreadRadius,
+                SpeedVariationFrac = cfg.PedSpeedVariationFrac,
             };
 
             _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
@@ -343,6 +375,55 @@ public sealed class LiveCitySim : IDisposable
         // DemoCarOverlapInvariantTests' straddle test (F4a). See docs/LIVE-CITY-REALISM-AB-DESIGN.md §Task A
         // and docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md §F2.
         _engine.SuppressHeldCrowdSwerve = Environment.GetEnvironmentVariable("LIVECITY_HELDSWERVE") != "0";
+        // F3 junction physical-occupancy gate (docs/F3-JUNCTION-OVERLAP-DESIGN.md). OFF by default --
+        // the port is INCOMPLETE (missing SUMO's isLeader() entry-time symmetry break, so saturated
+        // grids deadlock; see the Engine property comment). LIVECITY_F3OCCUPANCY=1 enables it for A/B
+        // measurement of the crossing-internal-lane overlap it is meant to remove.
+        _engine.JunctionPhysicalOccupancyGate = Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") == "1";
+        // F3/cont-turn predicate fix (docs/NEED-contturn-stuck-in-junction.md). OFF by default -- correct
+        // in isolation but it regresses a saturated-grid diagnostic until checkRewindLinkLanes is ported
+        // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
+        // mid-junction freeze it removes.
+        _engine.ContTurnInsideJunctionGate = EnvGate("LIVECITY_CONTTURNFIX", _engine.ContTurnInsideJunctionGate);
+        // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
+        // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
+        // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
+        // other half of SUMO's `isLeader(...) || inTheWay()` disjunction (MSVehicle.cpp:3429) -- stayed
+        // true symmetrically. LIVECITY_ISLEADERFIX=1 for A/B.
+        _engine.JunctionIsLeaderGate = EnvGate("LIVECITY_ISLEADERFIX", _engine.JunctionIsLeaderGate);
+        // F3/internal-junction SECOND-STAGE admission (docs/F3-INTERNAL-JUNCTION-DESIGN.md) -- the port
+        // that actually fixes the deadlock (veh 95/102 both arrive at SUMO's own --ignore-junction-blocker
+        // default). OFF by default pending the owner's defaults decision. Wired here so the live-city F3
+        // overlap buckets can be A/B'd at all: without this line the demo never exercises the gate, so a
+        // bucket re-measurement would report "unchanged" for the trivial reason that nothing was enabled
+        // -- an UNMEASURED condition masquerading as a neutral result. LIVECITY_INTERNALJUNCTIONFIX=1.
+        _engine.InternalJunctionAdmissionGate = EnvGate("LIVECITY_INTERNALJUNCTIONFIX", _engine.InternalJunctionAdmissionGate);
+        // Sub-gate of the line above (inert without it): applies `isLeader`'s entry-time ORDERING to a
+        // bay-vs-bay foe instead of blocking on bare occupancy, which is symmetric and therefore wedges a
+        // cycle of bays permanently (measured: 4 cars, junction d_5_4, 857+ steps, 48.1% of stall heads at
+        // 3x). Separate flag so the A/B has one variable. LIVECITY_INTERNALJUNCTIONENTRYORDER=1.
+        _engine.InternalJunctionAdmissionEntryOrder =
+            EnvGate("LIVECITY_INTERNALJUNCTIONENTRYORDER", _engine.InternalJunctionAdmissionEntryOrder);
+        // H-INS insertion follower-gap (pure-overlap) check -- docs/NEED-same-step-double-placement-colocation.md.
+        // Refuses a departure that would bury the new car's REAR inside a car already queued just behind the
+        // depart position. SUMO refuses these BY DEFAULT (insertionChecks = InsertionCheck::ALL), so this is a
+        // faithfulness increase. OFF by default here only until measured. LIVECITY_INSERTIONFOLLOWERGAP=1.
+        _engine.InsertionFollowerGapCheck = EnvGate("LIVECITY_INSERTIONFOLLOWERGAP", _engine.InsertionFollowerGapCheck);
+        // Fix 2: co-location symmetry break -- lets an already-overlapping same-lane pair SEPARATE instead of
+        // persisting (measured: longest episode 79 steps). Triggered by measured overlap only, never a timer.
+        // LIVECITY_COLOCATIONSYMMETRYBREAK=1.
+        _engine.ColocationSymmetryBreak = EnvGate("LIVECITY_COLOCATIONSYMMETRYBREAK", _engine.ColocationSymmetryBreak);
+        // G1 of the checkRewindLinkLanes port (docs/NEED-checkrewindlinklanes-partial-port.md): propagate
+        // junction blockage backward from a car that merely CANNOT PROCEED, not only one already halted.
+        // Default OFF; the measurement that decides it is the OPEN-LOOP discharge test, not the goldens.
+        // LIVECITY_KEEPCLEARHELD=1.
+        _engine.KeepClearHeldPropagation = EnvGate("LIVECITY_KEEPCLEARHELD", _engine.KeepClearHeldPropagation);
+        // Minor-link approach: SUMO's nonzero arrival-speed target instead of a stop-at-the-line plan.
+        // LIVECITY_MINORARRIVALSPEED=1.
+        _engine.MinorApproachArrivalSpeed = EnvGate("LIVECITY_MINORARRIVALSPEED", _engine.MinorApproachArrivalSpeed);
+        // Fix 3: same-step lane-change arrival arbitration -- prevents the ONSET fixes 1/2 could only
+        // mitigate (two cars changing into one slot in one step). LIVECITY_LANECHANGEARBITRATION=1.
+        _engine.LaneChangeArrivalArbitration = EnvGate("LIVECITY_LANECHANGEARBITRATION", _engine.LaneChangeArrivalArbitration);
 
         // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md): inside the high-realism zone a car
         // YIELDS to a pedestrian in its path instead of weaving past it at speed, and can never pass one
@@ -375,6 +456,9 @@ public sealed class LiveCitySim : IDisposable
         _engine.DiagSeqDesync = Environment.GetEnvironmentVariable("LIVECITY_SEQDESYNC") == "1"; // #15 prong-1
         _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+        // B1: report the vType once, before any RecordVehicle call, so the emitted file is
+        // self-contained. No-op when `_recordDemandSink` is null.
+        _recordDemandSink?.RecordVType(RecordVTypeId, vClass: "passenger", sigma: 0.0);
 
         // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §6: vehicle-only (CrowdSource left null, "leave
         // CrowdSource vehicle-only") when peds are disabled; footprints-only (walk-only, no crossing
@@ -475,6 +559,14 @@ public sealed class LiveCitySim : IDisposable
     // destinations but never reach them). Host-side read-only metric only -- never feeds the engine.
     public long ArrivedTotal { get; private set; }
 
+    // B1 (docs/DENSITY-DIFF-HARNESS-TASKS.md, SC4): read-only passthroughs of Engine's own already-
+    // computed counts, for a caller (Sim.DensityDiff) to derive "vehicles spawned but neither active
+    // nor arrived" (a still-Pending/refused-insertion proxy) without Engine exposing a dedicated
+    // refusal counter. Zero cost beyond the property read; never used by any golden/parity path.
+    public int CurrentCars => _engine.VehicleHandles.Length;
+
+    public int CurrentPeds => _demand?.LiveCount ?? 0;
+
     // DIAGNOSTIC (#15 residual): how many vehicles hit the wrong-lane dead-end clamp in the engine's
     // last step (a turner that could not merge into its turn lane and stranded at the stop line with no
     // onward connection). This is the strand that upstream lane-change cooperation would PREVENT --
@@ -521,6 +613,13 @@ public sealed class LiveCitySim : IDisposable
     public double HighRealismPocketY { get; private set; }
     public double HighRealismPromoteRadius { get; private set; }
     public double HighRealismDemoteRadius { get; private set; }
+
+    // Diagnostic-only (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §1), ADDITIVE, read-only: a passthrough
+    // to the ped LOD manager's per-ped internal state (Model/HighIndex/dwell timers/route/pos), for the
+    // headless --live-city-pedtrace harness to correlate server-side LOD transitions against the wire.
+    // Empty when peds are disabled (`_manager` null). Never consulted by Step() or any sim behavior.
+    public IEnumerable<Sim.Pedestrians.Lod.PedLodDiag> PedLodDiagnostics(double now)
+        => _manager?.DiagnosticSnapshot(now) ?? Array.Empty<Sim.Pedestrians.Lod.PedLodDiag>();
 
     // #15 camera-driven LC-realism zone (docs/LIVE-CITY-CAMERA-REALISM-ZONE-DESIGN.md). The per-area
     // lane-change realism gate in Step() tests against THIS zone (not the static ped-ORCA pocket above),
@@ -624,7 +723,24 @@ public sealed class LiveCitySim : IDisposable
         if (_cropEdges.Count >= 2)
         {
             var live = _engine.VehicleHandles.Length;
-            for (var s = 0; s < _cfg.CarSpawnPerStep && live < _cfg.CarTargetConcurrent; s++)
+
+            // A3 (design §1b): how many insertions to ATTEMPT this step.
+            //   closed-loop (default) -- up to CarSpawnPerStep, and only while below the occupancy cap. The
+            //                            cap makes inflow a function of our own drain, which is why this
+            //                            mode cannot measure discharge.
+            //   open-loop             -- a fixed rate, occupancy IGNORED, paced by a fractional-credit
+            //                            accumulator so any real-valued rate is expressible. Queue growth is
+            //                            then free to run away, which is the whole measurement.
+            var attempts = _cfg.CarSpawnPerStep;
+            if (_cfg.CarInflowVehPerSec is { } inflow)
+            {
+                _openLoopSpawnCredit += inflow * dt;
+                attempts = (int)Math.Floor(_openLoopSpawnCredit);
+                _openLoopSpawnCredit -= attempts;
+            }
+
+            for (var s = 0; s < attempts
+                 && (_cfg.CarInflowVehPerSec is not null || live < _cfg.CarTargetConcurrent); s++)
             {
                 var (fromId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
                 var (toId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
@@ -634,6 +750,30 @@ public sealed class LiveCitySim : IDisposable
                     _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
                     SpawnLog?.Add((_now, fromId, toId));
                     live++;
+
+                    // B1 (docs/DENSITY-DIFF-HARNESS-DESIGN.md §2, -TASKS.md): record-at-spawn -- fires
+                    // only when a sink was supplied. Recomputes the SAME from/to route via the
+                    // dedicated `_demandRouter` (see its field remark) so the recorded edges are
+                    // exactly what Engine just inserted. Recorded HERE (spawn-call success), not at
+                    // actual physical/lane insertion -- design §2 caveat 2: a vehicle Engine later
+                    // refuses to admit onto the road (InsertionFollowerGapCheck) still appears here,
+                    // which is the intended "record-at-spawn" contract, not a bug.
+                    if (_recordDemandSink is not null && _demandRouter is not null)
+                    {
+                        var routeEdges = _demandRouter.Route(fromId, toId);
+                        if (routeEdges is not null && routeEdges.Count > 0)
+                        {
+                            _recordVehCounter++;
+                            _recordDemandSink.RecordVehicle(
+                                "rec" + _recordVehCounter.ToString(CultureInfo.InvariantCulture),
+                                _now,
+                                "best", // departBestLane: true above -- SUMO's departLane="best".
+                                departPos: 5.0,
+                                departSpeed: 0.0,
+                                RecordVTypeId,
+                                routeEdges);
+                        }
+                    }
                 }
                 catch (InvalidOperationException)
                 {
@@ -940,6 +1080,22 @@ public sealed class LiveCitySim : IDisposable
     // pedestrian) of the WHOLE net, since road-net mode has no crop to centre on instead. Falls back
     // to the origin only for a pathological net with no lane geometry at all (never happens for a
     // real net.xml; defensive, not exercised by the committed fixture).
+    // TRI-STATE env override for an engine gate: unset => keep the engine's OWN default; "1" => on;
+    // anything else (in practice "0") => off.
+    //
+    // WHY NOT `GetEnvironmentVariable(name) == "1"`, which is what every one of these lines used to be:
+    // that form is a two-state override that silently FORCES OFF whenever the variable is absent. It was
+    // harmless while every gate defaulted to false and became a live bug the moment the defaults flipped to
+    // true -- the demo would have run with all seven gates disabled while the engine, the goldens and every
+    // other host had them enabled, and the resulting "the demo still gridlocks" report would have looked
+    // like a failed fix rather than a wiring mistake. The A/B diagnostics are unaffected because they set
+    // every gate EXPLICITLY to "1"/"0" (see AllLiveCityGateVars), which both forms honour identically.
+    private static bool EnvGate(string name, bool engineDefault)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
     private static Vec2 ComputeNetAabbCentre(NetworkModel model)
     {
         var minX = double.PositiveInfinity;

@@ -15,7 +15,7 @@ report.
 - [x] **CY-2** suppress the crowd swerve in-zone
 
 ## Stage 3 — L2 (guarantee)
-- [x] **CY-3** `CrowdYieldConstraint` (binder 14) — anticipatory in-path yield
+- [x] **CY-3** `CrowdYieldConstraint` (binder 16) — anticipatory in-path yield
 - [x] **CY-4** world-space proximity cap
 
 ## Stage 4 — Host wiring

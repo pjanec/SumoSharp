@@ -68,7 +68,11 @@ public static class ScenarioConfigParser
             // P2-H: SUMO's <processing><max-depart-delay> (seconds; -1 = never delete, the default).
             // Absent for every pre-P2-H scenario, so the InsertDepartingVehicles eviction branch stays
             // inert (gated on MaxDepartDelay >= 0) and all prior goldens are byte-identical.
-            MaxDepartDelay: ParseDouble(processingEl, "max-depart-delay", -1.0));
+            MaxDepartDelay: ParseDouble(processingEl, "max-depart-delay", -1.0),
+            // SUMO's <processing><ignore-junction-blocker> (seconds; -1 = never ignore, SUMO's own
+            // default). Absent for every pre-existing scenario, so Engine.IgnoreJunctionBlockerSeconds
+            // stays at its own -1 default and the JunctionYieldConstraint skip branch stays inert.
+            IgnoreJunctionBlockerSeconds: ParseDouble(processingEl, "ignore-junction-blocker", -1.0));
     }
 
     // P0-A: SUMO's <route-files value="a.rou.xml,b.rou.xml"/> / <additional-files value="..."/>

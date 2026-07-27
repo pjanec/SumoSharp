@@ -264,6 +264,14 @@ public class PedBackstepProbeTests
     {
         var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
         cfg.YieldEnabled = true;
+        // This THROWAWAY probe traces ped 1 through its JUNCTION TURN (window ~t=56.1-56.5) and asserts
+        // that segment renders without a backward step. It predates bug #6's crosswalk-wait spread, which
+        // ForRepoRoot now enables (radius 2.0): that spread intentionally sidesteps a waiting ped along the
+        // kerb and back, a legitimate direction reversal elsewhere in ped 1's trajectory (verified: the
+        // junction-turn window itself stays backstep-free). Disable the spread here so this diagnostic
+        // isolates the junction-turn behaviour it was written for; the spread has its own dedicated tests
+        // (Sim.Pedestrians.Tests CrosswalkWaitSpread*).
+        cfg.PedCrosswalkWaitSpreadRadius = 0.0;
         using var sim = new LiveCitySim(cfg);
 
         for (var i = 0; i < 60; i++)

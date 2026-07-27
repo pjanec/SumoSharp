@@ -545,6 +545,160 @@ public class PedLodManagerTests
         Assert.True(everPromoted, "a lively low-power ped inside a promote radius must promote to FreeKinematic");
     }
 
+    // ---- #3 promote flicker: seed-on-switch (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §2) ------
+    // Reproduces the vanish: a promotion is delivered as a DrSwitchEvent, but the ped's FIRST
+    // FreeKinematicSample is absent from the wire (the publish scheduler under-sends a just-promoted ped).
+    // Before the fix the IG reconstructs a FreeKinematic ped from LastPos == default(Vec2) == (0,0) -- the
+    // ped snaps to the world origin (culled from the view => "vanishes"). After the fix, the switch seeds
+    // the high-power pose from the ped's low-power pose at the switch instant, so the rendered pose stays
+    // on-body; and a real sample, when it does arrive, still wins.
+    [Fact]
+    public void PromoteSwitch_SeedsFreeKinematicPose_FromLowPowerPose_WhenFirstSampleAbsent()
+    {
+        // A simple low-power PathArc leg: straight west->east at 1 m/s from t=0.
+        var path = new List<Vec2> { new(0.0, 0.0), new(10.0, 0.0) };
+        const double speed = 1.0;
+        const double tSwitch = 3.0;
+
+        var ig = new HeadlessIg();
+        ig.Apply(new PathArcRecord(1, 0.0, path, 0.0, speed));
+
+        // The expected low-power pose at the switch instant (the same function the server evaluates).
+        var lowPowerPose = PathArcMotion.PositionAt(path, 0.0, speed, tSwitch);
+        Assert.True((lowPowerPose - new Vec2(3.0, 0.0)).Abs < 1e-9); // sanity: (3,0)
+
+        // Promote, but DO NOT deliver a FreeKinematicSample this "step".
+        ig.Apply(new DrSwitchEvent(1, tSwitch, PedDrModel.PathArc, PedDrModel.FreeKinematic));
+
+        Assert.Equal(PedDrModel.FreeKinematic, ig.ModelOf(1));
+
+        // The reconstructed high-power pose must be the on-body low-power pose, NOT the origin.
+        var reconstructed = ig.Reconstruct(1, tSwitch);
+        Assert.True((reconstructed - lowPowerPose).Abs < 1e-9,
+            $"seed-on-switch expected on-body pose {lowPowerPose}, got {reconstructed}");
+        Assert.True(reconstructed.Abs > 1.0, "reconstructed FreeKinematic pose must not be the (0,0) origin snap");
+
+        // When a real first sample finally arrives, it wins over the seed.
+        ig.Apply(new FreeKinematicSample(1, tSwitch + 0.5, new Vec2(3.5, 0.0), new Vec2(1.0, 0.0)));
+        var afterSample = ig.Reconstruct(1, tSwitch + 0.5);
+        Assert.True((afterSample - new Vec2(3.5, 0.0)).Abs < 1e-9,
+            $"a delivered FreeKinematicSample must override the seed, got {afterSample}");
+    }
+
+    // ---- #3 promote flicker: crowd-frame de-fragmentation (docs/...LIFECYCLE-DESIGN.md §2) --------
+    // A step with a MIX of high-power and low-power peds at interleaved ids must emit its
+    // FreeKinematicSamples as one CONTIGUOUS run (all before any heartbeat of the same time), so
+    // PedReplicationPublisher batches them into a single crowd frame. If a heartbeat interleaves between
+    // two same-time samples it forces a premature FlushCrowdFrame, fragmenting one step's crowd into
+    // several frames -- and the receiver only applies the LATEST frame, freezing every high-power ped
+    // except those in the final fragment. This asserts the ordering contract the reconstruction relies on.
+    [Fact]
+    public void Step_EmitsFreeKinematicSamplesContiguously_NotFragmentedByInterleavedHeartbeats()
+    {
+        var nav = BuildNav();
+        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        Assert.NotNull(path);
+
+        var publisher = new PedPublisher(heartbeatInterval: 0.05); // tiny -> heartbeats due every step
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        for (var id = 1; id <= 4; id++) manager.AddPed(id, path!, MaxSpeed, Radius, now: 0.0);
+
+        // Pin ids 1 and 3 high-power -- interleaved with low-power 2 and 4 (heartbeat emitters).
+        manager.SetForcedHighPower(1, true);
+        manager.SetForcedHighPower(3, true);
+
+        var field = new InterestField();
+        field.Register(new InterestSource(new Vec2(-10_000, -10_000), promoteRadius: 1.0, demoteRadius: 2.0));
+        var noEntities = Array.Empty<WorldDisc>();
+
+        var now = 0.0;
+        for (var i = 0; i < 5; i++) { manager.Step(now, Dt, field, noEntities); now += Dt; }
+
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(3));
+        Assert.Equal(PedDrModel.PathArc, manager.ModelOf(2));
+
+        // Within each publish time, the first heartbeat (if any) must come AFTER the last sample (if any).
+        var anySamples = false;
+        foreach (var g in publisher.Events.GroupBy(e => Math.Round(e.Time, 9)))
+        {
+            var seq = g.ToList();
+            var lastSampleIdx = -1;
+            var firstHeartbeatIdx = int.MaxValue;
+            for (var k = 0; k < seq.Count; k++)
+            {
+                if (seq[k] is FreeKinematicSample) { lastSampleIdx = k; anySamples = true; }
+                if (seq[k] is HeartbeatEvent && k < firstHeartbeatIdx) firstHeartbeatIdx = k;
+            }
+
+            if (lastSampleIdx >= 0 && firstHeartbeatIdx != int.MaxValue)
+            {
+                Assert.True(firstHeartbeatIdx > lastSampleIdx,
+                    $"at t={g.Key} a heartbeat (idx {firstHeartbeatIdx}) preceded a same-time sample (idx {lastSampleIdx}) -- fragments the crowd frame");
+            }
+        }
+
+        Assert.True(anySamples, "expected FreeKinematic samples in the stream (the two pinned peds)");
+    }
+
+    // ---- #4b: off-graph route recovery (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §3.1) ---------
+    // A nav whose FindPath can be switched to return null on demand, to force the "pos is off the
+    // walkable graph" branch RecoverRoute must handle (instead of the old straight-line fallback).
+    private sealed class SwitchableNav : IPedNavigation
+    {
+        public IReadOnlyList<Vec2>? Result;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => Result;
+    }
+
+    [Fact]
+    public void Demote_WhenFindPathReturnsNull_RecoversOntoRetainedRoute_NotStraightLine()
+    {
+        // A real multi-vertex on-graph route to (15,0); the ped promotes on this route, then FindPath is
+        // switched OFF (null) before demotion so RecoverRoute must fall back onto the retained polyline.
+        var route = new List<Vec2> { new(0.0, 0.0), new(5.0, 0.0), new(10.0, 0.0), new(15.0, 0.0) };
+        var nav = new SwitchableNav { Result = route };
+
+        var publisher = new PedPublisher();
+        var manager = new PedLodManager(nav, publisher, ArriveRadius, DwellSeconds);
+        manager.AddPed(id: 1, route, MaxSpeed, Radius, now: 0.0);
+
+        var field = new InterestField();
+        var srcId = field.Register(new InterestSource(new Vec2(0.0, 0.0), PromoteRadius, DemoteRadius), InterestSourceKind.EntityAttached);
+        var noEntities = Array.Empty<WorldDisc>();
+
+        var now = 0.0;
+        for (var i = 0; i < 60 && manager.ModelOf(1) != PedDrModel.FreeKinematic; i++)
+        {
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+        }
+
+        Assert.Equal(PedDrModel.FreeKinematic, manager.ModelOf(1));
+
+        // Now the ped is off-graph as far as the nav is concerned: FindPath returns null. Move the source
+        // away so it demotes; RecoverRoute must recover onto the retained steering route.
+        nav.Result = null;
+        field.Move(srcId, new Vec2(-10_000.0, -10_000.0));
+        var pathArcsBefore = publisher.PathArcRecordsSent.GetValueOrDefault(1);
+
+        for (var i = 0; i < 300 && manager.ModelOf(1) == PedDrModel.FreeKinematic; i++)
+        {
+            manager.Step(now, Dt, field, noEntities);
+            now += Dt;
+        }
+
+        Assert.Equal(PedDrModel.PathArc, manager.ModelOf(1));
+        Assert.True(publisher.PathArcRecordsSent[1] > pathArcsBefore, "expected a fresh PathArcRecord on demotion");
+
+        // The demotion route must be the RECOVERED multi-segment on-graph path, NOT the 2-point beeline
+        // [pos, destination] the old `?? new[] { pos, destination }` fallback would have produced.
+        var demotePath = publisher.Events.OfType<PathArcRecord>().Last(r => r.Id == 1).Path;
+        Assert.True(demotePath.Count >= 3,
+            $"off-graph demotion should recover a multi-segment route, got a {demotePath.Count}-point path (straight-line fallback?)");
+        // Its tail must reach the destination (the recovered route follows the retained polyline to its end).
+        Assert.True((demotePath[^1] - new Vec2(15.0, 0.0)).Abs < 1e-6, "recovered route must still end at the destination");
+    }
+
     // ---- P1-2: forced high-power (evac panic pin) -----------------------------------------------
 
     [Fact]

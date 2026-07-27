@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using Sim.Ingest;
 using Sim.LiveCity;
 using Xunit;
 using Xunit.Abstractions;
@@ -15,10 +16,16 @@ namespace Sim.LiveCity.Tests;
 // Sim.Viz/VizReplayBuilder).
 //
 // This is a FAIL-FIRST characterization test: it documents the KNOWN §F3 pre-existing junction-overlap
-// engine bug (cars on crossing internal junction lanes occupying the same space, worst ~3 m -- e.g.
+// engine bug (cars on crossing internal junction lanes occupying the same space, worst ~2.4 m -- e.g.
 // veh58 drives through stopped veh159). Today it asserts the overlap is PRESENT (proving the check is
 // live, not vacuous) and BOUNDED (a regression tripwire in the family of §F2/Task A, which blew car-car
 // overlaps far past the §F3 baseline). When §F3 is FIXED, both assertions flip to assert ZERO overlap.
+//
+// The overlap math is VehicleObb.Penetration (src/Sim.Ingest/VehicleObb.cs), which takes each
+// vehicle's FRONT-BUMPER pose (X, Y, naviDegree heading) directly -- see that file's header for the
+// two convention bugs it fixes (a reflected forward axis, and a front-bumper-vs-centre anchor error)
+// and docs/NEED-obb-anchor-halflength.md for the investigation. The thresholds below were re-measured
+// and re-baselined against the corrected math; they are NOT comparable to any pre-fix numbers.
 public class DemoCarOverlapInvariantTests
 {
     private readonly ITestOutputHelper _out;
@@ -66,42 +73,6 @@ public class DemoCarOverlapInvariantTests
         throw new InvalidOperationException("could not resolve the SumoSharp repo root.");
     }
 
-    // Oriented-box overlap depth (metres) between two vehicles, each encoded as the 5-tuple
-    // [cx, cy, headingDeg, length, width]. COPIED verbatim (same math) from ObbOverlap in
-    // RunLiveCityDrCheck (src/Sim.Viz/Program.cs). Heading maps to forward = (-sinθ, cosθ) -- the
-    // convention validated in §F4 (NOT (cosθ, sinθ), which rotates every box 90°); right axis is
-    // perpendicular. Separating-axis test over the 4 box axes; returns the minimum penetration across
-    // axes, or 0 if any axis separates (a separating axis => disjoint).
-    private static double ObbOverlap(double[] a, double[] b)
-    {
-        double PenOnAxis(double axX, double axY)
-        {
-            double Half(double[] v, double ax, double ay)
-            {
-                var th = v[2] * Math.PI / 180.0;
-                var fx = -Math.Sin(th); var fy = Math.Cos(th);   // forward (length) axis
-                var rx = -fy; var ry = fx;                       // right (width) axis
-                var hl = v[3] * 0.5; var hw = v[4] * 0.5;
-                return Math.Abs((fx * ax + fy * ay) * hl) + Math.Abs((rx * ax + ry * ay) * hw);
-            }
-            var centerGap = Math.Abs((b[0] - a[0]) * axX + (b[1] - a[1]) * axY);
-            return Half(a, axX, axY) + Half(b, axX, axY) - centerGap; // >0 => overlap on this axis
-        }
-        double minPen = double.PositiveInfinity;
-        foreach (var v in new[] { a, b })
-        {
-            var th = v[2] * Math.PI / 180.0;
-            var fx = Math.Cos(th); var fy = Math.Sin(th);
-            foreach (var (ax, ay) in new[] { (fx, fy), (-fy, fx) })
-            {
-                var p = PenOnAxis(ax, ay);
-                if (p <= 0) return 0; // separating axis found -> disjoint
-                if (p < minPen) minPen = p;
-            }
-        }
-        return minPen;
-    }
-
     [Fact]
     public void DemoAuthoritative_CarFootprints_DoNotOverlapBeyondKnownF3Baseline()
     {
@@ -127,9 +98,9 @@ public class DemoCarOverlapInvariantTests
             {
                 for (var j = i + 1; j < cars.Count; j++)
                 {
-                    var pen = ObbOverlap(
-                        new[] { cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width },
-                        new[] { cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width });
+                    var pen = VehicleObb.Penetration(
+                        cars[i].X, cars[i].Y, cars[i].AngleDeg, cars[i].Length, cars[i].Width,
+                        cars[j].X, cars[j].Y, cars[j].AngleDeg, cars[j].Length, cars[j].Width);
                     if (pen <= noiseThreshold) continue;
 
                     pairsThisFrame++;
@@ -155,28 +126,36 @@ public class DemoCarOverlapInvariantTests
             + $"on pair [{worstPair}] at step {worstStep}; max overlapping pairs/frame {maxOverlappingPairsInAnyFrame}; "
             + $"total overlapping-pair events {totalOverlappingPairEvents}.");
 
-        // (A) LIVE + NON-VACUOUS: the check actually detects the real §F3 junction overlap (worst ~3 m).
-        //     If this ever drops <= 0.5 m the bug is either fixed (flip this whole test to assert ZERO) or
-        //     the check has gone dead (footprints/heading convention broke) -- either way, investigate.
-        Assert.True(worstPenetration > 0.5,
-            $"expected the live §F3 junction overlap to be detected (worst > 0.5 m), got {worstPenetration:F3} m "
+        // RE-BASELINED (2026-07-26) after the VehicleObb axis+anchor fix (docs/NEED-obb-anchor-halflength.md).
+        // The OLD numbers below were measured with the BROKEN math
+        // (reflected forward axis + front-bumper-as-centre anchor) and are WRONG; do not compare against them
+        // without re-deriving. Re-measured on this branch, same 200-step run, via VehicleObb.Penetration:
+        //   worst penetration = 2.382 m (pair __veh109/__veh163, step 185); max overlapping pairs in any
+        //   single frame = 4; total overlapping-pair events = 45.
+        // For the record, the pre-fix (broken-math) baseline this replaces was: worst 3.035 m (pair
+        // __veh134/__veh38, step 197), max pairs/frame varied by measurement (comment history says 4; the
+        // fix-investigation doc's headline comparison used 3), total events 61. The correction is NOT
+        // uniformly "smaller": some pairs' penetration increases, others decrease or vanish, because BOTH
+        // cars' boxes move when the anchor is corrected (see docs/NEED-obb-anchor-halflength.md). Direction
+        // of change must never be assumed -- re-measure whenever the helper or the scenario changes.
+
+        // (A) LIVE + NON-VACUOUS: the check actually detects the real §F3 junction overlap (worst ~2.4 m).
+        //     Floor set comfortably below the measured worst (2.382 m) and comfortably above the noise
+        //     threshold (0.05 m). If this ever drops <= 1.0 m the bug is either fixed (flip this whole test
+        //     to assert ZERO) or the check has gone dead (footprints/heading convention broke) -- either
+        //     way, investigate.
+        Assert.True(worstPenetration > 1.0,
+            $"expected the live §F3 junction overlap to be detected (worst > 1.0 m), got {worstPenetration:F3} m "
             + $"on pair [{worstPair}] at step {worstStep}. If §F3 is FIXED, flip this test to assert ZERO overlap.");
 
         // (B) BOUNDED (regression tripwire): §F3 overlaps stay in the known band. A §F2/Task-A-style
         //     regression (laterally-invisible straddling cars, followers creeping in) blows far past this.
-        //     Ceilings encode the MEASURED §F3 baseline on this branch (200 steps, default density):
-        //       worst penetration = 3.035 m (pair __veh134/__veh38, step 197); max overlapping pairs in
-        //       any single frame = 4.
-        //     Set just above the measured baseline (worst < 4.0 m; pairs ceiling = 4 + 3 margin = 7).
-        //     NOTE (Task A redo, SuppressHeldCrowdSwerve now ON by default): total overlapping-pair EVENTS
-        //     rose 116 -> 178 because cars that used to swerve THROUGH a crosswalk ped now correctly STOP
-        //     and queue, so the SAME pre-existing §F3 junction overlaps are exposed across more frames. The
-        //     two SEVERITY ceilings above are UNCHANGED (worst still 3.035 m, max pairs/frame still 4). Lane-
-        //     classified diff (fix on vs off): junction pairs 30->30 (worst 3.035 m both), normal-lane pairs
-        //     7->8 (worst 1.800 m both) -- the fix adds only shallow normal-lane overlaps (0.74 m, 0.09 m),
-        //     both shallower than 6 pre-existing normal-lane overlaps, and never a straddle (see §F4a).
-        Assert.True(worstPenetration < 4.0,
-            $"REGRESSION: worst car-car penetration {worstPenetration:F3} m exceeded the §F3 bound (4.0 m) "
+        //     Ceilings encode the MEASURED §F3 baseline on this branch under the CORRECTED math (200 steps,
+        //     default density): worst penetration = 2.382 m; max overlapping pairs in any single frame = 4.
+        //     Set just above the measured baseline (worst < 3.0 m, ~0.6 m / 26% margin; pairs ceiling =
+        //     4 + 3 margin = 7, same margin style as before the re-baseline).
+        Assert.True(worstPenetration < 3.0,
+            $"REGRESSION: worst car-car penetration {worstPenetration:F3} m exceeded the §F3 bound (3.0 m) "
             + $"on pair [{worstPair}] at step {worstStep}.");
         Assert.True(maxOverlappingPairsInAnyFrame <= MAX_OVERLAPPING_PAIRS_CEILING,
             $"REGRESSION: {maxOverlappingPairsInAnyFrame} overlapping pairs in a single frame exceeded the "
@@ -184,8 +163,11 @@ public class DemoCarOverlapInvariantTests
             + "lateral-freeze regression would blow past this.");
     }
 
-    // Measured §F3 baseline (4 pairs in the worst frame) + 3 margin. Encodes the known §F3 overlap band;
-    // a Task-A-style lateral-freeze regression would blow well past this. See comment on assertion (B).
+    // Measured §F3 baseline (4 pairs in the worst frame, corrected math) + 3 margin. Encodes the known §F3
+    // overlap band; a Task-A-style lateral-freeze regression would blow well past this. See comment on
+    // assertion (B). Re-baselined 2026-07-26 after the VehicleObb axis+anchor fix; the corrected measurement
+    // happens to match the old (broken-math) ceiling numerically, but was independently re-derived, not
+    // carried over.
     private const int MAX_OVERLAPPING_PAIRS_CEILING = 7;
 
     // ---------------------------------------------------------------------------------------------------

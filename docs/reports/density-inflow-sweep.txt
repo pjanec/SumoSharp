@@ -1,0 +1,13 @@
+# A3 open-loop inflow sweep -- max sustainable density per engine
+# steps=7200  net=/home/user/SumoSharp/scenarios/_ped/demo_city/box/net.xml
+# demand model = OPEN-LOOP (fixed inflow, occupancy cap IGNORED). A capacity claim from
+# closed-loop demand would be invalid -- see DENSITY-DIFF-HARNESS-DESIGN.md section 1b.
+
+inflow   | OURS                         | SUMO s-honest                | SUMO s-default
+---------+------------------------------+------------------------------+-----------------------------
+0.8      | STEADY STATE (plateau ~162 (r=162,a=2573) | STEADY(130,-1.8%)            | STEADY(130,-1.8%)
+1.0      | STEADY STATE (plateau ~201 (r=216,a=3198) | STEADY(165,-2.2%)            | STEADY(165,-2.2%)
+1.2      | STEADY STATE (plateau ~254 (r=281,a=3817) | STEADY(203,-0.6%)            | STEADY(203,-0.6%)
+1.4      | STEADY STATE (plateau ~306 (r=323,a=4448) | STEADY(240,+1.3%)            | STEADY(240,+1.3%)
+1.6      | RUNAWAY (resident count st (r=2242,a=2938) | STEADY(280,-1.0%)            | STEADY(280,-1.0%)
+2.0      | RUNAWAY (resident count st (r=3528,a=1681) | RUNAWAY(940,+61.6%)          | RUNAWAY(988,+65.3%)

@@ -127,6 +127,25 @@ public sealed class LiveCityConfig
 
     public int CarSpawnPerStep { get; set; } = 5;
 
+    // A3 (docs/DENSITY-DIFF-HARNESS-DESIGN.md §1b): OPEN-LOOP inflow, in vehicles per SIMULATED SECOND.
+    // `null` (the default) keeps the demo's normal CLOSED-LOOP behaviour byte-identical.
+    //
+    // WHY THIS EXISTS -- it is not a convenience knob, it is the difference between being able and unable to
+    // measure junction discharge. The normal spawn loop is
+    //     for (s = 0; s < CarSpawnPerStep && live < CarTargetConcurrent; s++)
+    // which inserts ONLY while occupancy is below the cap. That makes inflow a function of our own drain: if
+    // junctions discharge slowly we simply insert fewer cars, and resident count can never run away. A
+    // discharge deficit manifests as UNBOUNDED QUEUE GROWTH AT FIXED INFLOW, so a closed-loop model cannot
+    // exhibit the symptom at all -- and a comparison built on one reports "close to SUMO" no matter how
+    // narrow the drain actually is. That is exactly what happened: a closed-loop run reported 96% of SUMO's
+    // throughput while an open-loop experiment had SumoSharp climbing 258 -> 2623 resident cars over an hour
+    // and never reaching steady state, against vanilla SUMO plateauing at ~430.
+    //
+    // When set, `CarTargetConcurrent` is IGNORED (there is no cap -- that is the point) and insertions are
+    // paced by a fractional-credit accumulator so any real-valued rate is expressible, not just integer
+    // multiples of `CarSpawnPerStep / Dt`.
+    public double? CarInflowVehPerSec { get; set; }
+
     // step-length 0.5 == the ped/frame Dt, so cars and peds advance the same sim-time per Step().
     public double Dt { get; set; } = 0.5;
 
@@ -170,6 +189,16 @@ public sealed class LiveCityConfig
     public double PedArrivalRadius { get; set; } = 0.6;
     public bool PedEnableWeave { get; set; } = true;
 
+    // Bug #6 (crosswalk-wait kerb clustering; docs cross-ref: PedDemandConfig.CrosswalkWaitSpreadRadius):
+    // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
+    // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.
+    public double PedCrosswalkWaitSpreadRadius { get; set; } = 0.0;
+
+    // Demo-only realism (per-ped walking speed variation; docs cross-ref: PedDemandConfig.SpeedVariationFrac):
+    // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
+    // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.
+    public double PedSpeedVariationFrac { get; set; } = 0.0;
+
     // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §7, -TASKS.md D1: the PedLivelinessConfig block, likewise
     // promoted as a group from LiveCitySim's ctor-hardcoded literals (same byte-identical-demo argument
     // as PedMaxSpeed et al. above).
@@ -195,6 +224,13 @@ public sealed class LiveCityConfig
         cfg.DatasetDir = Path.Combine(repoRoot, "scenarios", "_ped", "demo_city", "box");
         cfg.NavMode = PedNavMode.Navmesh;
         cfg.RegionPlan = false;
+        // Bug #6: the demo enables the crosswalk-wait kerb spread; goldens/other configs (ForDataset,
+        // and any caller building LiveCityConfig directly) keep the 0.0 default => byte-identical.
+        cfg.PedCrosswalkWaitSpreadRadius = 2.0;
+        // Demo-only realism: per-ped walking speed variation so a group that started together spreads
+        // out as it walks; goldens/other configs (ForDataset, and any caller building LiveCityConfig
+        // directly) keep the 0.0 default => byte-identical.
+        cfg.PedSpeedVariationFrac = 0.15;
         return cfg;
     }
 

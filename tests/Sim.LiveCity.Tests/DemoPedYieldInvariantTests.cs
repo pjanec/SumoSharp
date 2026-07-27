@@ -9,7 +9,7 @@ using Xunit.Abstractions;
 
 namespace Sim.LiveCity.Tests;
 
-// docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2 (CrowdYieldConstraint, binder 14 -- the "guarantee"
+// docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2 (CrowdYieldConstraint, binder 16 -- the "guarantee"
 // layer): the demo-scale regression guard for "no car inside the high-realism zone passes a pedestrian
 // at close distance AND high speed". Modeled closely on DemoCarOverlapInvariantTests.cs (same RepoRoot()
 // helper, same config-pinning discipline, same AUTHORITATIVE-sampling style) but the invariant here is
