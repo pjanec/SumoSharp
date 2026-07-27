@@ -3,11 +3,14 @@
 One source of truth for who owns what across the concurrent live-city realism sessions, so no two
 sessions edit the same mechanism. Keep this short; update it when a boundary moves.
 
-**Shared iron law (all sessions):** `dotnet test tests/Sim.ParityTests -c Release` = **657/4**
-byte-identical; `Sim.Bench` hash **`D96213B7BB4021A7`** (par==single); `dotnet test
-tests/Sim.LiveCity.Tests` = **25/25** (run WITHOUT `--no-build` — it is not in `Traffic.sln`); no
-`System.Random`; demo/goldens byte-identical (new behaviour gated on `CrowdSource != null` or a demo-only
-flag no golden sets); netstandard2.1 + `LiveCitySim` consumer contract preserved.
+**Shared iron law (all sessions), post-PR#13 baseline:** `dotnet test tests/Sim.ParityTests -c Release` =
+**755 pass / 4 skip (759 total)** with all **661 goldens byte-identical**; `Sim.Bench` hash
+**`BF3794A4704BCD79`** (par==single — moved from `D96213B7BB4021A7` when the seven junction gates defaulted ON,
+PR#13; re-pinned tripwire, no SUMO reference); `dotnet test tests/Sim.LiveCity.Tests` all green (run WITHOUT
+`--no-build` — it is not in `Traffic.sln`; **50/50** post-PR#13); `tests/Sim.Pedestrians.Tests` all green (277
+on the ped-LOD-lifecycle branch); no `System.Random`; demo/goldens byte-identical (new behaviour gated on
+`CrowdSource != null` or a demo-only flag no golden sets); netstandard2.1 + `LiveCitySim` consumer contract
+preserved.
 
 ---
 
@@ -54,6 +57,14 @@ flag no golden sets); netstandard2.1 + `LiveCitySim` consumer contract preserved
 
 ## Status notes
 
+- **ped-LOD-lifecycle (`claude/livecity-ped-lod-lifecycle-bylitj`) — #3/#4/#6 DONE.** #3 promote flicker fixed
+  (seed-on-switch in `HeadlessIg` + crowd-frame de-fragmentation in `PedLodManager.Step`: emit samples
+  contiguously so the wire isn't fragmented by interleaved heartbeats). #4b off-graph route recovery
+  (`PedLodManager.RecoverRoute`). #4a leaky-dwell/watchdog **dropped** — trace evidence showed no server-side
+  stuck-ORCA; the wander was #3. #6 idle clustering fixed via a crosswalk-wait BLOB + diagonal cross in
+  `PedDemand` (opt-in `CrosswalkWaitSpreadRadius`, demo-only). Added a headless `--live-city-pedtrace` harness +
+  `PedLodManager.DiagnosticSnapshot`/`LiveCitySim.PedLodDiagnostics`. All parity-inert. See
+  `docs/LIVE-CITY-PED-LOD-LIFECYCLE-*`.
 - arbitrary-net has marked its **C5 enablement BLOCKED** pending the ped–vehicle session.
 - Task B was originally in the realism-A/B `AB-DESIGN` doc; it has been **reassigned** to the ped–vehicle
   session (car↔ped coupling belongs with one owner). AB-DESIGN §Task B remains the design reference.

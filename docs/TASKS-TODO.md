@@ -44,7 +44,19 @@ session — coordinate by editing your **own** method/region: `LiveCitySim.cs` (
 methods). Parity is untouched either way (the whole ped/LOD path is gated on `CrowdSource != null`, which no
 golden attaches → still **661/4** byte-identical).
 
+---
 
+## Test infrastructure
+
+- [ ] **Live-city test env-var isolation** *(owner: junction/F3 PR#13 test authors)* — `Sim.LiveCity.Tests`
+  probes (`HeadOfQueueStallProbeTests`, `LongHorizonGridlockDiagTests`, `ArbitraryNetStageATests`) set
+  process-global `LIVECITY_*` env vars that `LiveCityConfig.ForRepoRoot` reads, and xUnit runs collections in
+  parallel → they race/leak into other tests' config (notably the `DenseFlow…NoGridlock` throughput test, which
+  went 431/707/718 for the same config). **Interim mitigation already in tree:** `TestParallelization.cs`
+  disables assembly parallelization (green 3/3). **Proper fix TODO:** a snapshot/restore `EnvVarScope`
+  `IDisposable` on every `LIVECITY_*`-setting test + a single non-parallel `[Collection]` for them, then drop the
+  blanket disable (or move `LiveCityConfig` off env vars entirely). Full root-cause + evidence + fix options:
+  **`docs/LIVE-CITY-TEST-ISOLATION-ENV-RACE.md`**.
 
 ---
 
@@ -120,18 +132,24 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   (crowd-swerve's "prefer swerve over hard-stop", `ComputeLateralEvasion`) — the hard guard must override it.
   Minimal unit repro: `CrosswalkCrossingPedTests`' crossing-ped setup. Briefs: AB-DESIGN §Task B,
   `LIVE-CITY-PED-VEHICLE-AVOIDANCE-HANDOFF.md` §4.
-- [ ] **Realism #3 — low-power peds DISAPPEAR on promotion** into the pocket (re-appear as ORCA later);
-  one-sided `PedLodManager` promote handoff. *(ped-LOD-lifecycle session — parallel-safe, see table note)* (task #25)
-- [ ] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** off-route; demotion doesn't fire /
-  doesn't restore the sidewalk route. *(ped-LOD-lifecycle session — its root is the `PedLodManager` demote
-  trigger + route restore, NOT car coupling; fixing demotion also removes the "wandering ORCA near cars"
-  symptom the ped–vehicle session cared about. Moved out of the ped–vehicle bucket.)* (task #25)
+- [x] **Realism #3 — low-power peds DISAPPEAR on promotion** — FIXED (ped-LOD-lifecycle). Root: the promoted
+  ped had `Model=FreeKinematic` on the wire but no pose sample yet (origin-snap → culled), and the crowd frame
+  was fragmented by heartbeats interleaved among the samples (receiver kept only the last fragment → frozen
+  peds). Fix: seed-on-switch in `HeadlessIg` + emit samples contiguously in `PedLodManager.Step`. Trace: wire
+  mismatches 3627→0, ped fidelity ≤0.28 m. (task #25)
+- [x] **Realism #4 — ORCA peds leaving the zone STAY ORCA and wander** — RESOLVED (ped-LOD-lifecycle). Trace
+  evidence (400/1600 peds, static & moving zone, ≤250 s): NO server-side stuck-ORCA — demotion fires correctly
+  and demoted peds rejoin on-graph routes; the visible wander was the #3 wire bug. So #4a (leaky-dwell/watchdog)
+  was **dropped** as unnecessary; #4b off-graph route recovery (`PedLodManager.RecoverRoute`) was added as cheap
+  hardening for the rare (0.2%) null-`FindPath` case. (task #25)
 - [ ] **Realism #5 (= arbitrary-net task "C5"; distinct from Group-C C5 `keepClear` below) — ORCA peds
   don't dodge a car standing on the crosswalk**; needs a car→ped obstacle feed (mirror of the ped→car
   `CrowdSource`). *(ped–vehicle avoidance session)* (task #26)
-- [ ] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle there
-  (occasionally recolour ORCA); randomize ped destinations / idle spots. *(ped-LOD-lifecycle session —
-  parallel-safe; ped demand/destination assignment, no car-side surface)*
+- [x] **Realism #6 (LOW PRIORITY)** — low-power peds merge to a SINGLE junction point and idle — FIXED
+  (ped-LOD-lifecycle). Root (trace): 12041/12199 idle rows were `animTag=wait` — signalized-crossing kerb waits,
+  every ped held at the exact crossing-entry vertex. Fix: a per-ped seeded 2-D waiting BLOB at the kerb +
+  diagonal cross (`PedDemand`, opt-in `CrosswalkWaitSpreadRadius`, demo-only). The 23-peds-on-one-point stack
+  becomes a dense blob (busiest 0.5 m cell 2.5%). *(ped demand; no car-side surface)*
 - [ ] **W4 — multiple / large / overlapping camera realism zones** *(handed off; unallocated — ped–vehicle
   avoidance or a later dedicated session)*. N ped `InterestSource`s, N-zone car LC-realism, `SetLcRealismZones` API, re-point
   the C5 disc-feed bound at the zone union, optional bit-identical `OrcaCrowd` disc index (the one `Sim.Core`

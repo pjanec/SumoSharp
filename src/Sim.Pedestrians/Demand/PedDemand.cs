@@ -46,6 +46,19 @@ public sealed class PedDemand
     private const ulong SubareaODSalt = 0x5044_5354_5741_5701UL;   // "PDSTWAW1" ascii-ish, arbitrary distinct constant
     private const ulong WeaveSalt = 0x5044_5354_5745_5601UL;       // "PDSTWEV1" -- the per-ped lateral-weave stream, independent of the others
 
+    // Bug #6 (crosswalk-wait kerb clustering): a FIFTH, dedicated salt for the per-ped lateral
+    // sidestep-along-the-kerb offset drawn while waiting at a signalized crossing. Independent of
+    // every other stream -- when `PedDemandConfig.CrosswalkWaitSpreadRadius` is 0 (the default) this
+    // salt's stream is never even constructed, let alone drawn from, so the off path stays
+    // byte-identical to pre-change PedDemand (the ITERON RULE).
+    private const ulong WaitJitterSalt = 0x5044_5354_5741_4A31UL; // "PDSTWAJ1" per-ped crosswalk-wait lateral spread, independent of every other stream
+
+    // Demo-only realism (per-ped walking speed variation): a SIXTH, dedicated salt for the per-ped
+    // desired-speed factor. Independent of every other stream -- when `PedDemandConfig.SpeedVariationFrac`
+    // is 0 (the default) this salt's stream is never even constructed, let alone drawn from, so the off
+    // path stays byte-identical to pre-change PedDemand (the ITERON RULE).
+    private const ulong SpeedSalt = 0x5044_5354_5350_4431UL; // "PDSTSPD1" per-ped desired-speed factor
+
     // Phase 2b (docs/LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md): the anim tag a low-power ped plays while
     // waiting at a signalized crossing's kerb on red. Anything other than ActivityTimeline.WalkAnimTag
     // renders as a paused disc (SceneGen.BuildLivelyCrowd), so a waiting ped is visibly stopped at the kerb.
@@ -173,6 +186,18 @@ public sealed class PedDemand
     {
         var id = _nextId++;
 
+        // Demo-only realism (per-ped walking speed variation): OFF (SpeedVariationFrac<=0) keeps
+        // `pedSpeed` exactly `_config.MaxSpeed` -- byte-identical, and the speed salt's stream is never
+        // even constructed (the ITERON RULE). ON: each ped draws its own desired speed in
+        // MaxSpeed*(1 +/- SpeedVariationFrac), seeded per-ped, so a group that started together spreads
+        // longitudinally as it walks and staggers its kerb arrivals.
+        var pedSpeed = _config.MaxSpeed;
+        if (_config.SpeedVariationFrac > 0.0)
+        {
+            var speedRng = VehicleRng.SeedFor(_config.Seed, id, SpeedSalt);
+            pedSpeed = _config.MaxSpeed * (1.0 + (((speedRng.NextDouble() * 2.0) - 1.0) * _config.SpeedVariationFrac));
+        }
+
         Vec2 origin;
         Vec2 destination;
         if (_config.WeightedEndpoints is { } weighted)
@@ -244,15 +269,21 @@ public sealed class PedDemand
             var weaveSeed = _config.EnableWeave ? VehicleRng.SeedFor(_config.Seed, id, WeaveSalt).RawState : 0UL;
             var globalSeed = _config.EnableWeave ? _config.Seed : 0UL;
 
+            // Bug #6: a dedicated per-ped rng for the crosswalk-wait lateral spread, fully independent
+            // of every other stream (own salt). Constructed unconditionally (cheap -- just a SplitMix64
+            // seed mix), but only ever DRAWN FROM inside SplitWalkAtCrossings when
+            // CrosswalkWaitSpreadRadius > 0, so its mere existence never perturbs anything.
+            var waitJitterRng = VehicleRng.SeedFor(_config.Seed, id, WaitJitterSalt);
+
             var timeline = BuildLivelyTimeline(
-                path, now, liveliness, _config.MaxSpeed, ref livelinessRng,
+                path, now, liveliness, pedSpeed, ref livelinessRng,
                 _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
-                _config.CrosswalkSignals);
-            _lodManager.AddPedLively(id, timeline, _config.MaxSpeed, _config.Radius, now);
+                _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng);
+            _lodManager.AddPedLively(id, timeline, pedSpeed, _config.Radius, now);
         }
         else
         {
-            _lodManager.AddPed(id, path, _config.MaxSpeed, _config.Radius, now);
+            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now);
         }
 
         _destinationOf[id] = destination;
@@ -279,7 +310,7 @@ public sealed class PedDemand
     private static ActivityTimeline BuildLivelyTimeline(
         IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng,
         bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
-        CrosswalkSignals? crosswalkSignals = null)
+        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ref VehicleRng waitRng)
     {
         // W2: each Walk leg's per-vertex half-width, sampled from the navmesh for that exact (possibly
         // pause-split) sub-path -- so an interpolated split point gets the width of the polygon it lands in.
@@ -365,7 +396,7 @@ public sealed class PedDemand
         // durations, so the ped stays a pure ActivityTimeline (server==IG holds -- W1/W3).
         if (crosswalkSignals is { } signals)
         {
-            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals);
+            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals, waitSpreadRadius, ref waitRng, halfWidthsAlong);
         }
 
         return new ActivityTimeline(now, segments, seed, globalSeed);
@@ -377,7 +408,9 @@ public sealed class PedDemand
     // the route ENTERS a signalized crossing and, if the ped would arrive on red (or without room to
     // clear), split the walk at the kerb and insert a Pause until NextWalkStart. No rng, no promotion.
     private static List<ActivitySegment> InsertCrosswalkWaits(
-        List<ActivitySegment> segments, double now, double speed, CrosswalkSignals signals)
+        List<ActivitySegment> segments, double now, double speed, CrosswalkSignals signals,
+        double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
     {
         if (signals.SignalizedCount == 0 || speed <= 0.0)
         {
@@ -390,7 +423,7 @@ public sealed class PedDemand
         {
             if (seg is WalkSegment w && w.Path.Count >= 2)
             {
-                SplitWalkAtCrossings(w, ref t, speed, signals, result);
+                SplitWalkAtCrossings(w, ref t, speed, signals, result, waitSpreadRadius, ref waitRng, halfWidthsAlong);
             }
             else
             {
@@ -409,7 +442,9 @@ public sealed class PedDemand
     // kerb is path[i] (the entry vertex). Advances `t` by every emitted sub-walk/pause so downstream
     // segments keep correct absolute timing.
     private static void SplitWalkAtCrossings(
-        WalkSegment w, ref double t, double speed, CrosswalkSignals signals, List<ActivitySegment> result)
+        WalkSegment w, ref double t, double speed, CrosswalkSignals signals, List<ActivitySegment> result,
+        double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
     {
         var path = w.Path;
         var n = path.Count;
@@ -458,9 +493,80 @@ public sealed class PedDemand
                 t += pre.Duration;
             }
 
-            result.Add(new PauseSegment(wait, CrosswalkWaitTag));
-            t += wait;
-            segStart = i;
+            // Bug #6 (crosswalk-wait kerb clustering): OFF (waitSpreadRadius<=0) keeps exactly the
+            // original single-pause path -- byte-identical, and `waitRng` is never touched (the ITERON
+            // RULE). ON: the ped steps into a per-ped seeded 2-D spot in the waiting BLOB at the kerb --
+            // spread laterally along the kerb AND back into the sidewalk (a dense cluster at the crossing
+            // mouth, "a circle at the end of the rod", not a single line along the road) -- waits there,
+            // then crosses DIAGONALLY straight from its spot to the crossing exit path[i+1]. No step-back:
+            // the diagonal consumes the crossing sub-segment path[i]->path[i+1], so segStart advances to
+            // i+1. The far side needs no spread -- nobody waits there; peds disperse via their onward
+            // routes (and cross while MOVING, so the exit vertex forms no stationary cluster).
+            var kerbDir = path[i + 1] - path[i];
+            var blobPoint = Vec2.Zero;
+            var useBlob = false;
+            if (waitSpreadRadius > 0.0 && kerbDir.Abs >= 1e-9)
+            {
+                var d = kerbDir / kerbDir.Abs;                  // crossing direction (rod axis), unit
+                var perp = new Vec2(-d.Y, d.X);                 // along the near kerb, unit
+
+                // Bug #6 follow-up (looser waiting blob): place the ped by a golden-angle slot with radius
+                // r = s0*sqrt(slot). Since `slot` is a per-ped RANDOM draw (not a sequential arrival rank --
+                // low-power peds don't know how many others are waiting), r^2 is uniform, i.e. this fills a
+                // disc of radius s0*sqrt(SlotCount) with roughly UNIFORM area density: a bigger, lower-density
+                // cluster than the old tight disc, all on the sidewalk side. It does NOT truly bound
+                // personal space or grow with the crowd (that needs neighbour/rank awareness the low-power
+                // model omits); the per-ped SPEED variation is what actually thins a moving group. Scale
+                // chosen so the disc radius is ~2x `waitSpreadRadius` (~4 m at R=2) -- loose but still a
+                // crossing-mouth cluster, not peds stranded mid-sidewalk.
+                const int SlotCount = 64;
+                const double GoldenAngle = 2.399963229728653; // pi*(3 - sqrt 5)
+                var s0 = 0.25 * waitSpreadRadius;                      // -> max disc radius s0*sqrt(64) = 2x R
+                var slot = (int)(waitRng.NextDouble() * SlotCount);    // per-ped RANDOM slot (uniform-area fill)
+                var rr = s0 * Math.Sqrt(slot + 0.5);
+                var ang = slot * GoldenAngle;
+                var jx = ((waitRng.NextDouble() * 2.0) - 1.0) * 0.15;  // small jitter so it's not a rigid pattern
+                var jy = ((waitRng.NextDouble() * 2.0) - 1.0) * 0.15;
+                var lateral = (rr * Math.Cos(ang)) + jx;               // along the kerb, both sides
+                var back = Math.Abs(rr * Math.Sin(ang)) + 0.3 + Math.Abs(jy); // into the sidewalk, always >= 0 (never onto the road)
+                var candidate = path[i] + (perp * lateral) - (d * back);
+                if ((candidate - path[i]).Abs >= 1e-6)
+                {
+                    blobPoint = candidate;
+                    useBlob = true;
+                }
+            }
+
+            if (!useBlob)
+            {
+                result.Add(new PauseSegment(wait, CrosswalkWaitTag));
+                t += wait;
+                segStart = i; // crossing sub-segment still lives in the tail / next pre-walk
+            }
+            else
+            {
+                var enterDur = (blobPoint - path[i]).Abs / speed;
+                result.Add(new WalkSegment(new List<Vec2> { path[i], blobPoint }, speed)); // step into the blob
+                t += enterDur;
+
+                var blobWait = Math.Max(0.0, wait - enterDur); // leave the blob at ~the same green instant
+                result.Add(new PauseSegment(blobWait, CrosswalkWaitTag));
+                t += blobWait;
+
+                // Weave the diagonal cross like a sidewalk leg -- ONLY when this ped is weaving (the split
+                // walk carried per-vertex widths). Sampling the crosswalk half-widths lets LateralWeave put
+                // each crosser on its own travel-direction RIGHT side, so the two opposing streams keep to
+                // opposite halves of the crossing (no head-on centreline pass-through) and wave-shape within
+                // their side -- the sidewalk behaviour extended onto the crossing (docs/Lod/LateralWeave.cs).
+                // Weave off (HalfWidths null) => plain straight cross, byte-identical to before.
+                var crossPts = new List<Vec2> { blobPoint, path[i + 1] };
+                result.Add(w.HalfWidths != null
+                    ? new WalkSegment(crossPts, speed, halfWidthsAlong(crossPts))
+                    : new WalkSegment(crossPts, speed)); // diagonal cross
+                t += (path[i + 1] - blobPoint).Abs / speed;
+
+                segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex
+            }
         }
 
         if (segStart == 0)
@@ -468,12 +574,14 @@ public sealed class PedDemand
             result.Add(w); // an entry was found but every arrival was already on green -> untouched
             t += w.Duration;
         }
-        else
+        else if (segStart < n - 1)
         {
             var tail = SubWalk(w, segStart, n - 1);
             result.Add(tail);
             t += tail.Duration;
         }
+        // else segStart == n-1: a #6 diagonal crossing already ended at the walk's final vertex, so the
+        // route is fully covered -- adding SubWalk(w, n-1, n-1) would be a degenerate 1-point leg.
     }
 
     // Arc length of path[from..to] (inclusive vertices), i.e. the walk distance from vertex `from` to `to`.
@@ -652,6 +760,25 @@ public sealed class PedDemandConfig
     /// until the analytic walk window (from the static `<tlLogic>`), then crosses. The wait is a pure
     /// function of time (no rng, no runtime signal polling), so server==IG and two runs stay byte-identical.
     public CrosswalkSignals? CrosswalkSignals { get; init; }
+
+    /// Bug #6 (crosswalk-wait kerb clustering): ADDITIVE, opt-in. 0.0 (the default) => off => the
+    /// crosswalk kerb wait is the single point `path[i]` exactly as before -- byte-identical to
+    /// pre-change `PedDemand` (no rng stream is even drawn on the dedicated wait-jitter salt). >0.0 =>
+    /// each ped waiting at a signalized crossing steps into a per-ped seeded 2-D spot in the waiting BLOB
+    /// at the kerb -- waits there, then crosses DIAGONALLY straight to the crossing exit. This value sets
+    /// the blob's characteristic scale (the sunflower/phyllotaxis slot spacing is 0.4x it, ~0.8 m at
+    /// R=2.0): peds fill a sunflower pattern of ~0.8 m-spaced slots that grows outward with the crowd
+    /// (instead of packing uniformly into a fixed disc), so waiting peds form a realistic min-spaced
+    /// cluster rather than stacking on or crowding into one point, and each crosses from where it stood.
+    /// Only meaningful together with `Liveliness` and `CrosswalkSignals`.
+    public double CrosswalkWaitSpreadRadius { get; init; } = 0.0;
+
+    /// Demo-only realism (per-ped walking speed variation): ADDITIVE, opt-in. 0.0 (the default) => off
+    /// => byte-identical to pre-change `PedDemand` (no rng stream is even drawn on the dedicated speed
+    /// salt) -- every ped walks at exactly `MaxSpeed`. >0.0 => each ped's walking speed is drawn as
+    /// `MaxSpeed * (1 +/- up to this fraction)`, seeded per-ped, so a group that started together
+    /// spreads out longitudinally as it walks and staggers its kerb arrivals instead of moving in lockstep.
+    public double SpeedVariationFrac { get; init; } = 0.0;
 }
 
 /// LIVE-PROD-1b (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4): per-trip liveliness knobs. Deliberately

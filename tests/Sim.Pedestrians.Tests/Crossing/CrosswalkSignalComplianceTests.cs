@@ -1,3 +1,6 @@
+using System.Linq;
+using System.Reflection;
+using Sim.Core;
 using Sim.Core.Bridge;
 using Sim.Core.Orca;
 using Sim.Pedestrians.Crossing;
@@ -62,7 +65,7 @@ public class CrosswalkSignalComplianceTests
         PauseAnimTag = "sip",
     };
 
-    private static PedDemandConfig BuildConfig(ulong seed, CrosswalkSignals? signals) => new()
+    private static PedDemandConfig BuildConfig(ulong seed, CrosswalkSignals? signals, double waitSpreadRadius = 0.0) => new()
     {
         Origins = new[] { WestNorthArm, EastNorthArm },
         Destinations = new[] { WestNorthArm, EastNorthArm },
@@ -74,6 +77,7 @@ public class CrosswalkSignalComplianceTests
         ArrivalRadius = ArrivalRadius,
         Liveliness = Lively(),
         CrosswalkSignals = signals,
+        CrosswalkWaitSpreadRadius = waitSpreadRadius,
     };
 
     // One sampled (ped, time, position); plus the count of samples that were on a crossing while it was
@@ -182,6 +186,141 @@ public class CrosswalkSignalComplianceTests
         }
 
         _output.WriteLine($"[P2b-T2] signals ON double-run: {runA.Traj.Count} samples, bit-identical.");
+    }
+
+    // ---- Bug #6 (crosswalk-wait kerb clustering) -----------------------------------------------------
+    //
+    // Gate 4: determinism holds with the spread ON -- two runs with the SAME seed and
+    // CrosswalkWaitSpreadRadius=2.0 produce byte-identical trajectories, exactly like Gate 3 above but
+    // with the new knob turned on (proves the new per-ped WaitJitterSalt stream doesn't introduce any
+    // nondeterminism -- still a pure function of (seed, id, now)).
+    [Fact]
+    public void CrosswalkWaitSpreadRadius_TwoRuns_AreBitIdentical()
+    {
+        var (navA, polysA) = BuildNav();
+        var (navB, polysB) = BuildNav();
+        var runA = Run(BuildConfig(seed: 777UL, CrosswalkSignals.FromNet(NetPath, polysA), waitSpreadRadius: 2.0),
+            steps: 1800, polysA, navA);
+        var runB = Run(BuildConfig(seed: 777UL, CrosswalkSignals.FromNet(NetPath, polysB), waitSpreadRadius: 2.0),
+            steps: 1800, polysB, navB);
+
+        Assert.Equal(runA.Traj.Count, runB.Traj.Count);
+        Assert.True(runA.Traj.Count > 0);
+        for (var i = 0; i < runA.Traj.Count; i++)
+        {
+            Assert.Equal(runA.Traj[i].Id, runB.Traj[i].Id);
+            Assert.Equal(runA.Traj[i].Time, runB.Traj[i].Time, precision: 12);
+            Assert.Equal(runA.Traj[i].Pos.X, runB.Traj[i].Pos.X, precision: 12);
+            Assert.Equal(runA.Traj[i].Pos.Y, runB.Traj[i].Pos.Y, precision: 12);
+        }
+
+        _output.WriteLine($"[Bug#6] spread ON double-run: {runA.Traj.Count} samples, bit-identical.");
+    }
+
+    // Gate 5: the OFF path (radius=0, the default) is the exact pre-change single-PauseSegment splice --
+    // no sidestep walks -- while radius=2.0 splices in exactly two extra bounded-length WalkSegments
+    // (sidestep out, sidestep back) around the SAME wait. Exercises PedDemand's private
+    // `BuildLivelyTimeline` directly (via reflection) so the assertion is about the TIMELINE'S SEGMENT
+    // STRUCTURE itself, not an indirect inference from sampled positions.
+    [Fact]
+    public void CrosswalkWaitSpreadRadius_Zero_IsPlainPause_Positive_AddsEnterBlobAndDiagonalCross()
+    {
+        var (nav, polys) = BuildNav();
+        var signals = CrosswalkSignals.FromNet(NetPath, polys);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        Assert.NotNull(path);
+
+        // MaxPausesPerTrip = 0: no unrelated liveliness "sip" pause is spliced in, so every PauseSegment
+        // in the built timeline is unambiguously a crosswalk "wait" beat.
+        var liveliness = new PedLivelinessConfig { MaxPausesPerTrip = 0 };
+
+        var offTimeline = InvokeBuildLivelyTimeline(
+            path!, now: 0.0, liveliness, MaxSpeed, weave: false, seed: 0, globalSeed: 0,
+            p => nav.HalfWidthsAlong(p), signals, waitSpreadRadius: 0.0,
+            livelinessRngSeed: 11UL, waitRngSeed: 999UL);
+
+        var onTimeline = InvokeBuildLivelyTimeline(
+            path!, now: 0.0, liveliness, MaxSpeed, weave: false, seed: 0, globalSeed: 0,
+            p => nav.HalfWidthsAlong(p), signals, waitSpreadRadius: 2.0,
+            livelinessRngSeed: 11UL, waitRngSeed: 999UL);
+
+        var offSegments = offTimeline.Segments.ToList();
+        var onSegments = onTimeline.Segments.ToList();
+
+        var offWaitPauses = offSegments.Count(s => s is PauseSegment ps && ps.AnimTag == CrosswalkWaitAnimTag);
+        var onWaitPauses = onSegments.Count(s => s is PauseSegment ps && ps.AnimTag == CrosswalkWaitAnimTag);
+        Assert.True(offWaitPauses > 0, "no crosswalk wait was spliced in -- test is vacuous (route/geometry wrong)");
+        Assert.Equal(offWaitPauses, onWaitPauses); // same number of wait beats either way -- only their shape differs
+
+        var offWalkCount = offSegments.Count(s => s is WalkSegment);
+        var onWalkCount = onSegments.Count(s => s is WalkSegment);
+        // Each spread wait replaces the plain pause with enter-blob + pause + diagonal-cross: +2 walks for a
+        // mid-route crossing, +1 when the crossing is the walk's last sub-segment (the diagonal ends at the
+        // final vertex, so there is no tail leg). So between +1 and +2 extra walks per wait.
+        Assert.True(onWalkCount >= offWalkCount + onWaitPauses && onWalkCount <= offWalkCount + (2 * onWaitPauses),
+            $"expected {onWaitPauses} wait(s) to add 1-2 walks each: off={offWalkCount} on={onWalkCount}");
+
+        // Locate the (first) wait pause in each timeline and inspect its immediate neighbours.
+        var offIdx = offSegments.FindIndex(s => s is PauseSegment ps && ps.AnimTag == CrosswalkWaitAnimTag);
+        var onIdx = onSegments.FindIndex(s => s is PauseSegment ps && ps.AnimTag == CrosswalkWaitAnimTag);
+
+        // OFF: the wait pause's neighbours are the ORIGINAL route legs, not a synthetic 2-point sidestep
+        // (if a neighbour happens to be a WalkSegment at all, it must not be the tiny sidestep shape).
+        if (offIdx > 0 && offSegments[offIdx - 1] is WalkSegment offBefore)
+        {
+            Assert.True(offBefore.Path.Count != 2 || (offBefore.Path[1] - offBefore.Path[0]).Abs > 2.0 + 1e-6,
+                "OFF path must not carry a bounded 2-point sidestep walk before the wait");
+        }
+
+        // ON: the wait pause is flanked by two freshly-inserted 2-point walks -- an ENTER-BLOB step
+        // (kerb entry -> the ped's 2-D spot in the waiting blob) before it, and a DIAGONAL CROSS
+        // (blob spot -> the far crossing exit) after it. They share the blob spot; the enter starts at
+        // the kerb entry and the cross ends at the DIFFERENT far exit -- no step-back to the kerb.
+        Assert.True(onIdx > 0 && onIdx < onSegments.Count - 1, "expected enter-blob + diagonal-cross walks around the wait");
+        var onBefore = Assert.IsType<WalkSegment>(onSegments[onIdx - 1]);
+        var onAfter = Assert.IsType<WalkSegment>(onSegments[onIdx + 1]);
+        Assert.Equal(2, onBefore.Path.Count);
+        Assert.Equal(2, onAfter.Path.Count);
+        // Enter-blob length is bounded by the phyllotaxis slot's max radius: rr_max = 0.4*R*sqrt(SlotCount)
+        // (SlotCount=64), plus the fixed 0.3 m back-offset and up to ~0.15*sqrt(2) m of jitter on each axis
+        // (bounded here by a conservative +0.6 total slack), R = 2.0.
+        var enterLen = (onBefore.Path[1] - onBefore.Path[0]).Abs;
+        Assert.True(enterLen > 0.0 && enterLen <= (0.25 * 2.0 * Math.Sqrt(64.0)) + 0.6 + 1e-6, $"enter-blob length {enterLen} out of the phyllotaxis-slot bound");
+        // The two walks share the blob spot (enter ends exactly where the diagonal cross starts).
+        Assert.Equal(onBefore.Path[1].X, onAfter.Path[0].X, precision: 9);
+        Assert.Equal(onBefore.Path[1].Y, onAfter.Path[0].Y, precision: 9);
+        // The diagonal cross ends at the far crossing exit, NOT back at the kerb entry (the #6 no-step-back).
+        var crossEnd = onAfter.Path[1];
+        var kerbEntry = onBefore.Path[0];
+        Assert.True((crossEnd - kerbEntry).Abs > 0.5, "diagonal cross must reach the far exit, not step back to the kerb entry");
+
+        _output.WriteLine($"[Bug#6] OFF: {offWaitPauses} wait(s), {offWalkCount} walk(s); "
+            + $"ON: {onWaitPauses} wait(s), {onWalkCount} walk(s), enter-blob {enterLen:F3} m.");
+    }
+
+    private const string CrosswalkWaitAnimTag = "wait"; // mirrors PedDemand's private CrosswalkWaitTag
+
+    // Invokes PedDemand's private static BuildLivelyTimeline via reflection so this test asserts on the
+    // TIMELINE'S SEGMENT STRUCTURE directly (the "simplest and deterministic" fallback the task calls
+    // for) rather than inferring it indirectly from sampled positions.
+    private static ActivityTimeline InvokeBuildLivelyTimeline(
+        IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed,
+        bool weave, ulong seed, ulong globalSeed,
+        System.Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
+        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ulong livelinessRngSeed, ulong waitRngSeed)
+    {
+        var method = typeof(PedDemand).GetMethod("BuildLivelyTimeline", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new System.MissingMethodException("PedDemand.BuildLivelyTimeline not found (signature changed?)");
+
+        var rng = new VehicleRng(livelinessRngSeed);
+        var waitRng = new VehicleRng(waitRngSeed);
+        var args = new object?[]
+        {
+            path, now, liveliness, maxSpeed, rng, weave, seed, globalSeed, halfWidthsAlong, crosswalkSignals,
+            waitSpreadRadius, waitRng,
+        };
+
+        return (ActivityTimeline)method.Invoke(null, args)!;
     }
 
     // ---- ground-truth signal evaluation (independent of production code) ---------------------------

@@ -39,6 +39,15 @@ namespace Sim.Pedestrians.Lod;
 // with stable per-source ids (Register/Move/Remove) and a bounded, grid-indexed per-ped query
 // (RebuildIndex once per step, Query once per ped) -- same promotion/demotion semantics and hysteresis
 // as POC-3, but the per-step scan no longer multiplies with the source count.
+
+// Diagnostic-only, ADDITIVE: one ped's internal LOD state, exposed read-only by
+// PedLodManager.DiagnosticSnapshot for external investigation tooling (e.g. Sim.Viz
+// --live-city-pedtrace). Mirrors fields that are otherwise private on PedLodManager.PedEntry;
+// never consulted by any existing behavior.
+public readonly record struct PedLodDiag(
+    int Id, PedDrModel Model, bool HighIndexValid,
+    double StateEnteredAt, double OutsideSince, int RouteVertexCount, Sim.Core.Orca.Vec2 Pos);
+
 public sealed class PedLodManager
 {
     private sealed class PedEntry
@@ -242,6 +251,56 @@ public sealed class PedLodManager
         return pts;
     }
 
+    // #4b (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §3.1): route from `pos` to `destination` via the nav
+    // graph; if that returns null -- `pos` has drifted OFF the walkable graph, the case that made the old
+    // `?? new[] { pos, destination }` fallback cut a single straight line across off-route -- RECOVER onto
+    // `lastRoute` (the ped's retained on-graph polyline to this SAME destination: its low-power path at a
+    // promotion, its steering route at a demotion). Splice from `pos` to the nearest vertex on that polyline
+    // and follow it to the end, yielding a multi-segment on-graph resume path instead of a beeline. Behaviour
+    // changes ONLY on the null path (rare -- SumoNavMesh usually projects a slightly-off pose back onto the
+    // graph); when FindPath succeeds the result is returned verbatim, so the common path is byte-identical.
+    // Falls back to the original beeline only when `lastRoute` is itself degenerate (e.g. a prior straight-
+    // line fallback), so this is never worse than before.
+    private IReadOnlyList<Vec2> RecoverRoute(Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute)
+    {
+        var routed = _navigation.FindPath(pos, destination);
+        if (routed is not null)
+        {
+            return routed;
+        }
+
+        if (lastRoute.Count >= 2)
+        {
+            var best = 0;
+            var bestD2 = double.PositiveInfinity;
+            for (var k = 0; k < lastRoute.Count; k++)
+            {
+                var d2 = (lastRoute[k] - pos).AbsSq;
+                if (d2 < bestD2)
+                {
+                    bestD2 = d2;
+                    best = k;
+                }
+            }
+
+            var recovered = new List<Vec2>(lastRoute.Count - best + 1) { pos };
+            for (var k = best; k < lastRoute.Count; k++)
+            {
+                if ((lastRoute[k] - recovered[^1]).Abs > 1e-9)
+                {
+                    recovered.Add(lastRoute[k]);
+                }
+            }
+
+            if (recovered.Count >= 2)
+            {
+                return recovered;
+            }
+        }
+
+        return new[] { pos, destination };
+    }
+
     // ADDITIVE (P2-3, docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-NAVMESH-CONTRACT.md): removes a ped
     // entirely -- the "arrived at its OD destination, despawn" case a demand generator needs, distinct
     // from a demotion (which keeps the ped, just switches its DR model). If the ped is currently
@@ -306,6 +365,28 @@ public sealed class PedLodManager
     // quantify how far the high-water mark has drifted above the live count after a churn spike. Never
     // consulted by Step() itself; purely observability.
     public int HighCrowdSlotHighWater => _highCrowd.Count;
+
+    // Diagnostic-only, ADDITIVE (live-city ped LOD lifecycle investigation): a read-only snapshot of
+    // every ped's internal LOD state, otherwise private on `PedEntry`. Never consulted by Step() or any
+    // other existing behavior -- purely observability, for a headless trace tool to correlate
+    // server-side LOD transitions against the wire (see Sim.Viz --live-city-pedtrace).
+    public IEnumerable<PedLodDiag> DiagnosticSnapshot(double now)
+    {
+        var ids = new List<int>(_peds.Keys);
+        ids.Sort();
+        foreach (var id in ids)
+        {
+            var e = _peds[id];
+            yield return new PedLodDiag(
+                id,
+                e.Model,
+                e.HighIndex.IsValid,
+                e.StateEnteredAt,
+                e.OutsideSince,
+                e.Path.Count,
+                PositionOf(id, now));
+        }
+    }
 
     // The ped's current world position: for Low-power this is the pure PathArcMotion function
     // evaluated AT `now` (so it can be queried for any `now`, not just at a Step boundary); for
@@ -403,7 +484,7 @@ public sealed class PedLodManager
             var velocity = e.Model == PedDrModel.ActivityTimeline
                 ? e.Timeline!.VelocityAt(now)
                 : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
-            var steeringPath = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+            var steeringPath = RecoverRoute(pos, e.Destination, e.Path);
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
@@ -427,7 +508,7 @@ public sealed class PedLodManager
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var routed = _navigation.FindPath(pos, e.Destination) ?? new[] { pos, e.Destination };
+            var routed = RecoverRoute(pos, e.Destination, e.Path);
             // Re-anchor the resume leg EXACTLY at the frozen high-power pose, so the low-power pose at the
             // demote instant is the ped's current position to machine precision (no pop across the LOD switch).
             var newPath = ReanchorAt(routed, pos);
@@ -481,6 +562,17 @@ public sealed class PedLodManager
         }
 
         var newNow = now + dt;
+
+        // Emit this step's FreeKinematic samples as one CONTIGUOUS run (all before any heartbeat), then the
+        // low-power heartbeats. PedReplicationPublisher batches CONSECUTIVE same-time FreeKinematicSamples
+        // into one crowd frame; a non-sample event (a heartbeat) interleaved among the samples forces a
+        // premature FlushCrowdFrame, fragmenting one step's crowd into several frames -- and the receiver
+        // only applies the LATEST crowd frame, so every high-power ped except those in the final fragment
+        // is never updated on the wire and renders frozen (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §2,
+        // the #3 producer half). Splitting the single interleaved loop into two ordered passes restores the
+        // publisher's documented "samples are consecutive => one crowd frame per step" contract. Both passes
+        // keep ascending-id order, so the wire event sequence stays fully deterministic; heartbeats carry no
+        // pose, so their relative position does not affect any reconstruction.
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -488,7 +580,12 @@ public sealed class PedLodManager
             {
                 _publisher.PublishSample(id, newNow, _highCrowd.Position(e.HighIndex), _highCrowd.Velocity(e.HighIndex));
             }
-            else
+        }
+
+        foreach (var id in ids)
+        {
+            var e = _peds[id];
+            if (e.Model != PedDrModel.FreeKinematic)
             {
                 _publisher.MaybePublishHeartbeat(id, newNow);
             }

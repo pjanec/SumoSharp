@@ -40,6 +40,24 @@ public sealed class HeadlessIg
                 break;
 
             case DrSwitchEvent s:
+                // Seed-on-switch (docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md §2): a promotion is delivered
+                // as a lifecycle DrSwitchEvent (always sent), but the ped's FIRST FreeKinematicSample can
+                // be absent from this batch (the publish scheduler under-sends a just-promoted ped). Without
+                // a seed the FreeKinematic branch below would reconstruct from LastPos == default(Vec2) ==
+                // (0,0) -- the ped snaps to the world origin (culled from the view => the reported "vanish")
+                // until a real sample finally lands. So on switch TO FreeKinematic, seed the high-power pose
+                // from the pose this ped is currently reconstructing under its (still low-power) model at the
+                // switch time: an on-body, zero-velocity anchor that the first real sample overwrites
+                // seamlessly (samples are applied AFTER lifecycle within a Drain, so a present first sample
+                // still wins this same step). Reconstruct reads the pre-switch Model, so it must run BEFORE
+                // the Model flip below.
+                if (s.To == PedDrModel.FreeKinematic)
+                {
+                    state.LastPos = Reconstruct(evt.Id, s.Time);
+                    state.LastVel = Vec2.Zero;
+                    state.LastSampleTime = s.Time;
+                }
+
                 state.Model = s.To;
                 break;
 
