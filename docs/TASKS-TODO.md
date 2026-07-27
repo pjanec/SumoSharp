@@ -65,6 +65,32 @@ Detail: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md` (shipped #1/#2), `docs/LIVE-CITY-
 (trail), `docs/LIVE-CITY-REALISM-AB-DESIGN.md` (A/B brief), `TASKS-DONE.md` → "Realism violations in
 high-realism zones".
 
+### Fixes on branch `claude/livecity-realism-fixes` — some cherry-picked here, rest available to integrate
+A prior session (`claude/livecity-realism-fixes`) shipped several car↔ped fixes against the *pre-arbitrary-net*
+`LiveCitySim`. Two SAFE, no-overlap ones are now **cherry-picked onto main** (verified parity **755/4** +
+bench **`BF3794A4704BCD79`**, par==single):
+- [x] **`Engine.MaxCrowdDiscs` 16→256** — the crowd-disc query buffer. At density a car had a median 39 / max
+  131 crowd discs in range, so the old `stackalloc[16]` truncated the in-path disc ~90% of the time → cars
+  drove *through* peds. Parity-inert (gated on `CrowdSource != null`). **The B / ped–vehicle sessions depend on
+  this** — their crossing/ORCA reactions rely on the crowd query not truncating at density.
+- [x] **Viewer click-to-identify** — `ScenePayload.VehIds` emitted by `VizReplayBuilder` (from
+  `IReplicationSource.Names`) + amber ring in `template.js`. Click a car → its `__vehN` id (matches trace
+  names). Was inert before (payload emitted no `vehIds`).
+
+**Still on that branch, NOT cherry-picked (overlap the in-flight sessions or marginal — integrate if wanted).**
+The pre-refactor implementations don't apply cleanly to the new `LiveCitySim`; treat as reference:
+- **Crossing-gate radius `1.5 m`** (enlarge the `CrossingOccupancySource` disc from the 0.3 m point) + **feed
+  paused low-power peds** on a crossing (drop the `WalkAnimTag`-only filter). → overlaps **car-yields-ped**
+  (B-guard). (Paused-feed fixed 0 measured cases — the "9 paused" was a metric artifact; low value.)
+- **Velocity-preserving ORCA footprint inflate** (`InflatedFootprintSource`, extra radius ~0.6 m; A/B sweep
+  found 0.6 kills mid-junction ORCA drive-throughs AND *raises* throughput, 0.8+ cliffs it) → overlaps **B /
+  ped–vehicle** (a world-space hard guard is the better long-term approach for internal lanes).
+- **Diagnostics** `--live-city-{yieldtrace,orcatrace,cartrace,yielddump}` + `LiveCitySim.{CrowdDiscCountsNear,
+  IsOnCrossingPolygon,IsOccupancyMarkedAt,CrossingCentroids}` — headless car↔ped repro tools (per-car
+  authoritative dumps, ORCA drive-through classifier). Overlap the sessions' own `--live-city-cartrace/drcheck`;
+  port selectively.
+Full detail: `docs/LIVE-CITY-REALISM-1-2-DESIGN.md`, `docs/LIVE-CITY-REALISM-ATTEMPT-LOG.md` (both on main).
+
 **Session ownership (coordinated 2026-07):** this branch (`claude/livecity-realism-fixes-vr4k4b`) owns
 **A only** (A now DONE). **B + C5 (#5) are ONE car↔ped coupling workstream** → the **ped–vehicle avoidance**
 session (`claude/livecity-ped-vehicle-avoidance`, to be started), NOT this one — one owner for one mechanism.

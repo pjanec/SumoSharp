@@ -912,17 +912,17 @@
         var sc = worldToScreen(pv.x, pv.y);
         var ringLen = (typeof pv.len === "number" && pv.len > 0) ? pv.len : (vdim[0] || 5);
         ctx.save();
-        ctx.strokeStyle = "#fde047";
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#f59e0b";        // amber ring tracking the clicked car
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(sc[0], sc[1], Math.max(ringLen * camera.scale * 0.7, 12), 0, Math.PI * 2);
+        ctx.arc(sc[0], sc[1], Math.max(ringLen * camera.scale * 0.85, 14), 0, Math.PI * 2);
         ctx.stroke();
         ctx.font = "bold 13px system-ui, sans-serif";
         var tw = ctx.measureText(pickedId).width;
         ctx.fillStyle = "rgba(0,0,0,0.7)";
-        ctx.fillRect(sc[0] + 10, sc[1] - 22, tw + 10, 18);
-        ctx.fillStyle = "#fde047";
-        ctx.fillText(pickedId, sc[0] + 15, sc[1] - 9);
+        ctx.fillRect(sc[0] + 12, sc[1] - 24, tw + 10, 18);
+        ctx.fillStyle = "#f59e0b";
+        ctx.fillText(pickedId, sc[0] + 17, sc[1] - 11);
         ctx.restore();
       }
     }
