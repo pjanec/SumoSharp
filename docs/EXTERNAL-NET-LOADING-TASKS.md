@@ -127,8 +127,13 @@ real configs' multi-line lists).
 ## Stage C — Change 2: pedestrian elevation (retain-not-reconstruct)
 
 > Restructured after the design was corrected: z is **retained** from ingest and carried along the ped's
-> own path (design §3.1–§3.4), not recovered by a nearest-lane search. The whole stage stays inside
-> `Sim.Pedestrians` plus the two render seams; **no new project reference anywhere** (design §3.1).
+> own path (design §3.1–§3.4), not recovered by a nearest-lane search. C1–C3 stay inside `Sim.Pedestrians`
+> plus the `Sample()` seam; C4–C5 extend that to the wire per the **W1** decision (design §3.6).
+> **No new project reference anywhere** (design §3.1).
+>
+> C4 is the only task in this plan that touches gate-covered code (`Sim.ParityTests`'
+> `RungB22ReplicationCodecTests`) and the only one that changes a wire format. Treat its SC3 (decoder
+> discrimination) and SC4 (2-D wire byte-identical) as non-negotiable.
 
 ### C1 — `PedNetworkParser` retains the third coordinate
 **Design:** §3.2, §3.3. **Depends on:** A1.
@@ -205,30 +210,62 @@ for a nearest-lane or nearest-vertex lookup, it has misread the design; stop and
    means the implementation searched something.
 6. Standing gate unchanged **and** `tests/Sim.LiveCity.Tests` built explicitly and green.
 
-### C4 — `PedRemoteReconstructor` 5-out-param overload
-**Design:** §3.5(b), §3.6. **Depends on:** C3, **and on the §3.6 W1/W2/W3 decision — do not start until
-that is made.**
-**Touches:** `src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs`; under **W1** also
-`src/Sim.Replication/FrameCodec.cs` (`PathArcRecord` 8 → 12 B/point) and the ped publisher.
+### C4 — W1: carry z on the wire (new frame kind 5)
+**Design:** §3.6. **Depends on:** C1 (there must be a z to publish). **Unblocked** — the owner chose W1.
+**Touches:** `src/Sim.Replication/Records.cs` (`PathArcRecord.PathZ` via an **additive** ctor overload;
+keep the 4-arg ctor), `src/Sim.Replication/FrameCodec.cs` (`KindPathArcZ = 5`, `PathArcZRecordSize`,
+write/read paths), `src/Sim.Pedestrians/Lod/PedPublisher.cs` + `PedReplicationPublisher.cs` (emit kind 5
+only when `PathZ` is non-null), `src/Sim.Pedestrians/Lod/PedReplicationReceiver.cs` (accept **both**
+kinds).
 
-**Success conditions (all options):**
+**Do:** exactly the layout in §3.6 — `14 B + 12 B/point`, z quantized with the **existing**
+`QuantizeCm32`, no new quantization scheme. **Do not** change kind 4's stride and **do not** bump
+`FrameCodec.Version` (design §3.6 gives the two measured reasons).
+
+**Success conditions:**
+1. `PathArcZRecordSize(n) == 14 + 12 * n` exactly; kind 4's `PathArcRecordSize(n) == 14 + 8 * n`
+   **unchanged**.
+2. **Round-trip:** a record with z encodes and decodes to the same x, y **and z** within the 1 cm
+   quantization step (assert ≤ 0.01 m, not "approximately equal"), over ≥3 paths including a 1-point and a
+   many-point path.
+3. **Decoder discrimination — the load-bearing one (design §8/R9a).** A kind-4 payload handed to the
+   reader yields `PathZ == null` and correct x,y; a kind-5 payload yields populated z. Neither is
+   misparsed as the other. Because `ReadHeader` validates no version byte, a stride change would have
+   corrupted silently — assert explicitly that a kind-4 frame is **not** read with a 12 B stride.
+4. **2-D nets stay byte-identical on the wire (design §8/R9c).** With `PathZ` null, the publisher emits
+   **kind 4** and the produced byte buffer is **byte-for-byte identical** to the pre-change output for the
+   same input (capture the bytes before the change and compare). Anything less and every existing
+   consumer's traffic changed silently.
+5. **Gate-covered test read, not assumed (design §8/R9b).** `RungB22ReplicationCodecTests` is in
+   `Sim.ParityTests`. Re-run it, and **read** it to confirm it still asserts something real about frame
+   sizing rather than passing vacuously through the helper.
+6. `PedBandwidthMeter` accounts kind-5 frames at the new size; a 3-D-net measurement shows the expected
+   `+4 B × pointCount` per path record and **no** change on a 2-D net. Report both numbers.
+7. Standing gate unchanged (775/0/4, hash `BF3794A4704BCD79`); DDS loopback self-test passes; both TFMs
+   build.
+
+### C5 — `PedRemoteReconstructor` 5-out-param overload
+**Design:** §3.5(b), §3.6. **Depends on:** C4.
+**Touches:** `src/Sim.Pedestrians/Lod/HeadlessIg.cs` (interpolate z with the **same arc fraction**
+already used for position), `src/Sim.Pedestrians/Lod/PedRemoteReconstructor.cs` (the new overload).
+
+**Do:** z is reconstructed in `HeadlessIg` alongside pos — not by a separate lookup, and not by
+re-deriving the arc fraction independently, so pos and z cannot disagree.
+
+**Success conditions:**
 1. The existing 4-out-param overload's body is **untouched**, and all **15** call sites (design §1.10)
    compile unedited — verify by diff.
 2. The 5-param overload returns the same `pos`/`visible`/`animTag` as the 4-param one for the same id and
-   render time; z is sampled at the **smoothed** render position, not the raw wire sample.
-3. `tests/Sim.Pedestrians.Tests` green; both TFMs build; standing gate unchanged.
-
-**Additional, per option:**
-- **W1 (wire extension):** round-trip a `PathArcRecord` with z through `FrameCodec` and assert
-  bit-exact recovery; assert the new record size is exactly `14 + 12 × pointCount`; a **decoder-version
-  test** proving old and new payloads are distinguishable rather than silently misparsed; the DDS
-  loopback self-test still passes.
-- **W2 (receiver-side lookup):** z within **2.0 m** of the C3 in-process value at ≥20 sampled poses,
-  **plus** an explicit test at one of the measured stacked-lane locations documenting the known error
-  (design §8/R8 bounds it at ≤ 27 spots nationwide, ≤ 12.6 m).
-- **W3 (defer):** the overload returns exactly `0.0` and both the XML doc comment and
-  `docs/EXTERNAL-NET-LOADING-TRACKER.md` say so plainly. A silently-flat z that callers mistake for real
-  elevation is the one unacceptable outcome.
+   render time.
+3. z is sampled at the **smoothed** render position, not the raw wire sample — assert during an active
+   correction/catch-up, where the two differ, that z tracks the smoothed pos.
+4. **Wire path agrees with the in-process path — the real proof W1 was worth doing.** For the same ped at
+   the same sim time, `TryGetRenderPose`'s z and `LiveCitySim.Sample()`'s `LiveCityPed.Z` (C3) agree within
+   **0.05 m** (quantization + playout interpolation only) at ≥20 sampled times. Under the rejected W2 this
+   bar would have been metres, not centimetres.
+5. **Kind-4 / no-z stream:** against a publisher emitting kind 4, the overload returns `z == 0.0` and does
+   not throw — the graceful path for a 2-D net.
+6. `tests/Sim.Pedestrians.Tests` green; both TFMs build; standing gate unchanged.
 
 ---
 

@@ -19,14 +19,13 @@ Toolchain (ephemeral — re-provision each session): dotnet SDK **8.0.129** (apt
 
 ---
 
-## Status: design revised (retain-not-reconstruct), implementation not started
+## Status: design COMPLETE and unblocked · implementation not started
 
-**One decision needed before Stage C can be scheduled:** design §3.6 — how z reaches the *remote/wire*
-surface. `PathArcRecord` carries x,y only (8 B/point). **W1** extend the wire to 12 B/point
-(recommended; also closes the gap logged in `DEMO-CITY3D-TRACKER.md` T1.2) · **W2** receiver-side
-nearest-lane lookup (no wire change; reintroduces the search and the ≤27-spot ambiguity on that surface
-only) · **W3** defer, overload returns 0 and says so. Blocks neither Stage A/B nor BIG's own `Sample()`
-path.
+**§3.6 decided by the owner (2026-07-27): W1 — z travels on the wire**, under a **new frame kind 5**
+(`14 B + 12 B/point`, z on the existing int32-cm quantization), leaving kind 4's layout untouched. The
+publisher emits kind 4 whenever there is no z, so 2-D nets stay byte-identical on the wire. Rationale and
+the two measured reasons for a new kind rather than a `Version` bump: design §3.6. No open design
+questions remain; Stage A can begin.
 
 ## Stage A — Validation data (Tier 2, committed synthetic — design §6.2)
 - [ ] **A1** synthetic georeferenced 3-D ped-net fixture `scenarios/_ped/roadnet_geo3d/` (6 SCs; SC4 must reproduce the measured real-net property: 3-D shapes on **all** ped-lane categories)
@@ -40,7 +39,8 @@ path.
 - [ ] **C1** `PedNetworkParser` retains the 3rd coordinate → `PedLane.ShapeZ` / `PedCrossing.ShapeZ` / `PedWalkingArea.PolygonZ` (2-D net ⇒ **null**, not zeros)
 - [ ] **C2** `IPedNavigation.ElevationsAlong` default interface method + `SumoNavMesh` / `SumoRouteGraphNav` overrides (existing providers unedited)
 - [ ] **C3** ped runtime exposes z; `LiveCitySim.Sample()` uses it (SC4 = **2-D trajectory bitwise identical** with z on vs. off — the proof z is output-only)
-- [ ] **C4** `PedRemoteReconstructor` 5-out-param overload — **BLOCKED on the §3.6 W1/W2/W3 wire decision**
+- [ ] **C4** W1 wire extension: `KindPathArcZ = 5` + `PathArcRecord.PathZ` (SC3 decoder discrimination · SC4 **2-D wire byte-identical** · only task touching gate-covered code)
+- [ ] **C5** `PedRemoteReconstructor` 5-out-param overload; `HeadlessIg` interpolates z on the **same arc fraction** as pos (SC4: wire z agrees with in-process z within **0.05 m**)
 
 ## Stage D — Change 3: live pedestrian density knobs
 - [ ] **D1** mirror `PedPopulationCap`/`PedSpawnRatePerSecond` into `PedDemandConfig` each `Step()` (SC1: **fails before, passes after**)
@@ -71,6 +71,7 @@ never committed). Probed with existing public APIs only, no feature code. M1/M2/
 | M4 | `Sample()` cost, z on vs. off at ≥300 peds | §8/R3, C3·SC5 | *pending — needs C3. Expected in the noise (one lerp per ped); a measurable cost means the implementation searched something.* |
 | M10 | Is z genuinely output-only? 2-D ped trajectory over 200 steps, z populated vs. null | §3.3, C3·SC4 | *pending — needs C3. Must be **bitwise identical**. This is what turns "parity-inert" from a claim into a fact.* |
 | M6 | Demo 200-step `PeakCars`/`PeakPeds`/`ArrivedTotal`, before vs. after | B1·SC5, D1·SC6 | *pending — capture before touching `src/`* |
+| M11 | Wire bytes/ped-path: kind 4 vs kind 5, on a 2-D and a 3-D net | §3.6, C4·SC6 | *pending — needs C4. Expect **exactly 0** change on a 2-D net and **+4 B × pointCount** on a 3-D one.* |
 
 ---
 
@@ -84,6 +85,9 @@ Stated up front so the close-out cannot quietly overclaim:
 - **No `preprocess.py` cut and no absolute-path `.sumocfg` are among the received files** — the real
   Geneva configs use *relative* paths. The absolute branch stays covered by a synthesised temp-dir config
   (B2·SC2), not by real output.
+- **W1 changes a wire format.** Kind 4 is preserved and 2-D output stays byte-identical, but any external
+  consumer pinned to a hand-rolled PathArc decoder (rather than `FrameCodec`) would need the kind-5 case
+  added to read 3-D ped paths. In-repo consumers are covered by C4/C5.
 - **The ~80 s / 1.65 GB full-Switzerland load is pre-existing** and out of scope here (design §7, §8/R6).
   This work must not make it worse; it is not chartered to make it better.
 - Nothing in Stages A–E is a **parity golden**. There is no SUMO trajectory comparison in this work; the

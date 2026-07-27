@@ -276,23 +276,63 @@ first draft:
 public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag);
 ```
 
-with the existing 4-out-param overload untouched so all 15 call sites (§1.10) compile as-is. But **the
-source of z here is a genuine open decision**, because this surface reconstructs from the wire alone and
-`PathArcRecord` carries 8 B/point — two `float32`, x and y only (`FrameCodec.cs:37,240`). There is no z on
-the wire to interpolate. Options in §3.6.
+with the existing 4-out-param overload untouched so all 15 call sites (§1.10) compile as-is. This surface
+reconstructs from the wire alone, and today's `PathArcRecord` carries only x,y — quantized int32
+centimetres, 8 B/point (`FrameCodec.cs:37,240`). Per the **W1** decision (§3.6) the wire is extended to
+carry z, and `HeadlessIg` interpolates it with the same arc fraction it already uses for position, so this
+surface uses the same retain-don't-reconstruct mechanism as (a).
 
-### §3.6 The one open decision: z on the remote/wire surface
+### §3.6 DECIDED (owner, 2026-07-27): **W1 — carry z on the wire**
 
-| option | what it means | cost | verdict |
-|---|---|---|---|
-| **W1 — extend the wire** | `PathArcRecord` 8 → 12 B/point, carrying z per path point; publisher fills it from §3.2 | +50 % on a once-per-ped-lifetime durable record (not the per-step hot path); a wire-format change touching `FrameCodec`, the DDS path and City3D consumers | **Recommended.** Consistent with §3.1 (retain, don't reconstruct), exact, and closes the pre-existing gap already noted in `DEMO-CITY3D-TRACKER.md` T1.2: *"wire `LaneGeo` is 2-D — elevation over the wire needs a future `GeometryCodec` Z-extension"* |
-| **W2 — receiver-side lookup** | the remote consumer loads the ped network itself and resolves z from the retained `ShapeZ` by nearest-lane search — i.e. the superseded mechanism, scoped to this one surface | no wire change; reintroduces the per-frame search and the 27-spot ambiguity, on this surface only | Acceptable fallback if a wire change is out of scope this cycle |
-| **W3 — defer** | ship (a) only; the reconstructor overload returns 0 and is documented as flat-until-W1 | none | Only if BIG's Spectacle path truly never uses the reconstructor — the handoff says it drives `Step()` + reconstruction, so **probably not** |
+The remote surface reconstructs from the wire alone, and today's `PathArcRecord` carries x,y only. Of the
+three options considered (W2 receiver-side lookup, W3 defer-and-return-zero), the owner chose **W1**:
+extend the wire so the remote path retains z like everything else. This is consistent with §3.1, is exact,
+and closes a gap already logged in `DEMO-CITY3D-TRACKER.md` T1.2 — *"wire `LaneGeo` is 2-D — elevation over
+the wire needs a future `GeometryCodec` Z-extension"*.
 
-**This needs a decision before Stage C is scheduled.** It does not block Stage A/B, and (a) — BIG's actual
-consumption path — is unaffected either way.
+**Wire layout — a NEW frame kind, not a mutated one.**
 
----
+```
+KindPathArc  = 4   (unchanged)  14 B + 8 B/point : handle(u32) speed(f32) startTime(f32) n(u16)
+                                                   then n * ( x_cm i32, y_cm i32 )
+KindPathArcZ = 5   (new)        14 B + 12 B/point: ...identical header...
+                                                   then n * ( x_cm i32, y_cm i32, z_cm i32 )
+```
+
+z uses the **same int32-centimetre quantization** as x/y (`QuantizeCm32`), so it inherits the existing
+±21 474 km range at ~1 cm precision — Swiss elevations (199–1634 m, §5) sit trivially inside it, and no new
+quantization scheme or origin bookkeeping is introduced.
+
+**Why a new kind rather than bumping `FrameCodec.Version`** — two measured reasons, not stylistic ones:
+
+1. `ReadHeader` reads the version byte into `FrameHeader` but **never validates it**
+   (`FrameCodec.cs:74-84`; the only version check in the tree is `SimRecFormat`, a different format). So
+   changing Kind 4's point stride would make an old payload **silently misparse** into garbage rather than
+   fail loudly. A distinct kind byte makes old and new structurally distinguishable, and lets one reader
+   accept both.
+2. `Version` is global across all four frame kinds. Bumping it to signal a PathArc change would force
+   lockstep upgrades of the vehicle, crowd and ped-kinematic frames, which have nothing to do with this.
+
+**The publisher emits Kind 4 whenever there is no z.** On a 2-D net every retained `ShapeZ` is null (§3.2),
+so `PathZ` is null, so the wire bytes are **byte-identical to today** — no bandwidth change, no codec
+behaviour change, and every existing replication test and consumer is untouched. Only a 3-D net pays the
+extra 4 B/point, on a record sent **once per ped path lifetime** on the durable/low-rate topic, never on
+the per-step hot path.
+
+**Record and reconstruction.** `PathArcRecord` gains `PathZ` (`IReadOnlyList<double>?`) through an
+additive constructor overload; the existing 4-argument constructor stays. `HeadlessIg` — already the
+reconstruction engine both the server and the remote consumer share — interpolates z **alongside** the
+position using the *same* arc fraction it already computes, so the reconstructed z is consistent with the
+reconstructed pos by construction, and the remote surface ends up using the identical mechanism as the
+in-process one (§3.4). No lookup, no search, on either side.
+
+**Blast radius (checked, not estimated).** `PathArcRecord` is referenced in 10 files: `FrameCodec`,
+`Records`, `PedPublisher`, `PedReplicationPublisher`, `PedReplicationReceiver`, `HeadlessIg`,
+`ActivityTimelineWire`, `PedBandwidthMeter`, `Sim.Viz/SceneGen`, and the two `Sim.Replication.Dds`
+sink/source types. Most only pass records through. `PedBandwidthMeter` already sizes frames via
+`FrameCodec.PathArcRecordSize(...)` rather than a literal, as does the gate-covered
+`RungB22ReplicationCodecTests`, so byte accounting follows the helper automatically — but that test is in
+`Sim.ParityTests` and therefore **inside the standing gate**, so it must be re-run and read, not assumed.
 
 ## §4 — Change 3: make the pedestrian density knobs live
 
@@ -470,10 +510,13 @@ paths — so the absolute branch stays covered by a synthesised temp-dir config 
   deck by construction. (The measurement stands as a fact about the data — 27 stacked spots nationwide,
   0.004 % — and now serves only to bound the error of option **W2** in §3.6, should that fallback be
   chosen for the wire surface.)
-- **R9 — OPEN, and the one real decision left.** z on the remote/wire surface: `PathArcRecord` carries
-  x,y only, so §3.6's W1/W2/W3 must be chosen. W1 (extend the wire to 12 B/point) is recommended and also
-  closes a gap already logged in `DEMO-CITY3D-TRACKER.md` T1.2, but it is a wire-format change and needs
-  explicit sign-off. Blocks Stage C scheduling; blocks neither Stage A/B nor BIG's own `Sample()` path.
+- **R9 — DECIDED: W1** (§3.6). z travels on the wire under a **new frame kind 5**, leaving kind 4's layout
+  untouched. Residual risk is now narrow and named: (a) `ReadHeader` validates no version, so the new kind
+  must be *structurally* distinguishable — it is, by the kind byte — and a decoder-discrimination test is a
+  hard success condition; (b) `RungB22ReplicationCodecTests` lives in `Sim.ParityTests`, i.e. **inside the
+  standing gate**, so the codec change touches gate-covered code and must be re-run and read rather than
+  assumed; (c) the publisher must emit kind 4 whenever `PathZ` is null, so 2-D nets stay byte-identical on
+  the wire — assert that, or a "harmless" codec change silently alters every existing consumer's traffic.
 - **R6 — OPEN (informational, not ours to fix).** Full-Switzerland load is ~80 s / 1.65 GB across four
   pre-existing net passes (§7). Not caused by this change and explicitly out of scope, but BIG must be
   told before it builds a UI around it.
