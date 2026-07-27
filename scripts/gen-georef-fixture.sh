@@ -2,7 +2,7 @@
 #
 # gen-georef-fixture.sh
 # ---------------------
-# docs/EXTERNAL-NET-LOADING-DESIGN.md §6: generates the committed GEOREFERENCED 3-D test fixture
+# docs/EXTERNAL-NET-VIEWER-DESIGN.md §6: generates the committed GEOREFERENCED 3-D test fixture
 # `scenarios/_ped/georef_min/` -- a small synthetic stand-in for a SumoData `preprocess.py` cut
 # sub-area (a Geneva box), which the SumoSharp repo cannot carry (a real cut is 100s of MB and is
 # produced by a pipeline living in another repo).
@@ -206,7 +206,7 @@ elevation (370 + 4i + 7j + 1.5ij metres). Two lanes per direction, 13.89 m/s.
 
 No --offset.* / reprojection option is passed, so <location> carries netconvert's own natural
 netOffset -- the absolute UTM georeference the BIG/Spectacle side converts back with
-"utm = sumo - netOffset" (docs/EXTERNAL-NET-LOADING-DESIGN.md §2). Do not add offset
+"utm = sumo - netOffset" (docs/EXTERNAL-NET-VIEWER-DESIGN.md §2). Do not add offset
 re-normalization here: consumers depend on that offset being the real one.
 
 NOT a parity/golden scenario. It has no golden.fcd.xml and no tolerance.json; it is a LOADER and

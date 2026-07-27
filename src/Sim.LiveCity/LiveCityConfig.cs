@@ -30,7 +30,7 @@ public sealed class LiveCityConfig
     // below point somewhere else.
     public string DatasetDir { get; set; } = string.Empty;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: explicit net path, overriding the
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: explicit net path, overriding the
     // `<DatasetDir>/net.xml` convention. A SumoData cut sub-area's net is named `scenario.net.xml`
     // (preprocess.py's output), and a caller may want to point at a net in a subfolder or outside the
     // dataset dir entirely -- neither was loadable while the filename was hardcoded. null (the
@@ -38,14 +38,14 @@ public sealed class LiveCityConfig
     // byte-identical to before this knob existed.
     public string? NetPath { get; set; }
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: explicit route-file path, overriding the
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: explicit route-file path, overriding the
     // `<DatasetDir>/scenario.rou.xml` convention. LiveCitySim only SCRAPES this file for its
     // drivable-edge (spawn edge) set -- it generates its own procedural demand -- so a dataset with no
     // route file at all is fine (the net-derived fallback covers it). null => the convention.
     // `RoutePaths` below wins over this when both are set.
     public string? RoutePath { get; set; }
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: the MULTI-file form, set by `ForSumocfg` from a
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: the MULTI-file form, set by `ForSumocfg` from a
     // `.sumocfg`'s `<route-files>` (which is a comma-separated LIST -- a real cut's is
     // "vType.config.xml,vType_pedestrians.xml,vTypeDist.config.xml,scenario.rou.xml", see
     // scenarios/_ped/subarea-box/scenario.sumocfg). The drivable-edge scrape UNIONS over every entry:
@@ -54,10 +54,36 @@ public sealed class LiveCityConfig
     // null => fall back to `RoutePath`, then to the `<DatasetDir>/scenario.rou.xml` convention.
     public IReadOnlyList<string>? RoutePaths { get; set; }
 
-    // The resolved net path: the explicit override when set, else the `<DatasetDir>/net.xml`
-    // convention. One place so `LiveCitySim` and any diagnostic/harness agree on what was loaded.
+    // The resolved net path. One place, so `LiveCitySim` and any diagnostic/harness agree on what was
+    // loaded. Order is fixed by docs/EXTERNAL-NET-LOADING-API-CONTRACT.md §4:
+    //
+    //   1. `NetPath`, if set -- used verbatim.
+    //   2. `<DatasetDir>/net.xml`, if it exists -- the historical convention, so the demo and every
+    //      pre-existing dataset resolve to the identical string they always did.
+    //   3. `<DatasetDir>/scenario.net.xml`, if it exists -- the name SumoData `preprocess.py` cut
+    //      sub-areas use. This is what lets `ForDataset(cutDir)` work on a cut WITHOUT the caller
+    //      first probing filenames itself.
+    //   4. Otherwise `<DatasetDir>/net.xml` anyway, so a "file not found" names the conventional file
+    //      rather than whichever alternative was probed last.
+    //
+    // Probing only ever fires when the conventional name is ABSENT, so no existing dataset can change
+    // which file it loads.
     public string ResolveNetPath()
-        => !string.IsNullOrEmpty(NetPath) ? NetPath! : Path.Combine(DatasetDir, "net.xml");
+    {
+        if (!string.IsNullOrEmpty(NetPath))
+        {
+            return NetPath!;
+        }
+
+        var conventional = Path.Combine(DatasetDir, "net.xml");
+        if (File.Exists(conventional))
+        {
+            return conventional;
+        }
+
+        var cutStyle = Path.Combine(DatasetDir, "scenario.net.xml");
+        return File.Exists(cutStyle) ? cutStyle : conventional;
+    }
 
     // The resolved route-file list for the drivable-edge scrape, in the precedence order documented
     // on `RoutePaths`/`RoutePath` above. Never null; entries that do not exist are simply skipped by
@@ -296,7 +322,7 @@ public sealed class LiveCityConfig
         return cfg;
     }
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1.2: the `.sumocfg` factory -- load a scenario the way
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1.2: the `.sumocfg` factory -- load a scenario the way
     // `sumo -c scenario.sumocfg` does, by letting the config name its own net and route files.
     //
     // Reuses the EXISTING `Sim.Ingest.ScenarioConfigParser` (the same parser

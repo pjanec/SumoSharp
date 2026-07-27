@@ -1,6 +1,16 @@
-# EXTERNAL NET LOADING — tracker
+# EXTERNAL NET LOADING (viewer + loader) — tracker
 
-At-a-glance state of `docs/EXTERNAL-NET-LOADING-TASKS.md`. A box is ticked only when its task's
+**Engine API is governed by `docs/EXTERNAL-NET-LOADING-API-CONTRACT.md`** (parallel session, branch
+`claude/document-review-r0uhcw`). Mapping of that contract's task IDs onto this branch:
+
+| Contract | This branch | State |
+| --- | --- | --- |
+| B1, B2 | C1 | done here — signatures match the contract exactly, incl. its 4-step net-path resolution order |
+| D1 | C3 | done here — API chosen by this branch, see design §3.4 (needs an explicit decision if they also build it) |
+| C1–C5 (ped Z) | — | **theirs**, not built here |
+| — | T1, T2, T3 | the Godot viewer |
+
+At-a-glance state of `docs/EXTERNAL-NET-VIEWER-TASKS.md`. A box is ticked only when its task's
 stated success conditions have been verified first-hand (CLAUDE.md: the review is the load-bearing
 step — every "done" is unverified until proven).
 
@@ -10,17 +20,19 @@ step — every "done" is unverified until proven).
       areas, 5 routed vehicles. Asserted by `ExternalNetLoadingTests.Fixture_IsGeoreferenced3DAndFarFromOrigin`.
 
 ## Stage C — engine (shared by BIG + both viewers)
-- [x] **C1** `LiveCityConfig.NetPath`/`RoutePath`/`RoutePaths` + `ForSumocfg` — 11 tests in
-      `tests/Sim.LiveCity.Tests/ExternalNetLoadingTests.cs` (relative + absolute `<input>` paths,
-      multi-file `<route-files>` union, missing net-file throws, missing route-files falls back,
-      demo overrides stay null).
+- [x] **C1** (= contract **B1 + B2**) `LiveCityConfig.NetPath`/`RoutePath`/`RoutePaths` +
+      `ForSumocfg` — 13 tests in `tests/Sim.LiveCity.Tests/ExternalNetLoadingTests.cs` (relative +
+      absolute `<input>` paths, multi-file `<route-files>` union, missing net-file throws, missing
+      route-files falls back, demo overrides stay null). Reconciled against the contract §4: the
+      4-step resolution order now includes the `scenario.net.xml` probe, so `ForDataset(cutDir)`
+      loads a `preprocess.py` cut with no explicit `NetPath`.
 - [ ] **C2** pedestrian elevation on a 3-D net — **NOT IN THIS WORK, by decision.** Owned by a
       parallel workstream adding z to the pedestrian engine itself. This branch briefly carried an
       incompatible implementation (render-time surface sampling through an injected
       `IPedElevationSource`); it was removed rather than left to collide on the same overload. See
       design §4 for the consequence: peds render at the viewer's flat ground datum until that work
       lands.
-- [x] **C3** live density setters (`PedDemand.SetPopulationCap`/`SetSpawnRatePerSecond`,
+- [x] **C3** (= contract **D1**) live density setters (`PedDemand.SetPopulationCap`/`SetSpawnRatePerSecond`,
       `LiveCitySim.SetPedDensity`/`SetCarDensity`) — raise converges (40 → ≥100 within the run),
       lower is non-increasing with zero new spawn events, rate-0 is reversible, setters are
       deterministic for a fixed call sequence, no-op on a ped-less net.

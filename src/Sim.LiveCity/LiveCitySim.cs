@@ -140,7 +140,7 @@ public sealed class LiveCitySim : IDisposable
         // instead of each re-parsing the dataset dir's JSON companions themselves.
         Scene = LiveCityScene.Load(cfg.DatasetDir);
 
-        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: the net path is `cfg.NetPath` when the caller set one
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: the net path is `cfg.NetPath` when the caller set one
         // (an explicit path, a `scenario.net.xml` cut, or a `.sumocfg`-resolved path via ForSumocfg),
         // else the historical `<DatasetDir>/net.xml` convention -- see LiveCityConfig.ResolveNetPath.
         // ForRepoRoot/ForDataset leave NetPath null, so the demo resolves to the identical string.
@@ -474,7 +474,7 @@ public sealed class LiveCitySim : IDisposable
                 ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
                 : _manager.HighPowerFootprints;
 
-        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1: scrape the resolved route-file LIST (a `.sumocfg`'s
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: scrape the resolved route-file LIST (a `.sumocfg`'s
         // `<route-files>` is comma-separated and typically leads with vType files before the real
         // demand -- see LiveCityConfig.RoutePaths). Unset => the single `<DatasetDir>/scenario.rou.xml`
         // the demo has always used, so its scrape is byte-identical.
@@ -575,12 +575,12 @@ public sealed class LiveCitySim : IDisposable
 
     public int CurrentPeds => _demand?.LiveCount ?? 0;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): the live pedestrian demand, or null on a net with no
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): the live pedestrian demand, or null on a net with no
     // pedestrians (`PedestriansEnabled == false`). Exposed as the escape hatch for a caller wanting
     // finer control than `SetPedDensity` below (e.g. reading `SpawnEvents` for a determinism check).
     public PedDemand? PedDemand => _demand;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): change the pedestrian density LIVE -- takes effect on
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): change the pedestrian density LIVE -- takes effect on
     // the next Step(), with no sim rebuild. This is the knob a free-style density slider drives, in
     // BIG's Spectacle scene and the Godot City3D viewer alike; before it existed both had to rebuild
     // the whole sim (their ped sliders were documented as "applies on Restart").

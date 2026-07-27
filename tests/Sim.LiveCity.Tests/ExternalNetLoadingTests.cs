@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Sim.LiveCity.Tests;
 
-// docs/EXTERNAL-NET-LOADING-DESIGN.md / -TASKS.md, Stage C (C1/C2/C3): loading a net by explicit path
+// docs/EXTERNAL-NET-VIEWER-DESIGN.md / -TASKS.md, Stage C (C1/C2/C3): loading a net by explicit path
 // or from a .sumocfg, pedestrian ground elevation on a 3-D net, and live density setters.
 //
 // The fixture is scenarios/_ped/georef_min -- the committed synthetic stand-in for a SumoData
@@ -147,13 +147,52 @@ public class ExternalNetLoadingTests
     }
 
     [Fact]
-    public void ResolveNetPath_UnsetFallsBackToDatasetDirNetXml()
+    public void ResolveNetPath_FollowsTheContractsFourStepOrder()
     {
-        var cfg = new LiveCityConfig { DatasetDir = "/some/dataset" };
-        Assert.Equal(Path.Combine("/some/dataset", "net.xml"), cfg.ResolveNetPath());
+        // docs/EXTERNAL-NET-LOADING-API-CONTRACT.md §4: NetPath verbatim -> net.xml if present ->
+        // scenario.net.xml if present -> net.xml anyway (so a miss names the conventional file).
+        var dir = Path.Combine(Path.GetTempPath(), "livecity-resolve-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var cfg = new LiveCityConfig { DatasetDir = dir };
 
-        cfg.NetPath = "/elsewhere/scenario.net.xml";
-        Assert.Equal("/elsewhere/scenario.net.xml", cfg.ResolveNetPath());
+            // 4: neither file exists -> the conventional name, so the error message is the useful one.
+            Assert.Equal(Path.Combine(dir, "net.xml"), cfg.ResolveNetPath());
+
+            // 3: only the cut-style name exists -> ForDataset(cutDir) works with no filename probing
+            // by the caller. This is the case that did not work before the contract's order landed.
+            var cutStyle = Path.Combine(dir, "scenario.net.xml");
+            File.WriteAllText(cutStyle, "<net></net>");
+            Assert.Equal(cutStyle, cfg.ResolveNetPath());
+
+            // 2: the conventional name wins whenever it exists, so no existing dataset changes which
+            // file it loads just because a scenario.net.xml happens to sit beside it.
+            var conventional = Path.Combine(dir, "net.xml");
+            File.WriteAllText(conventional, "<net></net>");
+            Assert.Equal(conventional, cfg.ResolveNetPath());
+
+            // 1: an explicit NetPath beats everything, verbatim (not probed, not normalised).
+            cfg.NetPath = "/elsewhere/whatever.net.xml";
+            Assert.Equal("/elsewhere/whatever.net.xml", cfg.ResolveNetPath());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ForDataset_OnACutStyleDirectory_LoadsWithoutAnExplicitNetPath()
+    {
+        // The contract's stated payoff for step 3: point ForDataset at a preprocess.py cut dir and it
+        // just works. The fixture dir holds scenario.net.xml and no net.xml.
+        Assert.False(File.Exists(Path.Combine(FixtureDir(), "net.xml")));
+
+        using var sim = new LiveCitySim(LiveCityConfig.ForDataset(FixtureDir()));
+
+        Assert.True(sim.Network.EdgesById.Count > 0);
+        Assert.True(sim.CropEdges.Count > 0);
     }
 
     [Fact]

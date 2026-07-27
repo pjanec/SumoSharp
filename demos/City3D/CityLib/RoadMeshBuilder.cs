@@ -32,7 +32,7 @@ public static class RoadMeshBuilder
     //   2. offset centerline vertices +/-width/2 along the (miter-averaged at interior vertices) normal to
     //      get left/right edges;
     //   3. emit 2 triangles per segment.
-    // Every emitted vertex is transformed through `frame` (docs/EXTERNAL-NET-LOADING-DESIGN.md §5) --
+    // Every emitted vertex is transformed through `frame` (docs/EXTERNAL-NET-VIEWER-DESIGN.md §5) --
     // Y = elevation from shapeZ (or 0 when null), minus the frame's elevation origin. Pass
     // SumoGodotFrame.Identity for the un-recentered mapping this used before the frame existed.
     public static RibbonMesh Build(

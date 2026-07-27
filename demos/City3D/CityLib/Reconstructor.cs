@@ -48,7 +48,7 @@ public readonly struct ReconstructedVehicle
 // CENTER (half a length behind the front), which is exactly what City3D's center-anchored box wants.
 public sealed class Reconstructor
 {
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather than
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather than
     // defaulted so every construction site has to state its origin -- a car silently placed with the
     // identity frame on a georeferenced net would render 90 km from the road it is driving on, and a
     // default would let exactly that compile.

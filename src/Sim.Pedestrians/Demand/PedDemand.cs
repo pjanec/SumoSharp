@@ -77,7 +77,7 @@ public sealed class PedDemand
     private double _nextSpawnAt;
     private int _nextId = 1;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3): the two density values the spawn loop reads EVERY
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): the two density values the spawn loop reads EVERY
     // step, promoted out of the `init`-only `PedDemandConfig` into mutable fields so a live UI dial can
     // move them without rebuilding the sim. `PedDemandConfig` itself stays immutable -- it is the SEED
     // configuration, and several tests depend on that -- these are seeded FROM it in the ctor and are
@@ -133,7 +133,7 @@ public sealed class PedDemand
         _nextSpawnAt = startTime + DrawInterArrivalInterval();
     }
 
-    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: the LIVE target concurrent population -- seeded from
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: the LIVE target concurrent population -- seeded from
     /// `PedDemandConfig.PopulationCap` and thereafter movable via `SetPopulationCap`.
     public int PopulationCap => _populationCap;
 
@@ -141,7 +141,7 @@ public sealed class PedDemand
     /// thereafter movable via `SetSpawnRatePerSecond`. &lt;= 0 means "never spawn again" (reversibly).
     public double SpawnRatePerSecond => _spawnRatePerSecond;
 
-    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: change the concurrent-population target live; takes
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: change the concurrent-population target live; takes
     /// effect on the NEXT `Step`, with no rebuild.
     ///
     /// RAISING converges upward at the configured spawn rate. LOWERING stops new spawns but does NOT
@@ -153,7 +153,7 @@ public sealed class PedDemand
     public void SetPopulationCap(int populationCap)
         => _populationCap = populationCap < 0 ? 0 : populationCap;
 
-    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3: change the mean spawn rate (peds/sec) live; takes
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: change the mean spawn rate (peds/sec) live; takes
     /// effect on the next inter-arrival draw, with no rebuild. &lt;= 0 parks spawning indefinitely and
     /// is fully reversible: raising the rate later resumes from `_nextSpawnAt`, which `SpawnDue`
     /// clamps forward to `now`, so there is no burst of catch-up spawns for the quiet interval.
@@ -221,7 +221,7 @@ public sealed class PedDemand
     // reproducibility.
     private void SpawnDue(double now, double dt)
     {
-        // docs/EXTERNAL-NET-LOADING-DESIGN.md §3: a live rate change redraws the pending wait from the
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: a live rate change redraws the pending wait from the
         // current instant, so the new rate is felt immediately instead of after the old rate's already-
         // drawn interval (see `_spawnScheduleDirty`). Never true unless a setter was called.
         if (_spawnScheduleDirty)

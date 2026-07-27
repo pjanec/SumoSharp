@@ -2,7 +2,7 @@ using Sim.Ingest;
 
 namespace CityLib;
 
-// docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the SUMO -> Godot placement transform WITH A RECENTER
+// docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the SUMO -> Godot placement transform WITH A RECENTER
 // ORIGIN, and its inverse.
 //
 // WHY THIS EXISTS. `CoordinateTransform.SumoToGodot` is a bare `(float)` cast with zero offset. That is

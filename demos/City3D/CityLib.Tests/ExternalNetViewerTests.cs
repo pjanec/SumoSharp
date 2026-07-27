@@ -10,7 +10,7 @@ using Xunit;
 
 namespace CityLib.Tests;
 
-// docs/EXTERNAL-NET-LOADING-DESIGN.md / -TASKS.md, Stage T (T1/T2/T3): the Godot City3D viewer's half of
+// docs/EXTERNAL-NET-VIEWER-DESIGN.md / -TASKS.md, Stage T (T1/T2/T3): the Godot City3D viewer's half of
 // the external-net work -- loading an arbitrary SumoData cut, recentering it for float precision, and the
 // live density dials.
 //

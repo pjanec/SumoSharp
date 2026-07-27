@@ -7,8 +7,33 @@ Design of record for the two handoffs received 2026-07-27 from the BIG/Spectacle
 
 The WHAT lives in those two handoff documents, reproduced verbatim under `docs/handoffs/`. This
 document is the HOW: mechanisms, data structures, the exact seams touched, and the
-determinism/parity argument. Work breakdown is in `EXTERNAL-NET-LOADING-TASKS.md`; the checkable
-to-do list is `EXTERNAL-NET-LOADING-TRACKER.md`.
+determinism/parity argument. Work breakdown is in `EXTERNAL-NET-VIEWER-TASKS.md`; the checkable
+to-do list is `EXTERNAL-NET-VIEWER-TRACKER.md`.
+
+---
+
+> ### ⚠ Read this first: two sessions, one feature
+>
+> A parallel session owns the **engine-side API contract**:
+> `docs/EXTERNAL-NET-LOADING-API-CONTRACT.md` (branch `claude/document-review-r0uhcw`), with its own
+> `EXTERNAL-NET-LOADING-{DESIGN,TASKS,TRACKER}.md`. **That contract is authoritative for every public
+> signature.** This document covers what THIS branch actually implemented and why; where the two
+> speak about the same API, the contract wins and this document is the implementation note.
+>
+> These docs were originally named `EXTERNAL-NET-LOADING-*` and collided with theirs file-for-file.
+> Renamed to `EXTERNAL-NET-VIEWER-*` so both sets can land on `main` without a merge conflict.
+>
+> **Division of labour, as it actually stands:**
+>
+> | Contract task | What it delivers | State |
+> | --- | --- | --- |
+> | B1, B2 | `NetPath`/`RoutePaths`/`RoutePath`, `ForSumocfg` | **implemented on this branch** (§1), signatures match the contract exactly |
+> | D1 | live pedestrian density knobs | **implemented on this branch** (§3) — API not specified by the contract, see §3.4 |
+> | C1–C5 | pedestrian Z (retained `ShapeZ`, `ElevationsAlong`, wire kind 5, the `out z` overload) | **theirs** — deliberately not built here (§4) |
+> | T1–T3 | the Godot viewer: arbitrary nets, recenter, density sliders | **implemented on this branch** (§5) |
+>
+> The contract's own status probes (`grep -n "NetPath" src/Sim.LiveCity/LiveCityConfig.cs` etc.) will
+> report B1/B2/D1 as landed once this branch merges, and C1–C5 as absent until theirs does.
 
 ---
 
@@ -166,6 +191,26 @@ mid-stride to satisfy a slider would render as people vanishing. Both viewers th
 "density follows the dial, with a drain lag downward" behaviour for cars and peds. The tests assert
 this honestly: *converges up* on a raise, *non-increasing and no new spawns* on a lower.
 
+### 3.4 The D1 API is ours by default — flag for the other session
+
+`EXTERNAL-NET-LOADING-API-CONTRACT.md` §4 names task **D1** ("live ped density knobs") but does not
+specify its signatures, so this branch chose them:
+
+```csharp
+PedDemand.SetPopulationCap(int) / SetSpawnRatePerSecond(double)   // + PopulationCap/SpawnRatePerSecond getters
+LiveCitySim.SetPedDensity(int populationCap, double spawnRatePerSecond)
+LiveCitySim.SetCarDensity(int targetConcurrent, int? spawnPerStep = null)
+LiveCitySim.PedDemand { get; }                                    // escape hatch
+```
+
+If the other session implements D1 independently with a different surface, these collide. This is the
+one place where the two workstreams can produce incompatible public API without either being wrong,
+so it wants an explicit decision rather than a merge.
+
+One behavioural point worth agreeing on regardless of whose API wins: **lowering a cap drains by
+attrition** (§3.2) — it stops new spawns and does not despawn anybody. That matches the existing car
+knob and avoids people vanishing mid-stride.
+
 ### 3.3 Determinism
 
 Determinism is preserved **for a fixed knob trajectory**: same seed + same `(now, dt)` sequence +
@@ -182,19 +227,34 @@ is what makes the knob safe to drive from a UI.
 
 ---
 
-## §4 C2 — per-pedestrian elevation: NOT DONE HERE (owned by a parallel workstream)
+## §4 Pedestrian Z — NOT DONE HERE (contract tasks C1–C5, the other session's)
 
 The handoff's Change 2 asks for `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` and
-real pedestrian elevation on a 3-D net. **This work does not deliver it.** A separate, concurrent
-workstream is adding z to the pedestrian engine itself — i.e. making the ped stack 3-D rather than
-sampling a surface at render time — and two implementations of the same handoff item would collide
-on the same overload rather than compose.
+real pedestrian elevation on a 3-D net. **This work does not deliver it** —
+`EXTERNAL-NET-LOADING-API-CONTRACT.md` §2 assigns it to tasks C1–C5 in the other session, and its
+design is better than what this branch briefly had: z is **retained** from the net through
+`PedLane.ShapeZ` and interpolated along the ped's existing waypoint cursor, rather than recovered by
+a nearest-lane spatial search at render time. It also handles the 27 measured multi-level locations
+nationwide that any nearest-surface heuristic gets wrong (contract §9.6).
 
 An earlier revision of this branch did implement it, as an injected `IPedElevationSource` sampled
 from the vehicle-side `Lane.ShapeZ` (the ped subsystem may not reference `Sim.Ingest`, so the
 dependency was inverted rather than the ped types made 3-D). That is a fundamentally different shape
-from making the ped engine itself carry z, so it was **removed** rather than left to conflict. If it
-is ever wanted, it is in this branch's history.
+from retaining z in the ped stack, so it was **removed** rather than left to conflict. If it is ever
+wanted, it is in this branch's history.
+
+**The viewer is ready for theirs.** Per contract §1 the City3D change is two lines, in
+`demos/City3D/CityLib/PedReconstructor.cs`; this branch has already moved that call onto the
+placement frame and left the note at the call site. The moment C4+C5 tick, it becomes:
+
+```csharp
+if (!_reconstructor.TryGetRenderPose(id, out var pos, out var z, out var visible, out _) || !visible) continue;
+var (gx, gy, gz) = _frame.ToGodot(pos.X, pos.Y, z);   // was _frame.GroundToGodot(pos.X, pos.Y, 0.0)
+```
+
+Note this branch routes placement through `SumoGodotFrame` (§5) rather than the bare
+`CoordinateTransform.SumoToGodot` the contract quotes — the axis mapping is identical, the frame just
+subtracts the recenter origin first.
 
 **Consequence, stated so it is not discovered later:** until the parallel work lands, pedestrians on
 a georeferenced 3-D net render at the viewer's flat ground datum (§5.3) rather than on the local road
@@ -335,7 +395,7 @@ fixture's 370–400 m band rather than sitting at 0.
 
 The gate is: `dotnet test` green (including the City3D `CityLib.Tests`, which are NOT in
 `Traffic.sln` and must be built explicitly — CLAUDE.md measurement-discipline item 9), plus the new
-tests in `EXTERNAL-NET-LOADING-TASKS.md` each asserting its stated numeric condition.
+tests in `EXTERNAL-NET-VIEWER-TASKS.md` each asserting its stated numeric condition.
 
 ### §7.1 A parser bug the fixture found (the one parity-core change)
 
@@ -376,10 +436,14 @@ committed corpus lacks" instinct generally.
 2. **Pedestrians have no elevation** (§4) — owned by the parallel ped-engine workstream, not
    delivered here. On a 3-D net they render at the flat ground datum.
 3. **The recenter is ≤20 km** (§5.5) — owner scope, not a technical ceiling.
-4. **Whole-Switzerland load (168 MB net) is untested here.** The loader has no size ceiling and the
-   fixture proves the *shape* of the problem, but the 168 MB net lives in BIG's dist repo and is not
-   available in this environment; parse time and memory on it are unmeasured, and this design makes
-   no claim about them. `Sim.Viz --external-net` (§6.1) is the tool for finding out.
+4. **Whole-Switzerland load is untested *here*, but the other session measured it.** The real nets
+   are not in this repo, so nothing on this branch has run against them.
+   `EXTERNAL-NET-LOADING-API-CONTRACT.md` §8 supplies the numbers: the Geneva cut (44 MB) loads in
+   ~11.6 s / 572 MB, full Switzerland (161 MB) in ~80 s / 1.65 GB, and the constructor makes four
+   full passes over the net file (pre-existing, not changed by either workstream). Their
+   recommendation — load a cut, not the country, and show a progress indicator if you must, since the
+   load is synchronous in the constructor — applies directly to the City3D loader built here.
+   `Sim.Viz --external-net` (§6.1) is the tool for re-checking on a given machine.
 5. **The viewer's ground datum is flat** (§5.6). Overlays with no elevation data of their own — zone
    tint, POI markers, doors, procedural building bases, the realism ring, wire-fed signal heads —
    sit at the net's mid-elevation, so on hilly terrain they can be tens of metres off the local

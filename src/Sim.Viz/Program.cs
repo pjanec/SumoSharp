@@ -403,7 +403,7 @@ internal static class Program
     // PedLodManager.DiagnosticSnapshot cross-references the server-authoritative LOD state against what
     // the wire has reconstructed -- one CSV row per (step, ped). Never touches parity/goldens; not part
     // of `dotnet test`.
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §6, -TASKS.md V2: the headless EXTERNAL-NET probe -- "can
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §6, -TASKS.md V2: the headless EXTERNAL-NET probe -- "can
     // SumoSharp load this net, and does it behave?" in one command, with no viewer and no Godot.
     //
     // WHY IT EXISTS. The real targets of the external-net work -- a 168 MB `swiss_roads.net.xml`, a

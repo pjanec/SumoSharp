@@ -326,7 +326,7 @@ public partial class Main : Node3D
     private string _cameraMode = "overview";
     private (Vector3 Min, Vector3 Max) _sceneBbox;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the ONE SUMO->Godot placement frame for this scene.
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the ONE SUMO->Godot placement frame for this scene.
     // `Identity` (no recenter) for every pre-existing path, so the demo and the scenario/replay/remote
     // modes render byte-identically. Set to the loaded net's AABB centre when an ARBITRARY net is loaded
     // (--dataset / --sumocfg), because a georeferenced cut's coordinates are ~1e5 where float ULP is ~cm:
@@ -561,7 +561,7 @@ public partial class Main : Node3D
     private HSlider? _playoutDelaySlider;
     private Label? _playoutDelayLabel;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3, -TASKS.md T3: the free-style DENSITY dials. Both are LIVE --
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3, -TASKS.md T3: the free-style DENSITY dials. Both are LIVE --
     // the handlers poke the very objects the running sim holds (the by-reference LiveCityConfig for cars,
     // the live PedDemand for peds), so a drag is felt on the next tick with no sim/scene rebuild. The ped
     // one is live only because of engine change C3; before it, ped density was baked into an init-only
@@ -968,7 +968,7 @@ public partial class Main : Node3D
             // invariant), so this one assignment is enough; no separate ped-side knob needed here. `_liveCityDt`
             // mirrors it back out for ProcessLiveCity's accumulator (replacing the old hardcoded
             // `LiveCityTickSeconds` const read).
-            // docs/EXTERNAL-NET-LOADING-DESIGN.md §1, -TASKS.md T1: which net to load.
+            // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1, -TASKS.md T1: which net to load.
             //   --sumocfg <path>  -> ForSumocfg: the scenario names its own net/route files (the form a
             //                        SumoData preprocess.py cut ships, whose net is `scenario.net.xml`).
             //   --dataset <dir>   -> ForDataset: an arbitrary dataset dir containing net.xml.
@@ -997,7 +997,7 @@ public partial class Main : Node3D
             _liveCityDt = liveCfg.Dt;
             _liveCitySource = new LiveCitySource(liveCfg);
 
-            // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the recenter origin, computed ONCE here, before
+            // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the recenter origin, computed ONCE here, before
             // any geometry is placed. The demo keeps `Identity` so its output is byte-identical; an
             // arbitrary net gets the net's own AABB centre, because a georeferenced cut's coordinates are
             // ~1e5 (float ULP ~cm -> jitter, z-fighting, an unstable orbit) and its roads sit at z ~400 m
@@ -2398,7 +2398,7 @@ public partial class Main : Node3D
         _playoutDelaySlider.ValueChanged += OnPlayoutDelaySliderChanged;
         delayRow.AddChild(_playoutDelaySlider);
 
-        // docs/EXTERNAL-NET-LOADING-TASKS.md T3: car + pedestrian density, same row shape as the two
+        // docs/EXTERNAL-NET-VIEWER-TASKS.md T3: car + pedestrian density, same row shape as the two
         // sliders above (Label + HSlider + a ValueChanged handler). LOCAL live-city only: replay has no
         // sim to retune, and in remote mode the sim runs in the producer where this viewer cannot reach
         // its config -- offering a dead dial in those modes would be worse than offering none.
@@ -2499,7 +2499,7 @@ public partial class Main : Node3D
         }
     }
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (T3): live car density. Writes straight through to the config
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (T3): live car density. Writes straight through to the config
     // object the running LiveCitySim holds by reference, which its Step() re-reads every tick -- so the new
     // target is in force on the next tick, no rebuild. Raising fills at CarSpawnPerStep; LOWERING stops new
     // insertions and lets the live cars drain by arriving, rather than deleting cars out from under the
@@ -4354,7 +4354,7 @@ public partial class Main : Node3D
     // hit), fall back to the orbit focus + a distance-based radius.
     //
     // Godot ground point -> SUMO goes through `_sumoFrame.ToSumo`, the exact inverse of the placement mapping
-    // (docs/EXTERNAL-NET-LOADING-DESIGN.md §5.4). It MUST use the same origin the scene was placed with:
+    // (docs/EXTERNAL-NET-VIEWER-DESIGN.md §5.4). It MUST use the same origin the scene was placed with:
     // the naive `(gx, -gz)` this used before the frame existed is right only for the identity frame, and on
     // a recentered net it would silently put the realism zone (and the car-yields-ped zone that tracks it)
     // an origin's distance away from where the user is looking -- a wrong answer that type-checks.
@@ -5011,7 +5011,7 @@ public partial class Main : Node3D
         return false;
     }
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §1, -TASKS.md T1: `--dataset <dir>` / `--dataset=<dir>` loads an
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1, -TASKS.md T1: `--dataset <dir>` / `--dataset=<dir>` loads an
     // ARBITRARY SumoData dataset directory (a cut sub-area) instead of the pinned demo, via
     // LiveCityConfig.ForDataset -- the arbitrary-net path (RouteGraph ped nav + RegionPlan), which the
     // viewer had never called even though the engine had supported it for some time. Returns null when

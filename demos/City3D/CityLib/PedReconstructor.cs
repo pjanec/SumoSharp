@@ -52,7 +52,7 @@ public sealed class PedReconstructor
     private PedRemoteReconstructor? _reconstructor;
     private IPedReplicationSource? _boundSource;
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather
     // than defaulted for the same reason Reconstructor's is -- on a georeferenced net an unframed
     // placement lands 90 km from everything else, and a default would let that compile.
     public PedReconstructor(SumoGodotFrame frame)

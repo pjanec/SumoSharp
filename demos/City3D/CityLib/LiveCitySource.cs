@@ -32,7 +32,7 @@ public sealed class LiveCitySource : IDisposable
         _cfg = cfg;
         _sim = new LiveCitySim(cfg);
 
-        // docs/EXTERNAL-NET-LOADING-DESIGN.md §1 / -TASKS.md T1: the pinned X0..Y1 crop is the DEMO's
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1 / -TASKS.md T1: the pinned X0..Y1 crop is the DEMO's
         // hero-block (a ~840x840 m window on a 4750 m synthetic net). An arbitrary net -- a SumoData cut
         // sub-area -- has no such window: the whole cut IS the playable area, and LiveCitySim itself
         // already bypasses the crop predicates in RouteGraph mode (`_cropEnabled = !routeGraphMode`).
@@ -142,7 +142,7 @@ public sealed class LiveCitySource : IDisposable
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();
 
-    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3 (C3), -TASKS.md T3: the LIVE density knobs a viewer slider
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3), -TASKS.md T3: the LIVE density knobs a viewer slider
     // drives. Both poke the very objects the running sim holds -- the by-reference LiveCityConfig for
     // cars, the live PedDemand for peds -- so a change is felt on the NEXT Tick() with no rebuild of the
     // sim, the scene meshes, or this source.

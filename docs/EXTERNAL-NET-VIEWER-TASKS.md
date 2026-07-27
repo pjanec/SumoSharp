@@ -1,8 +1,8 @@
 # EXTERNAL NET LOADING — tasks
 
-Work breakdown for `docs/EXTERNAL-NET-LOADING-DESIGN.md`. Each task names its design reference (a
+Work breakdown for `docs/EXTERNAL-NET-VIEWER-DESIGN.md`. Each task names its design reference (a
 section, never a copy), the files it touches, its dependencies, and the **success conditions** that
-close it. Tick boxes live in `EXTERNAL-NET-LOADING-TRACKER.md`.
+close it. Tick boxes live in `EXTERNAL-NET-VIEWER-TRACKER.md`.
 
 Test-project note (CLAUDE.md measurement discipline #9): `dotnet build -c Release` does NOT build
 `tests/Sim.LiveCity.Tests` or `demos/City3D/CityLib.Tests` — they are not in `Traffic.sln`. Build and
