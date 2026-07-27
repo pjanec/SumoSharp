@@ -575,9 +575,13 @@ public sealed class LiveCitySim : IDisposable
 
     public int CurrentPeds => _demand?.LiveCount ?? 0;
 
-    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): the live pedestrian demand, or null on a net with no
-    // pedestrians (`PedestriansEnabled == false`). Exposed as the escape hatch for a caller wanting
-    // finer control than `SetPedDensity` below (e.g. reading `SpawnEvents` for a determinism check).
+    // The live pedestrian demand, or null on a net with no pedestrians (`PedestriansEnabled == false`).
+    //
+    // READ-MOSTLY. `Step()` mirrors `_cfg`'s density knobs into this object every tick (see
+    // MirrorPedDensity), so calling `SetPopulationCap`/`SetSpawnRatePerSecond` on it directly is
+    // overwritten on the next step. It is exposed for READING -- `SpawnEvents` for a determinism check,
+    // the live `PopulationCap`/`SpawnRatePerSecond` for a slider label. Drive density through
+    // `SetPedDensity` or through the config object.
     public PedDemand? PedDemand => _demand;
 
     // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): change the pedestrian density LIVE -- takes effect on
@@ -592,13 +596,47 @@ public sealed class LiveCitySim : IDisposable
     // A silent no-op when this net has no pedestrians, so a slider handler needs no capability guard.
     public void SetPedDensity(int populationCap, double spawnRatePerSecond)
     {
+        // `cfg` FIRST and always -- it is the single source of truth (see MirrorPedDensity). Writing
+        // only the demand would leave `cfg` stale, so a UI that reads `cfg` to position its slider shows
+        // the old number, and the two silently disagree. Clamping happens HERE, into cfg, rather than
+        // only inside the demand setter: otherwise cfg would keep a negative that gets re-clamped on
+        // every single step.
+        _cfg.PedPopulationCap = populationCap < 0 ? 0 : populationCap;
+        _cfg.PedSpawnRatePerSecond = spawnRatePerSecond;
+
+        // Apply immediately as well as on the next Step(), so a caller that reads CurrentPeds or
+        // PedDemand.PopulationCap right after setting sees the value it just set.
+        MirrorPedDensity();
+    }
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 / -TASKS.md D1: push the config's ped-density knobs into the
+    // live `PedDemand`. Called at ONE fixed point at the top of `Step()`, before any spawn logic, and
+    // from `SetPedDensity` above.
+    //
+    // WHY THIS EXISTS AT ALL. `PedDemandConfig` is built once in the ctor, so before this the ped knobs
+    // were write-once: mutating `cfg.PedPopulationCap` did nothing, forever. That is exactly what the
+    // BIG/Spectacle handoff requires to work ("please keep Step() reading these off the by-reference cfg
+    // each tick ... so a slider takes effect without a sim rebuild"), and exactly what the CAR knobs have
+    // always done -- `Step()` reads `_cfg.CarTargetConcurrent` every tick. This makes the two halves obey
+    // one rule instead of two.
+    //
+    // COSTS NOTHING WHEN NOTHING CHANGED: `PedDemand.SetSpawnRatePerSecond` early-returns on an unchanged
+    // rate (so no RNG stream is disturbed and no reschedule is queued), and setting an unchanged cap is a
+    // plain field assignment. A run that never touches a knob is therefore bit-identical to one from
+    // before this method existed.
+    //
+    // CONSEQUENCE, deliberate: because this runs every step, poking `PedDemand.SetPopulationCap(...)`
+    // directly is overwritten on the next `Step()`. `PedDemand` is exposed READ-MOSTLY (for SpawnEvents
+    // and the live values); drive density through `SetPedDensity` or `cfg`, not through the demand.
+    private void MirrorPedDensity()
+    {
         if (_demand is null)
         {
             return;
         }
 
-        _demand.SetPopulationCap(populationCap);
-        _demand.SetSpawnRatePerSecond(spawnRatePerSecond);
+        _demand.SetPopulationCap(_cfg.PedPopulationCap);
+        _demand.SetSpawnRatePerSecond(_cfg.PedSpawnRatePerSecond);
     }
 
     // The car-side twin of SetPedDensity, for symmetry at the call site. Cars needed no engine change:
@@ -770,6 +808,11 @@ public sealed class LiveCitySim : IDisposable
     public void Step()
     {
         var dt = _cfg.Dt;
+
+        // D1: the ped-density knobs are read off the by-reference `_cfg` every tick, exactly as the car
+        // knobs below already are. One fixed point, before any spawn logic, so a mid-run config change is
+        // felt by this tick's ped spawn pass rather than the next one.
+        MirrorPedDensity();
 
         // (a) spawn cars up to the cap on crop drivable edges.
         if (_cropEdges.Count >= 2)

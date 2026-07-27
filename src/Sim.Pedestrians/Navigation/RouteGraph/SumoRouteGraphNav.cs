@@ -33,7 +33,11 @@ public sealed record RouteNode(
     string Id,
     RouteNodeKind Kind,
     IReadOnlyList<Vec2> Geometry,
-    double HalfWidth)
+    double HalfWidth,
+    // C2: the source element's retained per-vertex elevation channel, index-aligned with `Geometry`
+    // and null on a 2-D net. Output-only -- read by `ElevationsAlong` and by nothing else. Defaulted
+    // so every existing `new RouteNode(...)` compiles unchanged.
+    IReadOnlyList<double>? GeometryZ = null)
 {
     public Vec2 Centroid { get; } = PolygonGeometry.VertexAverage(Geometry);
 }
@@ -345,6 +349,34 @@ public sealed class SumoRouteGraphNav : IPedNavigation
         return widths;
     }
 
+    // ---- C2: ElevationsAlong (design §3.4) ------------------------------------------------------
+
+    /// Per-vertex surface elevation: each vertex is re-located to its nearest node -- the SAME grid
+    /// lookup `HalfWidthsAlong` above uses -- and its height is interpolated along that node's own
+    /// retained elevation channel. So a ped on a bridge follows the bridge, because the node it is
+    /// located to IS the bridge's lane; there is no plan-view nearest-surface guess to get wrong at the
+    /// 27 measured places nationwide where ped lanes stack vertically.
+    ///
+    /// Returns 0.0 for a vertex whose node has no elevation channel (a 2-D net), matching the
+    /// interface's flat default exactly, so a 2-D net is bit-identical to before this existed.
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
+    {
+        var elevations = new double[path.Count];
+        for (var i = 0; i < path.Count; i++)
+        {
+            var nearest = NearestLane(path[i]);
+            if (nearest is null)
+            {
+                continue; // stays 0.0 -- the documented flat fallback
+            }
+
+            var node = _nodes[nearest.Value.NodeIndex];
+            elevations[i] = PolylineElevation.AtNearestPoint(node.Geometry, node.GeometryZ, path[i]);
+        }
+
+        return elevations;
+    }
+
     // ---- Construction helpers -------------------------------------------------------------------
 
     // design §3.1: one node per pedestrian lane element, in a fixed deterministic order --
@@ -358,17 +390,17 @@ public sealed class SumoRouteGraphNav : IPedNavigation
 
         foreach (var wa in network.WalkingAreas.OrderBy(w => w.Id, StringComparer.Ordinal))
         {
-            nodes.Add(new RouteNode(index++, wa.Id, RouteNodeKind.WalkingArea, wa.Polygon, HalfWidthOf(wa.Width)));
+            nodes.Add(new RouteNode(index++, wa.Id, RouteNodeKind.WalkingArea, wa.Polygon, HalfWidthOf(wa.Width), wa.PolygonZ));
         }
 
         foreach (var crossing in network.Crossings.OrderBy(c => c.Id, StringComparer.Ordinal))
         {
-            nodes.Add(new RouteNode(index++, crossing.Id, RouteNodeKind.Crossing, crossing.Shape, HalfWidthOf(crossing.Width)));
+            nodes.Add(new RouteNode(index++, crossing.Id, RouteNodeKind.Crossing, crossing.Shape, HalfWidthOf(crossing.Width), crossing.ShapeZ));
         }
 
         foreach (var sidewalk in network.Sidewalks.OrderBy(s => s.Id, StringComparer.Ordinal))
         {
-            nodes.Add(new RouteNode(index++, sidewalk.Id, RouteNodeKind.Sidewalk, sidewalk.Shape, HalfWidthOf(sidewalk.Width)));
+            nodes.Add(new RouteNode(index++, sidewalk.Id, RouteNodeKind.Sidewalk, sidewalk.Shape, HalfWidthOf(sidewalk.Width), sidewalk.ShapeZ));
         }
 
         return nodes.ToArray();

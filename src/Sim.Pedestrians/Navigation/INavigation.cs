@@ -53,6 +53,23 @@ public interface IPedNavigation
         Array.Fill(widths, 0.5);
         return widths;
     }
+
+    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4 (C2): the surface elevation (metres, the net's own
+    /// vertical datum) at each vertex of `path`, index-aligned with it -- the channel a pedestrian's
+    /// rendered height is interpolated from as it walks.
+    ///
+    /// Default: ALL ZEROS, so a provider with no elevation model (DotRecast, every test double) keeps
+    /// today's flat behaviour and needs no edit. Deliberately the same shape and the same rationale as
+    /// `HalfWidthsAlong` above -- this follows that precedent rather than inventing a second convention.
+    /// `SumoNavMesh` and `SumoRouteGraphNav` override it from the elevation channels
+    /// `PedNetworkParser` retains.
+    ///
+    /// OUTPUT-ONLY: the returned elevations are consumed at the render seam and by no steering, ORCA or
+    /// routing decision, which is what keeps every 2-D scenario bit-identical.
+    IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
+    {
+        return new double[path.Count]; // flat
+    }
 }
 
 /// Tactical steering: turn a path + current pose into a PREFERRED velocity. This is the single point the

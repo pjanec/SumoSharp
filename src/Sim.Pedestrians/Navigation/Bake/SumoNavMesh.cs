@@ -63,6 +63,39 @@ public sealed class SumoNavMesh : IPedNavigation
         return widths;
     }
 
+    // C2 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4): surface elevation at `p`, from the containing (or
+    // nearest, per LocatePolygon's off-mesh fallback) polygon's own retained elevation channel --
+    // located exactly as HalfWidthAt does, so height and width always describe the same polygon.
+    //
+    // 0.0 when no polygon can be located, or when the located polygon has no elevation channel (a 2-D
+    // net) -- the flat default the interface documents.
+    public double ElevationAt(Vec2 p)
+    {
+        var index = LocatePolygon(p, blocked: null);
+        if (index < 0)
+        {
+            return 0.0;
+        }
+
+        var poly = _polygons[index];
+        return poly.ElevationReference is { Count: > 0 } reference
+            ? PolylineElevation.AtNearestPoint(reference, poly.ElevationZ, p)
+            : 0.0;
+    }
+
+    // ElevationAt sampled at every vertex of `path`, in order -- the override of the interface's
+    // all-zeros default.
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
+    {
+        var elevations = new double[path.Count];
+        for (var i = 0; i < path.Count; i++)
+        {
+            elevations[i] = ElevationAt(path[i]);
+        }
+
+        return elevations;
+    }
+
     /// P8-1b (docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md): number of connected components in the
     /// portal-adjacency graph -- a direct diagnostic for the real-geometry fragmentation bug. A well-connected
     /// crop is 1 (or a few large) components; ~1000 means the surface shattered and O/D routing will fail.

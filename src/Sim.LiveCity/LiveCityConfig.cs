@@ -390,10 +390,16 @@ public sealed class LiveCityConfig
             if (routes.Count > 0)
             {
                 cfg.RoutePaths = routes;
-                // Keep the single-path knob meaningful for a caller that only reads `RoutePath`:
-                // point it at the LAST entry, which is where SUMO's own convention puts the actual
-                // demand file (the vType/vTypeDist files come first).
-                cfg.RoutePath = routes[routes.Count - 1];
+
+                // `RoutePath` is set ONLY when the cfg names exactly one route file. An earlier version
+                // guessed `routes[^1]` on the theory that SUMO puts the demand file last -- that is not
+                // a SUMO convention and it is wrong on both real configs measured by the engine session:
+                // `geneve_Medium.sumocfg`'s last entry is a PERSON-flow file (the vehicle routes are
+                // entries 4-5), and `geneve_Empty.sumocfg` lists only the three vType files, so the last
+                // is a vTypeDist file containing no routes at all. Nothing misbehaves today because the
+                // ctor reads `RoutePaths`, but a public value that is confidently wrong is worse than
+                // null -- someone will read it and believe it.
+                cfg.RoutePath = routes.Count == 1 ? routes[0] : null;
             }
         }
 

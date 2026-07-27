@@ -57,7 +57,8 @@ public static class PedNetworkParser
                         Id: (string)lane.Attribute("id")!,
                         EdgeId: edgeId,
                         Width: ParseWidth(lane),
-                        Shape: ParseShape(lane.Attribute("shape"))));
+                        Shape: ParseShape(lane.Attribute("shape")),
+                        ShapeZ: ParseShapeZ(lane.Attribute("shape"))));
                 }
             }
             else if (function == "crossing")
@@ -77,7 +78,9 @@ public static class PedNetworkParser
                     Shape: ParseShape(lane.Attribute("shape")),
                     Outline: ParseShape(lane.Attribute("outlineShape")),
                     CrossingEdges: crossingEdges,
-                    TlLogicId: tlLogicIds.Contains(junctionId) ? junctionId : null));
+                    TlLogicId: tlLogicIds.Contains(junctionId) ? junctionId : null,
+                    ShapeZ: ParseShapeZ(lane.Attribute("shape")),
+                    OutlineZ: ParseShapeZ(lane.Attribute("outlineShape"))));
             }
             else if (function == "walkingarea")
             {
@@ -88,7 +91,8 @@ public static class PedNetworkParser
                     Id: (string)lane.Attribute("id")!,
                     JunctionId: JunctionIdFromInternalEdgeId(edgeId),
                     Width: ParseWidth(lane),
-                    Polygon: ParseShape(lane.Attribute("shape"))));
+                    Polygon: ParseShape(lane.Attribute("shape")),
+                    PolygonZ: ParseShapeZ(lane.Attribute("shape"))));
             }
             // function="internal" (and any other function) is vehicle-only turn geometry; ignored.
         }
@@ -186,6 +190,47 @@ public static class PedNetworkParser
         }
 
         return match.Groups["junction"].Value;
+    }
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3.2 (C1): the optional 3rd (z / elevation) component of each
+    // shape vertex, index-aligned with `ParseShape`'s output above.
+    //
+    // Mirrors `Sim.Ingest.NetworkParser.ParseShapeZ` deliberately -- same all-or-nothing rule, same null
+    // return -- so the ped side and the vehicle side treat a 2-D net identically instead of inventing a
+    // second convention. Returns **null** (never an empty array, never zeros) when the attribute is
+    // absent or ANY vertex lacks a z, which is what lets a consumer distinguish "this net has no
+    // elevation" from "this net is at sea level", and what keeps every 2-D scenario bit-identical.
+    //
+    // Vertices are skipped here under exactly the same condition `ParseShape` skips them (`parts.Length
+    // < 2`), so the two outputs stay index-aligned even for a malformed token -- that alignment is the
+    // whole contract of this channel.
+    private static IReadOnlyList<double>? ParseShapeZ(XAttribute? shapeAttr)
+    {
+        if (shapeAttr is null)
+        {
+            return null;
+        }
+
+        var tokens = shapeAttr.Value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var zs = new List<double>(tokens.Length);
+
+        foreach (var token in tokens)
+        {
+            var parts = token.Split(',');
+            if (parts.Length < 2)
+            {
+                continue; // skipped by ParseShape too -- stay index-aligned with it
+            }
+
+            if (parts.Length < 3)
+            {
+                return null; // 2-D shape -> no elevation profile at all
+            }
+
+            zs.Add(ParseDouble(parts[2]));
+        }
+
+        return zs.Count > 0 ? zs : null;
     }
 
     private static IReadOnlyList<Vec2> ParseShape(XAttribute? shapeAttr)

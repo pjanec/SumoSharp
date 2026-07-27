@@ -33,7 +33,8 @@ public static class WalkablePolygonBaker
 
     public static IReadOnlyList<BakedPolygon> Bake(PedNetwork network)
     {
-        var staged = new List<(string Id, BakedPolygonKind Kind, IReadOnlyList<Vec2> Vertices, IReadOnlyList<Vec2>? Spine, double Half)>();
+        var staged = new List<(string Id, BakedPolygonKind Kind, IReadOnlyList<Vec2> Vertices,
+            IReadOnlyList<Vec2>? Spine, double Half, IReadOnlyList<Vec2>? ElevRef, IReadOnlyList<double>? ElevZ)>();
 
         // WalkingAreas: Polygon already IS the walkable polygon.
         foreach (var wa in network.WalkingAreas.OrderBy(w => w.Id, StringComparer.Ordinal))
@@ -41,7 +42,7 @@ public static class WalkablePolygonBaker
             if (IsRealArea(wa.Polygon))
             {
                 var half = wa.Width > 0.0 ? wa.Width / 2.0 : 0.5;
-                staged.Add((wa.Id, BakedPolygonKind.WalkingArea, wa.Polygon, null, half));
+                staged.Add((wa.Id, BakedPolygonKind.WalkingArea, wa.Polygon, null, half, wa.Polygon, wa.PolygonZ));
             }
         }
 
@@ -51,7 +52,7 @@ public static class WalkablePolygonBaker
             if (IsRealArea(crossing.Outline))
             {
                 var half = crossing.Width > 0.0 ? crossing.Width / 2.0 : 0.5;
-                staged.Add((crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null, half));
+                staged.Add((crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null, half, crossing.Outline, crossing.OutlineZ));
             }
         }
 
@@ -66,7 +67,7 @@ public static class WalkablePolygonBaker
             var strip = PolylineBuffer.Buffer(lane.Shape, half);
             if (strip.Count >= 3)
             {
-                staged.Add((lane.Id, BakedPolygonKind.SidewalkSegment, strip, lane.Shape, half));
+                staged.Add((lane.Id, BakedPolygonKind.SidewalkSegment, strip, lane.Shape, half, lane.Shape, lane.ShapeZ));
             }
         }
 
@@ -76,7 +77,7 @@ public static class WalkablePolygonBaker
         {
             if (IsRealArea(wp.Shape))
             {
-                staged.Add((wp.Id, BakedPolygonKind.WalkablePolygon, wp.Shape, null, 0.5));
+                staged.Add((wp.Id, BakedPolygonKind.WalkablePolygon, wp.Shape, null, 0.5, null, null));
             }
         }
 
@@ -86,8 +87,8 @@ public static class WalkablePolygonBaker
         var result = new List<BakedPolygon>(staged.Count);
         for (var i = 0; i < staged.Count; i++)
         {
-            var (id, kind, vertices, spine, half) = staged[i];
-            result.Add(new BakedPolygon(i, id, kind, vertices, spine, half));
+            var (id, kind, vertices, spine, half, elevRef, elevZ) = staged[i];
+            result.Add(new BakedPolygon(i, id, kind, vertices, spine, half, elevRef, elevZ));
         }
 
         return result;
@@ -113,7 +114,8 @@ public static class WalkablePolygonBaker
             if (IsRealArea(crossing.Outline))
             {
                 var half = crossing.Width > 0.0 ? crossing.Width / 2.0 : 0.5;
-                result.Add(new BakedPolygon(index++, crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null, half));
+                result.Add(new BakedPolygon(index++, crossing.Id, BakedPolygonKind.Crossing, crossing.Outline, null, half,
+                    crossing.Outline, crossing.OutlineZ));
             }
         }
 

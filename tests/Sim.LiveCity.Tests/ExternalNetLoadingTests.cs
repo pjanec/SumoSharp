@@ -380,6 +380,88 @@ public class ExternalNetLoadingTests
 
     // ---- C3: live density ------------------------------------------------------------------------
 
+    // ---- D1: `cfg` is the single source of truth for ped density -----------------------------------
+    //
+    // The requirement (BIG/Spectacle handoff, engine-session contract §0/C3) is that mutating the
+    // by-reference `LiveCityConfig` takes effect on the next tick, exactly as the CAR knobs already do.
+    // Setters alone did not deliver that: they wrote the live `PedDemand` and left `cfg` stale, so a
+    // consumer following the handoff got silence, and a UI reading `cfg` to position its slider showed a
+    // stale number. Per D1·SC1 this test is recorded as FAILING before the mirror was added.
+
+    [Fact]
+    public void MutatingCfgPedPopulationCap_TakesEffectNextStep_LikeTheCarKnob()
+    {
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        cfg.PedPopulationCap = 20;
+        cfg.PedSpawnRatePerSecond = 8.0;
+        using var sim = new LiveCitySim(cfg);
+
+        for (var i = 0; i < 100; i++)
+        {
+            sim.Step();
+        }
+
+        var before = sim.CurrentPeds;
+        Assert.InRange(before, 1, 20);
+
+        // The handoff's own usage: poke the config object, don't call a setter.
+        cfg.PedPopulationCap = 120;
+        cfg.PedSpawnRatePerSecond = 16.0;
+
+        for (var i = 0; i < 200; i++)
+        {
+            sim.Step();
+        }
+
+        Assert.True(sim.CurrentPeds > 20,
+            $"mutating cfg.PedPopulationCap must be felt on the next tick; count stayed at {sim.CurrentPeds}");
+    }
+
+    [Fact]
+    public void SetPedDensity_WritesCfg_SoCfgAndTheLiveDemandNeverDiverge()
+    {
+        // The other half of D1: the setter must not leave `cfg` behind, or the two disagree silently.
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        cfg.PedPopulationCap = 40;
+        using var sim = new LiveCitySim(cfg);
+        sim.Step();
+
+        sim.SetPedDensity(120, 16.0);
+
+        Assert.Equal(120, cfg.PedPopulationCap);
+        Assert.Equal(16.0, cfg.PedSpawnRatePerSecond);
+        Assert.Equal(120, sim.PedDemand!.PopulationCap);
+        Assert.Equal(16.0, sim.PedDemand!.SpawnRatePerSecond);
+
+        // Negatives are clamped INTO cfg, not only in the demand -- otherwise cfg keeps a negative that
+        // gets re-clamped on every step.
+        sim.SetPedDensity(-5, 4.0);
+        Assert.Equal(0, cfg.PedPopulationCap);
+    }
+
+    [Fact]
+    public void MutatingCfgCarTarget_TakesEffectNextStep_UnchangedByTheD1Work()
+    {
+        // D1·SC5: the car half already worked off the by-reference cfg; prove the mirror did not
+        // disturb it. This test is expected to pass both before and after the D1 change.
+        var cfg = LiveCityConfig.ForRepoRoot(RepoRoot());
+        cfg.CarTargetConcurrent = 20;
+        using var sim = new LiveCitySim(cfg);
+
+        for (var i = 0; i < 120; i++)
+        {
+            sim.Step();
+        }
+
+        cfg.CarTargetConcurrent = 90;
+        for (var i = 0; i < 120; i++)
+        {
+            sim.Step();
+        }
+
+        Assert.True(sim.CurrentCars > 30, $"cars should follow cfg; got {sim.CurrentCars}");
+    }
+
     [Fact]
     public void SetPedDensity_RaisingTheCap_ConvergesUpward_WithNoRebuild()
     {
