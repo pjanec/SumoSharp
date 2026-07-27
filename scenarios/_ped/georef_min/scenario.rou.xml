@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-07-27 17:15:09 by Eclipse SUMO duarouter Version 1.20.0
+<configuration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
+
+    <input>
+        <net-file value="/home/user/SumoSharp/scenarios/_ped/georef_min/scenario.net.xml"/>
+        <route-files value="/tmp/tmp.slNBLs08v2/trips.xml"/>
+    </input>
+
+    <output>
+        <output-file value="/home/user/SumoSharp/scenarios/_ped/georef_min/scenario.rou.xml"/>
+    </output>
+
+    <report>
+        <no-warnings value="true"/>
+        <ignore-errors value="true"/>
+    </report>
+
+</configuration>
+-->
+
+<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
+    <vehicle id="t0" depart="0.00">
+        <route edges="e_00_10 e_10_20 e_20_21 e_21_22"/>
+    </vehicle>
+    <vehicle id="t1" depart="1.00">
+        <route edges="e_22_12 e_12_11 e_11_10 e_10_00"/>
+    </vehicle>
+    <vehicle id="t2" depart="2.00">
+        <route edges="e_01_02 e_02_12 e_12_11 e_11_10 e_10_20 e_20_21"/>
+    </vehicle>
+    <vehicle id="t3" depart="3.00">
+        <route edges="e_20_10 e_10_11 e_11_12 e_12_02 e_02_01"/>
+    </vehicle>
+    <vehicle id="t4" depart="4.00">
+        <route edges="e_11_21 e_21_22 e_22_12 e_12_02 e_02_01 e_01_00"/>
+    </vehicle>
+</routes>
