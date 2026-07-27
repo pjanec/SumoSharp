@@ -44,7 +44,19 @@ session — coordinate by editing your **own** method/region: `LiveCitySim.cs` (
 methods). Parity is untouched either way (the whole ped/LOD path is gated on `CrowdSource != null`, which no
 golden attaches → still **661/4** byte-identical).
 
+---
 
+## Test infrastructure
+
+- [ ] **Live-city test env-var isolation** *(owner: junction/F3 PR#13 test authors)* — `Sim.LiveCity.Tests`
+  probes (`HeadOfQueueStallProbeTests`, `LongHorizonGridlockDiagTests`, `ArbitraryNetStageATests`) set
+  process-global `LIVECITY_*` env vars that `LiveCityConfig.ForRepoRoot` reads, and xUnit runs collections in
+  parallel → they race/leak into other tests' config (notably the `DenseFlow…NoGridlock` throughput test, which
+  went 431/707/718 for the same config). **Interim mitigation already in tree:** `TestParallelization.cs`
+  disables assembly parallelization (green 3/3). **Proper fix TODO:** a snapshot/restore `EnvVarScope`
+  `IDisposable` on every `LIVECITY_*`-setting test + a single non-parallel `[Collection]` for them, then drop the
+  blanket disable (or move `LiveCityConfig` off env vars entirely). Full root-cause + evidence + fix options:
+  **`docs/LIVE-CITY-TEST-ISOLATION-ENV-RACE.md`**.
 
 ---
 
