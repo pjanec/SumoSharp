@@ -575,6 +575,14 @@ public sealed class LiveCitySim : IDisposable
 
     public int CurrentPeds => _demand?.LiveCount ?? 0;
 
+    // LIVE-CITY-PERF-DESIGN.md ADD1: read-only passthrough to the live ped LOD manager's high-power
+    // (full ORCA, inside the high-realism pocket) count -- PedLodManager.HighPowerCount. 0 when peds
+    // are disabled (`_manager` null). Ped cost is dominated by how many peds are high-power, not by
+    // the raw ped count, so a ped total alone is an uninterpretable workload number; this is the split
+    // Sim.BenchLiveCity reports alongside it. Additive, read-only, never consulted by Step() -> zero
+    // behavioral effect.
+    public int PedHighPowerCount => _manager?.HighPowerCount ?? 0;
+
     // The live pedestrian demand, or null on a net with no pedestrians (`PedestriansEnabled == false`).
     //
     // READ-MOSTLY. `Step()` mirrors `_cfg`'s density knobs into this object every tick (see
@@ -800,6 +808,66 @@ public sealed class LiveCitySim : IDisposable
         return (dx * dx) + (dy * dy) > promoteRadius * promoteRadius;
     }
 
+    // Perf diagnostics (docs/LIVE-CITY-PERF-DESIGN.md P1): opt-in per-phase wall-time accounting for
+    // Step(), mirroring Engine.ProfilePhases EXACTLY in shape (a bool gate, a name->ticks dictionary,
+    // PhaseStart/PhaseEnd via Stopwatch.GetTimestamp -- see Engine.cs's own ProfilePhases for the
+    // pattern this copies). OFF by default and then effectively free: one bool test per phase per
+    // step, GetTimestamp is never called, nothing allocates. The setter also forwards to the wrapped
+    // Engine so its own phases profile together with this host's; PhaseTicks below merges them in,
+    // prefixed "engine." to stay distinguishable. Sim.BenchLiveCity's --profile turns this on and
+    // prints the breakdown. Never read by any sim algorithm -> zero behavioral effect, parity-inert
+    // (LiveCitySim is never constructed by a golden/parity/bench path).
+    public bool ProfilePhases
+    {
+        get => _profilePhases;
+        set
+        {
+            _profilePhases = value;
+            _engine.ProfilePhases = value;
+        }
+    }
+
+    private bool _profilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+
+    // This host's own phases, plus the wrapped Engine's (prefixed "engine.") merged in. When nothing
+    // has been profiled (the common case, ProfilePhases off) `_engine.PhaseTicks` is empty and this
+    // returns `_phaseTicks` (itself empty) directly -- no allocation. The merge only happens when a
+    // caller actually reads this after a profiled run.
+    public IReadOnlyDictionary<string, long> PhaseTicks
+    {
+        get
+        {
+            if (_engine.PhaseTicks.Count == 0)
+            {
+                return _phaseTicks;
+            }
+
+            var merged = new Dictionary<string, long>(_phaseTicks);
+            foreach (var kv in _engine.PhaseTicks)
+            {
+                merged["engine." + kv.Key] = kv.Value;
+            }
+
+            return merged;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private long PhaseStart() => _profilePhases ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+
+    private void PhaseEnd(string name, long start)
+    {
+        if (!_profilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+    }
+
     // Advances the coupled sim by one tick (Dt seconds, per LiveCityConfig.Dt), then publishes the
     // resulting frame onto both wires. Reproduces SceneGen.BuildLiveCity's per-tick order exactly:
     // (a) spawn cars up to the cap on crop drivable edges -> (b) step the ped demand -> (c) gather this
@@ -812,9 +880,12 @@ public sealed class LiveCitySim : IDisposable
         // D1: the ped-density knobs are read off the by-reference `_cfg` every tick, exactly as the car
         // knobs below already are. One fixed point, before any spawn logic, so a mid-run config change is
         // felt by this tick's ped spawn pass rather than the next one.
+        var tMirror = PhaseStart();
         MirrorPedDensity();
+        PhaseEnd("pedDensityMirror", tMirror);
 
         // (a) spawn cars up to the cap on crop drivable edges.
+        var tSpawn = PhaseStart();
         if (_cropEdges.Count >= 2)
         {
             var live = _engine.VehicleHandles.Length;
@@ -876,15 +947,24 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        PhaseEnd("carSpawn", tSpawn);
+
         // (b) step the ped demand; capture the wire-event cursor first so the batch published this tick
         // includes exactly what this Step call emits (mirrors PedSimSource.Tick). Skipped when
         // PedestriansEnabled==false -- no demand was built, `_demand` is null (docs/LIVE-CITY-
         // ARBITRARY-NET-DESIGN.md §6): cars run alone and `_pedPublisher` simply never sees an event.
+        // NOTE (LIVE-CITY-PERF-DESIGN.md P1): this one call is where ped steering, LOD promote/demote,
+        // and InterestField queries all happen (PedDemand.Step -> PedLodManager.Step, in
+        // src/Sim.Pedestrians -- out of this task's file scope), so "pedDemandStep" below is reported
+        // as ONE fused phase; it is not separable at this seam without touching Sim.Pedestrians.
         var beforeCount = _pedPublisher.Events.Count;
+        var tPedDemand = PhaseStart();
         _demand?.Step(_now, dt, _field, NoEntities);
+        PhaseEnd("pedDemandStep", tPedDemand);
         var tNext = _now + dt;
 
         // (c) gather this tick's WALKING low-power ped positions (empty when peds are disabled).
+        var tGather = PhaseStart();
         _movingLowPowerPositions.Clear();
         if (_demand is not null && _manager is not null)
         {
@@ -898,14 +978,19 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        PhaseEnd("pedLowPowerGather", tGather);
+
         // (d) refresh the crossing-occupancy gate from the current walking peds. Skipped when
         // CrossingsEnabled==false (no crossings, or peds disabled entirely) -- `_crossingOccupancy` is
         // null; `OccupiedCrossings` reads 0 and `PeakOccupiedCrossings` never advances.
+        var tCrossing = PhaseStart();
         if (_crossingOccupancy is not null)
         {
             _crossingOccupancy.Update(_movingLowPowerPositions);
             if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
         }
+
+        PhaseEnd("crossingOccupancy", tCrossing);
 
         // (d2) #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): classify each live car's
         // lane-change realism from its PREVIOUS-step position vs the static high-realism pocket, BEFORE the
@@ -915,6 +1000,7 @@ public sealed class LiveCitySim : IDisposable
         // in the previous snapshot (spawned this step) stay high-realism (cooperative) by default. Pure
         // function of the frozen previous snapshot + the static pocket => deterministic, order-independent.
         // Never runs on a golden (parity/bench drive Engine directly, not LiveCitySim) => flag stays false.
+        var tLcLod = PhaseStart();
         if (_cfg.CooperativeLaneChange && _lcZoneR > 0.0)
         {
             for (var i = 0; i < _lastSnapshot.Count; i++)
@@ -926,11 +1012,16 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        PhaseEnd("lcRealismLod", tLcLod);
+
         // (e) step the engine -- its CrowdSource query now sees the current gates + promoted peds.
+        var tEngine = PhaseStart();
         _engine.Step();
+        PhaseEnd("engineStep", tEngine);
         _now = tNext;
 
         // Tally trip completions this step (Engine.Events is fresh each Step) -- the #15 arrival signal.
+        var tArrival = PhaseStart();
         foreach (var ev in _engine.Events)
         {
             if (ev.Kind == SimEventKind.Arrived) ArrivedTotal++;
@@ -938,15 +1029,21 @@ public sealed class LiveCitySim : IDisposable
 
         if (_engine.VehicleHandles.Length > PeakCars) PeakCars = _engine.VehicleHandles.Length;
         if (_demand is not null && _demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;
+        PhaseEnd("arrivalAndPeakTally", tArrival);
 
         // Car-yield metric: for each occupied crossing disc, count it once if any car within 10 m has
         // Speed < 2.0 m/s -- a car braking beside a ped-occupied crossing.
+        var tYield = PhaseStart();
         CarYieldObservations += CountYieldObservationsThisStep();
+        PhaseEnd("carYieldMetric", tYield);
 
         // ---- publish: capture the engine snapshot, then publish both wires ----
+        var tSnapshot = PhaseStart();
         var snap = SimulationSnapshot.Capture(_engine);
         _lastSnapshot = snap;
+        PhaseEnd("snapshotCapture", tSnapshot);
 
+        var tPublishCars = PhaseStart();
         if (!_vehGeometryPublished)
         {
             _vehPublisher.PublishGeometryOnce(Network, _vehBus.Sink);
@@ -970,6 +1067,9 @@ public sealed class LiveCitySim : IDisposable
             _recordPublisher.PublishStep(snap, _recordVehSink);
         }
 
+        PhaseEnd("publishCars", tPublishCars);
+
+        var tPublishPeds = PhaseStart();
         var newEvents = new List<PedEvent>(_pedPublisher.Events.Count - beforeCount);
         for (var e = beforeCount; e < _pedPublisher.Events.Count; e++)
         {
@@ -981,6 +1081,7 @@ public sealed class LiveCitySim : IDisposable
         // Stage E (E3) tee: also publish this tick's ped event batch through the DEDICATED
         // `_recordPedPublisher`, if a ped record/DDS sink was supplied -- mirrors the car tee just above.
         _recordPedPublisher?.Publish(newEvents);
+        PhaseEnd("publishPeds", tPublishPeds);
     }
 
     private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];

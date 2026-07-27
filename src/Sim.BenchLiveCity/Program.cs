@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Sim.LiveCity;
 
 // docs/LIVE-CITY-PERF-DESIGN.md (P0 in -TRACKER.md): a headless perf/GC/alloc MEASUREMENT INSTRUMENT
@@ -191,13 +192,10 @@ static void RunOne(
         sim.Step();
     }
 
-    // TASK 2 (LIVE-CITY-PERF-DESIGN.md P1) wires `--profile` here: `sim.ProfilePhases = profile;` right
-    // before the baselines below, once LiveCitySim grows the ProfilePhases/PhaseTicks scaffolding. Task
-    // 1 (this commit) never references that API -- LiveCitySim does not have it yet.
-    if (profile)
-    {
-        Console.Error.WriteLine("Sim.BenchLiveCity: --profile is not yet wired (LIVE-CITY-PERF-DESIGN.md P1 pending).");
-    }
+    // LIVE-CITY-PERF-DESIGN.md P1: turn phase profiling on only NOW (if requested), right before the
+    // baselines below, so warmup's JIT/first-touch cost never pollutes the phase breakdown -- exactly
+    // like the GC/alloc/pause baselines are read only after warmup.
+    sim.ProfilePhases = profile;
 
     // ---- baselines, read AFTER warmup, immediately before the measured loop ----
     var process = Process.GetCurrentProcess();
@@ -312,6 +310,11 @@ static void RunOne(
         Console.WriteLine($"  peak working set: {peakWsMib.ToString("F1", inv)} MiB");
         Console.WriteLine($"  arrived (behavioral counter): {arrivedTotal}");
 
+        if (profile)
+        {
+            PrintPhaseBreakdown(sim, wallS, inv);
+        }
+
         Console.WriteLine();
     }
 
@@ -386,6 +389,57 @@ static double Mean(double[] values)
     }
 
     return sum / values.Length;
+}
+
+// docs/LIVE-CITY-PERF-DESIGN.md P1: print LiveCitySim's own top-level Step() phases, sorted descending
+// by ms, with an explicit "unaccounted" remainder (measured wall minus the sum of phases) so missing
+// instrumentation is visible rather than hidden. The wrapped Engine's own phases (LiveCitySim.
+// PhaseTicks merges them in, prefixed "engine.") are a SUB-DIVISION of the single "engineStep" entry
+// above (the one call into _engine.Step()), not siblings of it -- summing both would double-count
+// engineStep's wall time. They are printed separately, as a nested breakdown OF engineStep.
+static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, CultureInfo inv)
+{
+    var toMs = 1000.0 / Stopwatch.Frequency;
+    var wallMs = wallS * 1000.0;
+    Console.WriteLine("  phase breakdown (--profile; measured loop only, warmup excluded):");
+    if (sim.PhaseTicks.Count == 0)
+    {
+        Console.WriteLine("    (no phases recorded)");
+        return;
+    }
+
+    var own = new List<KeyValuePair<string, long>>();
+    var enginePhases = new List<KeyValuePair<string, long>>();
+    foreach (var kv in sim.PhaseTicks)
+    {
+        (kv.Key.StartsWith("engine.", StringComparison.Ordinal) ? enginePhases : own).Add(kv);
+    }
+
+    var sumMs = 0.0;
+    foreach (var kv in own.OrderByDescending(kv => kv.Value))
+    {
+        var ms = kv.Value * toMs;
+        sumMs += ms;
+        var pct = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
+        Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pct.ToString("F1", inv),6}% of wall");
+    }
+
+    var unaccounted = wallMs - sumMs;
+    var unaccountedPct = wallMs > 0 ? 100.0 * unaccounted / wallMs : 0.0;
+    Console.WriteLine(
+        $"    {"unaccounted",-28} {unaccounted.ToString("F1", inv),10} ms   {unaccountedPct.ToString("F1", inv),6}% of wall"
+        + "   (measured wall - sum of the TOP-LEVEL phases above)");
+
+    if (enginePhases.Count > 0)
+    {
+        Console.WriteLine("  engine sub-phases (breakdown OF engineStep above, not additional wall time):");
+        foreach (var kv in enginePhases.OrderByDescending(kv => kv.Value))
+        {
+            var ms = kv.Value * toMs;
+            var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
+            Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pctWall.ToString("F1", inv),6}% of wall");
+        }
+    }
 }
 
 // CLAUDE.md measurement rule 10: LIVECITY_*/SUMOSHARP_* gates are PROCESS-GLOBAL; an inherited shell
