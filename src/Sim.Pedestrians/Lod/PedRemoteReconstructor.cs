@@ -100,16 +100,16 @@ public sealed class PedRemoteReconstructor
         RenderTime = Math.Max(0.0, latestServerTime - _playoutDelay);
     }
 
-    // Reconstructs `id`'s render-time pose (position, visibility, animation tag) from the wire alone,
-    // applying capped-correction smoothing to the position. Returns false if `id` has never been
-    // observed on the wire (or has since despawned) -- there is nothing to render.
-    public bool TryGetRenderPose(int id, out Vec2 pos, out bool visible, out string animTag)
-        => TryGetRenderPose(id, out pos, out _, out visible, out animTag);
-
-    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5b, -TASKS.md C5): the elevation-carrying sibling.
+    // Reconstructs `id`'s render-time pose (position, ELEVATION, visibility, animation tag) from the
+    // wire alone, applying capped-correction smoothing to the position. Returns false if `id` has never
+    // been observed on the wire (or has since despawned) -- there is nothing to render.
     //
-    // ADDITIVE and non-breaking: the four-out-param overload above keeps its exact behaviour (it now
-    // delegates here and drops `z`), so all of its existing call sites compile and behave unedited.
+    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5b, -TASKS.md C5) originally shipped this as an
+    // ADDITIVE sibling of a four-out-param (z-less) overload. That overload has since been REMOVED --
+    // see docs/EXTERNAL-NET-VIEWER-DESIGN.md §"z is mandatory, not additive": a renderer that silently
+    // keeps calling the 2-D form is a ped drawn at the wrong height with nothing to catch it, so the
+    // single mandatory signature makes every omission a compile error instead. A caller that genuinely
+    // does not want the height discards it explicitly with `out _`.
     //
     // `z` is metres in the net's own vertical datum -- raw SUMO elevation, no geoid correction, no
     // ground clamp, no offset -- sampled at the SMOOTHED render position, so it is consistent with the

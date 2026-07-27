@@ -62,7 +62,16 @@ public class PedElevationsAlongTests
     // default is what they inherit.
     private sealed class BareNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => new[] { start, goal };
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return new[] { start, goal };
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     // ---- C2·SC2: the default is flat, the right length, and does not throw -------------------------
@@ -73,7 +82,7 @@ public class PedElevationsAlongTests
         IPedNavigation nav = new BareNav();
         var path = new[] { new Vec2(0, 0), new Vec2(5, 5), new Vec2(9, 1), new Vec2(12, 4) };
 
-        var elevations = nav.ElevationsAlong(path);
+        var elevations = nav.ElevationsAlong(path, vertexSurfaces: null);
 
         Assert.Equal(path.Length, elevations.Count);
         Assert.All(elevations, z => Assert.Equal(0.0, z));
@@ -83,7 +92,7 @@ public class PedElevationsAlongTests
     public void Default_OnAnEmptyPath_IsEmptyNotNull()
     {
         IPedNavigation nav = new BareNav();
-        Assert.Empty(nav.ElevationsAlong(Array.Empty<Vec2>()));
+        Assert.Empty(nav.ElevationsAlong(Array.Empty<Vec2>(), vertexSurfaces: null));
     }
 
     // ---- C2·SC3: every override returns exactly path.Count, over many real paths -------------------
@@ -108,13 +117,13 @@ public class PedElevationsAlongTests
         {
             for (var j = i + 1; j < anchors.Count && checkedPaths < 80; j += 3)
             {
-                var path = nav.FindPath(anchors[i], anchors[j]);
+                var path = nav.FindPath(anchors[i], anchors[j], out _);
                 if (path is null || path.Count == 0)
                 {
                     continue;
                 }
 
-                var elevations = nav.ElevationsAlong(path);
+                var elevations = nav.ElevationsAlong(path, vertexSurfaces: null);
                 Assert.Equal(path.Count, elevations.Count);
                 Assert.All(elevations, z => Assert.False(double.IsNaN(z) || double.IsInfinity(z)));
                 Assert.All(elevations, z => Assert.InRange(z, 360.0, 410.0));
@@ -154,7 +163,7 @@ public class PedElevationsAlongTests
                 var probe = new Vec2(a.X + ((b.X - a.X) * f), a.Y + ((b.Y - a.Y) * f));
                 var expected = za + ((zb - za) * f);
 
-                var elevations = nav.ElevationsAlong(new[] { probe });
+                var elevations = nav.ElevationsAlong(new[] { probe }, vertexSurfaces: null);
                 Assert.Single(elevations);
                 Assert.True(Math.Abs(elevations[0] - expected) <= 0.05,
                     $"{sw.Id} at f={f}: expected {expected:F3}, got {elevations[0]:F3}");
@@ -196,7 +205,7 @@ public class PedElevationsAlongTests
             walk.Add(new Vec2(a.X + ((b.X - a.X) * f), a.Y + ((b.Y - a.Y) * f)));
         }
 
-        var elevations = nav.ElevationsAlong(walk);
+        var elevations = nav.ElevationsAlong(walk, vertexSurfaces: null);
         Assert.Equal(walk.Count, elevations.Count);
 
         for (var i = 1; i < elevations.Count; i++)
@@ -226,8 +235,8 @@ public class PedElevationsAlongTests
 
         var path = netA.Sidewalks.OrderBy(s => s.Id, StringComparer.Ordinal).First().Shape;
 
-        var a = navA.ElevationsAlong(path);
-        var b = navB.ElevationsAlong(path);
+        var a = navA.ElevationsAlong(path, vertexSurfaces: null);
+        var b = navB.ElevationsAlong(path, vertexSurfaces: null);
 
         Assert.Equal(a.Count, b.Count);
         for (var i = 0; i < a.Count; i++)
@@ -250,8 +259,8 @@ public class PedElevationsAlongTests
         var path = net.Sidewalks.OrderBy(s => s.Id, StringComparer.Ordinal).First().Shape;
         Assert.NotEmpty(path);
 
-        Assert.All(routeGraph.ElevationsAlong(path), z => Assert.Equal(0.0, z));
-        Assert.All(navmesh.ElevationsAlong(path), z => Assert.Equal(0.0, z));
+        Assert.All(routeGraph.ElevationsAlong(path, vertexSurfaces: null), z => Assert.Equal(0.0, z));
+        Assert.All(navmesh.ElevationsAlong(path, vertexSurfaces: null), z => Assert.Equal(0.0, z));
     }
 
     // ---- the navmesh override on 3-D geometry -------------------------------------------------------
@@ -266,7 +275,7 @@ public class PedElevationsAlongTests
         var navmesh = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons), net.PedConnections);
 
         var sidewalk = net.Sidewalks.First(s => s.ShapeZ is { Count: > 1 });
-        var elevations = navmesh.ElevationsAlong(sidewalk.Shape);
+        var elevations = navmesh.ElevationsAlong(sidewalk.Shape, vertexSurfaces: null);
 
         Assert.Equal(sidewalk.Shape.Count, elevations.Count);
         Assert.Contains(elevations, z => z != 0.0);

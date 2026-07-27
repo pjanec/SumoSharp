@@ -32,14 +32,32 @@ public class PedReplicationRoundTripTests
     // losslessly (see the exactness remarks on Ped1 below).
     private sealed class StraightLineNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return null;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     // W4: a nav that DOES route (straight start->goal) and reports a real 2 m half-width, so a demote's
     // resume leg has room to weave -- lets the test see the weave actually resume after coming back low-power.
     private sealed class StraightWideNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => new[] { start, goal };
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return new[] { start, goal };
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
 
         public IReadOnlyList<double> HalfWidthsAlong(IReadOnlyList<Vec2> path)
         {

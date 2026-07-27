@@ -291,7 +291,7 @@ public sealed class PedStream
                 continue;
             }
 
-            var path = _nav.FindPath(origin, destination);
+            var path = _nav.FindPath(origin, destination, out _);
             if (path is null || path.Count < 2)
             {
                 continue; // unroutable this pair -- try the next deterministic candidate

@@ -649,7 +649,7 @@ internal static class Program
                     var dzy = d.Pos.Y - sim.LcZoneY;
                     var distFromZone = Math.Sqrt(dzx * dzx + dzy * dzy);
 
-                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out var wvis, out var wtag);
+                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out _, out var wvis, out var wtag);
                     string wireXStr, wireYStr, wireSrvDistStr, wireVisibleStr;
                     if (wireKnown)
                     {

@@ -141,7 +141,16 @@ public class RequirementPropertyTests
         // No navmesh needed: these peds never promote/demote (no interest sources registered), so
         // PedLodManager never calls FindPath for them after spawn -- mirrors PedPublishGovernorTests'
         // own stub.
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return null;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     // (PathArc leg count, ActivityTimeline leg count) per seeded config -- deliberately varies the MIX
@@ -794,7 +803,16 @@ public class RequirementPropertyTests
 
     private sealed class ReplicationStraightLineNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return null;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     private readonly record struct MixConfig(int PathArcCount, int LivelyCount, int PromotedCount);

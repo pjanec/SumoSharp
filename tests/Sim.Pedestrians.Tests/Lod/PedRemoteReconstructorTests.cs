@@ -27,7 +27,16 @@ public class PedRemoteReconstructorTests
 
     private sealed class StraightLineNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return null;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     private const double Dt = 0.1;
@@ -106,9 +115,9 @@ public class PedRemoteReconstructorTests
 
             var rt = reconstructor.RenderTime;
 
-            var p1Known = reconstructor.TryGetRenderPose(1, out var p1r, out _, out _);
-            var p2Known = reconstructor.TryGetRenderPose(2, out var p2r, out _, out _);
-            var p3Known = reconstructor.TryGetRenderPose(3, out var p3r, out _, out _);
+            var p1Known = reconstructor.TryGetRenderPose(1, out var p1r, out _, out _, out _);
+            var p2Known = reconstructor.TryGetRenderPose(2, out var p2r, out _, out _, out _);
+            var p3Known = reconstructor.TryGetRenderPose(3, out var p3r, out _, out _, out _);
             var p3High = reconstructor.Ig.Knows(3) && reconstructor.Ig.ModelOf(3) == PedDrModel.FreeKinematic;
             var p3Raw = reconstructor.Ig.Knows(3) ? reconstructor.Ig.ReconstructSample(3, rt).Pos : Vec2.Zero;
 
@@ -271,7 +280,7 @@ public class PedRemoteReconstructorTests
         bus.Sink.PublishPedLifecycle(new PedLifecycleRecord(new VehicleHandle(99, 0), PedLifecycleKind.PromoteToFreeKinematic, 0.0));
         bus.Sink.PublishCrowdFrame(0, 0.0f, new[] { new PedFreeKinematicRecord(new VehicleHandle(99, 0), 0.0, 0.0, 0.0, 0.0, 0.0) });
         reconstructor.Pump(0.0);
-        Assert.True(reconstructor.TryGetRenderPose(99, out var pos0, out _, out _));
+        Assert.True(reconstructor.TryGetRenderPose(99, out var pos0, out _, out _, out _));
         Assert.Equal(0.0, pos0.X, 6);
 
         // The unsmoothed reconstruction's own jump: a full 1.0 m in one wire update (this IS what
@@ -281,13 +290,13 @@ public class PedRemoteReconstructorTests
         var rawJump = reconstructor.Ig.ReconstructSample(99, reconstructor.RenderTime).Pos;
         Assert.Equal(1.0, rawJump.X, 6);
 
-        Assert.True(reconstructor.TryGetRenderPose(99, out var pos1, out _, out _));
+        Assert.True(reconstructor.TryGetRenderPose(99, out var pos1, out _, out _, out _));
         var step1 = (pos1 - pos0).Abs;
 
         // Steady (no further correction needed) -- the smoother should finish closing the gap.
         bus.Sink.PublishCrowdFrame(2, (float)(2 * Dt), new[] { new PedFreeKinematicRecord(new VehicleHandle(99, 0), 1.0, 0.0, 0.0, 0.0, 0.0) });
         reconstructor.Pump(2 * Dt);
-        Assert.True(reconstructor.TryGetRenderPose(99, out var pos2, out _, out _));
+        Assert.True(reconstructor.TryGetRenderPose(99, out var pos2, out _, out _, out _));
         var step2 = (pos2 - pos1).Abs;
 
         const double capPerFrame = (3.0 + 2.0) * Dt; // 0.5 m at Dt=0.1 -- see PedRemoteReconstructor.Smooth

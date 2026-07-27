@@ -108,7 +108,7 @@ public sealed class RerouteDriver
     public int PedCount => _peds.Count;
 
     // Registers an already-added crowd agent (handle) with its current path + goal. `path` is
-    // whatever the caller already computed (typically nav.FindPath(start, goal) unblocked, or
+    // whatever the caller already computed (typically nav.FindPath(start, goal, out _) unblocked, or
     // pre-blocked if the ped spawns into an already-blocked area) -- this driver only decides WHEN to
     // replace it, never how the first one was made.
     public void RegisterPed(OrcaHandle handle, Vec2 goal, IReadOnlyList<Vec2> path)
@@ -226,7 +226,7 @@ public sealed class RerouteDriver
             }
 
             var position = _crowd.Position(handle);
-            var newPath = _nav.FindPath(position, entry.Goal, _effectiveBlocked);
+            var newPath = _nav.FindPathAvoiding(position, entry.Goal, _effectiveBlocked);
             if (newPath is null)
             {
                 continue; // goal unreachable under the current blocks: keep the old path rather than strand the ped with none

@@ -151,12 +151,15 @@ public sealed class SumoRouteGraphNav : IPedNavigation
 
     // ---- B2: FindPath (design §4, §4.1) --------------------------------------------------------
 
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal)
-        => FindPath(start, goal, out _);
-
-    /// Provenance-carrying overload (see IPedNavigation): identical routing, and additionally the NODE
-    /// INDEX that produced each returned vertex. Recorded as the polyline is assembled -- the router
-    /// already visits the nodes in order, so this costs one int per vertex and no extra work.
+    /// The interface's single routing entry point (see IPedNavigation): routes, and additionally
+    /// reports the NODE INDEX that produced each returned vertex. Recorded as the polyline is
+    /// assembled -- the router already visits the nodes in order, so this costs one int per vertex and
+    /// no extra work.
+    ///
+    /// There is deliberately NO 2-D `FindPath(start, goal)` sibling: the provenance is what lets
+    /// `ElevationsAlong` tell stacked surfaces apart, so a caller that quietly took the shorter form
+    /// would get a silently flat (or wrong-deck) route. A caller with genuinely no use for it discards
+    /// it explicitly with `out _`.
     public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
     {
         vertexSurfaces = null;
@@ -376,18 +379,12 @@ public sealed class SumoRouteGraphNav : IPedNavigation
 
     // ---- C2: ElevationsAlong (design §3.4) ------------------------------------------------------
 
-    /// Per-vertex surface elevation: each vertex is re-located to its nearest node -- the SAME grid
-    /// lookup `HalfWidthsAlong` above uses -- and its height is interpolated along that node's own
-    /// retained elevation channel. So a ped on a bridge follows the bridge, because the node it is
-    /// located to IS the bridge's lane; there is no plan-view nearest-surface guess to get wrong at the
-    /// 27 measured places nationwide where ped lanes stack vertically.
+    /// Per-vertex surface elevation. `vertexSurfaces` is MANDATORY (pass an explicit `null` to ask for
+    /// the plan-view fallback below) -- there is no one-argument sibling, so dropping the provenance is
+    /// always a visible decision at the call site rather than an omission.
     ///
     /// Returns 0.0 for a vertex whose node has no elevation channel (a 2-D net), matching the
     /// interface's flat default exactly, so a 2-D net is bit-identical to before this existed.
-    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
-        => ElevationsAlong(path, vertexSurfaces: null);
-
-    /// Per-vertex surface elevation.
     ///
     /// With PROVENANCE (`vertexSurfaces` from the routing overload above) the height is read off the
     /// node the router actually walked -- so a ped crossing a footbridge follows the bridge and one

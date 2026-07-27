@@ -227,7 +227,7 @@ public class CrosswalkSignalComplianceTests
     {
         var (nav, polys) = BuildNav();
         var signals = CrosswalkSignals.FromNet(NetPath, polys);
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         // MaxPausesPerTrip = 0: no unrelated liveliness "sip" pause is spliced in, so every PauseSegment

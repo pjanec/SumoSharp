@@ -181,7 +181,7 @@ public class PedBackstepProbeTests
             var pedNow = simNow + accumulator;
             recon.Pump(pedNow);
 
-            if (!recon.TryGetRenderPose(targetId.Value, out var smoothedPos, out var visible, out _))
+            if (!recon.TryGetRenderPose(targetId.Value, out var smoothedPos, out _, out var visible, out _))
             {
                 break; // despawned
             }
@@ -306,7 +306,7 @@ public class PedBackstepProbeTests
             var pedNow = simNow + accumulator;
             recon.Pump(pedNow);
 
-            if (!recon.TryGetRenderPose(targetId, out var smoothedPos, out _, out _))
+            if (!recon.TryGetRenderPose(targetId, out var smoothedPos, out _, out _, out _))
             {
                 break;
             }

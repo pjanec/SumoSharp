@@ -221,7 +221,7 @@ public sealed class RemotePedOverlay : IPedDemoOverlay
                 var hasSrv = server is not null;
                 var srv = hasSrv ? server!.ServerPositionOf(id) : default;
 
-                var hasIg = reconstructor.TryGetRenderPose(id, out var igPos, out var visible, out _) && visible;
+                var hasIg = reconstructor.TryGetRenderPose(id, out var igPos, out _, out var visible, out _) && visible;
                 var regime = PedRegime.LowPower;
                 if (hasIg)
                 {

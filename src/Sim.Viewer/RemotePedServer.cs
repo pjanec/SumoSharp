@@ -65,7 +65,7 @@ public sealed class RemotePedServer
         _validPairs = new List<(Vec2[] Forward, Vec2[] Backward)>();
         foreach (var (a, b) in candidates)
         {
-            var path = nav.FindPath(a, b);
+            var path = nav.FindPath(a, b, out _);
             if (path is { Count: >= 2 })
             {
                 var fwd = path.ToArray();

@@ -50,7 +50,7 @@ public class PedLodManagerTests
     public void LowPower_ServerPositionMatchesHeadlessIgReconstruction_AtEverySampledTime()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -107,7 +107,7 @@ public class PedLodManagerTests
     public void Promotion_SwitchesToFreeKinematic_AndPromotedPedAvoidsTheStimulus()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -171,7 +171,7 @@ public class PedLodManagerTests
     public void Demotion_ReattachesFreshPathArc_AfterStimulusLeavesAndDwellElapses()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -226,7 +226,7 @@ public class PedLodManagerTests
     public void HighPowerFootprints_ExposesPromotedPed_ButNotLowPowerOrFarAway()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -267,7 +267,7 @@ public class PedLodManagerTests
     public void Demotion_DoesNotFlap_WhenStimulusHoversAtTheDemoteBoundary()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -308,7 +308,7 @@ public class PedLodManagerTests
     public void LowPower_NeverEmitsFreeKinematicSamples_OnlyOnePathArcRecordAndHeartbeats()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher(heartbeatInterval: 3.0);
@@ -364,7 +364,7 @@ public class PedLodManagerTests
     private static (List<Vec2> Trajectory, List<PedEvent> Events) RunFullScenario()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -466,7 +466,7 @@ public class PedLodManagerTests
     public void LivelyLowPower_ServerPoseMatchesHeadlessIgReconstruction_OverSweep_AndStaysSilentLowPower()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -519,7 +519,7 @@ public class PedLodManagerTests
     public void LivelyLowPowerPed_PromotesToFreeKinematic_WhenAnInterestSourceIsPresent()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();
@@ -596,7 +596,7 @@ public class PedLodManagerTests
     public void Step_EmitsFreeKinematicSamplesContiguously_NotFragmentedByInterleavedHeartbeats()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher(heartbeatInterval: 0.05); // tiny -> heartbeats due every step
@@ -647,7 +647,16 @@ public class PedLodManagerTests
     private sealed class SwitchableNav : IPedNavigation
     {
         public IReadOnlyList<Vec2>? Result;
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => Result;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return Result;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     [Fact]
@@ -705,7 +714,7 @@ public class PedLodManagerTests
     public void SetForcedHighPower_PromotesWithNoInterestSource_AndHoldsHigh_ThenDemotesWhenCleared()
     {
         var nav = BuildNav();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var publisher = new PedPublisher();

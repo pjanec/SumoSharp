@@ -5,6 +5,7 @@ using System.Linq;
 using Sim.Core.Orca;
 using Sim.Pedestrians;
 using Sim.Pedestrians.Navigation.RouteGraph;
+using Sim.Pedestrians.Navigation.Bake;
 using Xunit;
 
 namespace Sim.Pedestrians.Tests;
@@ -147,8 +148,8 @@ public class PedElevationMultiLevelTests
         var nav = new SumoRouteGraphNav(net);
         var crossing = new Vec2(50.0, 0.0);
 
-        var a = nav.ElevationsAlong(new[] { crossing })[0];
-        var b = nav.ElevationsAlong(new[] { crossing })[0];
+        var a = nav.ElevationsAlong(new[] { crossing }, vertexSurfaces: null)[0];
+        var b = nav.ElevationsAlong(new[] { crossing }, vertexSurfaces: null)[0];
 
         Assert.Equal(a, b, 9); // deterministic, just not disambiguating
         Assert.True(Math.Abs(a - BridgeZ) <= 0.05 || Math.Abs(a - GroundZ) <= 0.05);
@@ -163,7 +164,7 @@ public class PedElevationMultiLevelTests
         var nav = new SumoRouteGraphNav(net);
         var bridge = net.Sidewalks.Single(s => s.Id == "bridge_0");
 
-        var elevations = nav.ElevationsAlong(bridge.Shape);
+        var elevations = nav.ElevationsAlong(bridge.Shape, vertexSurfaces: null);
 
         Assert.Equal(bridge.Shape.Count, elevations.Count);
         for (var i = 0; i < elevations.Count; i++)
@@ -183,7 +184,7 @@ public class PedElevationMultiLevelTests
 
         // Sampled away from the overlap, where even the proximity fallback is unambiguous.
         var away = new[] { new Vec2(10.0, 0.0), new Vec2(25.0, 0.0), new Vec2(80.0, 0.0), new Vec2(95.0, 0.0) };
-        var elevations = nav.ElevationsAlong(away);
+        var elevations = nav.ElevationsAlong(away, vertexSurfaces: null);
 
         for (var i = 0; i < elevations.Count; i++)
         {
@@ -218,6 +219,113 @@ public class PedElevationMultiLevelTests
         Assert.True(Math.Abs(onBridge - onGround) > 1.0);
     }
 
+    // ---- the SAME discrimination, on the OTHER provider ----------------------------------------------
+    //
+    // SumoNavMesh used to answer `ElevationsAlong` from a plan-view polygon lookup with no notion of
+    // which deck the ped was on, so it failed this fixture outright: both routes read the same height.
+    // It now records the BakedPolygon index behind each waypoint (the funnel's own corridor) and reads
+    // the height off that polygon's retained channel. These tests exist so the two providers are held to
+    // one standard rather than the mesh one being "the 2-D one".
+
+    private static SumoNavMesh StackedNavMesh(PedNetwork net)
+    {
+        var polygons = WalkablePolygonBaker.Bake(net);
+        return new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
+    }
+
+    [Fact]
+    public void OnTheNavMesh_ProvenanceAlsoKeepsTheTwoStackedSurfacesApart()
+    {
+        var net = LoadStacked();
+        var nav = StackedNavMesh(net);
+
+        var bridgeZ = NavMeshElevationAtCrossing(nav, new Vec2(50.0, -40.0), new Vec2(50.0, 40.0));
+        var groundZ = NavMeshElevationAtCrossing(nav, new Vec2(10.0, 0.0), new Vec2(90.0, 0.0));
+
+        Assert.True(Math.Abs(bridgeZ - BridgeZ) <= 0.05,
+            $"navmesh: a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ:F2}");
+        Assert.True(Math.Abs(groundZ - GroundZ) <= 0.05,
+            $"navmesh: a ped routed under the bridge read {groundZ:F2}, expected {GroundZ:F2} "
+            + "-- it was lifted onto the bridge");
+        Assert.True(Math.Abs(bridgeZ - groundZ) > 1.0);
+    }
+
+    private static double NavMeshElevationAtCrossing(SumoNavMesh nav, Vec2 start, Vec2 goal)
+    {
+        var path = nav.FindPath(start, goal, out var surfaces);
+        Assert.NotNull(path);
+        Assert.NotNull(surfaces);
+        Assert.Equal(path!.Count, surfaces!.Count);
+
+        var elevations = nav.ElevationsAlong(path, surfaces);
+        Assert.Equal(path.Count, elevations.Count);
+
+        var crossing = new Vec2(50.0, 0.0);
+        var best = 0;
+        var bestD2 = double.PositiveInfinity;
+        for (var i = 0; i < path.Count; i++)
+        {
+            var d = path[i] - crossing;
+            var d2 = (d.X * d.X) + (d.Y * d.Y);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                best = i;
+            }
+        }
+
+        return elevations[best];
+    }
+
+    [Fact]
+    public void OnTheNavMesh_ProvenanceIsIndexAlignedAndNamesRealPolygons()
+    {
+        var net = LoadStacked();
+        var polygons = WalkablePolygonBaker.Bake(net);
+        var nav = new SumoNavMesh(polygons, new SumoWalkableSpace(polygons));
+
+        var path = nav.FindPath(new Vec2(10.0, 0.0), new Vec2(90.0, 0.0), out var surfaces);
+
+        Assert.NotNull(path);
+        Assert.NotNull(surfaces);
+        Assert.Equal(path!.Count, surfaces!.Count);
+        Assert.All(surfaces, s => Assert.InRange(s, 0, polygons.Count - 1));
+
+        // ...and every named polygon really is the ground deck, not the bridge overhead.
+        Assert.All(surfaces, s => Assert.Equal("ground_0", polygons[s].Id));
+    }
+
+    [Fact]
+    public void OnTheNavMesh_A2DNetStillReadsFlat()
+    {
+        // The mesh provider's own 2-D regression: no channel on the baked polygons => 0.0 everywhere,
+        // provenance or not.
+        var dir = Path.Combine(Path.GetTempPath(), "ped-navmesh2d-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var netPath = Path.Combine(dir, "net.xml");
+            File.WriteAllText(netPath,
+                "<net>\n"
+                + "  <edge id=\"ground\" from=\"W\" to=\"E\">\n"
+                + "    <lane id=\"ground_0\" index=\"0\" allow=\"pedestrian\" width=\"3.0\" speed=\"1.5\" length=\"100.0\""
+                + " shape=\"0,0 50,0 100,0\"/>\n"
+                + "  </edge>\n"
+                + "</net>\n");
+
+            var net = PedNetworkParser.Load(netPath);
+            var nav = StackedNavMesh(net);
+
+            var path = nav.FindPath(new Vec2(10.0, 0.0), new Vec2(90.0, 0.0), out var surfaces);
+            Assert.NotNull(path);
+            Assert.All(nav.ElevationsAlong(path!, surfaces), z => Assert.Equal(0.0, z));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public void A2DStackedNet_StillYieldsNullChannels()
     {
@@ -244,7 +352,7 @@ public class PedElevationMultiLevelTests
             Assert.All(net.Sidewalks, s => Assert.Null(s.ShapeZ));
 
             var nav = new SumoRouteGraphNav(net);
-            Assert.All(nav.ElevationsAlong(net.Sidewalks.First().Shape), z => Assert.Equal(0.0, z));
+            Assert.All(nav.ElevationsAlong(net.Sidewalks.First().Shape, vertexSurfaces: null), z => Assert.Equal(0.0, z));
         }
         finally
         {

@@ -166,7 +166,7 @@ public class SumoRouteGraphNavTests
     {
         var nav = new SumoRouteGraphNav(ConnectedFixture());
 
-        var path = nav.FindPath(StartOnSwA, GoalOnSwB);
+        var path = nav.FindPath(StartOnSwA, GoalOnSwB, out _);
 
         Assert.NotNull(path);
         Assert.True(path!.Count >= 2);
@@ -189,7 +189,7 @@ public class SumoRouteGraphNavTests
     {
         var nav = new SumoRouteGraphNav(ConnectedFixture());
 
-        var path = nav.FindPath(StartOnSwA, GoalOnSwB);
+        var path = nav.FindPath(StartOnSwA, GoalOnSwB, out _);
         Assert.NotNull(path);
 
         var sawCrossingVertex = false;
@@ -211,7 +211,7 @@ public class SumoRouteGraphNavTests
     {
         var nav = new SumoRouteGraphNav(DisconnectedFixture());
 
-        var path = nav.FindPath(new Vec2(-95, 0), new Vec2(95, 0));
+        var path = nav.FindPath(new Vec2(-95, 0), new Vec2(95, 0), out _);
 
         Assert.Null(path);
     }
@@ -223,7 +223,7 @@ public class SumoRouteGraphNavTests
 
         var start = new Vec2(-15, 0);
         var goal = new Vec2(-10, 0);
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
 
         Assert.NotNull(path);
         Assert.True(path!.Count >= 2);
@@ -242,7 +242,7 @@ public class SumoRouteGraphNavTests
     {
         var nav = new SumoRouteGraphNav(ConnectedFixture());
 
-        var path = nav.FindPath(StartOnSwA, GoalOnSwB);
+        var path = nav.FindPath(StartOnSwA, GoalOnSwB, out _);
         Assert.NotNull(path);
 
         var widths = nav.HalfWidthsAlong(path!);
@@ -279,8 +279,8 @@ public class SumoRouteGraphNavTests
     {
         var nav = new SumoRouteGraphNav(ConnectedFixture());
 
-        var first = nav.FindPath(StartOnSwA, GoalOnSwB);
-        var second = nav.FindPath(StartOnSwA, GoalOnSwB);
+        var first = nav.FindPath(StartOnSwA, GoalOnSwB, out _);
+        var second = nav.FindPath(StartOnSwA, GoalOnSwB, out _);
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -305,8 +305,8 @@ public class SumoRouteGraphNavTests
             var start = new Vec2(-19 + (t * 13.0), 0.0); // sweeps across sw_a's span
             var goal = new Vec2(6 + (t * 13.0), 0.0);    // sweeps across sw_b's span
 
-            var run1 = nav.FindPath(start, goal);
-            var run2 = nav.FindPath(start, goal);
+            var run1 = nav.FindPath(start, goal, out _);
+            var run2 = nav.FindPath(start, goal, out _);
 
             Assert.NotNull(run1);
             Assert.NotNull(run2);
@@ -415,7 +415,7 @@ public class SumoRouteGraphNavTests
         var start = new Vec2(GenevaOriginX - 15, GenevaOriginY + 0.2);
         var goal = new Vec2(GenevaOriginX + 15, GenevaOriginY - 0.2);
 
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
         Assert.NotNull(path);
         Assert.True(path!.Count >= 2);
 
@@ -442,7 +442,7 @@ public class SumoRouteGraphNavTests
 
         // Determinism: repeat the query, expect byte-identical output at large magnitude too (no
         // floating-point-order hazard introduced by the larger coordinate values).
-        var again = nav.FindPath(start, goal);
+        var again = nav.FindPath(start, goal, out _);
         Assert.NotNull(again);
         Assert.Equal(path.Count, again!.Count);
         for (var i = 0; i < path.Count; i++)

@@ -82,7 +82,7 @@ internal static class VizReplayBuilder
                     pedRecon.Pump(tau + pedDelay);
                     foreach (var id in pedRecon.KnownIds)
                     {
-                        if (!pedRecon.TryGetRenderPose(id, out var pos, out var visible, out var animTag) || !visible) continue;
+                        if (!pedRecon.TryGetRenderPose(id, out var pos, out _, out var visible, out var animTag) || !visible) continue;
                         if (!In(pos.X, pos.Y)) continue;
                         var kind = pedRecon.Ig.ModelOf(id) == PedDrModel.FreeKinematic ? SceneGen.KindPedHighPower
                             : animTag == ActivityTimeline.WalkAnimTag ? SceneGen.KindPedLowPower

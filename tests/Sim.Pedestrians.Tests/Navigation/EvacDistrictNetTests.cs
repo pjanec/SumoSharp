@@ -38,7 +38,7 @@ public class EvacDistrictNetTests
     {
         var nav = BuildNav();
 
-        var path = nav.FindPath(Centre, CornerSafeZone);
+        var path = nav.FindPath(Centre, CornerSafeZone, out _);
         Assert.NotNull(path);
         Assert.True(path!.Count >= 2, "a route must have at least two waypoints");
 
@@ -69,7 +69,7 @@ public class EvacDistrictNetTests
 
         foreach (var corner in corners)
         {
-            var path = nav.FindPath(Centre, corner);
+            var path = nav.FindPath(Centre, corner, out _);
             Assert.True(path is { Count: >= 2 }, $"safe zone {corner} was not routable from the centre");
         }
     }

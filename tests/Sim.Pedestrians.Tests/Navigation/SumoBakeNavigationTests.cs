@@ -79,7 +79,7 @@ public class SumoBakeNavigationTests
     {
         var (_, space, nav) = BuildProvider();
 
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
 
         Assert.NotNull(path);
         // Forces >= 2 polygons per the task: sidewalk -> walkingarea -> crossing -> walkingarea ->
@@ -108,7 +108,7 @@ public class SumoBakeNavigationTests
     public void SinglePed_RoutedThroughOrcaCrowd_ArrivesWithinSlack_EveryStepInsideWalkableSpace()
     {
         var (_, space, nav) = BuildProvider();
-        var path = nav.FindPath(WestNorthArm, EastNorthArm);
+        var path = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(path);
 
         var trajectory = RunSinglePed(WestNorthArm, path!, EastNorthArm, out var steps);
@@ -141,8 +141,8 @@ public class SumoBakeNavigationTests
 
         // Ped A: west arm -> east arm. Ped B: the reverse, same junction -- they meet head-on in
         // the walkingarea/crossing chain, forcing ORCA to negotiate (POC-1 success condition 3).
-        var pathA = nav.FindPath(WestNorthArm, EastNorthArm);
-        var pathB = nav.FindPath(EastNorthArm, WestNorthArm);
+        var pathA = nav.FindPath(WestNorthArm, EastNorthArm, out _);
+        var pathB = nav.FindPath(EastNorthArm, WestNorthArm, out _);
         Assert.NotNull(pathA);
         Assert.NotNull(pathB);
 
@@ -197,8 +197,8 @@ public class SumoBakeNavigationTests
     {
         var (_, _, nav) = BuildProvider();
 
-        var pathRun1 = nav.FindPath(WestNorthArm, EastNorthArm);
-        var pathRun2 = nav.FindPath(WestNorthArm, EastNorthArm);
+        var pathRun1 = nav.FindPath(WestNorthArm, EastNorthArm, out _);
+        var pathRun2 = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(pathRun1);
         Assert.NotNull(pathRun2);
         Assert.Equal(pathRun1!.Count, pathRun2!.Count);

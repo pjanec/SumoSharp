@@ -51,11 +51,30 @@ public class PedRemoteElevationTests
         Assert.NotEqual(Vec2.Zero, pos);
     }
 
-    // ---- C5·SC2: the two overloads agree on everything they share -----------------------------------
+    // ---- C5·SC2 (as amended): ONE mandatory signature -----------------------------------------------
 
     [Fact]
-    public void BothOverloads_ReturnTheSamePoseVisibilityAndAnimTag()
+    public void ThereIsExactlyOneRenderPoseOverload_AndItCarriesElevation()
     {
+        // C5 originally shipped `TryGetRenderPose` as a 5-out-param sibling of a 4-out-param (z-less)
+        // form, and SC2 asserted the two agreed. The z-less form has since been REMOVED (see
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §"z is mandatory, not additive"): a dual API means a
+        // renderer can keep calling the 2-D form and draw every ped at the wrong height with nothing to
+        // catch it. Asserted by REFLECTION rather than by a call, because the whole point is that the
+        // other form must not be callable -- a compile-time check cannot express its own absence.
+        var overloads = typeof(PedRemoteReconstructor)
+            .GetMethods()
+            .Where(m => m.Name == nameof(PedRemoteReconstructor.TryGetRenderPose))
+            .ToArray();
+
+        Assert.Single(overloads);
+
+        var ps = overloads[0].GetParameters();
+        Assert.Equal(5, ps.Length);
+        Assert.Equal(typeof(double).MakeByRefType(), ps[2].ParameterType);
+        Assert.True(ps[2].IsOut);
+
+        // ...and it does return a real height on a z-carrying stream.
         var (bus, publisher, wire) = NewWire();
         publisher.PublishPathArc(id: 1, Ramp, startTime: 0.0, speed: 1.0, time: 0.0, pathZ: RampZ);
         wire.Publish(publisher.Events);
@@ -63,15 +82,10 @@ public class PedRemoteElevationTests
         var recon = new PedRemoteReconstructor(bus.Source);
         recon.Pump(20.0);
 
-        var okFive = recon.TryGetRenderPose(1, out var posFive, out var z, out var visFive, out var tagFive);
-        var okFour = recon.TryGetRenderPose(1, out var posFour, out var visFour, out var tagFour);
-
-        Assert.True(okFive);
-        Assert.Equal(okFour, okFive);
-        Assert.Equal(posFour.X, posFive.X, 9);
-        Assert.Equal(posFour.Y, posFive.Y, 9);
-        Assert.Equal(visFour, visFive);
-        Assert.Equal(tagFour, tagFive);
+        Assert.True(recon.TryGetRenderPose(1, out var pos, out var z, out var visible, out var tag));
+        Assert.True(visible);
+        Assert.NotEqual(Vec2.Zero, pos);
+        Assert.Equal(ActivityTimeline.IdleAnimTag, tag);
         Assert.True(z > 0.0, $"expected real elevation on a z-carrying stream, got {z}");
     }
 

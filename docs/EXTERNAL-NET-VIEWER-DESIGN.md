@@ -273,17 +273,61 @@ which node produced each vertex and discarded it before returning.
 This mattered at runtime, not just at the query API: the ped's elevation channel is *built* by
 calling `ElevationsAlong`, so the wrong height was baked into the channel the ped then carried.
 
-**The change — two ADDITIVE members on `IPedNavigation`:**
+**The change — `IPedNavigation` now has exactly TWO members, both mandatory:**
 
 ```csharp
 IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces);
 IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces);
 ```
 
-Both are **default interface methods** — the routing one delegates to the existing `FindPath` and
-reports no provenance; the elevation one returns zeros. So DotRecast, every test double, and all
-**79 existing `FindPath` call sites** compile and behave exactly as before. The existing
-one-argument `ElevationsAlong(path)` now delegates with `null`.
+**This is a BREAKING interface change, deliberately.** It first shipped additively — as default
+interface methods alongside the old `FindPath(start, goal)` / `ElevationsAlong(path)` pair, so that
+DotRecast, every test double, and all 79 existing call sites compiled untouched. That is exactly the
+property that made it wrong, and it is documented here as the reasoning, not just the outcome:
+
+- **A default that returns flat is a silent wrong answer, not a safe fallback.** A provider that
+  simply does not override reports "no provenance" and gets zeros — indistinguishable at the call
+  site from a genuinely 2-D net. `SumoNavMesh` sat in exactly that state and was described in this
+  document as "correct for a 2-D net, which is all it is used for". It is not: `PedSimSource` and
+  `SceneGen` route on it, and the City3D viewer renders those peds in 3-D.
+- **Z is not an optional aspect of a position.** Every consumer of a ped pose in the 3-D viewer needs
+  a height. An API where the 2-D form is still callable means the omission is invisible; an API where
+  it is not means the compiler enumerates every site that has to be thought about. That is the whole
+  value of making it mandatory — the migration list is generated, not remembered.
+
+So the 2-D forms are **gone**, with no default bodies:
+
+| Removed | Replacement |
+| --- | --- |
+| `IPedNavigation.FindPath(Vec2, Vec2)` (default body) | the 3-arg form; discard with `out _` |
+| `IPedNavigation.ElevationsAlong(IReadOnlyList<Vec2>)` (default body) | the 2-arg form; pass `vertexSurfaces: null` |
+| `SumoRouteGraphNav.FindPath(Vec2, Vec2)` | ditto |
+| `SumoRouteGraphNav.ElevationsAlong(IReadOnlyList<Vec2>)` | ditto |
+| `PedRemoteReconstructor.TryGetRenderPose(id, out pos, out visible, out animTag)` | the 5-out-param form; discard z with `out _` |
+
+`SumoNavMesh.FindPath(start, goal, ISet<int>? blocked)` — POC-5's blocked-set query — was **renamed
+to `FindPathAvoiding`**. It is not part of the interface, and leaving it as an overload of `FindPath`
+made `FindPath(a, b, out _)` ambiguous at the call site (CS1615/CS1620: the compiler binds the
+3-argument call to the blocked-set form and then rejects the `out`). The rename keeps the routing
+entry point unambiguous, which is precisely what the mandatory signature depends on.
+
+Every migrated call site now discards **explicitly** (`out _`, `vertexSurfaces: null`) rather than by
+omission, so "this caller does not want the height" is a visible decision in the diff.
+
+#### 4.1.1 This CONTRADICTS contract C5·SC1 — flag for the other session
+
+`EXTERNAL-NET-LOADING-API-CONTRACT.md` C5·SC1 states the success condition as: *"the existing
+4-out-param overload's body is untouched, and all 15 call sites compile unedited."* That condition is
+now **deliberately unmet** — the overload is deleted and all of its call sites were edited (to
+`out _`). This is the owner's call, recorded verbatim: *"why Z as additive. that leads to omissions.
+no dual interfaces when we need to pass z coord everywhere. no just 2d. compiler will catch."*
+
+Nothing about the *behaviour* C5 specifies changed: the 5-out-param body, its smoothing, its
+`ReconstructElevationAt` call, and the `z == 0.0`-on-a-flat-stream semantics are all exactly as C5
+describes. Only the additivity requirement is dropped. SC2 ("both overloads agree") is unsatisfiable
+by construction and has been **replaced** by a reflection test asserting there is exactly one
+overload and that its third parameter is `out double` — a compile-time check cannot assert its own
+absence, so the absence is asserted at runtime instead.
 
 The ids are **opaque and provider-local** (node index for `SumoRouteGraphNav`, and nothing at all for
 providers that do not override): they mean nothing except to the instance that issued them, carry no
@@ -304,9 +348,28 @@ one of them is handled explicitly:
 | `RecoverRoute` fallbacks | splice/beeline paths are not routed, so provenance is explicitly nulled |
 | lively ped's timeline geometry | a different list from `Path`, so ids would not line up — falls back to proximity, by reference check |
 
-**Not covered:** `SumoNavMesh` (the 2-D demo provider) does not override the routing overload, so it
-inherits the flat default and keeps proximity resolution. That is correct for a 2-D net, which is all
-it is used for; a 3-D net takes the `RouteGraph` provider.
+**`SumoNavMesh` — now a full provenance provider too.** It was previously left inheriting the flat
+default, on the reasoning that it is "the 2-D demo provider". Removing the default made that claim
+untenable (see above), so the mesh provider was given real provenance rather than a hand-written
+flat implementation:
+
+- `FindPathAvoiding` records, per emitted waypoint, the **`BakedPolygon` index it belongs to**. The
+  corridor the funnel walks *is* the provenance — it was already computed and then discarded along
+  with the polygon list once the waypoints were pulled out of it. A portal vertex is attributed to
+  the polygon being **entered**, so a waypoint on a sidewalk/crossing boundary names the surface the
+  ped is heading onto rather than the one it is leaving.
+- `ElevationsAlong(path, vertexSurfaces)` reads each height off `_polygons[index]`'s own
+  `ElevationReference`/`ElevationZ` pair (sidewalk → `Spine`, walkingarea/crossing → `Vertices`),
+  falling back to the plan-view `LocatePolygon` lookup when the provenance is absent or misaligned.
+
+`PedElevationMultiLevelTests` now runs the same stacked-deck fixture (12.5 m clearance) against
+**both** providers, and asserts the mesh one separates the decks and names `ground_0` for every
+vertex of the under-bridge route. The two providers are held to one standard.
+
+**Still not covered:** `DotRecastNavMesh`, which reports `null` provenance and flat elevations. That
+is now an explicit, hand-written implementation with a comment saying so — a *choice* recorded in the
+provider, not a default silently inherited from the interface. The same applies to the 13 test
+doubles.
 
 ## §5 T2 — the Godot recenter (float precision)
 

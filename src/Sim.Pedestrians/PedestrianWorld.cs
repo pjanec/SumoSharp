@@ -48,7 +48,7 @@ public sealed class PedestrianWorld
     /// </summary>
     public bool AddWalker(int id, Vec2 origin, Vec2 destination, double maxSpeed, double radius, double now)
     {
-        var path = _navigation.FindPath(origin, destination);
+        var path = _navigation.FindPath(origin, destination, out _);
         if (path is null)
         {
             return false;

@@ -60,21 +60,32 @@ step — every "done" is unverified until proven).
 
 | Suite | Result |
 | ----- | ------ |
-| `tests/Sim.LiveCity.Tests` | pass (17 new external-net tests) |
-| `tests/Sim.Pedestrians.Tests` | 277/277 pass |
-| `demos/City3D/CityLib.Tests` | 3 failures, all **pre-existing** (see below) |
-| `Traffic.sln` (parity) | 775 pass, 0 fail — including after the §7.1 parser fix |
+| `tests/Sim.LiveCity.Tests` | 80/80 pass |
+| `tests/Sim.Pedestrians.Tests` | 317/317 pass |
+| `demos/City3D/CityLib.Tests` | 146 pass / 3 fail, all **pre-existing** (see below) |
+| `Traffic.sln` (parity) | 775 pass, 0 fail, 4 skip |
+| `Sim.Bench` determinism hash | `BF3794A4704BCD79`, par == single |
 
 The three `CityLib.Tests` failures (`ReconstructorS2Tests.Reconstructor_StoppedVehicle_DoesNotCreep`,
 `…_CenterIsHalfLengthBehindSnapshotFront`, `…_JunctionTurn_FollowsConnectingLaneArc_Smoothly`) were
-confirmed failing on a clean worktree at the pre-change commit `7985647`. They are wall-clock /
-`Thread.Sleep`-paced reconstruction tests, unrelated to this work, and are left as found rather than
-silently retuned.
+confirmed failing on a clean worktree at the pre-change commit `7985647`, and **re-confirmed** at
+`4bf36e5` (146/3/149 — identical counts to the post-change run) after clearing the stale
+`~/.nuget/packages/sumosharp.*` entries, which had been masking them. They are vehicle-reconstructor
+tests (stopped-vehicle pivot, junction-arc following), unrelated to this work, and are left as found
+rather than silently retuned. Their messages are concrete enough to be worth a separate task: center
+sitting 6.484 m behind the front bumper where L/2 = 2.50 m is expected, 0.1250 m/frame creep while
+stopped, and 0.996 m of stray off the connecting-lane centreline through a turn.
+
+> **Repacking caveat.** `demos/City3D/build.sh --pack-only` writes `SumoSharp.*.0.1.0.nupkg` at a
+> version that never changes, so NuGet's global cache will happily serve a **stale** package and the
+> City3D projects will silently build against an old engine. After any engine change, clear
+> `~/.nuget/packages/sumosharp.*` before repacking, or the demo suites measure code you are not
+> looking at (CLAUDE.md measurement-discipline #9, same failure mode, different mechanism).
 
 ## Definition of done (from the handoff)
 - [x] `LiveCityConfig.NetPath` / `ForSumocfg` land — BIG can load `swiss_roads.net.xml`, a cut box, or a `.sumocfg`
-- [ ] `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` overload lands, real elevation
-      on a 3-D net — **reassigned to the parallel ped-engine workstream**, see above
+- [x] `PedRemoteReconstructor.TryGetRenderPose(..., out double z, ...)` lands, real elevation on a
+      3-D net — ownership came back to this session; it is now the **only** overload (design §4.1)
 - [x] live ped-density setter lands — ped count changes with no sim rebuild
 - [x] all validated headless in isolation
 

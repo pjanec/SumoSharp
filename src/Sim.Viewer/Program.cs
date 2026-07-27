@@ -1120,7 +1120,7 @@ static IReadOnlyList<LiveCityPed> BuildLiveCityPeds(PedRemoteReconstructor recon
     var arr = new List<LiveCityPed>(recon.KnownIds.Count);
     foreach (var id in recon.KnownIds)
     {
-        if (!recon.TryGetRenderPose(id, out var pos, out var visible, out var animTag) || !visible)
+        if (!recon.TryGetRenderPose(id, out var pos, out _, out var visible, out var animTag) || !visible)
         {
             continue;
         }

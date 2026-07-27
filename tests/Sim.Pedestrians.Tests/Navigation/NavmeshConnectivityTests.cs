@@ -54,7 +54,7 @@ public class NavmeshConnectivityTests
         Assert.Equal(1, nav.ConnectedComponentCount());
 
         // A ped can route from the crossing across the junction to the far sidewalk...
-        var path = nav.FindPath(new Vec2(2, -5), new Vec2(-5, 2));
+        var path = nav.FindPath(new Vec2(2, -5), new Vec2(-5, 2), out _);
         Assert.NotNull(path);
 
         // ...and the route goes THROUGH the walkingArea (a waypoint lands inside WA=[0,4]x[0,4]), never a
@@ -75,7 +75,7 @@ public class NavmeshConnectivityTests
         var nav = new SumoNavMesh(polys);
 
         Assert.Equal(3, nav.ConnectedComponentCount());
-        Assert.Null(nav.FindPath(new Vec2(2, -5), new Vec2(-5, 2))); // crossing -> far sidewalk unreachable
+        Assert.Null(nav.FindPath(new Vec2(2, -5), new Vec2(-5, 2), out _)); // crossing -> far sidewalk unreachable
         _out.WriteLine("[P8-1b] non-area polygons are never overlap-bridged (crossing<->sidewalk stays disconnected)");
     }
 
@@ -121,7 +121,7 @@ public class NavmeshConnectivityTests
         // Routable across the whole box (nearest polygons to opposite corners).
         var lo = polygons.OrderBy(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
         var hi = polygons.OrderByDescending(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
-        Assert.NotNull(nav.FindPath(lo, hi));
+        Assert.NotNull(nav.FindPath(lo, hi, out _));
 
         _out.WriteLine($"[P8-1b] irregular witness box: {polygons.Count} polygons, {nav.ConnectedComponentCount()} component (was 222)");
     }
@@ -157,7 +157,7 @@ public class NavmeshConnectivityTests
         var nav = new SumoNavMesh(polys);
 
         Assert.Equal(1, nav.ConnectedComponentCount());
-        Assert.NotNull(nav.FindPath(new Vec2(-9.0, 2.0), new Vec2(9.0, 2.0)));
+        Assert.NotNull(nav.FindPath(new Vec2(-9.0, 2.0), new Vec2(9.0, 2.0), out _));
         _out.WriteLine("[P8-1c] collinear sidewalk continuation (3 cm gap, no WA): 2 islands -> 1 component");
     }
 
@@ -199,7 +199,7 @@ public class NavmeshConnectivityTests
 
         var lo = polygons.OrderBy(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
         var hi = polygons.OrderByDescending(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
-        Assert.NotNull(nav.FindPath(lo, hi));
+        Assert.NotNull(nav.FindPath(lo, hi, out _));
 
         _out.WriteLine($"[P8-1c] pedfrag2 witness box: {polygons.Count} polygons, {nav.ConnectedComponentCount()} component (was 83)");
     }
