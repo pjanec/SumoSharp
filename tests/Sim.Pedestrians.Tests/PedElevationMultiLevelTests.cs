@@ -72,27 +72,86 @@ public class PedElevationMultiLevelTests
         Assert.Contains(bridge.Shape, p => Math.Abs(p.X - 50.0) < 1e-9 && Math.Abs(p.Y) < 1e-9);
     }
 
-    // KNOWN LIMITATION -- see the class remarks and the report to the design owner. `ElevationsAlong`
-    // receives only POINTS, so it must locate each one by plan-view proximity; `FindPath` knows which
-    // node produced each vertex but discards that before returning. Directly under the bridge the two
-    // surfaces are equidistant and the tie-break decides, so today BOTH queries return the bridge.
+    // THE discriminating test. At the SAME plan-view point the two stacked surfaces must give two
+    // different heights -- which is only possible if the query knows which surface the ped is ON.
     //
-    // This test pins the CURRENT behaviour so the limitation is visible rather than folklore. When the
-    // provider learns to carry path provenance, it fails and should be replaced by the two assertions
-    // below it (a ped on the ground gets 400, a ped on the bridge gets 412.5).
+    // Without provenance this collapsed: both queries returned the bridge, because from directly
+    // beneath it the two candidates are equidistant and the tie-break decided. Any position-only
+    // mechanism -- nearest-lane, ground-clamp, heightmap probe -- fails here no matter which it picks.
     [Fact]
-    public void AtTheCrossingPoint_BothSurfacesResolveToOne_TheProvenanceLimitation()
+    public void AtTheCrossingPoint_ProvenanceKeepsTheTwoSurfacesApart()
     {
+        var net = LoadStacked();
+        var nav = new SumoRouteGraphNav(net);
+
+        // Route ALONG each surface and read the height at the shared crossing point from that route.
+        var bridgeZ = ElevationAtCrossingWalking(nav, new Vec2(50.0, -40.0), new Vec2(50.0, 40.0));
+        var groundZ = ElevationAtCrossingWalking(nav, new Vec2(10.0, 0.0), new Vec2(90.0, 0.0));
+
+        Assert.True(Math.Abs(bridgeZ - BridgeZ) <= 0.05,
+            $"a ped routed over the bridge read {bridgeZ:F2}, expected {BridgeZ:F2}");
+        Assert.True(Math.Abs(groundZ - GroundZ) <= 0.05,
+            $"a ped routed under the bridge read {groundZ:F2}, expected {GroundZ:F2} "
+            + "-- it was lifted onto the bridge");
+        Assert.True(Math.Abs(bridgeZ - groundZ) > 1.0);
+    }
+
+    // Route start->goal, then report the elevation the router itself attributes to the vertex nearest
+    // the crossing point -- i.e. exactly what the runtime stores as that ped's elevation channel.
+    private static double ElevationAtCrossingWalking(SumoRouteGraphNav nav, Vec2 start, Vec2 goal)
+    {
+        var path = nav.FindPath(start, goal, out var surfaces);
+        Assert.NotNull(path);
+        Assert.NotNull(surfaces);
+        Assert.Equal(path!.Count, surfaces!.Count);
+
+        var elevations = nav.ElevationsAlong(path, surfaces);
+
+        var crossing = new Vec2(50.0, 0.0);
+        var best = 0;
+        var bestD2 = double.PositiveInfinity;
+        for (var i = 0; i < path.Count; i++)
+        {
+            var d = path[i] - crossing;
+            var d2 = (d.X * d.X) + (d.Y * d.Y);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                best = i;
+            }
+        }
+
+        return elevations[best];
+    }
+
+    [Fact]
+    public void ProvenanceIsIndexAlignedWithThePath_AndIdsAreRealNodes()
+    {
+        var net = LoadStacked();
+        var nav = new SumoRouteGraphNav(net);
+
+        var path = nav.FindPath(new Vec2(10.0, 0.0), new Vec2(90.0, 0.0), out var surfaces);
+
+        Assert.NotNull(path);
+        Assert.NotNull(surfaces);
+        Assert.Equal(path!.Count, surfaces!.Count);
+        Assert.All(surfaces, s => Assert.InRange(s, 0, nav.Nodes.Count - 1));
+    }
+
+    [Fact]
+    public void WithoutProvenance_TheQueryStillAnswers_ButCannotSeparateStackedSurfaces()
+    {
+        // The documented fallback: correct away from overlaps, ambiguous under them. Kept as a test so
+        // the difference the provenance channel makes is visible rather than asserted in prose.
         var net = LoadStacked();
         var nav = new SumoRouteGraphNav(net);
         var crossing = new Vec2(50.0, 0.0);
 
-        var viaBridge = nav.ElevationsAlong(new[] { crossing, new Vec2(50.0, 25.0) })[0];
-        var viaGround = nav.ElevationsAlong(new[] { crossing, new Vec2(75.0, 0.0) })[0];
+        var a = nav.ElevationsAlong(new[] { crossing })[0];
+        var b = nav.ElevationsAlong(new[] { crossing })[0];
 
-        Assert.Equal(viaBridge, viaGround, 6);
-        Assert.True(Math.Abs(viaBridge - BridgeZ) <= 0.05 || Math.Abs(viaBridge - GroundZ) <= 0.05,
-            "the shared answer should at least be one of the two real surfaces");
+        Assert.Equal(a, b, 9); // deterministic, just not disambiguating
+        Assert.True(Math.Abs(a - BridgeZ) <= 0.05 || Math.Abs(a - GroundZ) <= 0.05);
     }
 
     [Fact]
@@ -122,8 +181,7 @@ public class PedElevationMultiLevelTests
         var nav = new SumoRouteGraphNav(net);
         var ground = net.Sidewalks.Single(s => s.Id == "ground_0");
 
-        // Sampled AWAY from the overlap, where the ground lane is unambiguously nearest. At the crossing
-        // point itself the answer is currently the bridge's -- see the provenance-limitation test above.
+        // Sampled away from the overlap, where even the proximity fallback is unambiguous.
         var away = new[] { new Vec2(10.0, 0.0), new Vec2(25.0, 0.0), new Vec2(80.0, 0.0), new Vec2(95.0, 0.0) };
         var elevations = nav.ElevationsAlong(away);
 

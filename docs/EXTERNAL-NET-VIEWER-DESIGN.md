@@ -261,6 +261,53 @@ a georeferenced 3-D net render at the viewer's flat ground datum (§5.3) rather 
 surface, and `LiveCityPed.Z` is 0. Every other part of the 3-D story is in place — road meshes, cars,
 crosswalk and lane markings all follow the net's real elevation (§5.6).
 
+## §4.1 API change — lane provenance through `IPedNavigation` (added after C1–C5)
+
+**What went wrong.** `ElevationsAlong(path)` receives bare 2-D points, so the provider could only
+decide which surface a point belonged to by nearest-in-plan-view. Wherever surfaces STACK — a
+footbridge over the path beneath it — both candidates are equidistant and the tie-break decides. A
+synthetic stacked-net test (12.5 m clearance) showed both queries collapsing onto the bridge, so a
+ped walking underneath would be lifted onto it for the vertices inside the overlap. `FindPath` knew
+which node produced each vertex and discarded it before returning.
+
+This mattered at runtime, not just at the query API: the ped's elevation channel is *built* by
+calling `ElevationsAlong`, so the wrong height was baked into the channel the ped then carried.
+
+**The change — two ADDITIVE members on `IPedNavigation`:**
+
+```csharp
+IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces);
+IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces);
+```
+
+Both are **default interface methods** — the routing one delegates to the existing `FindPath` and
+reports no provenance; the elevation one returns zeros. So DotRecast, every test double, and all
+**79 existing `FindPath` call sites** compile and behave exactly as before. The existing
+one-argument `ElevationsAlong(path)` now delegates with `null`.
+
+The ids are **opaque and provider-local** (node index for `SumoRouteGraphNav`, and nothing at all for
+providers that do not override): they mean nothing except to the instance that issued them, carry no
+ordering, and must only be handed back to that same instance. `SumoRouteGraphNav.ElevationsAlong`
+validates the range and falls back to flat rather than indexing a foreign id into its own graph.
+
+**Where provenance is threaded.** The path is reassigned or re-sliced at several points, and a stale
+or misaligned surface list is worse than none — it reads heights off the *previous* route — so every
+one of them is handled explicitly:
+
+| Site | Handling |
+| --- | --- |
+| `PedDemand` spawn | routes with provenance; hands it to `AddPed`, or to the lively timeline sampler |
+| lively Walk legs | sub-paths (pause-split, with interpolated split points) map each point back onto the ped's own full route to recover its surface |
+| `PedLodManager.PathSurfaces` | cleared by the `Path` setter, so it can never outlive the path it describes |
+| promotion | steering route's own provenance attached |
+| demotion | `ReanchorSurfaces` re-anchors the list the same way `ReanchorAt` re-anchors the path (prepend + possible leading-vertex drop), returning null if the lengths cannot be reconciled |
+| `RecoverRoute` fallbacks | splice/beeline paths are not routed, so provenance is explicitly nulled |
+| lively ped's timeline geometry | a different list from `Path`, so ids would not line up — falls back to proximity, by reference check |
+
+**Not covered:** `SumoNavMesh` (the 2-D demo provider) does not override the routing overload, so it
+inherits the flat default and keeps proximity resolution. That is correct for a 2-D net, which is all
+it is used for; a 3-D net takes the `RouteGraph` provider.
+
 ## §5 T2 — the Godot recenter (float precision)
 
 ### 5.1 The problem, quantified

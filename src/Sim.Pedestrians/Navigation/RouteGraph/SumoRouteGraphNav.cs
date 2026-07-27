@@ -152,7 +152,15 @@ public sealed class SumoRouteGraphNav : IPedNavigation
     // ---- B2: FindPath (design §4, §4.1) --------------------------------------------------------
 
     public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal)
+        => FindPath(start, goal, out _);
+
+    /// Provenance-carrying overload (see IPedNavigation): identical routing, and additionally the NODE
+    /// INDEX that produced each returned vertex. Recorded as the polyline is assembled -- the router
+    /// already visits the nodes in order, so this costs one int per vertex and no extra work.
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
     {
+        vertexSurfaces = null;
+
         var startLane = NearestLane(start);
         var goalLane = NearestLane(goal);
         if (startLane is null || goalLane is null)
@@ -162,7 +170,11 @@ public sealed class SumoRouteGraphNav : IPedNavigation
 
         if (startLane.Value.NodeIndex == goalLane.Value.NodeIndex)
         {
-            return SameNodeSubPath(_nodes[startLane.Value.NodeIndex], start, goal);
+            var single = SameNodeSubPath(_nodes[startLane.Value.NodeIndex], start, goal);
+            var ids = new int[single.Count];
+            Array.Fill(ids, startLane.Value.NodeIndex);
+            vertexSurfaces = ids;
+            return single;
         }
 
         var nodePath = AStarNodePath(startLane.Value.NodeIndex, goalLane.Value.NodeIndex, start, goal);
@@ -171,7 +183,10 @@ public sealed class SumoRouteGraphNav : IPedNavigation
             return null; // disconnected ped graph
         }
 
-        return AssemblePolyline(start, goal, nodePath);
+        var surfaces = new List<int>();
+        var polyline = AssemblePolyline(start, goal, nodePath, surfaces);
+        vertexSurfaces = surfaces;
+        return polyline;
     }
 
     // Start and goal snap to the SAME node: walk (or cut straight, for a walkingarea) between the
@@ -285,9 +300,13 @@ public sealed class SumoRouteGraphNav : IPedNavigation
     // near end matches the entry, exactly like SumoNavMesh's spine-threading); WalkingArea nodes
     // append a straight chord from entry to exit anchor (design §4.1's documented first
     // approximation -- see the report for how this was verified against the committed fixture).
-    private IReadOnlyList<Vec2> AssemblePolyline(Vec2 start, Vec2 goal, List<int> nodePath)
+    // `surfaces`, when supplied, receives the node index responsible for each appended waypoint --
+    // index-aligned with the returned polyline. The first waypoint (`start`) is attributed to the first
+    // node on the path, since that is the surface the ped stands on when it sets off.
+    private IReadOnlyList<Vec2> AssemblePolyline(Vec2 start, Vec2 goal, List<int> nodePath, List<int>? surfaces = null)
     {
         var waypoints = new List<Vec2> { start };
+        surfaces?.Add(nodePath[0]);
 
         for (var i = 0; i < nodePath.Count; i++)
         {
@@ -306,6 +325,12 @@ public sealed class SumoRouteGraphNav : IPedNavigation
                 var exitPos = NearestPositionOnPolyline(node.Geometry, exitAnchor);
                 AppendIntervening(waypoints, node.Geometry, entryPos, exitPos);
                 waypoints.Add(exitAnchor);
+            }
+
+            // Everything appended during this node's turn belongs to this node.
+            while (surfaces is not null && surfaces.Count < waypoints.Count)
+            {
+                surfaces.Add(nodePath[i]);
             }
         }
 
@@ -360,21 +385,60 @@ public sealed class SumoRouteGraphNav : IPedNavigation
     /// Returns 0.0 for a vertex whose node has no elevation channel (a 2-D net), matching the
     /// interface's flat default exactly, so a 2-D net is bit-identical to before this existed.
     public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
+        => ElevationsAlong(path, vertexSurfaces: null);
+
+    /// Per-vertex surface elevation.
+    ///
+    /// With PROVENANCE (`vertexSurfaces` from the routing overload above) the height is read off the
+    /// node the router actually walked -- so a ped crossing a footbridge follows the bridge and one
+    /// passing underneath follows the ground, even though the two are the same point in plan view.
+    ///
+    /// WITHOUT provenance it falls back to the nearest node in plan view. That is correct wherever
+    /// surfaces do not overlap, and unavoidably ambiguous where they do: from directly beneath the
+    /// bridge both candidates are equidistant and the tie-break decides. Prefer the provenance form for
+    /// anything that will run on a real net.
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
     {
+        var usable = vertexSurfaces is not null && vertexSurfaces.Count == path.Count;
         var elevations = new double[path.Count];
+
         for (var i = 0; i < path.Count; i++)
         {
-            var nearest = NearestLane(path[i]);
-            if (nearest is null)
+            int nodeIndex;
+            if (usable)
             {
-                continue; // stays 0.0 -- the documented flat fallback
+                nodeIndex = vertexSurfaces![i];
+                if (nodeIndex < 0 || nodeIndex >= _nodes.Length)
+                {
+                    continue; // a foreign/stale id -- stay flat rather than index into the wrong graph
+                }
+            }
+            else
+            {
+                var nearest = NearestLane(path[i]);
+                if (nearest is null)
+                {
+                    continue; // stays 0.0 -- the documented flat fallback
+                }
+
+                nodeIndex = nearest.Value.NodeIndex;
             }
 
-            var node = _nodes[nearest.Value.NodeIndex];
+            var node = _nodes[nodeIndex];
             elevations[i] = PolylineElevation.AtNearestPoint(node.Geometry, node.GeometryZ, path[i]);
         }
 
         return elevations;
+    }
+
+    /// The node index whose geometry is nearest `p` in plan view, or -1 when the graph is empty --
+    /// the provenance a caller can attach to a point it derived itself (e.g. an interpolated split
+    /// point on a sub-path). Exposed so such a caller re-uses the router's own lookup rather than
+    /// inventing a second one.
+    public int SurfaceAt(Vec2 p)
+    {
+        var nearest = NearestLane(p);
+        return nearest?.NodeIndex ?? -1;
     }
 
     // ---- Construction helpers -------------------------------------------------------------------

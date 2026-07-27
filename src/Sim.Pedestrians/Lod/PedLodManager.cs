@@ -75,6 +75,7 @@ public sealed class PedLodManager
             set
             {
                 _path = value;
+                PathSurfaces = null;   // provenance belongs to the path it came from
                 PathZ = null;
                 PathZGeometry = Array.Empty<Vec2>();
                 PathZValid = false;
@@ -87,6 +88,11 @@ public sealed class PedLodManager
         // elevation query after a path change (see PedLodManager.ElevationOf) and null on a 2-D net.
         // `PathZValid` distinguishes "not computed yet" from the legitimate "computed, and this net has
         // no elevation" -- without it a 2-D net would recompute an all-null answer on every query.
+        // Per-vertex OPAQUE surface ids for `Path`, from the router's provenance-carrying FindPath, or
+        // null when the provider offers none. Cleared with the path (see the setter above), because a
+        // stale mapping would silently read heights off the previous route's surfaces.
+        public IReadOnlyList<int>? PathSurfaces;
+
         public IReadOnlyList<double>? PathZ;
         public bool PathZValid;
 
@@ -207,7 +213,9 @@ public sealed class PedLodManager
     // Registers a new ped as low-power (PathArc), following `path` at `maxSpeed` from `now`.
     // `path[^1]` is treated as the ped's destination (used to re-route on later promote/demote).
     // Publishes the spawn PathArcRecord (the "path sent once").
-    public int AddPed(int id, IReadOnlyList<Vec2> path, double maxSpeed, double radius, double now)
+    public int AddPed(
+        int id, IReadOnlyList<Vec2> path, double maxSpeed, double radius, double now,
+        IReadOnlyList<int>? pathSurfaces = null)
     {
         if (path.Count == 0)
         {
@@ -221,6 +229,7 @@ public sealed class PedLodManager
             MaxSpeed = maxSpeed,
             Radius = radius,
             Path = path,
+            PathSurfaces = pathSurfaces,
             PathStartTime = now,
             StateEnteredAt = now,
         };
@@ -228,7 +237,7 @@ public sealed class PedLodManager
         _peds.Add(id, entry);
         // C4: publish the path's elevation alongside it, so the remote surface reconstructs the same
         // height the in-process one reports. Null on a 2-D net => a kind-4 frame => byte-identical wire.
-        _publisher.PublishPathArc(id, path, now, maxSpeed, now, ElevationChannelFor(path));
+        _publisher.PublishPathArc(id, path, now, maxSpeed, now, ElevationChannelFor(path, pathSurfaces));
         return id;
     }
 
@@ -260,6 +269,37 @@ public sealed class PedLodManager
         _publisher.PublishActivityTimeline(id, timeline, now);
         _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.ActivityTimeline, now);
         return id;
+    }
+
+    // Re-anchor a provenance list onto the path `ReanchorAt` produced. That method prepends the anchor
+    // and drops a leading routed vertex coincident with it, so the surface list must undergo the same
+    // shift; the prepended anchor inherits the first surviving vertex's surface, which is the one the
+    // ped is standing on. Returns null when there was no provenance to begin with, or when the two
+    // lengths cannot be reconciled -- a wrong-length list is worse than none, since it would silently
+    // read heights off the wrong surfaces.
+    private static IReadOnlyList<int>? ReanchorSurfaces(
+        IReadOnlyList<Vec2> routed, IReadOnlyList<int>? routedSurfaces, IReadOnlyList<Vec2> newPath)
+    {
+        if (routedSurfaces is null || routedSurfaces.Count != routed.Count || newPath.Count == 0)
+        {
+            return null;
+        }
+
+        var dropped = routed.Count - (newPath.Count - 1);
+        if (dropped < 0 || dropped > routed.Count)
+        {
+            return null;
+        }
+
+        var result = new int[newPath.Count];
+        result[0] = routedSurfaces[Math.Min(dropped, routedSurfaces.Count - 1)];
+        for (var i = 1; i < newPath.Count; i++)
+        {
+            var src = dropped + i - 1;
+            result[i] = src < routedSurfaces.Count ? routedSurfaces[src] : routedSurfaces[^1];
+        }
+
+        return result;
     }
 
     // W4: force a routed path to START exactly at `anchor` (the frozen demote pose), so a resume leg's
@@ -294,13 +334,18 @@ public sealed class PedLodManager
     // graph); when FindPath succeeds the result is returned verbatim, so the common path is byte-identical.
     // Falls back to the original beeline only when `lastRoute` is itself degenerate (e.g. a prior straight-
     // line fallback), so this is never worse than before.
-    private IReadOnlyList<Vec2> RecoverRoute(Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute)
+    private IReadOnlyList<Vec2> RecoverRoute(
+        Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute, out IReadOnlyList<int>? surfaces)
     {
-        var routed = _navigation.FindPath(pos, destination);
+        var routed = _navigation.FindPath(pos, destination, out surfaces);
         if (routed is not null)
         {
             return routed;
         }
+
+        // Every fallback below SPLICES or BEELINES rather than routing, so no provenance survives --
+        // null it rather than let the router's ids be mistaken for the spliced path's.
+        surfaces = null;
 
         if (lastRoute.Count >= 2)
         {
@@ -454,7 +499,12 @@ public sealed class PedLodManager
             // perfectly correct for everyone else. (Measured on the 3-D fixture before this branch
             // existed: 85 of 160 live peds reported z = 0.)
             var geometry = ElevationGeometryOf(e);
-            e.PathZ = geometry.Count > 0 ? _navigation.ElevationsAlong(geometry) : null;
+
+            // Provenance applies only when the geometry IS the ped's own `Path`; a lively ped's
+            // timeline geometry is a different (possibly re-sliced) list, so its ids would not line up
+            // and it falls back to proximity -- correct except where surfaces stack.
+            var surfaces = ReferenceEquals(geometry, e.Path) ? e.PathSurfaces : null;
+            e.PathZ = geometry.Count > 0 ? _navigation.ElevationsAlong(geometry, surfaces) : null;
             e.PathZGeometry = geometry;
             e.PathZValid = true;
 
@@ -492,14 +542,14 @@ public sealed class PedLodManager
     // C4: the elevation channel to publish with a PathArc leg -- null (rather than an all-zero array)
     // on a 2-D net, which is what makes the publisher emit the original kind-4 frame and keeps the wire
     // byte-identical there.
-    private IReadOnlyList<double>? ElevationChannelFor(IReadOnlyList<Vec2> path)
+    private IReadOnlyList<double>? ElevationChannelFor(IReadOnlyList<Vec2> path, IReadOnlyList<int>? surfaces = null)
     {
         if (path.Count == 0)
         {
             return null;
         }
 
-        var zs = _navigation.ElevationsAlong(path);
+        var zs = _navigation.ElevationsAlong(path, surfaces);
         for (var i = 0; i < zs.Count; i++)
         {
             if (zs[i] != 0.0)
@@ -646,12 +696,13 @@ public sealed class PedLodManager
             var velocity = e.Model == PedDrModel.ActivityTimeline
                 ? e.Timeline!.VelocityAt(now)
                 : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
-            var steeringPath = RecoverRoute(pos, e.Destination, e.Path);
+            var steeringPath = RecoverRoute(pos, e.Destination, e.Path, out var steeringSurfaces);
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
             e.OutsideSince = double.NaN;
-            e.Path = steeringPath;
+            e.Path = steeringPath;          // clears the old provenance
+            e.PathSurfaces = steeringSurfaces; // ...then attach this route's own
             e.Timeline = null; // now a reactive high-power agent; a later demotion resumes as plain PathArc
 
             var handle = _highCrowd.Add(pos, e.Radius, e.MaxSpeed, goal: pos, velocity: velocity);
@@ -670,10 +721,13 @@ public sealed class PedLodManager
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var routed = RecoverRoute(pos, e.Destination, e.Path);
+            var routed = RecoverRoute(pos, e.Destination, e.Path, out var routedSurfaces);
             // Re-anchor the resume leg EXACTLY at the frozen high-power pose, so the low-power pose at the
             // demote instant is the ped's current position to machine precision (no pop across the LOD switch).
             var newPath = ReanchorAt(routed, pos);
+            // ReanchorAt prepends the anchor and may drop a coincident leading vertex, so the provenance
+            // must be re-anchored the same way or it would be off by one against the new path.
+            var newSurfaces = ReanchorSurfaces(routed, routedSurfaces, newPath);
 
             _highController.RemoveRoute(e.HighIndex);
             _highCrowd.Remove(e.HighIndex);
@@ -692,12 +746,13 @@ public sealed class PedLodManager
                 var widths = _navigation.HalfWidthsAlong(newPath);
                 var resume = new ActivityTimeline(
                     now,
-                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths, ElevationChannelFor(newPath)) },
+                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths, ElevationChannelFor(newPath, newSurfaces)) },
                     e.WeaveSeed, e.WeaveGlobalSeed);
 
                 e.Model = PedDrModel.ActivityTimeline;
                 e.Timeline = resume;
                 e.Path = newPath;
+                e.PathSurfaces = newSurfaces;
                 _publisher.PublishActivityTimeline(id, resume, now);
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.ActivityTimeline, now);
             }
@@ -705,7 +760,8 @@ public sealed class PedLodManager
             {
                 e.Model = PedDrModel.PathArc;
                 e.Path = newPath;
-                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now, ElevationChannelFor(newPath));
+                e.PathSurfaces = newSurfaces;
+                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now, ElevationChannelFor(newPath, newSurfaces));
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.PathArc, now);
             }
         }

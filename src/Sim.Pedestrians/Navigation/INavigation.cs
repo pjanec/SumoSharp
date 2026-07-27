@@ -67,6 +67,38 @@ public interface IPedNavigation
     /// OUTPUT-ONLY: the returned elevations are consumed at the render seam and by no steering, ORCA or
     /// routing decision, which is what keeps every 2-D scenario bit-identical.
     IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path)
+        => ElevationsAlong(path, vertexSurfaces: null);
+
+    /// PROVENANCE-CARRYING routing: the same path as `FindPath(start, goal)`, plus, per returned
+    /// vertex, an OPAQUE identifier for the walkable surface (lane / polygon / node) that produced it.
+    ///
+    /// WHY THIS EXISTS. Elevation cannot be recovered from a bare 2-D point wherever surfaces STACK --
+    /// under a footbridge the bridge and the path beneath it are the same point in plan view, so a
+    /// nearest-surface lookup is a coin toss and a ped walking underneath can be lifted onto the bridge
+    /// for a step. The router already knows which surface each vertex came from, because it walked them
+    /// to build the path; this is the channel that stops that knowledge being thrown away.
+    ///
+    /// The ids are OPAQUE and PROVIDER-LOCAL: they mean nothing except to the provider that issued them,
+    /// carry no ordering, and must only ever be handed back to that same instance. Index-aligned with
+    /// the returned path.
+    ///
+    /// Default: delegates to `FindPath(start, goal)` and reports NO provenance, so a provider that has
+    /// no surface model needs no change and simply keeps the proximity behaviour.
+    IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+    {
+        vertexSurfaces = null;
+        return FindPath(start, goal);
+    }
+
+    /// `ElevationsAlong` with the provenance from `FindPath(start, goal, out …)`.
+    ///
+    /// When `vertexSurfaces` is supplied (and index-aligned with `path`), the height at each vertex is
+    /// read off THAT surface -- the one the ped is actually on -- rather than whichever happens to be
+    /// nearest in plan view. Null falls back to proximity, which is correct wherever surfaces do not
+    /// overlap and is all a provider without provenance can offer.
+    ///
+    /// Default: all zeros, exactly as the one-argument form.
+    IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
     {
         return new double[path.Count]; // flat
     }

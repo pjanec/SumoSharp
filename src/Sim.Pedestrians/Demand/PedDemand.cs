@@ -320,7 +320,10 @@ public sealed class PedDemand
             }
         }
 
-        var path = _navigation.FindPath(origin, destination);
+        // Provenance-carrying routing: the surface behind each vertex, so elevation is read off the
+        // lane the ped is actually on rather than whichever is nearest in plan view (which is a coin
+        // toss wherever surfaces stack -- a footbridge over the path beneath it).
+        var path = _navigation.FindPath(origin, destination, out var pathSurfaces);
         if (path is null)
         {
             UnreachableSkipCount++;
@@ -353,12 +356,12 @@ public sealed class PedDemand
                 path, now, liveliness, pedSpeed, ref livelinessRng,
                 _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
                 _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng,
-                ElevationsOrNull);
+                pts => ElevationsOrNull(pts, path, pathSurfaces));
             _lodManager.AddPedLively(id, timeline, pedSpeed, _config.Radius, now);
         }
         else
         {
-            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now);
+            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now, pathSurfaces);
         }
 
         _destinationOf[id] = destination;
@@ -385,14 +388,21 @@ public sealed class PedDemand
     // The elevation sampler handed to BuildLivelyTimeline: the nav's channel, or NULL when it is flat.
     // Collapsing all-zeros to null is what keeps a 2-D net's WalkSegments (and therefore its timeline
     // wire bytes, beyond the single flag byte) identical to before elevation existed.
-    private IReadOnlyList<double>? ElevationsOrNull(IReadOnlyList<Vec2> pts)
+    //
+    // `fullPath`/`fullSurfaces` are the ped's whole routed path and its provenance. A timeline's Walk
+    // legs are SUB-PATHS of it -- split at kerb pauses, with interpolated split points that appear in
+    // no original vertex -- so each sub-point is mapped back onto the full path to recover the surface
+    // it belongs to. That is a projection onto the ped's OWN route, not a search of the network, and it
+    // is what keeps a leg under a footbridge attributed to the ground rather than the bridge.
+    private IReadOnlyList<double>? ElevationsOrNull(
+        IReadOnlyList<Vec2> pts, IReadOnlyList<Vec2> fullPath, IReadOnlyList<int>? fullSurfaces)
     {
         if (pts.Count == 0)
         {
             return null;
         }
 
-        var zs = _navigation.ElevationsAlong(pts);
+        var zs = _navigation.ElevationsAlong(pts, MapSurfaces(pts, fullPath, fullSurfaces));
         for (var i = 0; i < zs.Count; i++)
         {
             if (zs[i] != 0.0)
@@ -402,6 +412,40 @@ public sealed class PedDemand
         }
 
         return null;
+    }
+
+    // Each sub-path point takes the surface of the nearest vertex of the full routed path. Nearest
+    // VERTEX rather than nearest segment because provenance is per-vertex; on a split point sitting
+    // between two vertices of the same surface either choice agrees, and at a surface boundary the
+    // nearer vertex is the right side of it. Null in, null out.
+    private static IReadOnlyList<int>? MapSurfaces(
+        IReadOnlyList<Vec2> pts, IReadOnlyList<Vec2> fullPath, IReadOnlyList<int>? fullSurfaces)
+    {
+        if (fullSurfaces is null || fullSurfaces.Count != fullPath.Count || fullPath.Count == 0)
+        {
+            return null;
+        }
+
+        var mapped = new int[pts.Count];
+        for (var i = 0; i < pts.Count; i++)
+        {
+            var best = 0;
+            var bestD2 = double.PositiveInfinity;
+            for (var k = 0; k < fullPath.Count; k++)
+            {
+                var d = pts[i] - fullPath[k];
+                var d2 = (d.X * d.X) + (d.Y * d.Y);
+                if (d2 < bestD2)
+                {
+                    bestD2 = d2;
+                    best = k;
+                }
+            }
+
+            mapped[i] = fullSurfaces[best];
+        }
+
+        return mapped;
     }
 
     private static ActivityTimeline BuildLivelyTimeline(
