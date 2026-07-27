@@ -8,11 +8,20 @@ Z-enabled rendering (and any other consumer session: BIG/Spectacle, raylib viewe
 
 ---
 
-## ⚠ STATUS: DESIGNED AND FROZEN — **NOT YET IMPLEMENTED**
+## ⚠ STATUS — partly IMPLEMENTED, partly still designed
 
-Every signature below is agreed and stable enough to code against, but **none of it exists on `main` yet**
-(baseline `791d3e6`). This document is the contract so both sessions can move in parallel; it is not a
-description of shipped code.
+**Updated 2026-07-27** after syncing with the Godot City3D session
+(`claude/handoff-docs-implementation-pmdu9z`), which had already implemented part of the engine side.
+See `docs/handoffs/SYNC-reply-to-viewer-session.md` for the full reconciliation.
+
+| Area | State |
+|---|---|
+| §4 net loading (**B1/B2**) | **IMPLEMENTED** on `claude/handoff-docs-implementation-pmdu9z`, adopted as-is. Gate verified there: parity 775/0/4, hash `BF3794A4704BCD79` |
+| §4 live density (**D1**) | **IMPLEMENTED** there, with one fix outstanding: `cfg` must be authoritative (sync doc FIX 1) |
+| §2 pedestrian Z (**C1–C5**) | **NOT IMPLEMENTED** — owned by the engine session (`claude/document-review-r0uhcw`) |
+| §6 wire kind 5 (**C4**) | **NOT IMPLEMENTED** |
+
+Nothing here is on `main` yet.
 
 Each item names the task that lands it. Check `-TRACKER.md` for ticked boxes, or probe directly:
 
@@ -46,14 +55,22 @@ becomes:
 
 ```csharp
 if (!_reconstructor.TryGetRenderPose(id, out var pos, out var z, out var visible, out _) || !visible) continue;
-var (gx, gy, gz) = CoordinateTransform.SumoToGodot(pos.X, pos.Y, z);
+var (gx, gy, gz) = _frame.ToGodot(pos.X, pos.Y, z);   // NOT CoordinateTransform.SumoToGodot — see below
 ```
+
+> **⚠ Use the scene's `SumoGodotFrame`, not `CoordinateTransform.SumoToGodot`.** City3D routes all
+> placement through a recenter frame (origin subtracted in double precision before the float cast).
+> Bypassing it misplaces peds **twice**: horizontally by the recenter, and — once z is real — **vertically
+> by `OriginZ`**, the net's mean elevation. In a georeferenced cut whose roads sit at ~370–398 m, peds that
+> skip the frame render ~380 m above the road even if the horizontal origin is zero.
+> `SumoGodotFrame.Identity` is bitwise identical to `CoordinateTransform.SumoToGodot`, so passing the
+> frame is always correct.
 
 Nothing else changes on the render side:
 - `ReconstructedPed` **already has a `Z` field** — it is currently fed a literal `0.0`. Only its doc
   comment ("The ped net is flat, so Z … is always 0") needs correcting.
-- `CoordinateTransform.SumoToGodot(x, y, z) => (x, z, -y)` **already maps SUMO z to Godot up (+Y)**. No
-  transform change.
+- The axis mapping already handles z: `SumoToGodot(x, y, z) => (x, z, -y)`, and `SumoGodotFrame.ToGodot`
+  is the same mapping with the origin subtracted first. No transform change — just pass the frame.
 - Cars already render at real elevation today (§3). No change.
 
 **Gated by:** C4 (wire kind) + C5 (the overload). Both are in Stage C.

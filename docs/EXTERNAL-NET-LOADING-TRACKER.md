@@ -24,7 +24,16 @@ Toolchain (ephemeral — re-provision each session): dotnet SDK **8.0.129** (apt
 
 ---
 
-## Status: design COMPLETE and unblocked · implementation not started
+## Status: Stages A/B/D ADOPTED from the viewer session · Stage C is ours, not started
+
+**Reconciled 2026-07-27** with the Godot City3D session
+(`claude/handoff-docs-implementation-pmdu9z` @ `371339a`), which had already implemented B1, B2, D1 and a
+better fixture. Full reply: `docs/handoffs/SYNC-reply-to-viewer-session.md`.
+
+**Verified by me on their branch, first-hand:** parity **775/0/4**, determinism hash
+**`BF3794A4704BCD79`** (par == single), `Sim.Pedestrians.Tests` 277/277, and their C2 ped-Z revert is
+clean (no `ShapeZ`/`ElevationsAlong`/`PolygonZ`/`out double z` anywhere in `src/Sim.Pedestrians/`). They
+had not reported the hash — a `NetworkParser` change can move it; it did not.
 
 **§3.6 decided by the owner (2026-07-27): W1 — z travels on the wire**, under a **new frame kind 5**
 (`14 B + 12 B/point`, z on the existing int32-cm quantization), leaving kind 4's layout untouched. The
@@ -32,13 +41,25 @@ publisher emits kind 4 whenever there is no z, so 2-D nets stay byte-identical o
 the two measured reasons for a new kind rather than a `Version` bump: design §3.6. No open design
 questions remain; Stage A can begin.
 
-## Stage A — Validation data (Tier 2, committed synthetic — design §6.2)
-- [ ] **A1** synthetic georeferenced 3-D ped-net fixture `scenarios/_ped/roadnet_geo3d/` (6 SCs; SC4 must reproduce the measured real-net property: 3-D shapes on **all** ped-lane categories)
-- [ ] **A2** fixture reachable from the test projects via the existing repo-root helper, no absolute paths
+## Stage A — Validation data — **SUPERSEDED, adopted from the viewer session**
+- [x] ~~**A1** synthetic fixture `scenarios/_ped/roadnet_geo3d/`~~ → **replaced by their
+  `scenarios/_ped/georef_min`, which is better.** Verified: UTM32N `projParameter`,
+  `netOffset="-187497.01,-5046275.45"`, 20 crossings / 24 walkingareas / 195 ped lanes, 3-coord shapes,
+  **28 m** elevation span (A1 asked ≥3 m). A real `netconvert --keep-edges.in-boundary` crop (mirrors the
+  actual cut pipeline, which my synthetic recipe did not) sitting at ~91850, 73956 (stress-tests float
+  precision). It found the `NetworkParser` bug below, which earns its keep.
+- [x] ~~**A2** fixture reachable from test projects~~ → done by their `ExternalNetLoadingTests`.
 
-## Stage B — Change 1: net/route path resolution
-- [ ] **B1** `LiveCityConfig.NetPath`/`RoutePath` + ctor resolution across **all three** net consumers (SC3 is the non-vacuous one)
-- [ ] **B2** `LiveCityConfig.ForSumocfg` — relative + absolute + no-`<input>` cases, reflection drift-guard vs `ForDataset`
+## Stage B — Change 1: net/route path resolution — **ADOPTED from the viewer session**
+- [x] **B1** their `LiveCityConfig.NetPath`/`RoutePath`/`RoutePaths` + `public ResolveNetPath()`. Matches
+  contract §4's four-step order exactly. **Correction to my own §1.1:** there are **four** net consumers,
+  not three — I had missed `_engine.LoadNetwork` (`:370`); all four use the resolved path.
+- [x] **B2** their `ForSumocfg` — unions **all** route files (§0/C4). Two follow-ups sent: the
+  `RoutePath = routes[^1]` guess is wrong on both real configs (last entry is `personFlows.rou.xml` /
+  `vTypeDist.config.xml`), and I **conceded** their throw-on-missing-`<net-file>` over my non-throwing
+  B2·SC3.
+- [x] **(theirs) `NetworkParser` multi-lane cont-bay fix** — blessed after independent review + gate.
+  Follows `Connection.FromLane` per stage and matches the previous hop on exact lane id, not edge.
 
 ## Stage C — Change 2: pedestrian elevation (**redesigned** — retain, don't reconstruct)
 - [ ] **C1** `PedNetworkParser` retains the 3rd coordinate → `PedLane.ShapeZ` / `PedCrossing.ShapeZ` / `PedWalkingArea.PolygonZ` (2-D net ⇒ **null**, not zeros)
@@ -47,8 +68,14 @@ questions remain; Stage A can begin.
 - [ ] **C4** W1 wire extension: `KindPathArcZ = 5` + `PathArcRecord.PathZ` (SC3 decoder discrimination · SC4 **2-D wire byte-identical** · only task touching gate-covered code)
 - [ ] **C5** `PedRemoteReconstructor` 5-out-param overload; `HeadlessIg` interpolates z on the **same arc fraction** as pos (SC4: wire z agrees with in-process z within **0.05 m**)
 
-## Stage D — Change 3: live pedestrian density knobs
-- [ ] **D1** mirror `PedPopulationCap`/`PedSpawnRatePerSecond` into `PedDemandConfig` each `Step()` (SC1: **fails before, passes after**)
+## Stage D — Change 3: live pedestrian density knobs — **ADOPTED with one fix outstanding (theirs)**
+- [x] **D1a** their `PedDemand.SetPopulationCap`/`SetSpawnRatePerSecond` + `_spawnScheduleDirty`.
+  Their **rate-0 one-way-door fix is a genuine improvement on my §4**, which specified plain cfg-mirroring
+  and would have had that bug (pending `+Infinity` wait that `SpawnDue`'s clamp cannot rescue). Folded in.
+- [ ] **D1b** *(theirs to fix)* make `cfg` authoritative: `SetPedDensity` writes `_cfg` first, and `Step()`
+  mirrors `_cfg` → demand at one fixed point. Today `SetPedDensity` writes only `_demand`, so **mutating
+  `cfg.PedPopulationCap` still does nothing** — the §0/C3 defect and the BIG handoff's explicit
+  requirement — and `cfg` goes stale while `SetCarDensity` *does* write `cfg` (car/ped asymmetry).
 
 ## Stage E — Real-net validation (Tier 1) & close-out
 - [ ] **E1** opt-in `SUMOSHARP_GENEVA_DIR` test gate — **skips** (not passes) when unset
