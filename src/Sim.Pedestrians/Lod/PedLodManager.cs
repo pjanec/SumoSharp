@@ -61,8 +61,39 @@ public sealed class PedLodManager
 
         // The polyline currently being followed: the PathArc leg's polyline when Low, the navmesh
         // steering route (set once, at promotion) when High.
-        public IReadOnlyList<Vec2> Path = Array.Empty<Vec2>();
+        //
+        // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4): assigning `Path` INVALIDATES the cached
+        // elevation channel below. Done through a property rather than a plain field on purpose -- the
+        // path is reassigned at five separate places (spawn, promote, demote, weave-resume, reroute) and
+        // a cache that had to be refreshed by hand at each of them would eventually be missed, leaving a
+        // ped's height stuck on the route it used to be walking.
+        private IReadOnlyList<Vec2> _path = Array.Empty<Vec2>();
+
+        public IReadOnlyList<Vec2> Path
+        {
+            get => _path;
+            set
+            {
+                _path = value;
+                PathZ = null;
+                PathZGeometry = Array.Empty<Vec2>();
+                PathZValid = false;
+            }
+        }
+
         public double PathStartTime;
+
+        // C3: per-vertex elevation for `Path`, index-aligned with it, filled LAZILY on the first
+        // elevation query after a path change (see PedLodManager.ElevationOf) and null on a 2-D net.
+        // `PathZValid` distinguishes "not computed yet" from the legitimate "computed, and this net has
+        // no elevation" -- without it a 2-D net would recompute an all-null answer on every query.
+        public IReadOnlyList<double>? PathZ;
+        public bool PathZValid;
+
+        // The polyline `PathZ` is index-aligned WITH -- `Path` for most models, but a lively ped's
+        // timeline walk geometry instead (see PedLodManager.ElevationGeometryOf). Stored rather than
+        // re-derived so the projection can never be run against a different list than the channel.
+        public IReadOnlyList<Vec2> PathZGeometry = Array.Empty<Vec2>();
 
         // LIVE-PROD-1a: set when this ped is a LIVELY low-power ped (Model == ActivityTimeline) -- its
         // low-power pose/velocity come from Timeline.PoseAt/VelocityAt instead of PathArcMotion. Null for
@@ -386,6 +417,113 @@ public sealed class PedLodManager
                 e.Path.Count,
                 PositionOf(id, now));
         }
+    }
+
+    // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4, -TASKS.md C3): the ped's current SURFACE ELEVATION
+    // -- the render-side companion to `PositionOf` below, and the value `LiveCitySim.Sample()` puts in
+    // `LiveCityPed.Z`.
+    //
+    // Resolved along THE PED'S OWN PATH, never by searching the network: the path's per-vertex elevation
+    // comes from `IPedNavigation.ElevationsAlong` (computed once per path and cached on the entry), and
+    // the height is read off it at the ped's current position. So a ped on a bridge follows the bridge,
+    // because the path it is walking IS the bridge's.
+    //
+    // WHY BY PROJECTION ONTO THAT PATH rather than by the arc-length cursor: the three LOD models locate
+    // a ped three different ways -- `PathArc` by arc length, `ActivityTimeline` by a timeline that
+    // includes PAUSES (so arc length and elapsed time part company), and `FreeKinematic` by the ORCA
+    // crowd's own committed position (which is deliberately not on the polyline at all while avoiding
+    // someone). One projection onto the ped's own ~10-30 vertex polyline is correct for all three, where
+    // an arc-length lerp would be right only for the first. It is a handful of segment tests against a
+    // list the ped already holds -- not a spatial query, and not the nearest-lane search this design
+    // explicitly rejects.
+    //
+    // Returns 0.0 on a 2-D net (no elevation channel), which is exactly the value this surface reported
+    // before elevation existed.
+    public double ElevationOf(int id, double now)
+    {
+        var e = _peds[id];
+
+        if (!e.PathZValid)
+        {
+            // WHICH polyline carries this ped's geometry depends on its model, and getting this wrong is
+            // silent: a LIVELY (ActivityTimeline) ped never populates `Path` at all -- `AddPedLively`
+            // builds it straight from a timeline whose WalkSegments hold the geometry -- so projecting
+            // against `Path` would have returned 0.0 for the entire lively population while looking
+            // perfectly correct for everyone else. (Measured on the 3-D fixture before this branch
+            // existed: 85 of 160 live peds reported z = 0.)
+            var geometry = ElevationGeometryOf(e);
+            e.PathZ = geometry.Count > 0 ? _navigation.ElevationsAlong(geometry) : null;
+            e.PathZGeometry = geometry;
+            e.PathZValid = true;
+
+            // An all-zero channel (the interface's flat default, i.e. a provider with no elevation model)
+            // is dropped to null so the common 2-D case costs one null check per query instead of a
+            // projection walk that can only ever return 0.
+            if (e.PathZ is { Count: > 0 } zs)
+            {
+                var anyNonZero = false;
+                for (var i = 0; i < zs.Count; i++)
+                {
+                    if (zs[i] != 0.0)
+                    {
+                        anyNonZero = true;
+                        break;
+                    }
+                }
+
+                if (!anyNonZero)
+                {
+                    e.PathZ = null;
+                }
+            }
+        }
+
+        if (e.PathZ is null)
+        {
+            return 0.0;
+        }
+
+        return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(
+            e.PathZGeometry, e.PathZ, PositionOf(id, now));
+    }
+
+    // The polyline a ped's elevation is resolved against: its `Path` for a PathArc or FreeKinematic ped,
+    // and the concatenation of its timeline's Walk legs for a lively (ActivityTimeline) one, which is
+    // where that ped's geometry actually lives. Pause/Dwell/Interact legs contribute no geometry -- they
+    // hold position at wherever the preceding Walk ended, which is already on the concatenation.
+    private static IReadOnlyList<Vec2> ElevationGeometryOf(PedEntry e)
+    {
+        if (e.Timeline is not { } timeline)
+        {
+            return e.Path;
+        }
+
+        List<Vec2>? combined = null;
+        IReadOnlyList<Vec2>? only = null;
+
+        foreach (var segment in timeline.Segments)
+        {
+            if (segment is not WalkSegment walk || walk.Path.Count == 0)
+            {
+                continue;
+            }
+
+            if (only is null)
+            {
+                only = walk.Path; // the overwhelmingly common single-Walk case allocates nothing
+                continue;
+            }
+
+            combined ??= new List<Vec2>(only);
+            combined.AddRange(walk.Path);
+        }
+
+        if (combined is not null)
+        {
+            return combined;
+        }
+
+        return only ?? e.Path;
     }
 
     // The ped's current world position: for Low-power this is the pure PathArcMotion function

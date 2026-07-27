@@ -1168,7 +1168,10 @@ public sealed class LiveCitySim : IDisposable
                 var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
                     : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
                     : PedRegime.Paused;
-                peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+                // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5a): the ped's real surface elevation,
+                // interpolated along the path it is walking. Exactly 0.0 on a 2-D net -- the demo and
+                // every committed 2-D scenario -- so their snapshots stay bit-identical.
+                peds.Add(new LiveCityPed(id, p.X, p.Y, _manager.ElevationOf(id, _now), regime, animTag));
             }
         }
 

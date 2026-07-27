@@ -16,7 +16,7 @@ namespace Sim.Pedestrians.Navigation;
 //
 // OUTPUT-ONLY, like every other consumer of these channels: nothing here feeds steering, ORCA or
 // routing.
-internal static class PolylineElevation
+public static class PolylineElevation
 {
     // Elevation at the point on `shape` nearest to `p`, interpolated from `shapeZ`.
     //
