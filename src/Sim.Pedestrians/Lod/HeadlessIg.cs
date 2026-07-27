@@ -129,24 +129,35 @@ public sealed class HeadlessIg
     {
         var state = _peds[id];
 
-        if (state.Model == PedDrModel.ActivityTimeline && state.Timeline is { } timeline)
+        // Ordered by which elevation source is the TRUTH for this ped, so a stale channel never wins:
+        //
+        // 1. A PathArc (routed) ped -> its own PathZ, walked by arc length. Highest precedence: a routed
+        //    ped's own path is authoritative even if a timeline lingers from an earlier lively phase.
+        if (state.Model == PedDrModel.PathArc
+            && state.Path is { Count: > 0 } arcPath && state.PathZ is { Count: > 0 })
+        {
+            return PathArcMotion.ElevationAt(arcPath, state.PathZ, state.PathStartTime, state.Speed, now);
+        }
+
+        // 2. Any timeline-bearing ped that is NOT PathArc -- a lively ActivityTimeline ped, OR one promoted
+        //    to high-power (FreeKinematic ORCA) which KEEPS its timeline (nothing clears it on promotion) --
+        //    reads the surface off the timeline's per-leg channel, projecting the render pose onto its walk
+        //    geometry. This is the fix for promoted lively peds that otherwise had no Path and rendered at
+        //    z=0 (sunk far below an elevated net).
+        if (state.Timeline is { } timeline)
         {
             return TimelineElevationAt(timeline, at);
         }
 
-        if (state.Path is not { Count: > 0 } path || state.PathZ is not { Count: > 0 })
+        // 3. FreeKinematic/Stationary promoted from a ROUTE (has a Path, no timeline): the pose is
+        //    dead-reckoned off the polyline, so project the rendered position onto it.
+        if (state.Path is { Count: > 0 } path && state.PathZ is { Count: > 0 })
         {
-            return 0.0;
+            return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
         }
 
-        if (state.Model == PedDrModel.PathArc)
-        {
-            return PathArcMotion.ElevationAt(path, state.PathZ, state.PathStartTime, state.Speed, now);
-        }
-
-        // FreeKinematic / Stationary: the pose is dead-reckoned off the last sample and is deliberately
-        // not on the polyline, so project the position the caller is actually rendering.
-        return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
+        // 4. No elevation source at all (kind-4 publisher / 2-D net): 0.0 per §9.1.
+        return 0.0;
     }
 
     // Elevation along a timeline's Walk legs: pick the leg whose polyline the pose is nearest to, then
