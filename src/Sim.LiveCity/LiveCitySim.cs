@@ -947,6 +947,11 @@ public sealed class LiveCitySim : IDisposable
         return _carSampleScratch;
     }
 
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1: passthrough to Engine.SampleControlledCrossingSignals()
+    // for the viewer's mini pedestrian-crossing signal heads. Read-only; the returned list is the engine's
+    // own reused buffer (valid until the next call).
+    public IReadOnlyList<(int LaneHandle, char State)> SampleCrossingSignals() => _engine.SampleControlledCrossingSignals();
+
     // issue #15 residual chase (docs/LIVE-CITY-15-RESIDUAL-REPRO.md): an ENGINE-AUTHORITATIVE per-vehicle
     // witness for confirming the turn-lane-segregation hypothesis -- LiveCityCar carries no lane/pos/posLat/
     // speed/TL, so this reaches straight into the live Engine's read columns. Diagnostic accessor only

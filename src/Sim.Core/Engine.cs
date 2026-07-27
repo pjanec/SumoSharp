@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Sim.Ingest;
 
 namespace Sim.Core;
@@ -1608,6 +1609,10 @@ public sealed partial class Engine : IEngine
         // Step()-only read projection can publish each one's current signal colour for rendering.
         BuildTlControlledLanes();
 
+        // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1: precompute the TL-controlled pedestrian
+        // crossing set once here too (empty for any net without a controlled crossing).
+        BuildTlControlledCrossings();
+
         _vehicles.Clear();
         // GAP-2: completed-trip records belong to the previous scenario's run -- a fresh
         // (re)load must start CompletedTrips empty, same discipline as every other per-scenario
@@ -1971,6 +1976,18 @@ public sealed partial class Engine : IEngine
     private (int LaneHandle, string TlId, int LinkIndex)[] _tlControlledLanes = Array.Empty<(int, string, int)>();
     private int[] _tlLaneHandles = Array.Empty<int>();
     private byte[] _tlStates = Array.Empty<byte>();
+
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1: the static set of TL-controlled pedestrian
+    // CROSSING lanes (an internal-lane category BuildTlControlledLanes structurally excludes -- see
+    // that method's `if (lane.Id.StartsWith(':')) continue;` guard) and their current signal-state
+    // chars, sampled on demand by SampleControlledCrossingSignals(). Built once (cold) alongside
+    // _tlControlledLanes in LoadScenario; empty for any net without a TL-controlled crossing. This is
+    // a pure Step()-only read projection -- never consumed by Step() itself -- so it cannot perturb
+    // any golden trajectory or the parity hash.
+    private static readonly Regex CrossingLaneIdPattern = new(@"^:.+_c\d+(_\d+)?$", RegexOptions.Compiled);
+    private (int LaneHandle, string TlId, int LinkIndex)[] _tlControlledCrossings = Array.Empty<(int, string, int)>();
+    // Reused across calls to SampleControlledCrossingSignals() to avoid a per-frame allocation.
+    private readonly List<(int LaneHandle, char State)> _crossingSignalsBuf = new();
 
     // DIAGNOSTIC ONLY (issue #15 residual, docs/LIVE-CITY-15-ATTEMPT-LOG.md): count of vehicles that hit
     // the wrong-lane dead-end clamp in ExecuteMoveVehicle this step -- a car that reached a lane end on a
@@ -2418,6 +2435,83 @@ public sealed partial class Engine : IEngine
         }
 
         _tlStates = new byte[_tlControlledLanes.Length];
+    }
+
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1 (enumeration mechanism): find every TL-controlled
+    // pedestrian crossing lane once (cold, per LoadScenario), mirroring BuildTlControlledLanes but for the
+    // internal-lane crossing category that method skips. A crossing lane id matches
+    // CityLib.CrosswalkBuilder.IsCrossingLaneId's pattern (`^:.+_c\d+(_\d+)?$`); CityLib is not
+    // referenceable from Sim.Core, so the pattern is replicated here (CrossingLaneIdPattern).
+    //
+    // ADAPTED from the design doc's sketch (LinkIndexByInternalLane + EntryConnectionByLink): verified
+    // empirically against scenarios/_ped/demo_city/box/net.xml that those two maps do NOT reach a
+    // crossing lane. Both are built from `Junction.Links`, which netconvert populates by matching each
+    // IntLanes[i] against a top-level <connection>'s `via` attribute (NetworkParser.cs ParseJunction's
+    // `connections.FirstOrDefault(c => c.Via == internalLaneId)`) -- but a pedestrian crossing's
+    // controlling <connection> has NO `via`; the crossing lane is the connection's `to` DIRECTLY
+    // (e.g. `<connection from=":d_0_0_w1" to=":d_0_0_c0" fromLane="0" toLane="0" tl="d_0_0"
+    // linkIndex="4" .../>`, walkingarea -> crossing, both internal), so it never becomes a `via` target
+    // and `Junction.Links`/`LinkIndexByInternalLane` skip it entirely even though it IS listed in the
+    // junction's own `intLanes=` attribute.
+    //
+    // The actual path: scan `_network.Connections` once for every connection that carries a `tl` (cheap,
+    // cold path), index it by (To edge id, ToLane), then look up each crossing lane by its OWN
+    // (EdgeId, Index) -- i.e. resolve the crossing's controlling connection as the one that ENTERS it,
+    // exactly the connection above already names `tl`/`linkIndex` on itself with no further indirection
+    // needed. Keep the crossing only when its `tl` has a loaded <tlLogic> (TL-controlled; an
+    // uncontrolled/priority crossing has no signal to sample).
+    private void BuildTlControlledCrossings()
+    {
+        var entryByToLane = new Dictionary<(string ToEdge, int ToLane), Connection>();
+        foreach (var conn in _network!.Connections)
+        {
+            if (conn.Tl is not null)
+            {
+                entryByToLane[(conn.To, conn.ToLane)] = conn;
+            }
+        }
+
+        var list = new List<(int, string, int)>();
+        foreach (var lane in _network.LanesByHandle)
+        {
+            if (!lane.Id.StartsWith(':') || !CrossingLaneIdPattern.IsMatch(lane.Id))
+            {
+                continue; // only internal lanes can be crossings, and only crossing-shaped ids qualify
+            }
+
+            if (!entryByToLane.TryGetValue((lane.EdgeId, lane.Index), out var entryConn))
+            {
+                continue; // no TL-carrying connection enters this crossing (uncontrolled crossing)
+            }
+
+            if (entryConn.Tl is not { } tl || !_network.TlLogicsById.ContainsKey(tl)
+                || entryConn.LinkIndex is not { } li || li < 0)
+            {
+                continue;
+            }
+
+            list.Add((lane.Handle, tl, li));
+        }
+
+        _tlControlledCrossings = list.ToArray();
+    }
+
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1 (API contract): read-only projection of every
+    // TL-controlled pedestrian crossing's current signal char, for the viewer's mini crossing heads.
+    // Pure read over state Step() already produced (same TlLinkStateChar call the vehicle approach-lane
+    // path uses in PublishReadState); never called from Step(), so it cannot perturb any golden
+    // trajectory or the parity hash. Fills a reused backing list to avoid a per-frame allocation --
+    // valid until the next call, same convention as the other Sample*/columnar accessors.
+    public IReadOnlyList<(int LaneHandle, char State)> SampleControlledCrossingSignals()
+    {
+        _crossingSignalsBuf.Clear();
+        for (var i = 0; i < _tlControlledCrossings.Length; i++)
+        {
+            var (laneHandle, tl, li) = _tlControlledCrossings[i];
+            _crossingSignalsBuf.Add((laneHandle, TlLinkStateChar(tl, li, CurrentTime)));
+        }
+
+        return _crossingSignalsBuf;
     }
 
     // Current signal char (G/g/y/r/...) for a controlled link at `evalTime`. Mirrors RedLightConstraint's

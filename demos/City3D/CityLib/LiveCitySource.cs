@@ -99,6 +99,10 @@ public sealed class LiveCitySource : IDisposable
     // to materialise the whole ped crowd every frame (the GC-pressure fix at large LIVECITY_PEDS).
     public IReadOnlyList<LiveCityCar> SampleCars() => _sim.SampleCars();
 
+    // docs/LIVE-CITY-PED-CROSSING-SIGNALS-DESIGN.md T1: passthrough to LiveCitySim.SampleCrossingSignals()
+    // for the viewer's mini pedestrian-crossing signal heads (T2, owned separately).
+    public IReadOnlyList<(int LaneHandle, char State)> SampleCrossingSignals() => _sim.SampleCrossingSignals();
+
     // Advances the coupled sim one Dt=0.5s tick (LiveCityConfig.Dt) and publishes the resulting frame onto
     // the car wire (LiveCitySim.Step()'s own responsibility) -- mirrors SimSource.Tick()'s one-line shape.
     public void Tick() => _sim.Step();
