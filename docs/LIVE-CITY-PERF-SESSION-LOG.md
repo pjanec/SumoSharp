@@ -754,6 +754,58 @@ reused buffer is not zeroed whereas both current paths are.
 - `carYieldMetric` = 4.7% of wall now that cars exist (the O(on-crossing peds × cars) structure I
   deliberately did not restructure in B1) ⇒ A17.
 
+### A15 · LP3 projected-lines scratch — **WIN, SHIPPED `48e5a0f`** (5.5× less allocation, GC pause 9% → 2.5%)
+
+- **Change:** `HalfPlaneLp.LinearProgram3` takes a trailing `Span<OrcaLine> projScratch = default`, using the
+  caller's buffer when large enough and otherwise falling back to *exactly* the prior stackalloc/heap path
+  (so `ShapedVoSolver`'s call site is untouched). `OrcaSolver.ComputeNewVelocity` forwards it;
+  `OrcaCrowd.ScratchSet` gained `ProjLineScratch`, grown identically to `LineScratch`. Implementation note
+  worth keeping: the local needed `scoped Span<OrcaLine> projLines;` or the ref-safety checker rejects it
+  (CS8353) across the stackalloc-vs-parameter-slice branches.
+- **Byte-identity argument (verified by reading, not assumed):** `projLines[0..count)` is always written
+  before any read reaches it and only `projLines[..count]` is passed onward, so a reused, **non-zeroed**
+  buffer's stale tail is never observed. That mattered because both prior paths (`stackalloc` span and
+  `new[]`) were zero-initialized and a pooled buffer is not.
+- **BEFORE / AFTER — orchestrator's paired A/B at production density** (3 000 cars + 20 000 peds; 2 984 /
+  19 965 achieved, 6 134 high-power), 60 steps, 2 rounds each:
+
+      alloc/step   264.2 / 262.9 MB  ->  48.8 / 47.1 MB   (-82%, 5.5x)
+      GC pause     9.05% / 8.81%     ->  2.90% / 2.46%    (-70%)
+      mean/step    230.0 / 230.4 ms  ->  216.4 / 214.4 ms (-6.4%, 4/4 paired wins, no overlap)
+      ALL counters identical: cars=2984 peds=19965 ped_hi_end=6134 ped_lo_end=13831 arrived=53
+
+- **Note on the implementor's own gate:** its paired check ran at 200 cars / 400 peds where the pocket holds
+  only **26** high-power agents — under the 64-line threshold, so LP3's heap path barely engages and it
+  measured +0.5% (noise). It said so plainly rather than dressing that up as the result. Correct call: a
+  fixed small gate scenario cannot measure a density-dependent win, which is exactly why the orchestrator
+  runs the real measurement.
+- **Gates:** ParityTests 775/4 skips (incl. `OrcaParallelStepTests`/`OrcaRegionDecompositionTests`),
+  LiveCity 80/80, Pedestrians 317/317, `Sim.Bench BF3794A4704BCD79` `hashA == hashPar`. **Verdict: WIN.**
+- **Lesson (2nd instance tonight):** a `stackalloc`-vs-heap threshold is a **latent scaling bug** whenever the
+  span it guards is sized by runtime data. A13 was `<= 64` vs a consumer raised to 256; this was `<= 64` vs
+  a line count that grows with crowd density. **Grep the codebase for every remaining
+  `stackalloc … : new …[]` threshold** — that is now a known recurring defect class here, not a one-off.
+
+### Cumulative scoreboard — COUPLED (3 000 cars + 20 000 peds requested; ~2 984 / 19 965 achieved)
+
+| stage | mean ms/step | alloc/step | GC pause |
+|---|---|---|---|
+| before A15 | 230.0 | 264 MB | 9.0% |
+| + A15 (`48e5a0f`) | **215.4** | **47.9 MB** | **2.5%** |
+
+Ped-only 20 000: **110.5 → 47.5 ms/step (2.33×)**. Car-only 500: alloc **10.17 MB → 586 KB/step (17.4×)**.
+
+### Remaining known targets (measured, ranked)
+
+- **A16 · `engine.insert` = 15.8% of wall + 1 546 MiB (6.3% alloc)** at 3 009 cars — unexplained; the car
+  population is at its cap during the measured window so few departures should occur. Next up.
+- **A12 · no scenario can host the TARGET** (5 000 cars + 20 000 peds together). Demo net gridlocks at
+  ~3 084 cars; Geneva has no ped infrastructure (~40 peds). Needs a purpose-built committed bench net.
+  **Without this the target is unmeasurable and every coupled number is a proxy.**
+- **A17 · `carYieldMetric` = 4.7% of wall** with cars present (the O(on-crossing peds × cars) structure
+  left deliberately unrestructured in B1). Fix by indexing slow cars spatially once per step.
+- **A18 · residual 47.9 MB/step** — where is it now? Re-attribute with `--profile` before guessing.
+
 ---
 
 ## REVISED PLAN (post-A1) — the ladder must be made VALID before any optimization
