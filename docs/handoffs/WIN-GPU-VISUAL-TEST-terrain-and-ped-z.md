@@ -99,8 +99,10 @@ dotnet test Traffic.sln -c Release                                   # expect 77
                                                                      #   (incl. Sim.Pedestrians.Tests 324/324)
 dotnet run --project src\Sim.Bench -c Release                        # expect hash BF3794A4704BCD79, par == single
 dotnet test tests\Sim.LiveCity.Tests -c Release                      # expect 90/90
-dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 190/190 (~2 m 20 s: its
-                                                                     #   render-loop tests are real-time paced)
+dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 186 pass / 4 skip (~45 s)
+# The 4 skips are real-time render-loop tests (~1 s wall per simulated second). You are about to judge the
+# render path on a GPU, so RUN THEM -- they are the headless half of the same question:
+$env:CITY3D_REALTIME_TESTS=1; dotnet test demos\City3D\CityLib.Tests -c Release   # expect 190/190 (~2 m 20 s)
 ```
 
 ---

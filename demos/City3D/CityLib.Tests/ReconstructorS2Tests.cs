@@ -29,6 +29,12 @@ namespace CityLib.Tests;
 // ReconstructionTests) so DrClock produces the smooth render-rate front a live viewer sees. Determinism uses
 // the fixed-dt override (Reconstruct's frameDtOverride), which additionally pins the DrClock query instant to
 // the packet stream (ResolveAt) so the pass is a pure function with no wall clock to diverge.
+//
+// THE FOUR WALL-CLOCK CASES ARE `[RealTimeFact]` -- SKIPPED unless `CITY3D_REALTIME_TESTS=1`. They cost about
+// one second of wall clock per simulated second (~2 minutes for the group), which is unavoidable: `DrClock`
+// tracks wall time, so a real-time render loop cannot be simulated faster than real time. Read
+// `RealTimeFactAttribute` for the full reasoning, how to run them, and when you MUST. The two fast cases
+// (`Facade_...`, `..._IsDeterministic_...`) always run and cover the pivot property and determinism purely.
 public class ReconstructorS2Tests
 {
     private readonly ITestOutputHelper _output;
@@ -89,7 +95,8 @@ public class ReconstructorS2Tests
     // ---- pivot fix (end-to-end through CityLib.Reconstructor): at a red-light STOP (no playout-delay lag, no
     // extrapolation) the reconstructed CENTER sits ~half a length behind the SUMO snapshot FRONT (getPosition =
     // front bumper). If the pipeline still fed the front, this distance would be ~0; it is ~L/2. ----
-    [Fact]
+    [RealTimeFact]
+    [Trait("Category", "RealTime")]
     public void Reconstructor_StoppedVehicle_CenterIsHalfLengthBehindSnapshotFront()
     {
         var (net, rou, cfg) = Paths("09-traffic-light");
@@ -154,7 +161,8 @@ public class ReconstructorS2Tests
 
     // ---- lane-change straddle is reconstructed CONTINUOUSLY (was skipped). 12-overtake: veh1 changes lane to
     // overtake. Pre-S2 the straddle frames hit `continue` -> veh1 disappeared and never eased across. ----
-    [Fact]
+    [RealTimeFact]
+    [Trait("Category", "RealTime")]
     public void Reconstructor_LaneChangeStraddle_IsReconstructedContinuously_NotSkipped()
     {
         var (net, rou, cfg) = Paths("12-overtake");
@@ -236,7 +244,8 @@ public class ReconstructorS2Tests
 
     // ---- junction turn follows the connecting-lane arc. 44-multilane-junction-turn: veh0 makes a ~90 deg
     // turn; the center tracks a lane centerline through the arc (bounded offset) with a smooth heading. ----
-    [Fact]
+    [RealTimeFact]
+    [Trait("Category", "RealTime")]
     public void Reconstructor_JunctionTurn_FollowsConnectingLaneArc_Smoothly()
     {
         var (net, rou, cfg) = Paths("44-multilane-junction-turn");
@@ -319,7 +328,8 @@ public class ReconstructorS2Tests
 
     // ---- a stopped vehicle does not creep: over consecutive genuinely-stopped frames the center barely moves
     // (a driving car covers ~0.2 m/frame; a creep bug would drift it forward continuously). ----
-    [Fact]
+    [RealTimeFact]
+    [Trait("Category", "RealTime")]
     public void Reconstructor_StoppedVehicle_DoesNotCreep()
     {
         var (net, rou, cfg) = Paths("09-traffic-light");

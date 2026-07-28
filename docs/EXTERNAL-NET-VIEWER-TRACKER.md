@@ -62,7 +62,7 @@ step — every "done" is unverified until proven).
 | ----- | ------ |
 | `tests/Sim.LiveCity.Tests` | 90/90 pass |
 | `tests/Sim.Pedestrians.Tests` | 324/324 pass |
-| `demos/City3D/CityLib.Tests` | **190/190** (the three `ReconstructorS2Tests` failures were test bugs — fixed, see below) |
+| `demos/City3D/CityLib.Tests` | **186 pass / 4 skip** (~45 s); **190/190** with `CITY3D_REALTIME_TESTS=1` (~2 m 20 s). The three `ReconstructorS2Tests` failures were test bugs — fixed, see below |
 | `Traffic.sln` (parity) | 775 pass, 0 fail, 4 skip |
 | `Sim.Bench` determinism hash | `BF3794A4704BCD79`, par == single |
 
@@ -93,8 +93,12 @@ three turned out to be assertions that did not measure what their own comments c
    steady state — one settle frame as the 0.6 s smoothing constant converges is not creep, and only the
    median distinguishes them. Measured: max 0.53, median 0.035.
 
-**Cost, since it is not free:** the wall-clock loops are real-time now, so this suite went from **28 s to
-2 m 18 s**. Tick counts were trimmed to the minimum each assertion needs (48→31, 44→36, 60→40).
+**Cost, and how it is contained:** the wall-clock loops are real-time now — ~1 s of wall clock per simulated
+second, taking the suite from 28 s to 2 m 18 s. Tick counts were trimmed to the minimum each assertion needs
+(48→31, 44→36, 60→40), and the four are `[RealTimeFact]`: **SKIPPED unless `CITY3D_REALTIME_TESTS=1`**, so the
+default run is 186 pass / 4 skip in ~45 s. Skipped rather than excluded so "not run" is visible in the output.
+**Run them after any change to `Sim.Viewer.Motion`, `CityLib.Reconstructor`, or the render-clock plumbing** —
+nothing else covers those end to end.
 
 > **Repacking caveat.** `demos/City3D/build.sh --pack-only` writes `SumoSharp.*.0.1.0.nupkg` at a
 > version that never changes, so NuGet's global cache will happily serve a **stale** package and the
