@@ -1,5 +1,8 @@
 # SumoSharp serve-path drop-in — achievements & handoff
 
+> **STATUS: ARCHIVED (2026-07-28)** — Achievements/handoff for the `sumosharp` drop-in CLI branch while it was still unmerged. Superseded by `docs/SERVE-PATH-PLAN.md`, which carries the same effort plus the Geneva acceptance, the merge, and the post-merge follow-ups this handoff predates.
+
+
 **Branch:** `claude/sumosharp-drop-in-binary-vq7u9p` (NOT yet merged to `main` — try it here first).
 **Scope:** the "last mile" from `docs/SUMOSHARP-SERVE-PATH-DROP-IN.md` — make SumoSharp a drop-in for
 the vanilla `sumo` binary in the SumoData sub-area **serve / replay** path. Design/verification trail:
@@ -124,7 +127,7 @@ per-call startup is process-start only (NOT `dotnet run --project`, which pays J
 
 ## 5. Geneva-session prompt
 
-See the copy-paste prompt for the SumoData / Geneva session in `docs/GENEVA-SESSION-TRY-PROMPT.md`.
+See the copy-paste prompt for the SumoData / Geneva session in `docs/archive/GENEVA-SESSION-TRY-PROMPT.md`.
 It names this branch and walks that session through building `sumosharp`, pointing `SUMO_BINARY` at it,
 running a real produced `scenario.sumocfg` through `preprocess.py --replay`, and running
 `audit_nocheat.py` — the definitive acceptance we could not run here for lack of the restricted data.

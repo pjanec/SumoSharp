@@ -1,5 +1,8 @@
 # PERF-ROADMAP.md — SIMD & parallelization roadmap
 
+> **STATUS: SUPERSEDED (2026-07-28)** — Self-declared superseded for the on-target work by `docs/PERF-HANDOVER.md` — read that first. ⚠ One claim here is **falsified for the coupled cars+peds host**: "the plan phase is allocation-free" was measured car-only with `CrowdSource` null; with pedestrians attached, `engine.plan` allocates ~520 B/car/step (tracked as A18 in `docs/TASKS-TODO.md`). Kept in place (code-pinned) for the Layer-0/1 history and the rejected-ideas list.
+
+
 > **📄 Reference documentation — superseded for the on-target work.** The Layer-0/1 allocation &
 > parallelization items in this roadmap have **landed** (byte-identical, parity-gated). The actual
 > on-target (16-core/24-thread Windows) measurement, results, and the definitive experiments log —

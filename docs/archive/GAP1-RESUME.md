@@ -1,5 +1,8 @@
 # GAP1-RESUME.md — single entry point to finish the dense-flow gridlock fix (Gap 1)
 
+> **STATUS: ARCHIVED (2026-07-28)** — Resume brief for the dense-flow gridlock fix ("Gap 1": dead-lane cars stalling junctions); its own header says SOLVED. Diagnosis, the three-part fix and the numbers are reproduced in `docs/HIGH-DENSITY-CALIBRATION-DESIGN.md` §2.3.4-§2.3.5 and indexed in `docs/CALIBRATION-KNEE-INDEX.md`.
+
+
 > **✅ SOLVED (2026-07-21, session 2, branch `claude/dense-lane-overlap-fix-5tr4ha`).** 2× dense synthetic
 > now drains to **0 teleports / 290 arrivals = vanilla SUMO 1.20.0 parity** (was 10 tp / 275 arr); 1×
 > **5→1 tp / 290 arr**. Full suite green (657 pass), every committed golden byte-identical, deterministic.
@@ -19,7 +22,7 @@ resume from this file alone. Companions with the deep detail: `HIGH-DENSITY-CALI
 ## RESUME PROMPT (paste this to restart)
 
 > Resume Gap 1 (dense-flow gridlock) on branch `claude/dense-flow-throughput-diag`. Read
-> `docs/GAP1-RESUME.md` first, then `docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.4`. Gaps 2+3 are DONE
+> `docs/archive/GAP1-RESUME.md` first, then `docs/HIGH-DENSITY-CALIBRATION-DESIGN.md §2.3.4`. Gaps 2+3 are DONE
 > and merged into the branch; a **safe partial** for Gap 1 (gated dead-lane reroute) is landed. The root
 > cause and the exact SUMO-faithful fix are already diagnosed — **do not re-investigate, implement.** The
 > fix: make a vehicle's junction continuation follow its ACTUAL current lane's connection when that lane

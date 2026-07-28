@@ -1,5 +1,8 @@
 # Live-city demo — data & decision requests for the SumoData session
 
+> **STATUS: ARCHIVED (2026-07-28)** — The Q1-Q9 checklist of confirms and scope decisions sent to SumoData for the coupled cars+peds City3D demo. The **answers** are the frozen contract in `docs/SUMOSHARP-LIVE-CITY-DECISIONS.md` -- read that. Kept for the problem framing, which the decisions doc does not restate.
+
+
 **From:** the SumoSharp pedestrian/engine session · **To:** the SumoData session
 **Re:** `SUMOSHARP-LIVE-CITY-DEMO-SPEC.md` (your combined-demo spec) + two extensions the SumoSharp owner
 has now made **hard requirements**. This doc closes information gaps *before* we design the implementation.

@@ -1,5 +1,8 @@
 # Pedestrian dev session — handoff
 
+> **STATUS: ARCHIVED (2026-07-28)** — Pedestrian dev handoff whose headline recommendation was "do DDS transport next". DDS transport landed (PR #5). Superseded by `docs/PEDESTRIAN-SESSION-HANDOFF.md`, which `docs/PEDESTRIAN-TRACKER.md` now designates as the handoff for a fresh session.
+
+
 **You are the continuation developer session.** You own the pedestrian subsystem **and** (now) `Sim.Core` —
 the parallel Engine track finished its work and merged it to `main`, and the core is handed to us. Continue
 the production build-out (DDS transport next; see below). Branch:

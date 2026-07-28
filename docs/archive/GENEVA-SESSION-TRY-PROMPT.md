@@ -1,5 +1,8 @@
 # Prompt for the SumoData / Geneva session — try SumoSharp as the serve-path engine
 
+> **STATUS: ARCHIVED (2026-07-28)** — One-shot prompt asking the Geneva/SumoData session to first-try SumoSharp as the serve-path engine. The branch it names is long since merged; the outcome is in `docs/SERVE-PATH-PLAN.md`.
+
+
 Copy everything in the fenced block below into the SumoData (Geneva) session. It names the SumoSharp
 branch to test **before** it is merged to `main`.
 

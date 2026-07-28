@@ -1,6 +1,6 @@
 # HIGH-DENSITY-X1-DESIGN.md — attention-aware / camera-based selective popping
 
-**Status:** design (owner picked X1 next, 2026-07-17). Item **X1** from `SUMOSHARP-HIGH-DENSITY-FEATURES.md`
+**Status:** design (owner picked X1 next, 2026-07-17). Item **X1** from `archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md`
 §5 (the flagship non-parity extra). **No SUMO golden** — SUMO's controls are global; this is the reason to
 own an engine. Validated functionally + statistically, not against a golden. Depends on P1-F (teleport
 action — done) and the insertion path (done).

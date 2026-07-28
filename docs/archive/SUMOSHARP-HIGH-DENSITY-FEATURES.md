@@ -1,5 +1,8 @@
 # SumoSharp — features needed for optimal high-density sub-area traffic
 
+> **STATUS: ARCHIVED (2026-07-28)** — Analysis (never a work order) of the engine features high-density sub-area traffic would need: P0 plumbing, P1 rerouting/teleport, X1 attention-aware popping. `docs/SUMOSHARP-SERVE-PATH-DROP-IN.md` states those are now landed and golden-verified. Kept as the requirements analysis that shaped them.
+
+
 **Audience:** an autonomous Claude Code session working **in the SumoSharp repo**. Copy this file
 into the SumoSharp repo (e.g. `docs/`) so that session has it. It is self-contained: it explains the
 product context, *why* each feature is needed (with measured numbers), the exact current-state

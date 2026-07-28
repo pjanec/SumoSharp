@@ -99,7 +99,7 @@ merge itself was validated). A real fix should:
   **stem-through under-discharge via turn-lane mis-segregation** (not gap-acceptance): see the C1
   witness commits `4633996`/`9343249` (keep-right drift ~15% minor; dominant = low stem-through
   discharge / `crossJxnLeader` regression).
-- **`docs/DISCHARGE-YIELD-RESUME.md`** — permissive/minor-crossing yield (`blockedByFoe`), already
+- **`docs/archive/DISCHARGE-YIELD-RESUME.md`** — permissive/minor-crossing yield (`blockedByFoe`), already
   landed (`f69a58d`), context for the discharge model.
 - **`docs/ISSUE2-JUNCTION-TELEPORT-DESIGN.md`** / **`ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md`** — the
   no-teleport gap (why a stubborn jam never breaks) and junction keep-clear.

@@ -1,5 +1,8 @@
 # DR motion jitter (frequent slowdowns/speedups on straight roads) — investigation plan
 
+> **STATUS: ARCHIVED (2026-07-28)** — A planned six-hypothesis (A-F) investigation into DR viewer motion jitter that was **never run as written**. The jitter was instead fixed by a different route -- auto-delay off by default, capped-correction error smoothing, DR-error-based publishing -- recorded in `docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md` §10. Kept because the unrun hypotheses are still the best list of what *else* could cause viewer jitter.
+
+
 **Status:** planned investigation (NOT started). Design-first, data-driven — **no fixing before the
 cause is localized from recorded data** (the standing rule; see `CLAUDE.md` and the pattern used in
 the junction / lane-change passes). **Companion:** `SUMOSHARP-VIEWER-DR-SMOOTHING.md` (the DR pipeline

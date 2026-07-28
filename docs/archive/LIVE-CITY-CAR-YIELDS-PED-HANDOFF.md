@@ -1,5 +1,8 @@
 # HANDOFF — cars yield to pedestrians in their path (crosswalk safety)
 
+> **STATUS: ARCHIVED (2026-07-28)** — The brief that spawned the car-yields-ped session, which is DONE. Its deliverables are the trio `docs/LIVE-CITY-CAR-YIELDS-PED-{DESIGN,TASKS,TRACKER}.md` -- read those instead. NOTE its §7 cites `--live-city-orcatrace` / `--live-city-cartrace`, which the T1-T3 viz refactor removed from `src/Sim.Viz/Program.cs`; that staleness is tracked in `docs/TASKS-TODO.md`.
+
+
 **Self-contained brief for a NEW session** that makes a car **STOP for a pedestrian crossing or standing in
 its path** instead of weaving around it at speed. Read top-to-bottom; assumes near-zero prior context.
 **Per `CLAUDE.md`: design-first** — produce and get agreement on the `design → tasks → tracker` trio in

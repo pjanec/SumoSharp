@@ -7,7 +7,7 @@ record. **Scope:** the publish side — `Sim.Replication` (`PublishScheduler` / 
 `Sim.Viewer.Core/DdsPublisher`, plus a small shared-extrapolation extraction. **Builds on:**
 `SUMOSHARP-DEADRECKONING.md` §7 (the adaptive scheduler) and `SUMOSHARP-VIEWER-DR-SMOOTHING.md` §5 (the
 viewer's DR pipeline). **Supersedes** the delay/extrapolation dimension of
-`SUMOSHARP-DR-MOTION-JITTER-INVESTIGATION.md` (this is the root-cause fix that investigation pointed
+`archive/SUMOSHARP-DR-MOTION-JITTER-INVESTIGATION.md` (this is the root-cause fix that investigation pointed
 to). **Parity:** publish-side only — zero engine/golden impact (`dotnet test` stayed 446/0 throughout).
 
 ---

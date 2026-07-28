@@ -1,7 +1,7 @@
 # Live-city demo — locked decisions (closed contract)
 
 Record of the decisions agreed between the SumoSharp ped/engine session and the SumoData session, from
-`SUMOSHARP-LIVE-CITY-DATA-REQUEST.md` (6614766) → SumoData's response. This is the frozen contract the
+`archive/SUMOSHARP-LIVE-CITY-DATA-REQUEST.md` (6614766) → SumoData's response. This is the frozen contract the
 design docs build against. Source of truth for the "why"; the two design docs
 (`LIVE-CITY-2D-BUILDER-DESIGN.md`, and later the crossing-yield + City3D designs) hold the "how".
 

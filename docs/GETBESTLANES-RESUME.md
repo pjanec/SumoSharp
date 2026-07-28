@@ -1,5 +1,8 @@
 # GETBESTLANES-RESUME.md — the calibration-knee fix: turn-lane segregation (getBestLanes lane-desirability)
 
+> **STATUS: HISTORICAL TRAIL (2026-07-28)** — Records a mechanism hypothesis ("getBestLanes under-values the turn lane") that its own session-5 update **FALSIFIED** — the knee's dominant cause is not lane-choice but keep-right rule 2. **This is the only place that correction is written down**; `docs/CALIBRATION-KNEE-INDEX.md` still carries the falsified conclusion, tracked as an open fix in `docs/TASKS-TODO.md`. Kept for the refutation and the landed partial fix (measurement-discipline #2, #8).
+
+
 **Written 2026-07-22 to survive context compaction.** Self-contained: a fresh session resumes from this file
 (plus `docs/CALIBRATION-KNEE-INDEX.md` for the full arc). SUMO source: `/sumo` (v1_20_0).
 
@@ -46,7 +49,7 @@ Everything below is LANDED, byte-identical goldens, full suite green (657 parity
 deterministic. In commit order:
 - **Gap-1 dead-lane, Stage-4 box, parking** — see `CALIBRATION-KNEE-INDEX.md`.
 - **Permissive-yield** (`f69a58d`): `lt` 112→7 = vanilla. Realism win, SEPARATE axis (reduces throughput;
-  NOT the knee). `docs/DISCHARGE-YIELD-RESUME.md`.
+  NOT the knee). `docs/archive/DISCHARGE-YIELD-RESUME.md`.
 - **Arrival-TL discharge fix** (`ca8d515`): `RedLightConstraint` final-edge exemption (a vehicle whose route
   ENDS at a TL edge is not braked at that TL). Real fix, but SumoData's re-run showed it does NOT help their
   box (their demand arrives off-lane at parkingAreas, not at TL through-edges) — and nudged their overshoot

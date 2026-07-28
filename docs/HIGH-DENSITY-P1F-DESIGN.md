@@ -1,6 +1,6 @@
 # HIGH-DENSITY-P1F-DESIGN.md — bounded teleport valve (`time-to-teleport` jam)
 
-Design doc for P1-F. WHAT/WHY: `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §3 P1-F. This is the HOW,
+Design doc for P1-F. WHAT/WHY: `docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §3 P1-F. This is the HOW,
 grounded in the vendored SUMO 1.20.0 source (`sumo/src/...`). Design-first: implement after this is
 agreed. P1-F is the anti-deadlock relief valve — under teleport-off, high density deadlocks
 permanently; a bounded valve (our config: `time-to-teleport=120`) lets the rare residual jam resolve

@@ -1,5 +1,8 @@
 # DISCHARGE-YIELD-RESUME.md — permissive/minor-link yield parity
 
+> **STATUS: ARCHIVED (2026-07-28)** — Resume brief for the permissive/minor-link junction-yield parity fix (left-turn violations 112 -> 7); its own header says SOLVED. The root cause, the three ported pieces and the numbers are all reproduced in `docs/HIGH-DENSITY-CALIBRATION-DESIGN.md` §2.3.8 and indexed in `docs/CALIBRATION-KNEE-INDEX.md`. Kept because it is the only place the *session's* narrative order survives.
+
+
 > **STATUS 2026-07-22: SOLVED (landed on `claude/dense-lane-overlap-fix-5tr4ha`).** The permissive-left
 > yield deficit is fixed to exact vanilla parity: `scenarios/_repro/saturation-flow/lt.sumocfg`
 > left-turns **112 → 7** (== vanilla). Every FCD golden byte-identical; full suite green; deterministic
@@ -41,7 +44,7 @@ in the uploads (`…HANDOFF-tl-junction-discharge…`, `…NEED-sustained-insert
 
 ## RESUME PROMPT (paste to restart)
 > Resume the TL/junction **discharge-yield** fix on branch `claude/dense-lane-overlap-fix-5tr4ha`. Read
-> `docs/DISCHARGE-YIELD-RESUME.md` first, then `scenarios/_repro/saturation-flow/FINDINGS.md`. The
+> `docs/archive/DISCHARGE-YIELD-RESUME.md` first, then `scenarios/_repro/saturation-flow/FINDINGS.md`. The
 > calibration-knee blocker is localized: **base saturation flow is at parity (straight-through 98–100%)**,
 > but **SumoSharp under-yields at permissive/minor links** — on a permissive left across dense oncoming it
 > lets 112 turns through vs vanilla's 7 (16×). `EgoLinkHasSignalPriority` already classifies `'g'` correctly

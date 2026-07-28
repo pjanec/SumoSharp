@@ -1,5 +1,8 @@
 # Bootstrap — run City3D (3D) + Raylib (2D) viewers locally on Windows, then remote over DDS
 
+> **STATUS: ARCHIVED (2026-07-28)** — Bootstrap brief for a Windows-GPU session on the City3D/Raylib viewers, from the cars-XOR-peds era. Superseded by `docs/LIVE-CITY-WINDOWS-TESTING-BOOTSTRAP.md` (which says so in its own text) and, for the current viewer, by `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`. Kept as the record of what the viewer needed to be brought up before the coupled scene existed.
+
+
 **Read this first, then jump to §4 (the run recipes).** This doc exists so a fresh session on a Windows
 desktop can get the two viewers **on screen** fast — running the SumoSharp engine with cars (and pedestrians)
 — **without** re-discovering how SumoSharp runs or what data exists. Those basics are settled and given here.

@@ -1,5 +1,8 @@
 # SumoSharp response — the composed demo-city (Prototype E)
 
+> **STATUS: ARCHIVED (2026-07-28)** — Point-in-time reply mapping SumoData's R1-R8 demo-city asks onto engine state. Superseded by the next round of the same collaboration (`docs/archive/SUMOSHARP-LIVE-CITY-DATA-REQUEST.md` / `docs/SUMOSHARP-LIVE-CITY-DECISIONS.md`). Kept as one turn of a negotiation whose sequence explains why the current data contract looks the way it does.
+
+
 Reply to `SUMOSHARP-DEMO-CITY-REQUIREMENTS.md` / `SUBAREA-DEMO-CITY-DESIGN.md` (both committed here). Maps the
 R1–R8 asks onto current SumoSharp state, flags what is already landed vs blocked on artifacts, and names the
 gating next action. This is the Prototype-E substrate the weave work (PED-REALISM-1) was building toward.

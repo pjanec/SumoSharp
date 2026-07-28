@@ -1,5 +1,8 @@
 # VIZ_BENCH_ACHIEVEMENTS.md — what the viz + benchmark track delivered
 
+> **STATUS: ARCHIVED (2026-07-28)** — Narrative handoff for the original `Sim.Viz` / `Sim.BenchCity` track. Its "current state" is 151 green tests against today's 775, and its remaining items are subsumed by the later perf and parity work (`docs/PERF-HANDOVER.md`, the rung docs). **Kept for the two real engine bugs it surfaced** -- that is the part not recoverable from the code.
+
+
 A summary of the `Sim.Viz` (replay/visualization) and scaled-city benchmark work built on the
 `claude/spec-docs-review-qgwatc` branch, from the two source specs (`VIZ_SPEC.md`,
 `BENCHMARK_SPEC.md`). Task-level detail is in `VIZ_BENCH_TASKS.md`; this is the narrative + the

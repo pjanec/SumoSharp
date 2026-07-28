@@ -1,5 +1,8 @@
 # Prompt for the SumoSharp sumo-core session — Issue 2: junction deadlock / jam-teleport
 
+> **STATUS: ARCHIVED (2026-07-28)** — Session prompt that framed "Issue 2" as a junction deadlock. That framing was wrong: the root cause turned out to be a zombie parking-stop, not right-of-way (`docs/SERVE-PATH-PLAN.md`). Kept as the first link in a two-stage refutation chain -- it records a reasoned-from-source hypothesis that a trace later overturned, which is exactly the class of record CLAUDE.md's measurement discipline is built out of.
+
+
 Copy the fenced block below into the sumo-core (micro-sim / high-density) SumoSharp session. This is
 **not** a serve-path task — it is a core junction/right-of-way parity divergence. The serve-path session
 is separately fixing Issue 1 (park-and-stay residency) on the same branch, so coordinate on merge.

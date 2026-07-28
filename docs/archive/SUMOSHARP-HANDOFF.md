@@ -1,5 +1,8 @@
 # SUMOSHARP-HANDOFF.md — session handoff
 
+> **STATUS: ARCHIVED (2026-07-28)** — Session handoff for the NuGet-packaging / public-API branch, pinning 250->294 tests. Disconnected from the live board and its counts are far behind the current gate. **Kept rather than deleted because `docs/SUMOSHARP-API.md` still defers to "the handoff's Remaining work" for specifics it does not itself duplicate** (vehicle-slot recycling, the DR-layer design) -- deleting it would break that pointer.
+
+
 Continuation notes for the **SumoSharp** library/packaging effort. Pairs with
 `docs/SUMOSHARP-API.md` (the design of record + landed-status per section) and
 `docs/LANELESS-DIRECTION.md` (the sibling laneless/RVO branch).

@@ -37,7 +37,7 @@ interactive Flask demo (`experiments/subarea/demo/`) does select→preprocess→
 
 The engine features that make this work — `device.rerouting`, bounded `time-to-teleport`, parkingArea
 sinks, and the **X1 RealismMask** (attention-aware "pop only where the camera isn't looking") — are
-exactly the high-density work now landed in SumoSharp `main` (see `SUMOSHARP-HIGH-DENSITY-FEATURES.md`,
+exactly the high-density work now landed in SumoSharp `main` (see `archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md`,
 which you already have).
 
 ---
@@ -134,5 +134,5 @@ reach them; the essentials are summarised above.
 - `experiments/subarea/` — the tools: `deduce_weights.py`, `auto_parking.py`, `auto_calibrate.py`,
   `preprocess.py` (orchestrator, `--progress`/manifest/`--replay`/`--compute-budget`), `sim_viz.py`
   (+ `templates/`), `make_overview.py`, and `demo/` (the interactive Flask demo).
-- Already in **SumoSharp** `main` (you can read these directly): `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md`
+- Already in **SumoSharp** `main` (you can read these directly): `docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md`
   (the engine feature spec that drove the high-density work) and `docs/COORDINATION-pedestrian-x-highdensity.md`.

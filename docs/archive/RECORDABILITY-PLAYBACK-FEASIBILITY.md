@@ -1,5 +1,8 @@
 # RECORDABILITY-PLAYBACK-FEASIBILITY.md — recording a run for later playback
 
+> **STATUS: ARCHIVED (2026-07-28)** — Feasibility study concluding that wire recording is nearly free and sufficient for playback, framed as "no commitment to build". It was built: `src/Sim.Replication/Recording/{RecordingReplicationSink,SimRecFormat}.cs`. Kept because it is the only written justification for that design's shape.
+
+
 **Status: feasibility study (no commitment to build).** Evaluates how to record a simulation run for later
 playback, and specifically tests the hypothesis **"recording the DDS stream is all we might need."** Like
 `DISTRIBUTED-COUPLING-FEASIBILITY.md`, this is a return-to-later artifact + a set of guardrails so current

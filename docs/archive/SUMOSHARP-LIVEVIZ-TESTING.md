@@ -1,5 +1,8 @@
 # Live visualizer — testing handoff
 
+> **STATUS: ARCHIVED (2026-07-28)** — Human-in-the-loop testing brief for a visual pass of the browser live viewer. The pass was run and reported in `docs/archive/SUMOSHARP-LIVEVIZ-OUTCOMES.md`. Kept as a reusable runbook if `Sim.LiveHost` needs re-testing.
+
+
 Handoff for a Claude Code (or human) session that **runs the SumoSharp live dead-reckoning viewer on a
 machine with a real display** (e.g. Windows) and visually verifies it. The viewer was built and smoke-tested
 headlessly in CI; this session is the human-in-the-loop visual pass.
@@ -130,7 +133,7 @@ obstacle not blocking, HUD not updating, mode/toggle wrong, sublane vehicles not
 ## Session prompt (paste into a fresh session on the target machine)
 
 ```
-Read docs/SUMOSHARP-LIVEVIZ-TESTING.md in this repo (branch main) and carry out the visual test it
+Read docs/archive/SUMOSHARP-LIVEVIZ-TESTING.md in this repo (branch main) and carry out the visual test it
 describes for the SumoSharp LIVE dead-reckoning viewer (src/Sim.LiveHost). You are on a machine with a real
 browser/display, so actually open http://localhost:5055 and LOOK at it — this is a human-in-the-loop visual
 pass, not just a build check.

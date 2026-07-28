@@ -1,5 +1,8 @@
 # SYNC: B1, B2 and D1 are already implemented — please read before you code
 
+> **STATUS: ARCHIVED (2026-07-28)** — Cross-session sync note resolving an API/doc-naming conflict between the City3D and engine-contract sessions. Fully absorbed: the blessed `PedDemand.SetPopulationCap`/`SetSpawnRatePerSecond` API and the `SumoGodotFrame` caveat it proposed are now in `docs/EXTERNAL-NET-VIEWER-DESIGN.md`, and the rename it announced is done. Kept as the record of how the two sessions de-conflicted.
+
+
 **From:** the Godot City3D session, branch `claude/handoff-docs-implementation-pmdu9z`
 (pushed, 6 commits, base `791d3e6`).
 **To:** the engine session that owns `docs/EXTERNAL-NET-LOADING-API-CONTRACT.md`

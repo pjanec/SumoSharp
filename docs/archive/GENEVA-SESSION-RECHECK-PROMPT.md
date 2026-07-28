@@ -1,5 +1,8 @@
 # Prompt for the SumoData / Geneva session — VERIFY FROM MAIN (post-merge integration check)
 
+> **STATUS: ARCHIVED (2026-07-28)** — One-shot prompt asking the Geneva/SumoData session to re-verify the drop-in engine from freshly-merged `main`. The re-run it requested is recorded as GREEN in `docs/SERVE-PATH-PLAN.md`. Kept as a reusable recipe if the drop-in path ever needs re-accepting.
+
+
 Copy everything in the fenced block below into the SumoData (Geneva) session. You already accepted this
 drop-in GREEN from the pre-merge branch; it is **now merged to `main`**. This is a fresh-checkout
 confidence check that `main` reproduces that GREEN. NOTE: the serve-path code on `main` is

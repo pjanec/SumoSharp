@@ -1,5 +1,8 @@
 # City3D demo — integration handoff (for the main session merging into `main`)
 
+> **STATUS: ARCHIVED (2026-07-28)** — Integration handoff for merging the original City3D Godot demo branch, pinning 465 tests and hash `909605E965BFFE59`. Both open decisions are settled (`SumoSharp.Host` is a published package, see `docs/PACKAGES.md`) and the demo has moved several generations past this snapshot. Kept as the record of how the 3-D demo entered the repo.
+
+
 **Branch:** `claude/3d-city-demo-design-conmq6`. **Scope:** a Godot 4 (.NET) 3D city viewer that consumes
 the `SumoSharp.*` packages from a local feed (never nuget.org, never a `ProjectReference` into `src/`),
 proving the packaged-consumer experience and the render-side dead-reckoning story — **local** (co-hosted)

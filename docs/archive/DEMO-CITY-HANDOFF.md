@@ -1,5 +1,8 @@
 # SumoData → SumoSharp handoff: the synthetic demo-city (Prototype E substrate)
 
+> **STATUS: ARCHIVED (2026-07-28)** — SumoData handoff delivering the synthetic 5x5 km "Prototype E" demo city. The dataset it delivered is now live at `scenarios/_ped/demo_city/box` and the one blocker it flagged (unknown `parking_lot`/`park` POI kinds) is fixed in `src/Sim.Pedestrians/PedPoiReader.cs`. Kept as the provenance record for a committed fixture.
+
+
 A fully **synthetic** ~5×5 km composed city + a 1 km feature kernel, for demonstrating and testing every
 vehicle + pedestrian feature and their interactions, in both `sim_viz` 2D and City3D 3D. No real
 geometry, no place tokens — safe to keep in the SumoSharp repo.

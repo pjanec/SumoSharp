@@ -1,5 +1,8 @@
 # Prompt for the SumoSharp sumo-core session — Issue 2 (RE-DIAGNOSED): teleport misclassification
 
+> **STATUS: ARCHIVED (2026-07-28)** — The second Issue-2 framing (teleport jam / yield misclassification), also superseded by the real finding in `docs/SERVE-PATH-PLAN.md`. Kept for the same reason as its predecessor: two plausible mechanisms were reasoned out and both were wrong, which is worth more to the next reader than the fix alone.
+
+
 Copy the fenced block below into a fresh sumo-core session. Issue 2 was re-diagnosed from "junction
 deadlock" to a **teleport jam-vs-yield classification / over-teleport** bug. The repro golden and the
 SUMO source seam are named. Base off the serve-path branch (it carries the Issue-1/parking fixes and

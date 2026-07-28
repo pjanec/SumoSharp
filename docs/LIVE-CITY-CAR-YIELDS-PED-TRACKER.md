@@ -80,7 +80,7 @@ report.
 | `LIVE-CITY-CAR-YIELDS-PED-DESIGN.md` | the mechanism of record: repro (§1), root cause (§2), the three pieces (§3), parity argument (§4), constants (§5), measured results (§6), out-of-scope (§7), and the `QueryNear` follow-up + the contract-vs-knob analysis (§8, §8.1, §8.2) |
 | `LIVE-CITY-CAR-YIELDS-PED-TASKS.md` | the work breakdown with per-task success conditions, including the two conditions that were **wrong as written** and the measurements that replaced them |
 | `LIVE-CITY-CAR-YIELDS-PED-TRACKER.md` | this file — checklist, measurements log, corrections, and the open items below |
-| `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` | the incoming brief (pre-existing; §7's diagnostic list is stale — see below) |
+| `archive/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` | the incoming brief (pre-existing; §7's diagnostic list is stale — see below) |
 
 ## Code and tests this session owns
 | file | role |
@@ -156,7 +156,7 @@ report.
    (ahead-in-corridor vs abeam vs offside) rather than quoted whole.
 
 **Stale documentation found:**
-8. **`LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 references diagnostics that no longer exist.**
+8. **`archive/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 references diagnostics that no longer exist.**
    `--live-city-orcatrace` and `--live-city-cartrace` are gone from `src/Sim.Viz/Program.cs` (the T1–T3 viz
    refactor). This session built the demo-scale check as a committed test instead
    (`DemoPedYieldInvariantTests`), which is deterministic and CI-runnable; the handoff text was not edited

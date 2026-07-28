@@ -2,7 +2,7 @@
 
 Design + task-description (folded, per CLAUDE.md "small features may fold the first two together")
 for the four P0 plumbing prerequisites. Reference for the WHAT/WHY: `docs/HIGH-DENSITY-FEATURES`
-(`SUMOSHARP-HIGH-DENSITY-FEATURES.md` §2) and the verified findings in `docs/HIGH-DENSITY-PLAN.md`
+(`archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §2) and the verified findings in `docs/HIGH-DENSITY-PLAN.md`
 §1. This doc is the HOW. Order: **P0-A → P0-C → P0-B → P0-D**.
 
 ## Invariants (all four tasks)

@@ -1,5 +1,8 @@
 # Native viewer — Windows GPU handoff (10k perf pass + interactive verification)
 
+> **STATUS: ARCHIVED (2026-07-28)** — One-shot handoff asking a Windows/GPU session to run the raylib native viewer's 10 k-vehicle perf pass. **No evidence that pass was ever run or reported** (unlike the browser-viewer equivalent, which has an outcomes doc), and GPU attention has since moved to the City3D/Godot viewer. The design of record is `docs/SUMOSHARP-NATIVE-VIEWER.md`, which still lists that perf pass as its one open item. Kept as a ready-made runbook if it is ever picked up.
+
+
 Handoff for a Claude Code (or human) session on a machine with a **real GPU + display** (e.g. Windows) to
 (1) run the **10k-vehicle 60 fps perf pass** — the one native-viewer item that cannot be done on the
 software-GL CI/Linux VM — and (2) visually verify the interactive bits that were only checked headless (under

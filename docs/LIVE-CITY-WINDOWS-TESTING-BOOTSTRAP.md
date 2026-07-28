@@ -1,5 +1,8 @@
 # Bootstrap — run the LIVE-CITY viewers on a Windows box (visual testing session)
 
+> **STATUS: ARCHIVED (2026-07-28)** — Windows-GPU visual-testing bootstrap pinned to a branch and to a `654/4` parity gate. Superseded by several later live-city generations (arbitrary-net import, the baked terrain field, the threaded tick); the current equivalent is `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`, which is signed off. Kept in place (code-pinned) as the record of the first coupled cars+peds GPU pass.
+
+
 > **Purpose of THIS doc / this session's role.** You are a **testing session on a Windows desktop with a real
 > GPU**. Your job is to *run the three viewers on the live-city scene and report what looks right/wrong* — the
 > feature development happens in a **separate cloud session** on the SAME branch. You **pull** its fixes as they
@@ -174,6 +177,6 @@ appears: confirm the producer is running and multicast/loopback isn't firewalled
 
 ---
 *Companion to `docs/LIVE-CITY-VIEWERS-{DESIGN,TASKS,TRACKER}.md` (the feature these viewers run). The older
-`docs/CITY3D-VIEWER-SESSION-BOOTSTRAP.md` predates the live-city work (cars XOR peds); this doc supersedes it
+`docs/archive/CITY3D-VIEWER-SESSION-BOOTSTRAP.md` predates the live-city work (cars XOR peds); this doc supersedes it
 for the coupled cars+peds goal. Flags verified against the code on branch
 `claude/city3d-live-city-mode-3yf4oc` at the time of writing.*

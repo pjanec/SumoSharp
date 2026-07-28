@@ -1,5 +1,8 @@
 # Live-city realism #1 residuals A + B — BOOTSTRAP for a separate session
 
+> **STATUS: ARCHIVED (2026-07-28)** — Bootstrap brief handing Task A (stopped-car lateral wiggle) and Task B (car must never hit a ped) to a separate session. **Both are done, by two different later workstreams:** Task A's write-up is `docs/LIVE-CITY-DEMO-INTEGRITY-FINDINGS.md` §F2 (`Engine.SuppressHeldCrowdSwerve`); Task B became the car-yields-ped trio `docs/LIVE-CITY-CAR-YIELDS-PED-{DESIGN,TASKS,TRACKER}.md`. Kept in place (code-pinned) as the framing both inherited.
+
+
 **Self-contained brief for a SEPARATE session to execute Tasks A and B.** Both are `Sim.Core`
 (engine) parity-sensitive changes — a different risk class than the feed-side realism fixes already
 shipped on `claude/livecity-realism-fixes` — so they were split off for a dedicated session. Read this

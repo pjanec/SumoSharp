@@ -87,4 +87,4 @@ accumulate the lag, since the synthetic no longer isolates it.
   a red-held-foe `WillPass=false` mirroring SUMO's `mySetRequest`).
 - informFollower retirement: `afec614` (removed the dead cooperative layer after these fixes obsoleted
   it; dense-LC `CoordinatedLaneChange` unchanged).
-- Geneva re-verify-from-main prompt: `docs/GENEVA-SESSION-RECHECK-PROMPT.md`.
+- Geneva re-verify-from-main prompt: `docs/archive/GENEVA-SESSION-RECHECK-PROMPT.md`.

@@ -228,7 +228,7 @@ set on the seam left behind). Multi-camera zones (W4) also handed off. Full boun
   `LaneGeometry` that defines them. `Sim.Core/VehicleFootprint.cs` (box↔disc, added by car-yields-ped) is a
   second encoding of the same two conventions in a different assembly. Correct and rotation-tested today;
   consolidate before a third appears.
-- [ ] **Stale brief:** `LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 cites `--live-city-orcatrace` /
+- [ ] **Stale brief:** `archive/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` §7 cites `--live-city-orcatrace` /
   `--live-city-cartrace`, which no longer exist in `src/Sim.Viz/Program.cs` (removed by the T1–T3 viz
   refactor). Any handoff pointing at them needs the same correction.
 

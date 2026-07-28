@@ -38,7 +38,7 @@ This is a **guarantee**, not best-effort tuning.
 ## 2. Scope — the API + the ped-side feed (the car→ped YIELD moved out)
 
 > **SCOPE CHANGE (2026-07):** **B-guard — the car→ped yield (a car STOPS/never-close-fast-passes a ped) — is
-> now owned by the separate `car-yields-ped` session** (`docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`), which owns
+> now owned by the separate `car-yields-ped` session** (`docs/archive/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md`), which owns
 > the `ComputeLateralEvasion` crowd-swerve gate + `CrowdLongitudinalConstraint`. That session has a committed
 > repro (`CrosswalkCrossingPedTests`). **This session must NOT re-touch the car→ped reaction** — coordinate on
 > the shared `WorldDisc`/`ExternalObstacle` seam only. Your scope is now B-api + C5:

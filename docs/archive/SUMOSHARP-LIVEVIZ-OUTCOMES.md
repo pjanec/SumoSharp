@@ -1,7 +1,10 @@
 # Live visualizer — test-pass outcomes & next-architecture decision
 
+> **STATUS: ARCHIVED (2026-07-28)** — Windows visual-test pass of the browser live viewer: root-caused DR jitter and decided to build a native C# viewer instead. That viewer exists (`docs/SUMOSHARP-NATIVE-VIEWER.md`, P0-P3 built), which supersedes this as the design of record. **Kept because it is the decision record for why the browser viewer was abandoned** -- a considered-and-rejected direction, not a dead end worth rediscovering.
+
+
 Handoff back to the Linux VM / main dev session. Summarizes a Windows human-in-the-loop session that
-(1) ran the visual test in `docs/SUMOSHARP-LIVEVIZ-TESTING.md`, (2) diagnosed and fixed dead-reckoning
+(1) ran the visual test in `docs/archive/SUMOSHARP-LIVEVIZ-TESTING.md`, (2) diagnosed and fixed dead-reckoning
 smoothness bugs in the browser client, and (3) reached an architecture decision: **the browser
 Canvas/WebSocket viewer is a demo, not the path to 10k-vehicle scenarios — replace it with a native C#
 viewer in two modes (local no-DR, remote DR), DDS transport for the remote mode.**
@@ -120,6 +123,6 @@ either renderer. This session's work is not wasted by the stack change.
 
 ## 5. Files
 - Changed this session: `src/Sim.LiveHost/HtmlPage.cs` (DR clock/interp/extrap/overlay), and earlier
-  `docs/SUMOSHARP-LIVEVIZ-TESTING.md` (findings A/B, commit `5a39f16`).
+  `docs/archive/SUMOSHARP-LIVEVIZ-TESTING.md` (findings A/B, commit `5a39f16`).
 - Diagnostic scripts (WebSocket timing probe, CDP frame-timing/clock probe) were run from the Windows
   scratchpad (ephemeral, not committed); the method is described in §2 if it needs reproducing.

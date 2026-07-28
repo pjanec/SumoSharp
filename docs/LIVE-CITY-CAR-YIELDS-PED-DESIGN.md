@@ -1,6 +1,6 @@
 # DESIGN — cars yield to pedestrians in their path (crosswalk safety, Task B-guard)
 
-**HOW it will work.** The WHAT is `docs/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` (session brief) and
+**HOW it will work.** The WHAT is `docs/archive/LIVE-CITY-CAR-YIELDS-PED-HANDOFF.md` (session brief) and
 `docs/LIVE-CITY-REALISM-AB-DESIGN.md` §Task B (owner requirement: *"in the high-realism zone a car must
 NEVER crash into a ped, nor pass one at close distance / high speed"*). This document is the mechanism,
 the data flow, and the parity argument. Task list: `LIVE-CITY-CAR-YIELDS-PED-TASKS.md`. Tracker:

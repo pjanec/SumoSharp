@@ -1,5 +1,8 @@
 # HANDOFF — F3 junction car–car overlap + F4b zero-overlap invariant (CORE)
 
+> **STATUS: HISTORICAL TRAIL (2026-07-28)** — ⚠ **Several claims in here are DISPROVEN** — `docs/F3-SESSION-LOG.md` §4 says so explicitly and is the authority on what actually held (notably this brief's F4b "assert zero overlap" premise, later shown to be *stronger* than SUMO parity). Do not treat it as current guidance. Kept deliberately: it is a reasoned-from-source hypothesis that a trace later corrected, which is the exact class of record CLAUDE.md measurement-discipline #2 is built out of.
+
+
 **Self-contained brief for a session that fixes a PRE-EXISTING core junction bug** and then turns on the
 strict no-overlap demo invariant. Read top-to-bottom; assumes near-zero prior context. **This is CORE
 engine / SUMO-parity work, not a live-city realism seam** — the parity iron law is in full force and this

@@ -1,5 +1,8 @@
 # PEDESTRIAN-POC-PLAN.md — the de-risking experiment ladder
 
+> **STATUS: ARCHIVED (2026-07-28)** — The de-risking experiment ladder (POC-0..POC-7) written before any pedestrian code existed. Nearly every rung — navmesh, LOD promotion, crossing gate, parking, evac — has since shipped. `docs/PEDESTRIAN-TRACKER.md` is the authoritative done/parked map and `docs/PEDESTRIANS.md` is the front door. Kept in place (code-pinned) as the planning rationale.
+
+
 **Status: plan for review. No code yet.** Companion to `PEDESTRIAN-OVERVIEW.md` (WHAT) and
 `PEDESTRIAN-DESIGN.md` (HOW). Each POC is a small, committed, green experiment that **resolves one open
 question or proves one mechanism** before we commit to the final design. POCs land as tests/harnesses in

@@ -396,7 +396,7 @@ conservative → it *reduces* throughput. It is **NOT the knee fix** — on a su
 tempo regression, and SumoData confirmed the real knee's 5.5× overshoot is fully present *without* it (ran
 the pre-yield-fix commit `3cbc8b9` through their pipeline → identical 538% / 382 tp). So: **land it for
 realism, calibrate the knee on vanilla; it does not move `peak_veh_lkm 33→6`.** Full write-up:
-`docs/DISCHARGE-YIELD-RESUME.md` (header marked SOLVED). The dense-synthetic anchor
+`docs/archive/DISCHARGE-YIELD-RESUME.md` (header marked SOLVED). The dense-synthetic anchor
 (`DenseFlowDeadLaneDrainTests`) was re-encoded to its intent — full drainage (arrivals ≥ 290) is the hard
 invariant; teleports a documented bounded allowance (≤ 2) — because the faithful yield shifts one dead-lane
 car's TL arrival by ~1 s in the 2× torture scenario (recovered teleports; arrivals stay 290 == vanilla).
