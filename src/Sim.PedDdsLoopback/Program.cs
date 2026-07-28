@@ -169,5 +169,14 @@ return ok ? 0 : 1;
 // back to a straight line from the ped's current position to its destination -- exactly this stub.
 sealed class StraightLineNav : IPedNavigation
 {
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+    {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+        vertexSurfaces = null;
+        return null;
+    }
+
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+        => new double[path.Count];
 }

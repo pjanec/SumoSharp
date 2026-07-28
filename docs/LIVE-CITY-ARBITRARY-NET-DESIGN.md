@@ -237,7 +237,17 @@ is a `SumoRouteGraphNav`).
 
 ---
 
-### 5.8 Pedestrian avoidance of vehicles (IN SCOPE — real-world requirement)
+### 5.8 Pedestrian avoidance of vehicles (⚠ NOT DELIVERED — see the correction below)
+
+> **CORRECTION (2026-07-28).** This section was written as IN SCOPE and §8 lists "the ped-avoids-car disc
+> feed (C5)" among what this session delivers. **It was not built.** Verified: `LiveCityConfig
+> .PedAvoidVehicles` — the knob this section specifies — **does not exist anywhere** under `src/`,
+> `demos/` or `tests/`, and `LIVE-CITY-ARBITRARY-NET-TRACKER.md` records C5 as `⚠ BLOCKED` / "remains OUT
+> (owned by the ORCA-ped session)". Everything else in this design (`SumoRouteGraphNav`, §1–§4) did land
+> and is confirmed live.
+>
+> The mechanism described below is still a sound plan — it is kept as the specification for whoever picks
+> C5 up, not as a description of the current system. Open item tracked in `docs/TASKS-TODO.md`.
 
 Peds must know about SUMO cars: walk **around a car stopped on a crosswalk** (a jammed junction — a real
 situation) and, for later evacuation work, around abandoned cars on the street. This is a first-class
@@ -335,7 +345,7 @@ Runtime never invokes `netconvert`. Making a bare net ped-capable is offline:
 
 ```
 netconvert --sumo-net-file in.net.xml \
-           --sidewalks.guess --crossings.guess --walkingareas.all-nonspecific \
+           --sidewalks.guess --crossings.guess --walkingareas \
            -o out.net.xml
 ```
 
@@ -395,7 +405,7 @@ the **single-zone** surface and leaves clean seams for that work; the two must n
 - The road-net-import mode, `SumoRouteGraphNav`, capability degrade, drivable-edges, config surfacing.
 - The **single** realism zone exactly as today (`_lcZone*` + `SetLcRealismZone`, one `InterestSource`) —
   unchanged in shape.
-- The **ped-avoids-car disc feed (C5)**, bounded to the current single-zone geometry (§5.8).
+- ~~The **ped-avoids-car disc feed (C5)**~~ — **NOT delivered**; see the correction at §5.8. Still open.
 - The `Engine.RegionPlan` enablement for large nets (§5.9).
 
 **The multi-camera session owns (NOT built here):**

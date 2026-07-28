@@ -38,7 +38,11 @@ public sealed class SumoNavMesh : IPedNavigation
         _space = space;
     }
 
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => FindPath(start, goal, blockedPolygonIndices: null);
+    /// The interface's single routing entry point: route, and report the BakedPolygon index behind each
+    /// returned waypoint. The corridor the funnel walks IS the provenance -- it used to be discarded
+    /// along with the polygon list once the waypoints were pulled out of it.
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        => FindPathAvoiding(start, goal, blockedPolygonIndices: null, out vertexSurfaces);
 
     // W2a (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md): the baked sidewalk/crossing/walkingarea
     // half-width (BakedPolygon.HalfWidth) at a single point -- the deterministic pedestrian weave's
@@ -61,6 +65,56 @@ public sealed class SumoNavMesh : IPedNavigation
         }
 
         return widths;
+    }
+
+    // C2 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4): surface elevation at `p`, from the containing (or
+    // nearest, per LocatePolygon's off-mesh fallback) polygon's own retained elevation channel --
+    // located exactly as HalfWidthAt does, so height and width always describe the same polygon.
+    //
+    // 0.0 when no polygon can be located, or when the located polygon has no elevation channel (a 2-D
+    // net) -- the flat default the interface documents.
+    public double ElevationAt(Vec2 p)
+    {
+        var index = LocatePolygon(p, blocked: null);
+        if (index < 0)
+        {
+            return 0.0;
+        }
+
+        var poly = _polygons[index];
+        return poly.ElevationReference is { Count: > 0 } reference
+            ? PolylineElevation.AtNearestPoint(reference, poly.ElevationZ, p)
+            : 0.0;
+    }
+
+    // ElevationAt sampled at every vertex of `path`, in order -- the override of the interface's
+    // all-zeros default.
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+    {
+        var usable = vertexSurfaces is not null && vertexSurfaces.Count == path.Count;
+        var elevations = new double[path.Count];
+
+        for (var i = 0; i < path.Count; i++)
+        {
+            if (!usable)
+            {
+                elevations[i] = ElevationAt(path[i]); // locate by proximity -- see ElevationAt's remarks
+                continue;
+            }
+
+            var index = vertexSurfaces![i];
+            if (index < 0 || index >= _polygons.Count)
+            {
+                continue; // foreign/stale id -- stay flat rather than index another provider's graph
+            }
+
+            var poly = _polygons[index];
+            elevations[i] = poly.ElevationReference is { Count: > 0 } reference
+                ? PolylineElevation.AtNearestPoint(reference, poly.ElevationZ, path[i])
+                : 0.0;
+        }
+
+        return elevations;
     }
 
     /// P8-1b (docs/PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md): number of connected components in the
@@ -129,8 +183,16 @@ public sealed class SumoNavMesh : IPedNavigation
     // `null` or an empty set reproduces the two-argument overload's result exactly (same code path,
     // same deterministic tie-breaks), so that overload's behaviour for every existing caller
     // (POC-1/POC-3) is unchanged byte-for-byte.
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, ISet<int>? blockedPolygonIndices)
+    public IReadOnlyList<Vec2>? FindPathAvoiding(Vec2 start, Vec2 goal, ISet<int>? blockedPolygonIndices)
+        => FindPathAvoiding(start, goal, blockedPolygonIndices, out _);
+
+    /// The blocked-set route, with provenance. `out _` at a call site here is a deliberate statement
+    /// that the caller is rerouting around an obstacle and does not build an elevation channel from the
+    /// result -- not an omission.
+    public IReadOnlyList<Vec2>? FindPathAvoiding(
+        Vec2 start, Vec2 goal, ISet<int>? blockedPolygonIndices, out IReadOnlyList<int>? vertexSurfaces)
     {
+        vertexSurfaces = null;
         var blocked = (blockedPolygonIndices is { Count: > 0 }) ? blockedPolygonIndices : null;
 
         var startPolygon = LocatePolygon(start, blocked);
@@ -154,9 +216,12 @@ public sealed class SumoNavMesh : IPedNavigation
             var spine = _polygons[startPolygon].Spine;
             if (spine is { Count: >= 3 })
             {
-                return ThreadThroughSpine(spine, start, goal);
+                var threaded = ThreadThroughSpine(spine, start, goal);
+                vertexSurfaces = Uniform(startPolygon, threaded.Count);
+                return threaded;
             }
 
+            vertexSurfaces = Uniform(startPolygon, 2);
             return new[] { start, goal };
         }
 
@@ -167,16 +232,31 @@ public sealed class SumoNavMesh : IPedNavigation
         }
 
         var waypoints = new List<Vec2> { start };
+        var surfaces = new List<int> { nodePath[0] };
         for (var i = 0; i + 1 < nodePath.Count; i++)
         {
             var from = nodePath[i];
             var to = nodePath[i + 1];
             var portal = _graph.Neighbors(from).First(p => p.Neighbor == to).Point;
             waypoints.Add(portal);
+
+            // A portal sits exactly ON the boundary between two polygons -- the ambiguous case that
+            // proximity cannot resolve. Attribute it to the polygon being ENTERED, so the vertex and
+            // the segment leaving it describe the same surface.
+            surfaces.Add(to);
         }
 
         waypoints.Add(goal);
+        surfaces.Add(nodePath[^1]);
+        vertexSurfaces = surfaces;
         return waypoints;
+    }
+
+    private static int[] Uniform(int polygonIndex, int count)
+    {
+        var ids = new int[count];
+        Array.Fill(ids, polygonIndex);
+        return ids;
     }
 
     // Locates the polygon containing `p`; if none does, snaps `p` onto walkable space first (the

@@ -7,7 +7,7 @@ namespace Sim.Pedestrians.Navigation;
 // P2-2 (docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-DESIGN.md §4/§6): generalizes POC-5's one-off
 // "blocked = a hand-picked HashSet<int>" (RerouteTests) into a managed, stable-identity registry of
 // DYNAMIC obstacles, each mapped to the set of baked walkable polygons (WalkablePolygonBaker.Bake)
-// it occludes. This is the production input to SumoNavMesh.FindPath(start, goal, blocked) -- see
+// it occludes. This is the production input to SumoNavMesh.FindPathAvoiding(start, goal, blocked) -- see
 // BlockedPolygons() below -- and to RerouteDriver, which watches this registry's output for changes.
 //
 // Shape/style mirrors InterestField (P1-1, src/Sim.Pedestrians/Lod/InterestField.cs): an opaque,
@@ -120,7 +120,7 @@ public sealed class BlockerRegistry
     }
 
     // The set of baked-polygon indices currently occluded by ANY registered blocker -- feeds directly
-    // into SumoNavMesh.FindPath(start, goal, blockedPolygonIndices) (POC-5's blocked-set overload).
+    // into SumoNavMesh.FindPathAvoiding(start, goal, blockedPolygonIndices) (POC-5's blocked-set overload).
     // Returned set is a live reference recomputed on every Register/Unregister; callers must not
     // mutate it (RerouteDriver treats it as read-only). Typed ISet<int> rather than IReadOnlySet<int>
     // so the signature compiles on netstandard2.1 (which predates IReadOnlySet<T>); only .Contains and

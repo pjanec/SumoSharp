@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using Sim.Core;
 using Sim.Harness;
@@ -49,6 +50,7 @@ internal static class Program
             Console.Error.WriteLine("       Sim.Viz --live-city <outPath>");
             Console.Error.WriteLine("       Sim.Viz --live-city-demo <outPath>   (FAITHFUL: real LiveCitySim + LiveCityConfig)");
             Console.Error.WriteLine("       Sim.Viz --live-city-pedtrace <outPath.csv> [steps]   (headless per-ped LOD lifecycle trace)");
+            Console.Error.WriteLine("       Sim.Viz --external-net <dir|net.xml|scenario.sumocfg> [steps]   (headless external-net load probe)");
             Console.Error.WriteLine("       Sim.Viz --engine-replay <scenarioDir> <outPath>   (REAL deterministic engine run, DR-smoothed)");
             Console.Error.WriteLine("       Sim.Viz --ped-remote <outPath>");
             Console.Error.WriteLine("       Sim.Viz --ped-subarea-fcd <outPath.fcd.xml> [--dial d] [--seconds s] [--box <dir>]");
@@ -76,6 +78,7 @@ internal static class Program
             "--live-city" => RunLiveCity(args),
             "--live-city-demo" => RunLiveCityDemo(args),
             "--live-city-pedtrace" => RunLiveCityPedTrace(args),
+            "--external-net" => RunExternalNet(args),
             "--engine-replay" => RunEngineReplay(args),
             "--ped-remote" => RunPedRemote(args),
             "--ped-subarea-fcd" => RunPedSubareaFcd(args),
@@ -400,6 +403,150 @@ internal static class Program
     // PedLodManager.DiagnosticSnapshot cross-references the server-authoritative LOD state against what
     // the wire has reconstructed -- one CSV row per (step, ped). Never touches parity/goldens; not part
     // of `dotnet test`.
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §6, -TASKS.md V2: the headless EXTERNAL-NET probe -- "can
+    // SumoSharp load this net, and does it behave?" in one command, with no viewer and no Godot.
+    //
+    // WHY IT EXISTS. The real targets of the external-net work -- a 168 MB `swiss_roads.net.xml`, a
+    // SumoData `preprocess.py` Geneva cut -- live in another repo and cannot be committed here, so no
+    // test can exercise them. This is the thing a human points at one of those, outside this
+    // environment, to find out whether it loads, whether cars and pedestrians actually populate it, and
+    // and how fast it steps.
+    //
+    // Accepts any of the three forms the loader now understands:
+    //   a DIRECTORY            -> ForDataset (expects net.xml), or ForSumocfg if the dir holds exactly
+    //                             one .sumocfg, or NetPath if it holds a *.net.xml under another name
+    //   a *.sumocfg            -> ForSumocfg
+    //   any other file         -> NetPath (an explicit net path)
+    //
+    // Diagnostic only: never part of `dotnet test`, never touches a golden.
+    private static int RunExternalNet(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("error: --external-net requires a dataset dir, a .sumocfg, or a net file");
+            return 2;
+        }
+
+        var target = args[1];
+        var steps = 400;
+        if (args.Length > 2 && int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var stepsArg))
+        {
+            steps = stepsArg;
+        }
+
+        Sim.LiveCity.LiveCityConfig cfg;
+        try
+        {
+            cfg = ResolveExternalNetConfig(target);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"error: could not resolve '{target}': {ex.Message}");
+            return 2;
+        }
+
+        Console.WriteLine($"net:        {cfg.ResolveNetPath()}");
+        Console.WriteLine($"routes:     {string.Join(", ", cfg.ResolveRoutePaths())}");
+        Console.WriteLine($"datasetDir: {cfg.DatasetDir}");
+
+        var loadStart = Stopwatch.StartNew();
+        using var sim = new Sim.LiveCity.LiveCitySim(cfg);
+        loadStart.Stop();
+
+        Console.WriteLine($"loaded in {loadStart.Elapsed.TotalSeconds:F2}s: "
+            + $"{sim.Network.EdgesById.Count} edges, {sim.Network.LanesById.Count} lanes, "
+            + $"{sim.CropEdges.Count} spawn edges");
+        Console.WriteLine($"pedestrians={sim.PedestriansEnabled} crossings={sim.CrossingsEnabled} "
+            + $"routeGraphNav={sim.RouteGraphNavigationActive}");
+
+        var stepStart = Stopwatch.StartNew();
+        for (var i = 0; i < steps; i++)
+        {
+            sim.Step();
+        }
+
+        stepStart.Stop();
+        var snap = sim.Sample();
+        Console.WriteLine($"stepped {steps}x in {stepStart.Elapsed.TotalSeconds:F2}s "
+            + $"({steps / Math.Max(1e-9, stepStart.Elapsed.TotalSeconds):F0} steps/s)");
+        Console.WriteLine($"cars={snap.Cars.Count} (peak {sim.PeakCars}, arrived {sim.ArrivedTotal})  "
+            + $"peds={snap.Peds.Count} (peak {sim.PeakPeds})");
+
+        // Lane elevation actually present on the net, since a 3-D net is the case the loader work is
+        // for: reported off the CAR side (LiveCityCar.Z, resolved from Lane.ShapeZ). Pedestrian
+        // elevation is a separate workstream and is deliberately not reported here.
+        var carZMin = double.PositiveInfinity;
+        var carZMax = double.NegativeInfinity;
+        foreach (var car in snap.Cars)
+        {
+            if (car.Z < carZMin) carZMin = car.Z;
+            if (car.Z > carZMax) carZMax = car.Z;
+        }
+
+        Console.WriteLine(snap.Cars.Count > 0
+            ? $"car elevation range: {carZMin:F2} .. {carZMax:F2} m"
+            : "car elevation range: n/a (no live cars)");
+
+        if (snap.Cars.Count == 0)
+        {
+            Console.Error.WriteLine("WARNING: no cars are live -- check the net has routable drivable edges.");
+        }
+
+        if (sim.PedestriansEnabled && snap.Peds.Count == 0)
+        {
+            Console.Error.WriteLine("WARNING: the net has sidewalks but no peds are live -- likely a "
+                + "fragmented walking network (no routable O/D pair).");
+        }
+
+        return 0;
+    }
+
+    // The three accepted forms (see RunExternalNet's remarks). A directory is probed rather than assumed
+    // so a caller can pass a cut dir without first having to know whether its net is `net.xml` or
+    // `scenario.net.xml`.
+    private static Sim.LiveCity.LiveCityConfig ResolveExternalNetConfig(string target)
+    {
+        if (Directory.Exists(target))
+        {
+            var cfgs = Directory.GetFiles(target, "*.sumocfg");
+            if (cfgs.Length == 1)
+            {
+                return Sim.LiveCity.LiveCityConfig.ForSumocfg(cfgs[0]);
+            }
+
+            if (File.Exists(Path.Combine(target, "net.xml")))
+            {
+                return Sim.LiveCity.LiveCityConfig.ForDataset(target);
+            }
+
+            var nets = Directory.GetFiles(target, "*.net.xml");
+            if (nets.Length >= 1)
+            {
+                var cfg = Sim.LiveCity.LiveCityConfig.ForDataset(target);
+                cfg.NetPath = nets[0];
+                return cfg;
+            }
+
+            throw new FileNotFoundException(
+                $"'{target}' holds no net.xml, no *.net.xml, and no single *.sumocfg.");
+        }
+
+        if (!File.Exists(target))
+        {
+            throw new FileNotFoundException($"'{target}' is neither a directory nor a file.");
+        }
+
+        if (target.EndsWith(".sumocfg", StringComparison.OrdinalIgnoreCase))
+        {
+            return Sim.LiveCity.LiveCityConfig.ForSumocfg(target);
+        }
+
+        var dir = Path.GetDirectoryName(Path.GetFullPath(target)) ?? string.Empty;
+        var byNet = Sim.LiveCity.LiveCityConfig.ForDataset(dir);
+        byNet.NetPath = Path.GetFullPath(target);
+        return byNet;
+    }
+
     private static int RunLiveCityPedTrace(string[] args)
     {
         if (args.Length < 2)
@@ -502,7 +649,7 @@ internal static class Program
                     var dzy = d.Pos.Y - sim.LcZoneY;
                     var distFromZone = Math.Sqrt(dzx * dzx + dzy * dzy);
 
-                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out var wvis, out var wtag);
+                    var wireKnown = reconstructor.TryGetRenderPose(d.Id, out var wpos, out _, out var wvis, out var wtag);
                     string wireXStr, wireYStr, wireSrvDistStr, wireVisibleStr;
                     if (wireKnown)
                     {

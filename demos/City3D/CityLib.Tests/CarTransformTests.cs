@@ -62,7 +62,7 @@ public class CarTransformTests
     {
         var (netPath, rouPath, cfgPath) = ScenarioPaths();
         using var sim = new SimSource(netPath, rouPath, cfgPath);
-        var reconstructor = new Reconstructor();
+        var reconstructor = new Reconstructor(SumoGodotFrame.Identity);
 
         var sawAnyVehicle = false;
 

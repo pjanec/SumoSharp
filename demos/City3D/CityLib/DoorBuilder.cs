@@ -18,7 +18,7 @@ public readonly struct DoorInstance
     }
 
     // Box CENTER, already in GODOT space -- PosY is raised HeightMeters/2 above the POI ground point
-    // (CoordinateTransform.SumoToGodot(..., 0.0)) so the door box sits ON the ground rather than being
+    // (frame.GroundToGodot(..., 0.0)) so the door box sits ON the ground rather than being
     // bisected by it, same convention CarTransform.ForVehicle/BuildingPlacer use for their own boxes.
     public float PosX { get; }
     public float PosY { get; }
@@ -43,9 +43,9 @@ public static class DoorBuilder
     // rare/defensive chance a caller passes a POI without a Facing vector (every `building_entrance` record
     // in the committed dataset has one, per LiveCityScene's own doc comment -- this is a never-throw
     // fallback, not an expected path).
-    public static DoorInstance ForEntrance(ScenePoi poi)
+    public static DoorInstance ForEntrance(SumoGodotFrame frame, ScenePoi poi)
     {
-        var (gx, gy, gz) = CoordinateTransform.SumoToGodot(poi.X, poi.Y, 0.0);
+        var (gx, gy, gz) = frame.GroundToGodot(poi.X, poi.Y, 0.0);
         var facingX = poi.FacingX ?? 0.0;
         var facingY = poi.FacingY ?? 1.0;
         var yaw = CoordinateTransform.DirectionToGodotYawRad(facingX, facingY);
@@ -54,7 +54,7 @@ public static class DoorBuilder
 
     // Builds every door in one pass, skipping any POI that is not `building_entrance` (defensive -- callers
     // are expected to already have filtered, mirroring PoiGroundBuilder.Build's own filter shape).
-    public static IReadOnlyList<DoorInstance> Build(IReadOnlyList<ScenePoi> pois)
+    public static IReadOnlyList<DoorInstance> Build(SumoGodotFrame frame, IReadOnlyList<ScenePoi> pois)
     {
         var result = new List<DoorInstance>();
         foreach (var poi in pois)
@@ -64,7 +64,7 @@ public static class DoorBuilder
                 continue;
             }
 
-            result.Add(ForEntrance(poi));
+            result.Add(ForEntrance(frame, poi));
         }
 
         return result;

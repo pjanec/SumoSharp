@@ -61,8 +61,45 @@ public sealed class PedLodManager
 
         // The polyline currently being followed: the PathArc leg's polyline when Low, the navmesh
         // steering route (set once, at promotion) when High.
-        public IReadOnlyList<Vec2> Path = Array.Empty<Vec2>();
+        //
+        // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4): assigning `Path` INVALIDATES the cached
+        // elevation channel below. Done through a property rather than a plain field on purpose -- the
+        // path is reassigned at five separate places (spawn, promote, demote, weave-resume, reroute) and
+        // a cache that had to be refreshed by hand at each of them would eventually be missed, leaving a
+        // ped's height stuck on the route it used to be walking.
+        private IReadOnlyList<Vec2> _path = Array.Empty<Vec2>();
+
+        public IReadOnlyList<Vec2> Path
+        {
+            get => _path;
+            set
+            {
+                _path = value;
+                PathSurfaces = null;   // provenance belongs to the path it came from
+                PathZ = null;
+                PathZGeometry = Array.Empty<Vec2>();
+                PathZValid = false;
+            }
+        }
+
         public double PathStartTime;
+
+        // C3: per-vertex elevation for `Path`, index-aligned with it, filled LAZILY on the first
+        // elevation query after a path change (see PedLodManager.ElevationOf) and null on a 2-D net.
+        // `PathZValid` distinguishes "not computed yet" from the legitimate "computed, and this net has
+        // no elevation" -- without it a 2-D net would recompute an all-null answer on every query.
+        // Per-vertex OPAQUE surface ids for `Path`, from the router's provenance-carrying FindPath, or
+        // null when the provider offers none. Cleared with the path (see the setter above), because a
+        // stale mapping would silently read heights off the previous route's surfaces.
+        public IReadOnlyList<int>? PathSurfaces;
+
+        public IReadOnlyList<double>? PathZ;
+        public bool PathZValid;
+
+        // The polyline `PathZ` is index-aligned WITH -- `Path` for most models, but a lively ped's
+        // timeline walk geometry instead (see PedLodManager.ElevationGeometryOf). Stored rather than
+        // re-derived so the projection can never be run against a different list than the channel.
+        public IReadOnlyList<Vec2> PathZGeometry = Array.Empty<Vec2>();
 
         // LIVE-PROD-1a: set when this ped is a LIVELY low-power ped (Model == ActivityTimeline) -- its
         // low-power pose/velocity come from Timeline.PoseAt/VelocityAt instead of PathArcMotion. Null for
@@ -146,6 +183,16 @@ public sealed class PedLodManager
         set => _highCrowd.RegionCellSizeMultiplier = value;
     }
 
+    // A22 (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2) passthrough: cap the high-power crowd's
+    // parallel plan/execute degree. -1 (TPL's default) == uncapped, which is what this was implicitly
+    // before the knob was reachable from a host. Scheduling-only, so the trajectory is unchanged --
+    // an interactive host caps it so a sim step cannot starve the render thread.
+    public int HighCrowdMaxParallelism
+    {
+        get => _highCrowd.MaxParallelism;
+        set => _highCrowd.MaxParallelism = value;
+    }
+
     public PedLodManager(
         IPedNavigation navigation,
         PedPublisher publisher,
@@ -176,7 +223,9 @@ public sealed class PedLodManager
     // Registers a new ped as low-power (PathArc), following `path` at `maxSpeed` from `now`.
     // `path[^1]` is treated as the ped's destination (used to re-route on later promote/demote).
     // Publishes the spawn PathArcRecord (the "path sent once").
-    public int AddPed(int id, IReadOnlyList<Vec2> path, double maxSpeed, double radius, double now)
+    public int AddPed(
+        int id, IReadOnlyList<Vec2> path, double maxSpeed, double radius, double now,
+        IReadOnlyList<int>? pathSurfaces = null)
     {
         if (path.Count == 0)
         {
@@ -190,12 +239,15 @@ public sealed class PedLodManager
             MaxSpeed = maxSpeed,
             Radius = radius,
             Path = path,
+            PathSurfaces = pathSurfaces,
             PathStartTime = now,
             StateEnteredAt = now,
         };
 
         _peds.Add(id, entry);
-        _publisher.PublishPathArc(id, path, now, maxSpeed, now);
+        // C4: publish the path's elevation alongside it, so the remote surface reconstructs the same
+        // height the in-process one reports. Null on a 2-D net => a kind-4 frame => byte-identical wire.
+        _publisher.PublishPathArc(id, path, now, maxSpeed, now, ElevationChannelFor(path, pathSurfaces));
         return id;
     }
 
@@ -227,6 +279,37 @@ public sealed class PedLodManager
         _publisher.PublishActivityTimeline(id, timeline, now);
         _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.ActivityTimeline, now);
         return id;
+    }
+
+    // Re-anchor a provenance list onto the path `ReanchorAt` produced. That method prepends the anchor
+    // and drops a leading routed vertex coincident with it, so the surface list must undergo the same
+    // shift; the prepended anchor inherits the first surviving vertex's surface, which is the one the
+    // ped is standing on. Returns null when there was no provenance to begin with, or when the two
+    // lengths cannot be reconciled -- a wrong-length list is worse than none, since it would silently
+    // read heights off the wrong surfaces.
+    private static IReadOnlyList<int>? ReanchorSurfaces(
+        IReadOnlyList<Vec2> routed, IReadOnlyList<int>? routedSurfaces, IReadOnlyList<Vec2> newPath)
+    {
+        if (routedSurfaces is null || routedSurfaces.Count != routed.Count || newPath.Count == 0)
+        {
+            return null;
+        }
+
+        var dropped = routed.Count - (newPath.Count - 1);
+        if (dropped < 0 || dropped > routed.Count)
+        {
+            return null;
+        }
+
+        var result = new int[newPath.Count];
+        result[0] = routedSurfaces[Math.Min(dropped, routedSurfaces.Count - 1)];
+        for (var i = 1; i < newPath.Count; i++)
+        {
+            var src = dropped + i - 1;
+            result[i] = src < routedSurfaces.Count ? routedSurfaces[src] : routedSurfaces[^1];
+        }
+
+        return result;
     }
 
     // W4: force a routed path to START exactly at `anchor` (the frozen demote pose), so a resume leg's
@@ -261,13 +344,18 @@ public sealed class PedLodManager
     // graph); when FindPath succeeds the result is returned verbatim, so the common path is byte-identical.
     // Falls back to the original beeline only when `lastRoute` is itself degenerate (e.g. a prior straight-
     // line fallback), so this is never worse than before.
-    private IReadOnlyList<Vec2> RecoverRoute(Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute)
+    private IReadOnlyList<Vec2> RecoverRoute(
+        Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute, out IReadOnlyList<int>? surfaces)
     {
-        var routed = _navigation.FindPath(pos, destination);
+        var routed = _navigation.FindPath(pos, destination, out surfaces);
         if (routed is not null)
         {
             return routed;
         }
+
+        // Every fallback below SPLICES or BEELINES rather than routing, so no provenance survives --
+        // null it rather than let the router's ids be mistaken for the spliced path's.
+        surfaces = null;
 
         if (lastRoute.Count >= 2)
         {
@@ -388,6 +476,140 @@ public sealed class PedLodManager
         }
     }
 
+    // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4, -TASKS.md C3): the ped's current SURFACE ELEVATION
+    // -- the render-side companion to `PositionOf` below, and the value `LiveCitySim.Sample()` puts in
+    // `LiveCityPed.Z`.
+    //
+    // Resolved along THE PED'S OWN PATH, never by searching the network: the path's per-vertex elevation
+    // comes from `IPedNavigation.ElevationsAlong` (computed once per path and cached on the entry), and
+    // the height is read off it at the ped's current position. So a ped on a bridge follows the bridge,
+    // because the path it is walking IS the bridge's.
+    //
+    // WHY BY PROJECTION ONTO THAT PATH rather than by the arc-length cursor: the three LOD models locate
+    // a ped three different ways -- `PathArc` by arc length, `ActivityTimeline` by a timeline that
+    // includes PAUSES (so arc length and elapsed time part company), and `FreeKinematic` by the ORCA
+    // crowd's own committed position (which is deliberately not on the polyline at all while avoiding
+    // someone). One projection onto the ped's own ~10-30 vertex polyline is correct for all three, where
+    // an arc-length lerp would be right only for the first. It is a handful of segment tests against a
+    // list the ped already holds -- not a spatial query, and not the nearest-lane search this design
+    // explicitly rejects.
+    //
+    // Returns 0.0 on a 2-D net (no elevation channel), which is exactly the value this surface reported
+    // before elevation existed.
+    public double ElevationOf(int id, double now)
+    {
+        var e = _peds[id];
+
+        if (!e.PathZValid)
+        {
+            // WHICH polyline carries this ped's geometry depends on its model, and getting this wrong is
+            // silent: a LIVELY (ActivityTimeline) ped never populates `Path` at all -- `AddPedLively`
+            // builds it straight from a timeline whose WalkSegments hold the geometry -- so projecting
+            // against `Path` would have returned 0.0 for the entire lively population while looking
+            // perfectly correct for everyone else. (Measured on the 3-D fixture before this branch
+            // existed: 85 of 160 live peds reported z = 0.)
+            var geometry = ElevationGeometryOf(e);
+
+            // Provenance applies only when the geometry IS the ped's own `Path`; a lively ped's
+            // timeline geometry is a different (possibly re-sliced) list, so its ids would not line up
+            // and it falls back to proximity -- correct except where surfaces stack.
+            var surfaces = ReferenceEquals(geometry, e.Path) ? e.PathSurfaces : null;
+            e.PathZ = geometry.Count > 0 ? _navigation.ElevationsAlong(geometry, surfaces) : null;
+            e.PathZGeometry = geometry;
+            e.PathZValid = true;
+
+            // An all-zero channel (the interface's flat default, i.e. a provider with no elevation model)
+            // is dropped to null so the common 2-D case costs one null check per query instead of a
+            // projection walk that can only ever return 0.
+            if (e.PathZ is { Count: > 0 } zs)
+            {
+                var anyNonZero = false;
+                for (var i = 0; i < zs.Count; i++)
+                {
+                    if (zs[i] != 0.0)
+                    {
+                        anyNonZero = true;
+                        break;
+                    }
+                }
+
+                if (!anyNonZero)
+                {
+                    e.PathZ = null;
+                }
+            }
+        }
+
+        if (e.PathZ is null)
+        {
+            return 0.0;
+        }
+
+        return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(
+            e.PathZGeometry, e.PathZ, PositionOf(id, now));
+    }
+
+    // C4: the elevation channel to publish with a PathArc leg -- null (rather than an all-zero array)
+    // on a 2-D net, which is what makes the publisher emit the original kind-4 frame and keeps the wire
+    // byte-identical there.
+    private IReadOnlyList<double>? ElevationChannelFor(IReadOnlyList<Vec2> path, IReadOnlyList<int>? surfaces = null)
+    {
+        if (path.Count == 0)
+        {
+            return null;
+        }
+
+        var zs = _navigation.ElevationsAlong(path, surfaces);
+        for (var i = 0; i < zs.Count; i++)
+        {
+            if (zs[i] != 0.0)
+            {
+                return zs;
+            }
+        }
+
+        return null;
+    }
+
+    // The polyline a ped's elevation is resolved against: its `Path` for a PathArc or FreeKinematic ped,
+    // and the concatenation of its timeline's Walk legs for a lively (ActivityTimeline) one, which is
+    // where that ped's geometry actually lives. Pause/Dwell/Interact legs contribute no geometry -- they
+    // hold position at wherever the preceding Walk ended, which is already on the concatenation.
+    private static IReadOnlyList<Vec2> ElevationGeometryOf(PedEntry e)
+    {
+        if (e.Timeline is not { } timeline)
+        {
+            return e.Path;
+        }
+
+        List<Vec2>? combined = null;
+        IReadOnlyList<Vec2>? only = null;
+
+        foreach (var segment in timeline.Segments)
+        {
+            if (segment is not WalkSegment walk || walk.Path.Count == 0)
+            {
+                continue;
+            }
+
+            if (only is null)
+            {
+                only = walk.Path; // the overwhelmingly common single-Walk case allocates nothing
+                continue;
+            }
+
+            combined ??= new List<Vec2>(only);
+            combined.AddRange(walk.Path);
+        }
+
+        if (combined is not null)
+        {
+            return combined;
+        }
+
+        return only ?? e.Path;
+    }
+
     // The ped's current world position: for Low-power this is the pure PathArcMotion function
     // evaluated AT `now` (so it can be queried for any `now`, not just at a Step boundary); for
     // High-power this is the last-committed OrcaCrowd position (the truth only advances via Step).
@@ -400,6 +622,81 @@ public sealed class PedLodManager
             PedDrModel.ActivityTimeline => e.Timeline!.PoseAt(now).Pos,
             _ => PathArcMotion.PositionAt(e.Path, e.PathStartTime, e.MaxSpeed, now),
         };
+    }
+
+    // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): fuses AnimTagOf(id, now) + PositionOf(id, now)
+    // into ONE call. A caller that needs both (PedDemand.DespawnArrivals; LiveCitySim's low-power
+    // gather, which called AnimTagOf then PositionOf back-to-back for the SAME id at the SAME `now`)
+    // was invoking ActivityTimeline.PoseAt(now) TWICE per ActivityTimeline ped -- computing the
+    // identical PoseSample twice with nothing mutating in between. Bit-identical to calling
+    // AnimTagOf(id, now) then PositionOf(id, now) separately: same three branches (mirroring
+    // PositionOf's switch exactly), same expressions, evaluated once instead of twice.
+    public (string AnimTag, Vec2 Pos) PoseInfoOf(int id, double now)
+    {
+        var e = _peds[id];
+        switch (e.Model)
+        {
+            case PedDrModel.FreeKinematic:
+                return (ActivityTimeline.WalkAnimTag, _highCrowd.Position(e.HighIndex));
+            case PedDrModel.ActivityTimeline:
+                var pose = e.Timeline!.PoseAt(now);
+                return (pose.AnimTag, pose.Pos);
+            default:
+                return (ActivityTimeline.WalkAnimTag, PathArcMotion.PositionAt(e.Path, e.PathStartTime, e.MaxSpeed, now));
+        }
+    }
+
+    // Perf diagnostics (docs/LIVE-CITY-PERF-SESSION-LOG.md B2): opt-in per-sub-phase wall-time
+    // accounting for Step(), mirroring Engine.ProfilePhases / LiveCitySim.ProfilePhases EXACTLY in
+    // shape (a bool gate, a name->ticks dictionary, PhaseStart/PhaseEnd via Stopwatch.GetTimestamp).
+    // OFF by default and then effectively free: one bool test per phase per step, GetTimestamp is
+    // never called, nothing allocates. LiveCitySim's ProfilePhases setter forwards to this manager
+    // (like it already does to the wrapped Engine) and merges these ticks in prefixed "ped.", so
+    // `pedDemandStep`'s formerly-opaque 60.9% becomes an aimable breakdown. Never read by any
+    // simulation algorithm -> zero behavioral effect, parity-inert.
+    public bool ProfilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+    public IReadOnlyDictionary<string, long> PhaseTicks => _phaseTicks;
+
+    // B3 (docs/LIVE-CITY-PERF-SESSION-LOG.md): allocated-bytes counterpart to _phaseTicks. See
+    // Engine.PhaseBytes for the process-wide-vs-per-thread rationale.
+    private readonly Dictionary<string, long> _phaseBytes = new();
+    public IReadOnlyDictionary<string, long> PhaseBytes => _phaseBytes;
+
+    // netstandard2.1 (Unity/Godot) has no GC.GetTotalAllocatedBytes -- degrades to "always 0 bytes"
+    // there, same rationale as Engine.cs's TotalAllocatedBytes.
+#if NET8_0_OR_GREATER
+    private static long TotalAllocatedBytes() => GC.GetTotalAllocatedBytes(precise: false);
+#else
+    private static long TotalAllocatedBytes() => 0L;
+#endif
+
+    private readonly struct PhaseSample
+    {
+        public readonly long Ticks;
+        public readonly long Bytes;
+        public PhaseSample(long ticks, long bytes) { Ticks = ticks; Bytes = bytes; }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private PhaseSample PhaseStart() => ProfilePhases
+        ? new PhaseSample(System.Diagnostics.Stopwatch.GetTimestamp(), TotalAllocatedBytes())
+        : default;
+
+    private void PhaseEnd(string name, PhaseSample start)
+    {
+        if (!ProfilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start.Ticks;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+
+        var elapsedBytes = TotalAllocatedBytes() - start.Bytes;
+        _phaseBytes.TryGetValue(name, out var accBytes);
+        _phaseBytes[name] = accBytes + elapsedBytes;
     }
 
     // Advances every ped by `dt`, from time `now` to `now + dt`:
@@ -422,17 +719,24 @@ public sealed class PedLodManager
         // a pure function of frozen state (source positions are start-of-step)") -- every ped queried
         // below sees the exact same source snapshot, regardless of evaluation order. See
         // InterestField.RebuildIndex remarks for why this is O(sources), not O(peds).
+        var tRebuildIndex = PhaseStart();
         interestField.RebuildIndex();
+        PhaseEnd("rebuildIndex", tRebuildIndex);
 
+        var tIdsSort = PhaseStart();
         var ids = new List<int>(_peds.Keys);
         ids.Sort(); // ascending ped-id order -- deterministic evaluation and application
+        PhaseEnd("idsSort", tIdsSort);
 
+        var tFrozenPos = PhaseStart();
         var frozenPos = new Dictionary<int, Vec2>(ids.Count);
         foreach (var id in ids)
         {
             frozenPos[id] = PositionOf(id, now);
         }
+        PhaseEnd("frozenPos", tFrozenPos);
 
+        var tLodDecide = PhaseStart();
         var toPromote = new List<int>();
         var toDemote = new List<int>();
         foreach (var id in ids)
@@ -473,10 +777,12 @@ public sealed class PedLodManager
                 }
             }
         }
+        PhaseEnd("lodDecide", tLodDecide);
 
         // Promotions: PathArc -> FreeKinematic. Adds ONLY this ped to the persistent high-power
         // OrcaCrowd (carrying its frozen position + PathArc-derived velocity forward) and registers
         // ONLY its route -- every already-high ped's handle/route is untouched (P0-3).
+        var tPromoteApply = PhaseStart();
         foreach (var id in toPromote)
         {
             var e = _peds[id];
@@ -484,12 +790,13 @@ public sealed class PedLodManager
             var velocity = e.Model == PedDrModel.ActivityTimeline
                 ? e.Timeline!.VelocityAt(now)
                 : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
-            var steeringPath = RecoverRoute(pos, e.Destination, e.Path);
+            var steeringPath = RecoverRoute(pos, e.Destination, e.Path, out var steeringSurfaces);
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
             e.OutsideSince = double.NaN;
-            e.Path = steeringPath;
+            e.Path = steeringPath;          // clears the old provenance
+            e.PathSurfaces = steeringSurfaces; // ...then attach this route's own
             e.Timeline = null; // now a reactive high-power agent; a later demotion resumes as plain PathArc
 
             var handle = _highCrowd.Add(pos, e.Radius, e.MaxSpeed, goal: pos, velocity: velocity);
@@ -499,19 +806,24 @@ public sealed class PedLodManager
 
             _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.FreeKinematic, now);
         }
+        PhaseEnd("promoteApply", tPromoteApply);
 
         // Demotions: FreeKinematic -> PathArc. Re-routes from the ped's CURRENT (frozen) position to
         // its destination via IPedNavigation (see the class remarks for why re-route rather than
         // resume), then Removes ONLY this ped's OrcaCrowd handle and route -- every other high-power
         // ped's handle/route/waypoint cursor is untouched (P0-3).
+        var tDemoteApply = PhaseStart();
         foreach (var id in toDemote)
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var routed = RecoverRoute(pos, e.Destination, e.Path);
+            var routed = RecoverRoute(pos, e.Destination, e.Path, out var routedSurfaces);
             // Re-anchor the resume leg EXACTLY at the frozen high-power pose, so the low-power pose at the
             // demote instant is the ped's current position to machine precision (no pop across the LOD switch).
             var newPath = ReanchorAt(routed, pos);
+            // ReanchorAt prepends the anchor and may drop a coincident leading vertex, so the provenance
+            // must be re-anchored the same way or it would be off by one against the new path.
+            var newSurfaces = ReanchorSurfaces(routed, routedSurfaces, newPath);
 
             _highController.RemoveRoute(e.HighIndex);
             _highCrowd.Remove(e.HighIndex);
@@ -530,12 +842,13 @@ public sealed class PedLodManager
                 var widths = _navigation.HalfWidthsAlong(newPath);
                 var resume = new ActivityTimeline(
                     now,
-                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths) },
+                    new ActivitySegment[] { new WalkSegment(newPath, e.MaxSpeed, widths, ElevationChannelFor(newPath, newSurfaces)) },
                     e.WeaveSeed, e.WeaveGlobalSeed);
 
                 e.Model = PedDrModel.ActivityTimeline;
                 e.Timeline = resume;
                 e.Path = newPath;
+                e.PathSurfaces = newSurfaces;
                 _publisher.PublishActivityTimeline(id, resume, now);
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.ActivityTimeline, now);
             }
@@ -543,13 +856,21 @@ public sealed class PedLodManager
             {
                 e.Model = PedDrModel.PathArc;
                 e.Path = newPath;
-                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now);
+                e.PathSurfaces = newSurfaces;
+                _publisher.PublishPathArc(id, newPath, now, e.MaxSpeed, now, ElevationChannelFor(newPath, newSurfaces));
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.PathArc, now);
             }
         }
+        PhaseEnd("demoteApply", tDemoteApply);
 
+        var tOrcaStep = PhaseStart();
         if (_highPowerLiveCount > 0)
         {
+            // A14: split into three sub-phases -- `ped.orcaStep` was 50.4% of wall and 91.7% of ALL
+            // allocation at 6 388 high-power agents, but it wraps three distinct calls, so the aggregate
+            // could not be aimed at. Attributing them separately is what the measurement discipline
+            // requires (three successive source-reasoned guesses at the allocator were all wrong).
+            var tOrcaDiscs = PhaseStart();
             var discs = new WorldDisc[externalEntities.Count];
             for (var i = 0; i < discs.Length; i++)
             {
@@ -557,9 +878,17 @@ public sealed class PedLodManager
             }
 
             _highCrowd.SetExternalObstacles(discs);
+            PhaseEnd("orcaDiscs", tOrcaDiscs);
+
+            var tOrcaGoals = PhaseStart();
             _highController.Update();
+            PhaseEnd("orcaRouteGoals", tOrcaGoals);
+
+            var tOrcaCrowd = PhaseStart();
             _highCrowd.Step(dt);
+            PhaseEnd("orcaCrowdStep", tOrcaCrowd);
         }
+        PhaseEnd("orcaStep", tOrcaStep);
 
         var newNow = now + dt;
 
@@ -573,6 +902,7 @@ public sealed class PedLodManager
         // publisher's documented "samples are consecutive => one crowd frame per step" contract. Both passes
         // keep ascending-id order, so the wire event sequence stays fully deterministic; heartbeats carry no
         // pose, so their relative position does not affect any reconstruction.
+        var tPublishSamples = PhaseStart();
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -581,7 +911,9 @@ public sealed class PedLodManager
                 _publisher.PublishSample(id, newNow, _highCrowd.Position(e.HighIndex), _highCrowd.Velocity(e.HighIndex));
             }
         }
+        PhaseEnd("publishSamples", tPublishSamples);
 
+        var tPublishHeartbeats = PhaseStart();
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -590,6 +922,7 @@ public sealed class PedLodManager
                 _publisher.MaybePublishHeartbeat(id, newNow);
             }
         }
+        PhaseEnd("publishHeartbeats", tPublishHeartbeats);
     }
 
 }

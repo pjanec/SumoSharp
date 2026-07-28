@@ -49,12 +49,12 @@ evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
         (5 tp / 287 arr, guard green) while improving 2× (teleports **10→3**, arrivals **275→281**, halting
         45→42). LANDED: full suite 656 green, all goldens byte-identical, deterministic.
       - STILL OPEN: 2× does not fully drain. **ROOT CAUSE + EXACT FIX NOW DIAGNOSED from SUMO source** —
-        see `docs/GAP1-RESUME.md` (single entry point) and design §2.3.4. It is `ignore-route-errors` +
+        see `docs/archive/GAP1-RESUME.md` (single entry point) and design §2.3.4. It is `ignore-route-errors` +
         lane-continuation: SUMO plans the car's move along its ACTUAL lane's connection (`30_1→44`) and
         crosses WHILE MOVING; SumoSharp pins the pool exit lane and HOLDS the car (→ queue → gridlock). The
         fix = port `getBestLanesContinuation` "continue along the lane you're on" semantics (byte-identical
         for goldens by construction). NOT congestion rerouting (124 is cheaper than 44 in vanilla) and NOT
-        cooperative LC (retired). **Next session: implement per GAP1-RESUME.md; do not re-investigate.**
+        cooperative LC (retired). **Next session: implement per archive/GAP1-RESUME.md; do not re-investigate.**
 - [~] **Stage 4** — end-to-end full box. **MAIN THROUGHPUT CRACKED (session 2).** The box's arrival
       deficit was NOT diffuse congestion — it localized to two arrival/exit bugs, both fixed byte-identical:
       1. **Final-edge arrival was strict `pos > laneLength`** (lane-crossing), but SUMO arrival is
@@ -84,7 +84,7 @@ evidence). NEEDs: `SUMOSHARP-NEED-dense-flow-gridlock-vs-vanilla.md`,
       impatience — ports `MSLink::blockedByFoe`. Goldens byte-identical; suite green (657); deterministic.
       **Realism win, SEPARATE axis from the knee** (makes yielding more conservative → *reduces* throughput;
       SumoData confirmed the knee's 5.5× is present without it). `DenseFlowDeadLaneDrainTests` re-encoded to
-      intent (arrivals ≥ 290 hard, teleports ≤ 2 documented). See design §2.3.8, `DISCHARGE-YIELD-RESUME.md`.
+      intent (arrivals ≥ 290 hard, teleports ≤ 2 documented). See design §2.3.8, `archive/DISCHARGE-YIELD-RESUME.md`.
 - [x] **Stage 6 — THE KNEE BLOCKER: signalized-discharge redistribution** (session 4, `ca8d515`).
       SumoData localized the real-box 5.5× / 538% overshoot to a discharge **redistribution** — SumoSharp
       piled 8–10× on 3-way T-light approaches, 4-way at parity (network-wide only ~1.22×). Reproduced

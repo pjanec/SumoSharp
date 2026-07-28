@@ -23,8 +23,10 @@ cars). Read `docs/TASKS-TODO.md` first every time — it is the live board; this
 - `dotnet run --project src/Sim.Bench -c Release` → hash **`BF3794A4704BCD79`**, `par == single`.
   (Bench runs `_bench/highway-dense`, no SUMO ref — a re-pinned tripwire, not a verified-correct value; the
   parity statement is the goldens. It last moved with PR #13 when 7 junction gates defaulted ON.)
-- `dotnet test tests/Sim.LiveCity.Tests -c Release` = **53/53** (build the csproj explicitly first).
-- `dotnet test tests/Sim.Pedestrians.Tests -c Release` = **277/277**. No `System.Random`.
+- `dotnet test tests/Sim.LiveCity.Tests -c Release` = **90/90** (build the csproj explicitly first).
+- `dotnet test tests/Sim.Pedestrians.Tests -c Release` = **324/324**. No `System.Random`.
+  (These two counts and the goldens count above are a dated snapshot; the live gate lives in
+  `docs/TASKS-TODO.md`.)
 - Why inert: every car↔ped path is gated on `Engine.CrowdSource != null`, which no committed golden/bench
   attaches. Keep new behaviour behind that gate (or a demo-only flag) and parity stays byte-identical.
 
@@ -32,10 +34,19 @@ cars). Read `docs/TASKS-TODO.md` first every time — it is the live board; this
 
 ## 1. Where realism stands (main `d4e1819`)
 **Closed:** #1/#2 (crossing-yield), **A** (stopped-car sideways wobble → `SuppressHeldCrowdSwerve`),
-**B-guard** (car stops for a ped in its path in the zone, PR #15), **#3** (peds vanish on promotion),
-**#4** (ORCA stay-ORCA/wander), **#6** (idle-clustering into one point) — both PR #14; F1/F2/F4a; arbitrary-net
+**B-guard** (car stops for a ped in its path in the zone, PR #15); F1/F2/F4a; arbitrary-net
 import (PR #11); junction-correctness + 7 gates ON (PR #13). Crowd-disc query buffer `MaxCrowdDiscs=256` +
 viewer click-to-identify are in (cherry-picked from `claude/livecity-realism-fixes`).
+
+**#3 (peds vanish on promotion) / #4 (ORCA stay-ORCA/wander) / #6 (idle-clustering into one point) are
+NOT closed by this handoff — correction.** This passage previously claimed all three closed via "PR #14";
+`docs/TASKS-TODO.md`'s in-flight table is the authority for session status and lists the owning
+**ped-LOD-lifecycle** session (`claude/livecity-ped-lod-lifecycle-bylitj`) as **STARTED**, not merged —
+consult that table, not this line, for the current state. Separately, per
+`docs/LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md` §3.2 (owner-ratified), **#4's proposed leaky-dwell/watchdog
+fix was DROPPED** because no stuck-ORCA ever reproduced, so #4 will never close as "fixed" in the sense
+this line implied — the finding was that #3's wire bug was the actual cause of the visible wander, and
+`OutsideSince` demotion already worked correctly.
 
 **Still open — realism:**
 - **#5 — ORCA peds don't dodge a car standing on the crosswalk.** Needs a **car→ped obstacle feed** (the

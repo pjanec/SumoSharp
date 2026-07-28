@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Sim.LiveCity;
@@ -24,8 +25,80 @@ public enum PedNavMode
 public sealed class LiveCityConfig
 {
     // The demo_city/box dataset directory (contains net.xml + scenario.rou.xml). Set by ForRepoRoot or
-    // by the caller directly.
+    // by the caller directly. Still the anchor for everything dataset-RELATIVE that is not the net or
+    // the routes (LiveCityScene's zones/buildings/pois JSON companions), even when NetPath/RoutePaths
+    // below point somewhere else.
     public string DatasetDir { get; set; } = string.Empty;
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: explicit net path, overriding the
+    // `<DatasetDir>/net.xml` convention. A SumoData cut sub-area's net is named `scenario.net.xml`
+    // (preprocess.py's output), and a caller may want to point at a net in a subfolder or outside the
+    // dataset dir entirely -- neither was loadable while the filename was hardcoded. null (the
+    // default, and what ForRepoRoot/ForDataset leave it at) => the `<DatasetDir>/net.xml` convention,
+    // byte-identical to before this knob existed.
+    public string? NetPath { get; set; }
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: explicit route-file path, overriding the
+    // `<DatasetDir>/scenario.rou.xml` convention. LiveCitySim only SCRAPES this file for its
+    // drivable-edge (spawn edge) set -- it generates its own procedural demand -- so a dataset with no
+    // route file at all is fine (the net-derived fallback covers it). null => the convention.
+    // `RoutePaths` below wins over this when both are set.
+    public string? RoutePath { get; set; }
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: the MULTI-file form, set by `ForSumocfg` from a
+    // `.sumocfg`'s `<route-files>` (which is a comma-separated LIST -- a real cut's is
+    // "vType.config.xml,vType_pedestrians.xml,vTypeDist.config.xml,scenario.rou.xml", see
+    // scenarios/_ped/subarea-box/scenario.sumocfg). The drivable-edge scrape UNIONS over every entry:
+    // scraping only the first would find zero edges in the vType file and then silently fall through
+    // to the net-derived fallback -- a wrong-but-plausible result rather than a loud failure.
+    // null => fall back to `RoutePath`, then to the `<DatasetDir>/scenario.rou.xml` convention.
+    public IReadOnlyList<string>? RoutePaths { get; set; }
+
+    // The resolved net path. One place, so `LiveCitySim` and any diagnostic/harness agree on what was
+    // loaded. Order is fixed by docs/EXTERNAL-NET-LOADING-API-CONTRACT.md §4:
+    //
+    //   1. `NetPath`, if set -- used verbatim.
+    //   2. `<DatasetDir>/net.xml`, if it exists -- the historical convention, so the demo and every
+    //      pre-existing dataset resolve to the identical string they always did.
+    //   3. `<DatasetDir>/scenario.net.xml`, if it exists -- the name SumoData `preprocess.py` cut
+    //      sub-areas use. This is what lets `ForDataset(cutDir)` work on a cut WITHOUT the caller
+    //      first probing filenames itself.
+    //   4. Otherwise `<DatasetDir>/net.xml` anyway, so a "file not found" names the conventional file
+    //      rather than whichever alternative was probed last.
+    //
+    // Probing only ever fires when the conventional name is ABSENT, so no existing dataset can change
+    // which file it loads.
+    public string ResolveNetPath()
+    {
+        if (!string.IsNullOrEmpty(NetPath))
+        {
+            return NetPath!;
+        }
+
+        var conventional = Path.Combine(DatasetDir, "net.xml");
+        if (File.Exists(conventional))
+        {
+            return conventional;
+        }
+
+        var cutStyle = Path.Combine(DatasetDir, "scenario.net.xml");
+        return File.Exists(cutStyle) ? cutStyle : conventional;
+    }
+
+    // The resolved route-file list for the drivable-edge scrape, in the precedence order documented
+    // on `RoutePaths`/`RoutePath` above. Never null; entries that do not exist are simply skipped by
+    // the scrape (a `.sumocfg` may legitimately list a vType file we have nothing to take from).
+    public IReadOnlyList<string> ResolveRoutePaths()
+    {
+        if (RoutePaths is { Count: > 0 })
+        {
+            return RoutePaths;
+        }
+
+        return !string.IsNullOrEmpty(RoutePath)
+            ? new[] { RoutePath! }
+            : new[] { Path.Combine(DatasetDir, "scenario.rou.xml") };
+    }
 
     // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1: selects the pedestrian-navigation provider Stage C
     // wires up. Defaults to `Navmesh` (today's only wired behaviour); `ForDataset` sets `RouteGraph`.
@@ -187,7 +260,63 @@ public sealed class LiveCityConfig
     public double PedMaxSpeed { get; set; } = 1.3;
     public double PedRadius { get; set; } = 0.3;
     public double PedArrivalRadius { get; set; } = 0.6;
+
+    // Perf (docs/LIVE-CITY-PERF-SESSION-LOG.md A3): plan the high-power (ORCA) crowd in parallel.
+    // `OrcaCrowd.UseParallelStep` is documented and TESTED bit-identical to serial
+    // (tests/Sim.ParityTests/OrcaParallelStepTests.cs) -- every new velocity is a pure function of the
+    // FROZEN start-of-step state and each worker writes only its own slots, so which agents a worker
+    // processes together cannot change any result. It is ALSO self-gating: `OrcaCrowd` engages it only at
+    // `_count >= ParallelStepThreshold` (256), so small scenarios and the whole test suite keep the exact
+    // serial path. Default TRUE because it is byte-identical -- this is not a fast-mode/lossy knob.
+    //
+    // Measured need (20k peds, 1189-1832 high-power, dt=0.5): `ped.orcaStep` was 37.4% of wall and 79.4%
+    // of all allocation -- the single largest phase. It had NEVER been enabled in production: a grep showed
+    // `UseParallelHighCrowd` was set only by `src/Sim.BenchPedLod`, never by LiveCitySim.
+    // Overridable via LIVECITY_PEDPARALLELORCA=0 for paired A/B. A real config knob rather than an env read
+    // in LiveCitySim's ctor, so a test can A/B it without mutating process-global state.
+    public bool PedParallelOrca { get; set; } = true;
     public bool PedEnableWeave { get; set; } = true;
+
+    // A22 (docs/LIVE-CITY-PERF-SESSION-LOG.md; docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2): the cap
+    // on BOTH of this host's parallel regions -- `Engine.MaxParallelism` (car plan/willPass/emit) and
+    // `OrcaCrowd.MaxParallelism` (the high-power ped crowd). Both default to TPL's -1 == every logical
+    // processor, and nothing in this host had ever set either.
+    //
+    // Leaving them uncapped is fine for a HEADLESS bench (the whole machine is the sim), and wrong for an
+    // INTERACTIVE viewer: once the tick runs on its own thread (Stage 2) a sim step that saturates all 24
+    // logical cores starves the render thread and the display driver, so the frame hitch survives the very
+    // change that was supposed to remove it. Hence a cap that leaves headroom.
+    //
+    // <= 0 means "leave TPL's default" (uncapped) -- so a bench, a test, and every existing caller are
+    // byte-identical to before this knob existed. `LeaveCoresFree`/`ResolveMaxParallelism` below is how an
+    // interactive host asks for "all but N cores" without hardcoding a machine's core count.
+    //
+    // Trajectory-invariant either way: both knobs are scheduling-only (results are order-independent), so
+    // this changes wall-clock and nothing else. Verified by the standing `Sim.Bench` par == single hash.
+    public int MaxParallelism { get; set; } = 0;
+
+    // The interactive form of `MaxParallelism`: reserve this many logical processors for whatever else the
+    // process is doing (render thread + GPU driver + OS). 0 (the default) reserves nothing, so a headless
+    // caller is unaffected. `ResolveMaxParallelism` turns it into a concrete cap.
+    public int LeaveCoresFree { get; set; } = 0;
+
+    // The cap actually handed to the two knobs: an explicit `MaxParallelism` wins; otherwise
+    // `LeaveCoresFree` is subtracted from the machine's logical processor count (never below 1); otherwise
+    // -1 (TPL's default, uncapped).
+    public int ResolveMaxParallelism()
+    {
+        if (MaxParallelism > 0)
+        {
+            return MaxParallelism;
+        }
+
+        if (LeaveCoresFree > 0)
+        {
+            return Math.Max(1, Environment.ProcessorCount - LeaveCoresFree);
+        }
+
+        return -1;
+    }
 
     // Bug #6 (crosswalk-wait kerb clustering; docs cross-ref: PedDemandConfig.CrosswalkWaitSpreadRadius):
     // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
@@ -246,6 +375,90 @@ public sealed class LiveCityConfig
         cfg.DatasetDir = datasetDir;
         cfg.NavMode = PedNavMode.RouteGraph;
         cfg.RegionPlan = true;
+        return cfg;
+    }
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1.2: the `.sumocfg` factory -- load a scenario the way
+    // `sumo -c scenario.sumocfg` does, by letting the config name its own net and route files.
+    //
+    // Reuses the EXISTING `Sim.Ingest.ScenarioConfigParser` (the same parser
+    // `Engine.LoadScenario(sumocfgPath)` drives; `ScenarioConfig` already carries NetFile/RouteFiles),
+    // so no parser change was needed here at all.
+    //
+    // Path resolution follows SUMO's documented rule and `Engine.LoadScenario`'s own `Resolve`: every
+    // `<input>` path is taken RELATIVE TO THE SUMOCFG'S OWN DIRECTORY, never the process CWD, so a
+    // dataset dir can be run from anywhere. An ALREADY-ABSOLUTE path is taken as-is -- that is not a
+    // nicety, it is the documented split between the two producers in the field: SumoData's
+    // preprocess.py emits ABSOLUTE net/route paths while demo-city emits RELATIVE ones
+    // (SumoData SUBAREA-METHOD.md §8). `Path.Combine` already returns an absolute right-hand side
+    // unchanged, so both forms fall out of the one call -- asserted by a test rather than left to
+    // rest on a framework detail.
+    //
+    // A `.sumocfg` names an arbitrary net by construction, so this applies the SAME
+    // RouteGraph/RegionPlan/`LIVECITY_*` defaults as `ForDataset`; only the path fields differ.
+    // Unlike `Engine.LoadScenario`, a MISSING `<route-files>` is NOT an error: LiveCitySim generates
+    // its own procedural demand and only scrapes the route file for a spawn-edge set, for which the
+    // net-derived fallback is a complete answer. A missing `<net-file>` IS an error -- there is
+    // nothing to load.
+    public static LiveCityConfig ForSumocfg(string sumocfgPath)
+    {
+        if (string.IsNullOrWhiteSpace(sumocfgPath))
+        {
+            throw new ArgumentException("sumocfg path must be non-empty.", nameof(sumocfgPath));
+        }
+
+        var fullCfgPath = Path.GetFullPath(sumocfgPath);
+        if (!File.Exists(fullCfgPath))
+        {
+            throw new FileNotFoundException($"sumocfg '{fullCfgPath}' does not exist.", fullCfgPath);
+        }
+
+        var scenario = Sim.Ingest.ScenarioConfigParser.Parse(fullCfgPath);
+        var cfgDir = Path.GetDirectoryName(fullCfgPath) ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(scenario.NetFile))
+        {
+            throw new InvalidDataException(
+                $"'{fullCfgPath}' has no <input><net-file> -- set LiveCityConfig.NetPath directly, or "
+                + "use ForDataset(dir) for a directory containing net.xml.");
+        }
+
+        // Path.Combine(dir, absolute) == absolute, so this one call covers both producers (see above).
+        string Resolve(string p) => Path.GetFullPath(Path.Combine(cfgDir, p.Trim()));
+
+        var cfg = WithEnvOverrides(new LiveCityConfig());
+        cfg.DatasetDir = cfgDir;
+        cfg.NetPath = Resolve(scenario.NetFile!);
+        cfg.NavMode = PedNavMode.RouteGraph;
+        cfg.RegionPlan = true;
+
+        if (scenario.RouteFiles.Count > 0)
+        {
+            var routes = new List<string>(scenario.RouteFiles.Count);
+            foreach (var rf in scenario.RouteFiles)
+            {
+                if (!string.IsNullOrWhiteSpace(rf))
+                {
+                    routes.Add(Resolve(rf));
+                }
+            }
+
+            if (routes.Count > 0)
+            {
+                cfg.RoutePaths = routes;
+
+                // `RoutePath` is set ONLY when the cfg names exactly one route file. An earlier version
+                // guessed `routes[^1]` on the theory that SUMO puts the demand file last -- that is not
+                // a SUMO convention and it is wrong on both real configs measured by the engine session:
+                // `geneve_Medium.sumocfg`'s last entry is a PERSON-flow file (the vehicle routes are
+                // entries 4-5), and `geneve_Empty.sumocfg` lists only the three vType files, so the last
+                // is a vTypeDist file containing no routes at all. Nothing misbehaves today because the
+                // ctor reads `RoutePaths`, but a public value that is confidently wrong is worse than
+                // null -- someone will read it and believe it.
+                cfg.RoutePath = routes.Count == 1 ? routes[0] : null;
+            }
+        }
+
         return cfg;
     }
 
@@ -322,6 +535,14 @@ public sealed class LiveCityConfig
         if (coopEnv != null)
         {
             cfg.CooperativeLaneChange = coopEnv != "0";
+        }
+
+        // LIVECITY_PEDPARALLELORCA: parallel-plan the high-power ORCA crowd (A3). Bit-identical either way
+        // (OrcaParallelStepTests), so this exists purely for paired A/B measurement of the speedup.
+        var pedParOrcaEnv = Environment.GetEnvironmentVariable("LIVECITY_PEDPARALLELORCA");
+        if (pedParOrcaEnv != null)
+        {
+            cfg.PedParallelOrca = pedParOrcaEnv != "0";
         }
 
         // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via

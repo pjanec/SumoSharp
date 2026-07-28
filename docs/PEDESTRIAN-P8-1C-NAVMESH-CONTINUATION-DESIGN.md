@@ -1,6 +1,7 @@
 # PEDESTRIAN-P8-1C-NAVMESH-CONTINUATION-DESIGN.md — sidewalk↔sidewalk continuation bridging
 
-**Status: agreed (approach A), implementing.** Successor to P8-1b
+**Status: landed and validated** — see §4.1 ("both parts landed and validated on the real Geneva crop;
+threshold tuning parked per owner"). Successor to P8-1b
 (`PEDESTRIAN-P8-1B-NAVMESH-CONNECTIVITY-DESIGN.md`). Closes the **residual** real-net navmesh fragmentation
 that P8-1b's *area-anchored* bridge structurally cannot: sidewalk↔sidewalk seams with no walkingArea between
 them. Driven by the sub-area (SumoData) session's geometry-free witness `subarea-pedfrag2` (target **83 → 1**).

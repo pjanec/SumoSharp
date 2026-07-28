@@ -36,7 +36,8 @@ namespace Sim.Pedestrians.Lod;
 //   segmentCount * {
 //     byte kind (0 = Walk, 1 = Pause, 2 = Dwell, 3 = Interact)
 //     Walk:     double speed, int32 pointCount, pointCount * (double X, double Y),
-//               byte hasWidths, hasWidths ? pointCount * double halfWidth
+//               byte hasWidths,     hasWidths     ? pointCount * double halfWidth,
+//               byte hasElevations, hasElevations ? pointCount * double elevation
 //     Pause:    double dur, string animTag
 //     Dwell:    double poseX, poseY, headingX, headingY, dur, byte visible, string animTag
 //     Interact: double poseX, poseY, headingX, headingY, dur, int32 partnerId, string animTag
@@ -80,6 +81,22 @@ public static class ActivityTimelineWire
                         foreach (var hw in widths)
                         {
                             WriteDouble(buffer, scratch, hw);
+                        }
+                    }
+                    else
+                    {
+                        buffer.WriteByte(0);
+                    }
+
+                    // Per-vertex elevation, same one-flag-byte + N-doubles shape as the half-widths
+                    // above. A 2-D net writes the single 0 byte, so its encoding grows by exactly one
+                    // byte per Walk leg over the pre-elevation format and by nothing per vertex.
+                    if (w.Elevations is { } elevations && elevations.Count == w.Path.Count)
+                    {
+                        buffer.WriteByte(1);
+                        foreach (var z in elevations)
+                        {
+                            WriteDouble(buffer, scratch, z);
                         }
                     }
                     else
@@ -174,7 +191,19 @@ public static class ActivityTimelineWire
             }
         }
 
-        return new WalkSegment(path, speed, widths);
+        var hasElevations = src[o] != 0;
+        o += 1;
+        double[]? elevations = null;
+        if (hasElevations)
+        {
+            elevations = new double[n];
+            for (var k = 0; k < n; k++)
+            {
+                elevations[k] = ReadDouble(src, ref o);
+            }
+        }
+
+        return new WalkSegment(path, speed, widths, elevations);
     }
 
     private static PauseSegment ReadPause(ReadOnlySpan<byte> src, ref int o)

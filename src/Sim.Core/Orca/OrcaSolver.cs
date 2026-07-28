@@ -79,7 +79,8 @@ public static class OrcaSolver
         double timeHorizon,
         double timeHorizonObst,
         double timeStep,
-        Span<OrcaLine> lineScratch)
+        Span<OrcaLine> lineScratch,
+        Span<OrcaLine> projLineScratch = default)
     {
         var lineCount = ComputeObstacleLines(self, obstacles, timeHorizonObst, lineScratch);
         var numObstLines = lineCount;
@@ -162,7 +163,7 @@ public static class OrcaSolver
         {
             // The dense-packing fallback: no velocity satisfies every constraint, so minimise the
             // maximum penetration instead of failing hard.
-            HalfPlaneLp.LinearProgram3(lines, numObstLines, lineFail, maxSpeed, ref result);
+            HalfPlaneLp.LinearProgram3(lines, numObstLines, lineFail, maxSpeed, ref result, projLineScratch);
         }
 
         return result;

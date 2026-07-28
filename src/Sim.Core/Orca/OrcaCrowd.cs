@@ -47,6 +47,14 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         public OrcaSolver.Agent[] NeighbourScratch;
         public double[] NeighbourDistSq;   // parallel to NeighbourScratch, only used when MaxNeighbours > 0
         public OrcaLine[] LineScratch;
+
+        // HalfPlaneLp.LinearProgram3's projected-line working buffer, hoisted here so the dense-packing
+        // fallback (constant in a jam -- LinearProgram2 reports infeasible whenever the crowd is packed)
+        // stops heap-allocating tens of KB per call once lines.Length > 64 (routine at high neighbour
+        // density since MaxNeighbours is uncapped by default). Sized/grown exactly like LineScratch
+        // (same lineCap -- LP3 never needs more than lines.Length slots), never shrunk. Per-worker on the
+        // parallel path, single reused instance on the serial path, exactly like every other buffer here.
+        public OrcaLine[] ProjLineScratch;
         public ObstacleSegment[] ObstacleSegmentScratch = Array.Empty<ObstacleSegment>();
         public int[] CandidateScratch = Array.Empty<int>();
 
@@ -65,6 +73,7 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             NeighbourScratch = new OrcaSolver.Agent[capacity];
             NeighbourDistSq = new double[capacity];
             LineScratch = new OrcaLine[capacity];
+            ProjLineScratch = new OrcaLine[capacity];
         }
     }
 
@@ -711,6 +720,12 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
             Array.Resize(ref scratch.LineScratch, lineCap);
         }
 
+        // LP3's projected-line scratch never needs more slots than the line count itself.
+        if (scratch.ProjLineScratch.Length < lineCap)
+        {
+            Array.Resize(ref scratch.ProjLineScratch, lineCap);
+        }
+
         var near = scratch.NeighbourScratch.AsSpan(0, cap);
         var rangeSq = NeighbourDist * NeighbourDist;
         var maxN = MaxNeighbours;
@@ -790,7 +805,7 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
 
         return OrcaSolver.ComputeNewVelocity(
             self, near[..k], obst[..oCount], pref, maxSpeed, TimeHorizon, TimeHorizonObst, dt,
-            scratch.LineScratch.AsSpan(0, oCount + k));
+            scratch.LineScratch.AsSpan(0, oCount + k), scratch.ProjLineScratch.AsSpan(0, oCount + k));
     }
 
     // Cross-regime bridge (Direction A): replace the external world-disc list every agent avoids this
@@ -1178,5 +1193,6 @@ public sealed class OrcaCrowd : ICrowdFootprintSource
         Array.Resize(ref _scratch.NeighbourScratch, newCapacity);
         Array.Resize(ref _scratch.NeighbourDistSq, newCapacity);
         Array.Resize(ref _scratch.LineScratch, newCapacity);
+        Array.Resize(ref _scratch.ProjLineScratch, newCapacity);
     }
 }

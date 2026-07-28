@@ -14,7 +14,10 @@ namespace Sim.Viewer.Motion;
 public sealed class KinematicReconstructor
 {
     private readonly KinematicHeading _kinematic;                              // front smoothing + rear-axle drag (docs §5.3)
-    private readonly Dictionary<VehicleHandle, float> _lookAheadPrev = new();  // previously-USED predictor heading (jump guard)
+    // CONCURRENT: same reason as KinematicHeading._state -- the City3D viewer drives Resolve from a parallel
+    // per-vehicle loop, and this map's first-sight insert is a structural mutation a plain Dictionary cannot
+    // survive concurrently. Per-handle values, one worker per handle.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<VehicleHandle, float> _lookAheadPrev = new();  // previously-USED predictor heading (jump guard)
 
     public KinematicReconstructor(KinematicHeadingParams? kinematics = null)
         => _kinematic = new KinematicHeading(kinematics);

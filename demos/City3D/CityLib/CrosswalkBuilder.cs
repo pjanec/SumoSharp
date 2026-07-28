@@ -30,12 +30,14 @@ public static class CrosswalkBuilder
     // crossing's outline/kerb). Elevated `elevationOffsetSumoZ` (SUMO z, additive) above the crossing lane's
     // own RoadMeshBuilder ribbon so the stripes never z-fight with the surface underneath them.
     public static (RibbonMesh Mesh, int StripeCount) Build(
+        SumoGodotFrame frame,
         IReadOnlyList<(double X, double Y)> shape,
         double width,
         double stripeSpacing = 1.0,
         double stripeThickness = 0.5,
         double widthFraction = 0.8,
-        double elevationOffsetSumoZ = 0.02)
+        double elevationOffsetSumoZ = 0.02,
+        IReadOnlyList<double>? shapeZ = null)
     {
         if (shape.Count < 2 || width <= 0.0 || stripeSpacing <= 0.0)
         {
@@ -60,8 +62,13 @@ public static class CrosswalkBuilder
             var p0 = (point.X - tangent.X * halfAlong, point.Y - tangent.Y * halfAlong);
             var p1 = (point.X + tangent.X * halfAlong, point.Y + tangent.Y * halfAlong);
             var stripeShape = new[] { p0, p1 };
-            var stripeZ = new[] { elevationOffsetSumoZ, elevationOffsetSumoZ };
-            parts.Add(RoadMeshBuilder.Build(stripeShape, stripeZ, acrossWidth));
+            // The stripe rides `elevationOffsetSumoZ` above the CROSSING LANE'S OWN surface, not above
+            // absolute z=0. On a 2-D lane (shapeZ null) the base is 0 and this is byte-identical to
+            // before; on a georeferenced 3-D net (roads at z ~370-400 m) the flat form would have put
+            // the zebra ~385 m underground.
+            var baseZ = ZAtArc(shapeZ, cumulative, d);
+            var stripeZ = new[] { baseZ + elevationOffsetSumoZ, baseZ + elevationOffsetSumoZ };
+            parts.Add(RoadMeshBuilder.Build(frame, stripeShape, stripeZ, acrossWidth));
             stripeCount++;
         }
 
@@ -70,6 +77,52 @@ public static class CrosswalkBuilder
 
     private static readonly RibbonMesh Empty =
         new(Array.Empty<float>(), Array.Empty<int>(), Array.Empty<float>(), 0.0);
+
+    // Elevation at arc length `arc` along a polyline whose per-vertex z is `shapeZ` and whose per-vertex
+    // cumulative arc lengths are `cumulative`. Returns 0 for a 2-D shape (shapeZ null/empty), which is
+    // exactly the flat behaviour every caller had before elevation was threaded through. Linear in the
+    // segment, clamped at both ends -- the same interpolation shape as Sim.Ingest's
+    // LaneGeometry.ElevationAtOffset, kept local because CityLib's marking builders work on OFFSET
+    // polylines (a lane's left edge, a stripe centreline) that no longer match any Lane's own shape.
+    internal static double ZAtArc(IReadOnlyList<double>? shapeZ, IReadOnlyList<double> cumulative, double arc)
+    {
+        if (shapeZ is not { Count: > 0 })
+        {
+            return 0.0;
+        }
+
+        if (arc <= 0.0 || cumulative.Count < 2)
+        {
+            return shapeZ[0];
+        }
+
+        var last = System.Math.Min(shapeZ.Count, cumulative.Count) - 1;
+        if (last <= 0)
+        {
+            return shapeZ[0];
+        }
+
+        if (arc >= cumulative[last])
+        {
+            return shapeZ[last];
+        }
+
+        for (var i = 0; i < last; i++)
+        {
+            var a = cumulative[i];
+            var b = cumulative[i + 1];
+            if (arc > b)
+            {
+                continue;
+            }
+
+            var span = b - a;
+            var f = span > 1e-12 ? (arc - a) / span : 0.0;
+            return shapeZ[i] + ((shapeZ[i + 1] - shapeZ[i]) * f);
+        }
+
+        return shapeZ[last];
+    }
 
     private static double[] CumulativeLengths(IReadOnlyList<(double X, double Y)> shape)
     {

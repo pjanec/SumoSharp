@@ -117,7 +117,7 @@ public class ArbitraryNetStageE4Tests
             var nav = new Sim.Pedestrians.Navigation.RouteGraph.SumoRouteGraphNav(pedNetwork);
             var start = new Sim.Core.Orca.Vec2(OriginX - 20, OriginY + 5);
             var goal = new Sim.Core.Orca.Vec2(OriginX + 20, OriginY + 5);
-            var path = nav.FindPath(start, goal);
+            var path = nav.FindPath(start, goal, out _);
 
             Assert.NotNull(path);
             Assert.True(path!.Count >= 2);

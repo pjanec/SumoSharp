@@ -137,7 +137,14 @@ public sealed class KinematicHeading
         return target + (change + temp) * exp;
     }
 
-    private readonly Dictionary<VehicleHandle, State> _state = new();
+    // CONCURRENT because the City3D viewer reconstructs vehicles from a PARALLEL per-vehicle loop
+    // (CityLib.Reconstructor) -- car reconstruction measured ~1.7 us/car, i.e. ~17 ms/frame at 10 000 cars,
+    // view-independent, and it is per-vehicle independent. `State` is a STRUCT, so an update is a WRITE BACK
+    // into the map (`_state[handle] = s`), not a mutation of a shared object -- and a plain Dictionary is
+    // unsafe for concurrent writes even on DISTINCT keys (a resize relinks shared buckets). So the container
+    // is what must change; the per-vehicle state itself needs nothing. Each handle is touched by exactly one
+    // worker, so `[handle] = s` cannot lose an update.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<VehicleHandle, State> _state = new();
     private readonly KinematicHeadingParams _p;
 
     public KinematicHeading(KinematicHeadingParams? p = null) => _p = p ?? new KinematicHeadingParams();

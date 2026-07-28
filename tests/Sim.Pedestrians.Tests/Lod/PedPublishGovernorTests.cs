@@ -258,7 +258,16 @@ public class PedPublishGovernorTests
 
     private sealed class StraightLineNav : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => null;
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return null;
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     [Fact]

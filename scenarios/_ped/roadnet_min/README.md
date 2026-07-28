@@ -38,7 +38,7 @@ which runs
 
 ```
 netconvert --sumo-net-file <in.net.xml> \
-           --sidewalks.guess --crossings.guess --walkingareas.all-nonspecific \
+           --sidewalks.guess --crossings.guess --walkingareas \
            -o <out.net.xml>
 ```
 

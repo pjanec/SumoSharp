@@ -33,8 +33,12 @@ public sealed class DotRecastNavMesh : IPedNavigation
     {
     }
 
-    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal)
+    // No provenance: DotRecast's polygon refs are its own, and this provider carries no elevation
+    // channel to key off them, so reporting ids that nothing can resolve would be worse than none.
+    // Stated here rather than inherited from a default -- see ElevationsAlong below.
+    public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
     {
+        vertexSurfaces = null;
         if (!DotRecastPolyLocator.TryFindNearestPoly(_query, _filter, start, out var startRef, out var startPt))
         {
             return null;
@@ -68,4 +72,12 @@ public sealed class DotRecastNavMesh : IPedNavigation
 
         return waypoints;
     }
+
+    // Flat by explicit choice. DotRecast bakes its own navmesh and does not retain the SUMO lane
+    // elevations, so it has nothing to report; a ped routed on this provider renders at the scene's
+    // ground datum. Written out here so the decision is visible at the provider rather than silently
+    // inherited -- which is exactly how the stacked-surface bug went unnoticed.
+    public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+        => new double[path.Count];
+
 }

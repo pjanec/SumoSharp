@@ -367,7 +367,7 @@ internal static class SceneGen
         var validPairs = new List<(Vec2[] Forward, Vec2[] Backward)>();
         foreach (var (a, b) in candidates)
         {
-            var path = nav.FindPath(a, b);
+            var path = nav.FindPath(a, b, out _);
             if (path is { Count: >= 2 })
             {
                 var fwd = path.ToArray();
@@ -566,7 +566,7 @@ internal static class SceneGen
         var validPairs = new List<(Vec2[] Forward, Vec2[] Backward)>();
         foreach (var (a, b) in candidates)
         {
-            var path = nav.FindPath(a, b);
+            var path = nav.FindPath(a, b, out _);
             if (path is { Count: >= 2 })
             {
                 var fwd = path.ToArray();
@@ -705,7 +705,7 @@ internal static class SceneGen
             var discs = new List<(string, double[])>(activeIds.Count + 1);
             foreach (var id in activeIds)
             {
-                if (!reconstructor.TryGetRenderPose(id, out var pos, out var visible, out _) || !visible)
+                if (!reconstructor.TryGetRenderPose(id, out var pos, out _, out var visible, out _) || !visible)
                 {
                     continue; // not yet observed on the wire this run, or (a future liveliness combo) hidden
                 }
@@ -2493,7 +2493,7 @@ internal static class SceneGen
         var reroutePeds = new List<(OrcaHandle Handle, Vec2 Goal, bool GoingEast)>();
         void SpawnReroutePed(Vec2 start, Vec2 goal, bool goingEast)
         {
-            var path = nav.FindPath(start, goal) ?? new[] { start, goal };
+            var path = nav.FindPath(start, goal, out _) ?? new[] { start, goal };
             var handle = crowd.Add(start, PedRadius, MaxSpeed, goal: path[0]);
             controller.AddRoute(handle, path, MaxSpeed);
             driver.RegisterPed(handle, goal, path);
@@ -2580,7 +2580,7 @@ internal static class SceneGen
                 if ((crowd.Position(handle) - goal).Abs <= ArriveRadius && controller.IsRouteComplete(handle))
                 {
                     var newGoal = goingEast ? westNorthArm : eastNorthArm;
-                    var newPath = nav.FindPath(goal, newGoal, driver.EffectiveBlockedPolygons) ?? new[] { goal, newGoal };
+                    var newPath = nav.FindPathAvoiding(goal, newGoal, driver.EffectiveBlockedPolygons) ?? new[] { goal, newGoal };
                     controller.AddRoute(handle, newPath, MaxSpeed);
                     driver.RegisterPed(handle, newGoal, newPath);
                     reroutePeds[i] = (handle, newGoal, !goingEast);

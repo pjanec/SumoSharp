@@ -75,6 +75,6 @@ only the *not-done* remainder.
 - **Distribution across machines** (vehicle-type split and spatial-topology split over DDS) — feasibility only,
   `docs/DISTRIBUTED-COUPLING-FEASIBILITY.md`. Guardrails documented so nothing precludes it; no implementation
   scheduled.
-- **Recordability / playback** — feasibility only, `docs/RECORDABILITY-PLAYBACK-FEASIBILITY.md` (recording the
+- **Recordability / playback** — feasibility only, `docs/archive/RECORDABILITY-PLAYBACK-FEASIBILITY.md` (recording the
   DDS replication surface as the playback format). The P8-3×P8-4 person-FCD recorder is a first concrete step
   in that direction for the sub-area path.

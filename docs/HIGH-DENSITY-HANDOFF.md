@@ -20,7 +20,7 @@ Make SumoSharp run **optimal high-density sub-area traffic** the way vanilla SUM
 and lay groundwork for engine-only "extras" (attention-aware popping). The product context, the
 measured density numbers (strict no-cheating clears ~2.7 veh/lane-km; rerouting + 120s teleport
 valve reaches ~7 at <1% pops), and the P0/P1/P2/extras breakdown are in
-**`docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md`** (the source-of-truth spec). Verified gap findings +
+**`docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md`** (the source-of-truth spec). Verified gap findings +
 owner steers are in **`docs/HIGH-DENSITY-PLAN.md`**.
 
 ## 2. Operating rules (READ — these govern how to work here)
@@ -119,7 +119,7 @@ design-first + scope heavily (each rivals a P1 rung in effort).
 
 ### X1 follow-ups (non-parity; measurement, not gates)
 - The dense **moving-camera statistical report** — "achievable visible-area density exceeds the global
-  no-cheating knee" (`SUMOSHARP-HIGH-DENSITY-FEATURES.md` §5 acceptance (3)) — a host-side benchmark
+  no-cheating knee" (`archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §5 acceptance (3)) — a host-side benchmark
   measurement, not a unit assertion. The functional gating (zero pops on visible edges, migration, de-jam,
   spawn) is done + tested (`RungHDx1RealismMaskTests`).
 - Optional: wire `SetVisibleEdges` from a real camera frustum in `Sim.LiveHost`; per-zone rerouting
@@ -145,7 +145,7 @@ design-first + scope heavily (each rivals a P1 rung in effort).
   between this work and the pedestrian/crosswalk session (junction RoW, the LC decision, net ingest) and
   the additive-constraint protocol to keep them conflict-free. READ if touching junction RoW or
   `DecideSpeedGainForVehicle` while pedestrian work is in flight.
-- **Spec:** `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md`.
+- **Spec:** `docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md`.
 - **Repo rules / architecture:** `CLAUDE.md`, `docs/DESIGN.md`.
 - **HD tests:** `tests/Sim.ParityTests/RungHD*.cs` + `RungHDx1RealismMaskTests.cs`. **HD scenarios:**
   `scenarios/4[1-8]-*` (P0/P1) + `49-multilane-keepright` (P2-G) + `50-max-depart-delay` (P2-H).

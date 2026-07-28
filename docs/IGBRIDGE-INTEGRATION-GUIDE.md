@@ -213,7 +213,7 @@ Lift these into the host (historical origin: `src/Sim.Viz/SceneGen.cs`):
   already provide a deterministic version of this.)
 - **Crossing-yield** (`:2016-2018`): `engine.CrowdSource = CompositeFootprintSource(pedFootprints,
   CrossingOccupancySource(...))` so cars stop for crossing peds — a **hard requirement** of the live city
-  (`SUMOSHARP-LIVE-CITY-DECISIONS.md`, `SUMOSHARP-LIVE-CITY-DATA-REQUEST.md`).
+  (`SUMOSHARP-LIVE-CITY-DECISIONS.md`, `archive/SUMOSHARP-LIVE-CITY-DATA-REQUEST.md`).
 - **Known caveats** (`LIVE-CITY-STATUS.md`): the loop-Δt vs engine-step mismatch + coarse-tick **tunneling**
   through ~4 m crossings at low rates (weigh against the chosen update rate), and the pre-existing dense
   multi-lane car-overlap limit (now fixed on main by the lane-change-overlap work — verify it's in your base).
@@ -289,8 +289,10 @@ not just the demo.
 
 - **Design-first.** Produce a design doc (HOW) + a task doc (stages + measurable success conditions) + a
   tracker before implementation. Get owner agreement first.
-- **Parity is the iron law.** `dotnet test tests/Sim.ParityTests` stays **654/4 byte-identical**; the
-  `Sim.Bench` determinism hash stays put; **never edit `Sim.Core`** for this (it's a consumer/host).
+- **Parity is the iron law.** `dotnet test tests/Sim.ParityTests` stays byte-identical against the
+  current gate (**775/4**, all 661 goldens — a dated snapshot; the live number lives in
+  `docs/TASKS-TODO.md`); the `Sim.Bench` determinism hash stays put; **never edit `Sim.Core`** for this
+  (it's a consumer/host).
 - **Determinism.** No `System.Random`, per-entity state, host-owned clock; a two-run byte-identical sample
   stream is the gate (IgBridge holds this).
 - **Measure, don't eyeball** (`IGBRIDGE-METHODOLOGY.md`): the metric suite (yaw-accel reversals, no-slip,
@@ -324,7 +326,7 @@ not just the demo.
 - **Reconstruction / DR:** `VIEWER-KINEMATIC-SMOOTHING-DESIGN.md`, `SUMOSHARP-VIEWER-DR-SMOOTHING.md`
   (esp. §8 + §11), `SUMOSHARP-DEADRECKONING.md`.
 - **Live city:** `LIVE-CITY-STATUS.md`, `SUMOSHARP-LIVE-CITY-DECISIONS.md`,
-  `SUMOSHARP-LIVE-CITY-DATA-REQUEST.md`, `SUBAREA-DEMO-CITY-DESIGN.md`, `LIVE-CITY-2D-BUILDER-DESIGN.md`,
+  `archive/SUMOSHARP-LIVE-CITY-DATA-REQUEST.md`, `SUBAREA-DEMO-CITY-DESIGN.md`, `LIVE-CITY-2D-BUILDER-DESIGN.md`,
   `LIVE-CITY-CROSSING-YIELD-DESIGN.md`, `LIVE-CITY-CROSSWALK-SIGNAL-DESIGN.md`.
 - **Peds:** `PEDESTRIANS.md`, `PEDESTRIAN-OVERVIEW.md`.
 - **Key code:** `src/Sim.IgBridge/{IgBridgeRunner,IgBridgeSession,PedStream,IgSample}.cs`,

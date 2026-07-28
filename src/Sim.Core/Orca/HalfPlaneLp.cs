@@ -134,14 +134,38 @@ internal static class HalfPlaneLp
     // half-planes (not derived relative to any other line), so the projected LP for line i starts as
     // a direct COPY of them, and only the agent lines [numObstLines, i) get pairwise-intersected
     // against line i (mirrors RVO2's linearProgram3 exactly).
+    // `projScratch` is a caller-owned scratch buffer (see OrcaCrowd.ScratchSet.ProjLineScratch) reused
+    // across calls to avoid the per-call heap allocation this method used to incur once `lines.Length`
+    // exceeded 64 (which is routine at high neighbour density -- MaxNeighbours is uncapped by default).
+    // Pure working memory: every use below writes projLines[0..count) before it is read (the caller-
+    // owned buffer's stale bytes past `count` are never touched), so reusing a buffer across calls is
+    // byte-identical to a fresh (zero-initialized) one -- see the class-level correctness note. When
+    // `projScratch` is absent or too small, falls back to exactly the prior behaviour (stackalloc for
+    // small line counts, else a fresh heap array).
     internal static void LinearProgram3(
-        ReadOnlySpan<OrcaLine> lines, int numObstLines, int beginLine, double radius, ref Vec2 result)
+        ReadOnlySpan<OrcaLine> lines, int numObstLines, int beginLine, double radius, ref Vec2 result,
+        Span<OrcaLine> projScratch = default)
     {
         var distance = 0.0;
-        // At most (lines.Length - 1) projected constraints for any single i.
-        Span<OrcaLine> projLines = lines.Length <= 64
-            ? stackalloc OrcaLine[lines.Length]
-            : new OrcaLine[lines.Length];
+        // At most (lines.Length - 1) projected constraints for any single i. `scoped` is required here:
+        // without it, the compiler infers this local's safe-to-escape scope from ALL branches, and the
+        // stackalloc branch below (safe-to-escape: this method only) conflicts with the projScratch
+        // branch (a caller-supplied parameter, safe-to-escape: the calling method) -- CS8353. `scoped`
+        // pins the local to "this method only," which every branch already satisfies (nothing here ever
+        // returns or stores projLines beyond this call).
+        scoped Span<OrcaLine> projLines;
+        if (projScratch.Length >= lines.Length)
+        {
+            projLines = projScratch[..lines.Length];
+        }
+        else if (lines.Length <= 64)
+        {
+            projLines = stackalloc OrcaLine[lines.Length];
+        }
+        else
+        {
+            projLines = new OrcaLine[lines.Length];
+        }
 
         for (var i = beginLine; i < lines.Length; i++)
         {

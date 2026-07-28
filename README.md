@@ -34,6 +34,24 @@ doesn't have. Highlights below; precise scope after that.
   emergency-vehicle give-way, opposite-direction overtaking, laneless/shaped mixed traffic, and a full
   **panic-evacuation** model (localized incident → flee → jam → abandon car → foot exodus, layered on
   the unchanged parity core).
+- **🗺️ Loads a real city, not just a hand-built scenario.** Point it at any SUMO `.net.xml`, a
+  `preprocess.py` crop box, or a whole `.sumocfg` (`LiveCityConfig.NetPath` / `ForSumocfg`) and the live
+  city runs on it. Georeferenced nets far from the origin are handled: the world is **recentred** so
+  `float` rendering keeps sub-millimetre precision at UTM coordinates around 9e4, where an identity
+  transform loses the detail entirely.
+- **⛰️ Real elevation, end to end.** A **terrain field** is baked from the net's own `Lane.ShapeZ` on load,
+  and everything on the ground follows it — the grid, the tinted realism zones, POI markers, building
+  bases, traffic-light poles. Pedestrians carry a true height with **per-vertex surface provenance**, so a
+  footbridge and the path beneath it no longer collapse onto one elevation. Elevation is **mandatory in
+  the navigation and render APIs** — there is no 2-D-defaulting sibling to call by accident, so an omitted
+  height is a compile error rather than a silent zero. Measured on a 27.5 m-relief georeferenced cut: the
+  field reproduces every lane vertex's own height to **0.326 m**, against up to ~14 m of error from the
+  flat datum it replaced.
+- **🧵 The engine tick runs off the render thread.** In the 3-D viewer the simulation steps on its own
+  producer thread and publishes a snapshot the renderer claims without blocking. Measured on a
+  28 276-lane city cut at **3 858 cars + 20 726 peds**: frames over 3× the median went to **0 of 2 000**,
+  p99 is **1.20× p50**, and 2 Hz is sustained in real time — where the synchronous tick had produced a
+  100–200 ms hitch roughly twice a second.
 - **🚶 A from-scratch pedestrian crowd layer.** Not a port of SUMO's person model — an independent,
   **network-distributable** crowd subsystem: a navmesh baked from the SUMO net, Poisson O-D demand, a
   two-level LOD (cheap dead-reckoned "ambient" peds vs. reactive full-ORCA ones, promoted on demand),
@@ -62,6 +80,32 @@ doesn't have. Highlights below; precise scope after that.
   à-la-carte package map, "which packages do I install?", and composition diagrams. Runnable
   consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
   `MotionReconstruction`, `EvacDemo`, `GameHostSample`).
+- **📘 Tutorials — drive the engine from your own code:** a three-step ladder, each backed by a runnable
+  sample that `Traffic.sln` compiles (so the snippets cannot rot):
+  [`docs/TUTORIAL-VEHICLES.md`](docs/TUTORIAL-VEHICLES.md) (load a net, spawn traffic, inject external
+  agents cars react to) → [`docs/TUTORIAL-PEDESTRIANS.md`](docs/TUTORIAL-PEDESTRIANS.md) (bake a navmesh,
+  O/D demand, the two-level LOD) → [`docs/TUTORIAL-LIVE-CITY.md`](docs/TUTORIAL-LIVE-CITY.md) (couple both,
+  and measure the coupling causally rather than with a speed threshold). CLI-side companion:
+  [`docs/TOOLS.md`](docs/TOOLS.md) — which of the 17 entry points to run, and the caveats that have each
+  invalidated a real measurement here.
+- **🗂️ Index of the design docs:** [`docs/README.md`](docs/README.md) — `docs/` holds 240+ files (the
+  design-first workflow produces a design + tasks + tracker set per feature), so start with the index
+  rather than `ls`. It gives entry points per area and explains the status banners, including
+  `HISTORICAL TRAIL` for docs that record a hypothesis later disproved.
+- **🧭 Landing cold?** [`CLAUDE.md`](CLAUDE.md) opens with a six-doc reading order plus the three traps
+  that most often waste a first session — including the two test projects `dotnet build` does *not* build.
+- **🎚️ Before you benchmark or A/B anything:** [`docs/ENV-GATES.md`](docs/ENV-GATES.md) — all 34
+  `LIVECITY_*` / `SUMOSHARP_*` / `CITY3D_*` environment gates, what each sets, what an *unset* value means,
+  and whether it is behavioural, refuted, perf-only or diagnostic. They are **process-global**, so an
+  inherited shell value is indistinguishable from a deliberate one; one gate silently breaks 14 goldens
+  when set. The inventory is completeness-checked by a test, so it cannot drift out of date.
+- **🗃️ The test data:** [`scenarios/README.md`](scenarios/README.md) — 89 numbered parity scenarios plus
+  six underscore groups, grouped by what they exercise. Says which datasets have committed SUMO goldens and
+  which are behavioural-only (so you don't cite a benchmark as a parity claim), and which one to pick when
+  you need pedestrians, rail, saturation, or real elevation.
+- **📋 The live work queue:** [`docs/TASKS-TODO.md`](docs/TASKS-TODO.md) — open items with evidence, and
+  the single authority on the current gate numbers (every other doc's copy of a test count has rotted at
+  least once).
 - **📐 Design of record:** [`docs/DESIGN.md`](docs/DESIGN.md) (engine & parity) ·
   [`docs/SUMOSHARP-PACKAGING-DESIGN.md`](docs/SUMOSHARP-PACKAGING-DESIGN.md) (packaging) ·
   [`docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md`](docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md) (dead-reckoning &
@@ -75,7 +119,13 @@ doesn't have. Highlights below; precise scope after that.
   the cheap LOD for performance — press **H** to cycle Central / Follow-camera / Locked. The dense
   downtown flow it drives is the same one the **live-city junction-gridlock** fixes (cooperative lane
   change, wrong-lane reroute, into-occupied cut-in reduction) were built and regression-tested against —
-  all demo-gated and byte-identical on every parity golden.
+  all demo-gated and byte-identical on every parity golden. It also loads **any** net (`--dataset=`,
+  `--sumocfg=`), drapes the ground over a **terrain field baked from the net's own elevations**, runs the
+  engine tick on a **separate thread** from rendering, and has live car- and pedestrian-density dials that
+  move the population without rebuilding the simulation. Design + tasks + tracker:
+  [`docs/EXTERNAL-NET-VIEWER-DESIGN.md`](docs/EXTERNAL-NET-VIEWER-DESIGN.md) and
+  [`docs/LIVE-CITY-THREADED-TICK-DESIGN.md`](docs/LIVE-CITY-THREADED-TICK-DESIGN.md) (whose §8 records what
+  actually landed, and where the original lock-free design was wrong).
 - **🛰️ IgBridge** ([`docs/IGBRIDGE-DESIGN.md`](docs/IGBRIDGE-DESIGN.md)) — a producer-side feed for an
   **external 3D image generator** that has **no protocol for sophisticated predictive dead-reckoning** and
   consumes only plain `position / orientation / timestamp` samples (interpolating between its two most recent).
@@ -121,7 +171,7 @@ Then build and run the offline parity suite (no SUMO, no network):
 ```bash
 git clone https://github.com/pjanec/SumoSharp && cd SumoSharp
 dotnet build -c Release
-dotnet test                     # 465 passed, 3 skipped  (offline; no SUMO, no network)
+dotnet test                     # 775 passed, 0 failed, 4 skipped  (offline; no SUMO, no network)
 ```
 
 ### See it run (from a fresh checkout)
@@ -244,8 +294,10 @@ snapshot** (order-independent, no arrival-time race).
   ingest (exact parity), and `<flow probability=>` inserted per step by a **per-flow seeded** RNG
   (deterministic & reproducible; statistical parity with SUMO — see *Not simulated → \[net\] tail*)
 - ✅ **Warm-start snapshot** — `WarmUp(steps)` deterministically pre-populates a live, already-running
-  network in memory; `SaveSnapshot` / `LoadSnapshot` round-trips **all** vehicles (incl. trains) plus
-  the engine state machines, so a run can start from a live-traffic snapshot (in-memory or from file)
+  network in memory; `SaveSnapshot` / `LoadSnapshot` round-trips vehicles (incl. trains) plus the engine
+  state machines, so a run can start from a live-traffic snapshot (in-memory or from file). Snapshotting
+  needs a loaded *scenario* (not a bare network) and throws rather than mis-restoring on the state it does
+  not yet capture — actuated TLS, and vehicles with scheduled stops, reroutes or `departLane="best"`
 
 ---
 
@@ -265,7 +317,7 @@ dwell, schedules) · mesoscopic model · **TraCI** runtime control · GUI intern
 cooperative lane changes · the full **sublane / lateral model** (`MSLCM_SL2015`, continuous lateral
 position, hexagonal footprints, spatial hash, SIMD — this is "phase 2") · U-turns · station dwell /
 train reversal · advanced actuated-TLS features (switching rules, TraCI overrides, jam logic). See
-`docs/TASKS.md` and `docs/DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
+`docs/TASKS-DONE.md` and `docs/DESIGN.md` for the full ledger and the phase-1/phase-2 seam analysis.
 
 The probabilistic-`<flow>` arrival stream and the warm-start snapshot also carry **SUMO cross-checks**:
 an ensemble statistical parity of the insertion-count distribution vs a 50-seed SUMO golden
@@ -352,7 +404,7 @@ every other scenario is byte-identical.
 An independent pedestrian subsystem — **not** a port of SUMO's `MSPModel` person model, and on the
 **live-reactivity axis, not the parity axis** (validated by behavioral/property tests, never golden
 FCD). Every pedestrian feature is **default-off / inert-when-absent**, so the vehicle parity goldens and
-the determinism hash are byte-unchanged when peds are unused. Suite: **214 tests, green**.
+the determinism hash are byte-unchanged when peds are unused. Suite: **324 tests, green**.
 
 - **Navmesh from the SUMO net** — sidewalks / crossings / walkingAreas bake into walkable polygons with
   per-vertex half-width (`WalkablePolygonBaker` → `SumoNavMesh`); A* routing; three additive connectivity
@@ -444,7 +496,7 @@ tuning story: `docs/VIEWER-KINEMATIC-SMOOTHING-DESIGN.md`, `docs/IGBRIDGE-METHOD
 - **Flow demand:** `<flow>` (period/vehsPerHour/number, exact parity) and probabilistic
   `<flow probability=>` (per-flow seeded RNG, deterministic & reproducible).
 - **Warm-start:** `WarmUp(steps)` deterministically precomputes a populated, already-driving network;
-  `SaveSnapshot`/`LoadSnapshot` persists the whole live state — every vehicle (cars **and** trains)
+  `SaveSnapshot`/`LoadSnapshot` persists the live state — vehicles (cars **and** trains)
   plus the engine's rail-crossing/clock machines — so a simulation can begin from a live-traffic
   snapshot rather than an empty map.
 
@@ -485,7 +537,7 @@ path (`--region`) scales cleanly at low core counts and saturates the memory sub
 
 **4 cores already captures most of the win** (3.07×); 8 cores adds the last ~16 %, and beyond 8 threads
 hyper-threading oversubscription regresses. Every point is **byte-identical** to the committed goldens
-(single == parallel determinism hash `909605E965BFFE59`) — a faster *identical* answer, not an
+(single == parallel determinism hash `BF3794A4704BCD79`) — a faster *identical* answer, not an
 approximation. The single-thread **1.24×** is the data-oriented engine being leaner than SUMO per tick;
 the rest is the region-parallel scaling on top.
 
@@ -527,6 +579,25 @@ The dominant plan/junction phases are **memory-bandwidth-bound on random neighbo
 byte-identical parallel scaling near ~3× (hence the 4→8-core tail-off above). The full ledger — the
 ceiling analysis, and the blind alleys that were tried and reverted (per-field SoA, a flat spatial
 reorder, locked parallel foe-index) — is in **`docs/PERF-HANDOVER.md`** and **`docs/SPATIAL-OPT.md`**.
+
+**Cars and pedestrians together.** The numbers above are car-only. The coupled target — **5 000 vehicles +
+20 000 pedestrians** — now runs at **~114 ms/step (RTF ~4.4× at 2 Hz)**, with **0 of 60 frames over 3× the
+median** where there had been 11. Pedestrians alone at 20 k went 110.5 → 47.5 ms/step. Allocation fell
+hardest: car-side **10.17 MB → 586 KB per step**, coupled **264 → 48 MB per step**, GC pause 9.0% → 2.5%.
+Every one of those was paired-A/B'd with behavioural counters proven identical, and the parity gate and
+determinism hash are unmoved.
+
+Two of the wins came from the same defect class and are worth naming, because the class is easy to
+reintroduce: a `stackalloc … : new …[]` threshold that had silently stopped covering its caller's
+runtime-sized span (17.4× and 5.5×). The remaining levers, the measured NULLs, and the hypotheses that were
+refuted before a bisection found the real cause are all in
+**`docs/LIVE-CITY-PERF-SESSION-LOG.md`** — append-only, one entry per attempt, failures included.
+
+Engine parallelism is now **capped rather than unbounded** in the live-city host. Unbounded TPL used up to
+all 24 logical cores on a hybrid P/E-core box, where the measured sweep says **24 is slower than 8** and the
+efficiency knee is around 4. Capping it was proven trajectory-inert: 11 889 car and pedestrian samples
+bitwise identical, uncapped versus capped. The viewer leaves cores free for the renderer and the display
+driver, which is why a threaded tick alone was not sufficient to remove the frame hitches.
 
 **Engine vs real SUMO on the same scenario.** `Sim.BenchCity` compares an engine run against a
 committed SUMO 1.20.0 reference (`--sumo-summary`/`--sumo-tripinfo`/`--aggregate-tolerance`) on
@@ -699,6 +770,12 @@ src/
   Sim.LiveHost/   live dead-reckoned browser viewer (WebSocket; the zero-install demo)
   Sim.Replication/     transport-agnostic frame codec + adaptive publish policy + DR model
   Sim.Replication.Dds/ CycloneDDS topic types (vehicle state / geometry / traffic-light / pedestrian) — out of Traffic.sln
+  Sim.LiveCity/   the coupled cars + pedestrians live city: net/sumocfg loading, camera-driven realism
+                  zone, live density dials, and the threaded-tick producer seam
+  Sim.Sumo/       the `sumosharp` drop-in CLI — a `sumo`-compatible binary (SUMO_BINARY replacement)
+  Sim.IgBridge/ · Sim.IgBridge.Host/  producer-side feed for an external 3D image generator that does
+                  no prediction of its own (bakes the smoothing in before the wire)
+  Sim.Viewer.Motion/ the shared kinematic reconstructor + DrClock — portable, no native deps
   Sim.Viewer.Core/ native-viewer engine host + DDS pub/sub + DrClock (headless-testable)
   Sim.Viewer/     native 10k-scale desktop viewer (raylib-cs + Dear ImGui) — out of Traffic.sln
   Sim.ExtDemo/    external-agent demo runner (combined FCD)
@@ -711,6 +788,9 @@ src/
   Sim.BenchPedLod/ · Sim.BenchPedNet/ · Sim.BenchCrowd/  pedestrian micro-benchmarks
   Sim.Bench/      determinism + micro-benchmark oracle
   Sim.BenchCity/  scaled-city benchmark runner (RTF / RSS / stuck detector)
+  Sim.BenchLiveCity/ headless coupled cars+peds bench — the instrument every coupled perf number above
+                  was measured with (open- and closed-loop demand, per-step percentiles, alloc, GC)
+  Sim.DensityDiff/ three-column engine-vs-SUMO discharge comparison (default SUMO / honest SUMO / ours)
 scenarios/        committed parity scenarios (inputs + goldens + tolerance + provenance), _bench/ demos,
                   and _ped/ pedestrian scenarios (poc0-crossing-plaza, demo_city, sub-area/evac nets)
 sumo/             vendored SUMO 1.20.0 source (read-only algorithm reference; never edited)
@@ -719,8 +799,10 @@ docs/             design, specs, the perf/optimization ledger, and open-issue no
 LICENSE           EPL-2.0 OR GPL-2.0-or-later (dual); version.json — project version (SemVer)
 ```
 
-Key docs: **`docs/DESIGN.md`** (architecture of record — read this for the "why"), **`docs/TASKS.md`** (the work
-queue / feature ledger), **`CLAUDE.md`** (contributor rules), **`docs/RAIL-SUPPORT.md`**,
+Key docs — or just read [**`docs/README.md`**](docs/README.md), the index:
+**`docs/DESIGN.md`** (architecture of record — read this for the "why"), **`docs/TASKS-TODO.md`** (the live
+work queue) and **`docs/TASKS-DONE.md`** (the archive, with the full characterization of each finished item),
+**`CLAUDE.md`** (contributor rules), **`docs/RAIL-SUPPORT.md`**,
 **`docs/EXTERNAL-AGENTS-VIZ.md`**, **`docs/BENCHMARK_SPEC.md`**, **`docs/C4-VII-REMAINING.md`** (open junction work),
 **`docs/PANIC-EVAC-OVERVIEW.md`** (the panic-evacuation feature index), **`docs/PEDESTRIANS.md`** (the
 pedestrian-subsystem front door — capabilities, code map, API, what's parked), **`docs/SUMOSHARP-NATIVE-VIEWER.md`**
@@ -731,14 +813,41 @@ pedestrian-subsystem front door — capabilities, code map, API, what's parked),
 ## Status
 
 The car-following, lane-change, junction/right-of-way, traffic-light, rail, emergency-vehicle and
-external-agent subsystems are implemented and parity-tested (**649 passing parity checks**, +3 skipped).
+external-agent subsystems are implemented and parity-tested. The standing gate:
+
+| Suite | Result |
+| --- | --- |
+| `dotnet test Traffic.sln -c Release` (parity) | **775 pass · 0 fail · 4 skip**, all 661 goldens byte-identical |
+| `Sim.Bench` determinism hash | **`BF3794A4704BCD79`**, parallel == single-threaded |
+| `tests/Sim.Pedestrians.Tests` | 324 / 324 |
+| `tests/Sim.LiveCity.Tests` | 90 / 90 |
+| `demos/City3D/CityLib.Tests` | 186 pass · 4 skip (190/190 with `CITY3D_REALTIME_TESTS=1`) |
+
+The last three are **not in `Traffic.sln`**, so `dotnet build -c Release` does not build them — build those
+csproj files explicitly or you will test stale code. The four City3D skips are real-time render-loop tests:
+they cost about a second of wall clock per simulated second because the render clock tracks wall time and
+the scenarios use `step-length = 1`, so they are opt-in. Run them after touching `Sim.Viewer.Motion`,
+`CityLib.Reconstructor`, or the render-clock plumbing — nothing else covers those end to end.
+
 The **pedestrian crowd layer** (navmesh, O-D demand, two-level LOD, liveliness, deterministic weave,
-server==IG replication) is on the live-reactivity axis and behavior/property-tested (**214 passing**);
-because it is default-off, the vehicle parity goldens and determinism hash are unaffected. Known open
-item: box-blocking on *pathological* tight unmarked single-lane rings under saturation (diagnosed,
-deferred — normal roundabouts flow fine). Phase 2 (the laneless/sublane heterogeneous model) is
-designed-for but not built; the pedestrian navmesh connectivity thresholds are provisional pending
-real-net (non-synthetic) re-validation.
+server==IG replication) is on the live-reactivity axis and behavior/property-tested; because it is
+default-off, the vehicle parity goldens and determinism hash are unaffected.
+
+**Known open items** — the full queue with evidence is [`docs/TASKS-TODO.md`](docs/TASKS-TODO.md):
+
+- **Junction discharge.** At the inflow where both engines are steady, our halting fraction matches SUMO's
+  (33.3% vs 33.7%) and the routes are identical, yet our trips take 247.7 s to SUMO's 180.6 s — cars *roll*
+  at ~8.0 m/s where SUMO rolls at ~11.0. Not junctions blocking; uniformly slower progress. Being chased
+  with a per-vehicle SUMO-oracle trace rather than another hypothesis, because seven reasoned-from-source
+  interventions have now been refuted against one trace that found a real cause in minutes.
+- **A pre-existing car–car overlap on internal junction lanes** (~3 m), present on `main` for a long time
+  and not a recent regression. It blocks asserting a clean zero-overlap invariant.
+- Box-blocking on *pathological* tight unmarked single-lane rings under saturation (diagnosed, deferred —
+  normal roundabouts flow fine).
+- Low-power pedestrians report `z = 0` on one real-net path. Downgraded from a blocker because the target
+  image generator ground-clamps, but it is still a wrong number we are shipping.
+- Phase 2 (the laneless/sublane heterogeneous model) is designed-for but not built; the pedestrian navmesh
+  connectivity thresholds are provisional pending further real-net re-validation.
 
 ---
 

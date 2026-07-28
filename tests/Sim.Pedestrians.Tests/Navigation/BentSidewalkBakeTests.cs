@@ -92,7 +92,7 @@ public class BentSidewalkBakeTests
 
         Assert.True(naiveLeavesSpace, "test setup is not meaningful: the naive direct segment never left walkable space");
 
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
         Assert.NotNull(path);
 
         // Must actually route THROUGH the bend (at least one interior waypoint beyond start/goal),
@@ -129,7 +129,7 @@ public class BentSidewalkBakeTests
                                             // independent of the elbow-threading behaviour the
                                             // previous test already covers.
 
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
         Assert.NotNull(path);
 
         for (var i = 0; i + 1 < path!.Count; i++)

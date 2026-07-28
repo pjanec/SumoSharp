@@ -1,6 +1,6 @@
 # HIGH-DENSITY-P1E-DESIGN.md — `device.rerouting` (periodic congestion-reactive rerouting)
 
-Design doc for P1-E. WHAT/WHY: `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §3 P1-E + `docs/HIGH-DENSITY-PLAN.md`
+Design doc for P1-E. WHAT/WHY: `docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` §3 P1-E + `docs/HIGH-DENSITY-PLAN.md`
 §1 (P1-E) / §"Owner steer". This is the HOW. **Owner signed off (with three day-1 additions below);
 implementation proceeds.** All SUMO citations verified against the vendored 1.20.0 source (`sumo/src/...`).
 

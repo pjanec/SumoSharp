@@ -13,6 +13,10 @@ public sealed class HeadlessIg
     {
         public PedDrModel Model = PedDrModel.PathArc;
         public IReadOnlyList<Vec2>? Path;
+
+        // C4/C5: the path's per-vertex elevation as it arrived on the wire (kind 5), or null for a
+        // kind-4 (z-less) stream. Output-only, exactly like the server-side channel.
+        public IReadOnlyList<double>? PathZ;
         public double PathStartTime;
         public double Speed;
         public Vec2 LastPos;
@@ -31,6 +35,7 @@ public sealed class HeadlessIg
         {
             case PathArcRecord r:
                 state.Path = r.Path;
+                state.PathZ = r.PathZ;
                 state.PathStartTime = r.StartTime;
                 state.Speed = r.Speed;
                 break;
@@ -95,6 +100,136 @@ public sealed class HeadlessIg
             PedDrModel.ActivityTimeline => state.Timeline is null ? Vec2.Zero : state.Timeline.PoseAt(now).Pos,
             _ => Vec2.Zero,
         };
+    }
+
+    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.6): the reconstructed SURFACE ELEVATION at `now`.
+    //
+    // For the PathArc model this is `PathArcMotion.SampleAt` walking the SAME arc length, on the SAME
+    // segment, with the SAME fraction `t` that `Reconstruct` above uses for the position -- one shared
+    // evaluator, so the reconstructed z and the reconstructed pos cannot disagree, and the remote
+    // surface lands on the same number the in-process one does.
+    //
+    // A LIVELY (ActivityTimeline) ped is published as a timeline, never as a PathArc, so its elevation
+    // rides the per-WalkSegment channel `ActivityTimelineWire` now carries (the follow-up to W1, which
+    // had extended the PathArc record only and therefore left the lively population -- most of the
+    // live-city scene -- flat on this surface). Resolved by projecting the reconstructed pose onto the
+    // timeline's own walk geometry, the same way the server does for the same model.
+    //
+    // 0.0 whenever the stream carries no elevation -- a kind-4 publisher, or a 2-D net. Per §9.1 that is
+    // deliberately indistinguishable from "genuinely at 0 m"; a consumer needing to tell them apart
+    // checks the net.
+    public double ReconstructElevation(int id, double now)
+        => ReconstructElevationAt(id, now, Reconstruct(id, now));
+
+    // C5·SC3: the same query, but evaluated AT a caller-supplied position -- the smoothed render
+    // position, so a ped's height tracks the body actually drawn rather than the raw wire sample it is
+    // still catching up to. For the PathArc model the arc-length answer is used unchanged (it is exact
+    // and cheaper); for the dead-reckoned models the supplied position is what gets projected.
+    public double ReconstructElevationAt(int id, double now, Vec2 at)
+    {
+        var state = _peds[id];
+
+        // Ordered by which elevation source is the TRUTH for this ped, so a stale channel never wins:
+        //
+        // 1. A PathArc (routed) ped -> its own PathZ, walked by arc length. Highest precedence: a routed
+        //    ped's own path is authoritative even if a timeline lingers from an earlier lively phase.
+        if (state.Model == PedDrModel.PathArc
+            && state.Path is { Count: > 0 } arcPath && state.PathZ is { Count: > 0 })
+        {
+            return PathArcMotion.ElevationAt(arcPath, state.PathZ, state.PathStartTime, state.Speed, now);
+        }
+
+        // 2. Any timeline-bearing ped that is NOT PathArc -- a lively ActivityTimeline ped, OR one promoted
+        //    to high-power (FreeKinematic ORCA) which KEEPS its timeline (nothing clears it on promotion) --
+        //    reads the surface off the timeline's per-leg channel, projecting the render pose onto its walk
+        //    geometry. This is the fix for promoted lively peds that otherwise had no Path and rendered at
+        //    z=0 (sunk far below an elevated net).
+        if (state.Timeline is { } timeline)
+        {
+            return TimelineElevationAt(timeline, at);
+        }
+
+        // 3. FreeKinematic/Stationary promoted from a ROUTE (has a Path, no timeline): the pose is
+        //    dead-reckoned off the polyline, so project the rendered position onto it.
+        if (state.Path is { Count: > 0 } path && state.PathZ is { Count: > 0 })
+        {
+            return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
+        }
+
+        // 4. No elevation source at all (kind-4 publisher / 2-D net): 0.0 per §9.1.
+        return 0.0;
+    }
+
+    // Elevation along a timeline's Walk legs: pick the leg whose polyline the pose is nearest to, then
+    // read the height off that leg's own channel. Walking the legs (rather than assuming the first) is
+    // what keeps a multi-leg timeline -- a route split by kerb pauses, or a Walk-Pause-Walk trip --
+    // correct at every point of it. Legs with no channel (a 2-D net) contribute nothing, so such a
+    // timeline yields 0.0 exactly as before.
+    private static double TimelineElevationAt(ActivityTimeline timeline, Vec2 at)
+    {
+        // PERF: resolve the WINNING leg first, then read its elevation ONCE -- instead of re-walking a leg's
+        // whole polyline (AtNearestPoint) every time the running minimum improved. Exactly equivalent by
+        // construction: `AtNearestPoint` is a pure function of (path, elevations, at), so evaluating it once
+        // for the final winner yields the same double the old loop's last assignment did; only the discarded
+        // intermediate evaluations are gone. Worst case (legs ordered nearest-last) this halves the polyline
+        // walks; best case it is unchanged.
+        //
+        // Why it matters: this runs per ped PER RENDER FRAME. Measured on GPU at 31 890 peds, ped
+        // reconstruction was 33.0 ms of an 84.5 ms frame (39%), ~1.0 us/ped -- far more than interpolation
+        // should cost, because this method re-derives geometry the pose query already scanned. Commit
+        // 789a4b8 widened the branch that reaches here, so MORE peds pay it.
+        var best = double.PositiveInfinity;
+        WalkSegment? bestWalk = null;
+
+        foreach (var segment in timeline.Segments)
+        {
+            if (segment is not WalkSegment { Path.Count: > 0 } walk
+                || walk.Elevations is not { Count: > 0 })
+            {
+                continue;
+            }
+
+            var d2 = NearestDistanceSquared(walk.Path, at);
+            if (d2 < best)
+            {
+                best = d2;
+                bestWalk = walk;
+            }
+        }
+
+        return bestWalk is null
+            ? 0.0
+            : Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(bestWalk.Path, bestWalk.Elevations!, at);
+    }
+
+    private static double NearestDistanceSquared(IReadOnlyList<Vec2> shape, Vec2 p)
+    {
+        if (shape.Count == 1)
+        {
+            return (p - shape[0]).Abs * (p - shape[0]).Abs;
+        }
+
+        var best = double.PositiveInfinity;
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var a = shape[i];
+            var b = shape[i + 1];
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var len2 = (dx * dx) + (dy * dy);
+            var t = len2 > 0.0
+                ? Math.Clamp((((p.X - a.X) * dx) + ((p.Y - a.Y) * dy)) / len2, 0.0, 1.0)
+                : 0.0;
+            var qx = a.X + (t * dx);
+            var qy = a.Y + (t * dy);
+            var d2 = ((p.X - qx) * (p.X - qx)) + ((p.Y - qy) * (p.Y - qy));
+            if (d2 < best)
+            {
+                best = d2;
+            }
+        }
+
+        return best;
     }
 
     // LIVE-POC-1: the ActivityTimeline model carries more than a position -- heading, animation tag,

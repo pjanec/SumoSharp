@@ -86,8 +86,8 @@ public class BothProvidersAgreeTests
         var (sumoSpace, sumoNav) = BuildSumoProvider(polygons);
         var (dotRecastSpace, dotRecastNav) = BuildDotRecastProvider(polygons);
 
-        var sumoPath = sumoNav.FindPath(WestNorthArm, EastNorthArm);
-        var dotRecastPath = dotRecastNav.FindPath(WestNorthArm, EastNorthArm);
+        var sumoPath = sumoNav.FindPath(WestNorthArm, EastNorthArm, out _);
+        var dotRecastPath = dotRecastNav.FindPath(WestNorthArm, EastNorthArm, out _);
 
         Assert.NotNull(sumoPath);
         Assert.NotNull(dotRecastPath);
@@ -123,9 +123,9 @@ public class BothProvidersAgreeTests
         var (_, navA) = BuildDotRecastProvider(polygons);
         var (_, navB) = BuildDotRecastProvider(polygons); // independent build: separate RcBuilder run, separate DtNavMesh
 
-        var pathA1 = navA.FindPath(WestNorthArm, EastNorthArm);
-        var pathA2 = navA.FindPath(WestNorthArm, EastNorthArm); // same navmesh, repeated query
-        var pathB1 = navB.FindPath(WestNorthArm, EastNorthArm); // independently built navmesh
+        var pathA1 = navA.FindPath(WestNorthArm, EastNorthArm, out _);
+        var pathA2 = navA.FindPath(WestNorthArm, EastNorthArm, out _); // same navmesh, repeated query
+        var pathB1 = navB.FindPath(WestNorthArm, EastNorthArm, out _); // independently built navmesh
 
         Assert.NotNull(pathA1);
         Assert.NotNull(pathA2);

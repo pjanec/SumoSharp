@@ -37,7 +37,20 @@ public sealed record BakedPolygon(
     IReadOnlyList<Vec2>? Spine = null,
     // The sidewalk/crossing/walkingarea half-width (metres) the deterministic pedestrian weave
     // clamps to; 0.5 m default when the source width is unset (see WalkablePolygonBaker).
-    double HalfWidth = 0.5)
+    double HalfWidth = 0.5,
+    // C2 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4): the source element's retained per-vertex
+    // elevation, and the polyline it is index-aligned WITH.
+    //
+    // The two are carried together because the reference differs by kind and `Vertices` is not always
+    // it: a sidewalk's `Vertices` are the BUFFERED strip (2N points, no elevation of their own) while
+    // its elevation belongs to the centreline in `Spine`; a walkingarea's and a crossing's `Vertices`
+    // ARE the source polygon/outline, so the reference is `Vertices` itself. Storing the pairing
+    // removes any need for a consumer to re-derive which list a z array lines up with -- getting that
+    // wrong would silently read elevations at the wrong vertices.
+    //
+    // Both null on a 2-D net. Output-only: read by `ElevationsAlong` and by nothing else.
+    IReadOnlyList<Vec2>? ElevationReference = null,
+    IReadOnlyList<double>? ElevationZ = null)
 {
     public Vec2 Centroid { get; } = PolygonGeometry.VertexAverage(Vertices);
 }

@@ -4,7 +4,14 @@ At-a-glance to-do for the tasks in `IGBRIDGE-TASKS.md`. A box is ticked only whe
 stated success conditions are verified first-hand (per CLAUDE.md: read the diff, read the test, re-run
 `dotnet test` — do not trust a "done" report). Code name **IgBridge**; no `"IgBridge"` in code.
 
-**Status:** design phase — awaiting owner sign-off on the trio (DECISIONS / TASKS / TRACKER). No code yet.
+**Status:** implemented and iterated well past the original trio — `src/Sim.IgBridge/` exists
+(`FakeIg.cs`, `IgBridgeRunner.cs`, `IgBridgeSession.cs`, `IgSample.cs`, `IgTraceWriter.cs`), Stages 0–2
+below are ticked done through owner-signed-off usable baselines (`igbridge-v1-usable` … see
+`docs/IGBRIDGE-VERSIONS.md`), and `docs/IGBRIDGE-RESUME.md` — the doc the other IgBridge docs call "the
+live working state" — records `igbridge-v5-usable` as current with both requested exploration
+directions (longer vehicles, organic nets) DONE. The two Stage 2 boxes still unticked below (a second
+`T2.1`/`T2.2` pair) and all of Stage 3 (`T3.1`–`T3.3`) are left as this tracker's own body shows them —
+not re-verified here, so left unticked rather than guessed at.
 
 ## Stage 0 — retarget, scaffold, prove .NET 6
 - [x] **T0.1** Retarget `Sim.Pedestrians` → `netstandard2.1;net8.0`; `dotnet test` green + goldens byte-identical

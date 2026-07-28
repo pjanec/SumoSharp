@@ -30,7 +30,7 @@ public class CrosswalkBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (mesh, stripeCount) = CrosswalkBuilder.Build(shape, width: 4.0, stripeSpacing: 1.0);
+        var (mesh, stripeCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, shape, width: 4.0, stripeSpacing: 1.0);
 
         Assert.Equal(10, stripeCount);
         Assert.True(mesh.Vertices.Length > 0);
@@ -44,8 +44,8 @@ public class CrosswalkBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (_, denseCount) = CrosswalkBuilder.Build(shape, width: 4.0, stripeSpacing: 1.0);
-        var (_, sparseCount) = CrosswalkBuilder.Build(shape, width: 4.0, stripeSpacing: 2.0);
+        var (_, denseCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, shape, width: 4.0, stripeSpacing: 1.0);
+        var (_, sparseCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, shape, width: 4.0, stripeSpacing: 2.0);
 
         Assert.True(sparseCount < denseCount, $"expected fewer stripes at wider spacing (dense={denseCount}, sparse={sparseCount})");
         Assert.Equal(5, sparseCount);
@@ -62,7 +62,7 @@ public class CrosswalkBuilderTests
         const double widthFraction = 0.8;
         const double elevation = 0.02;
 
-        var (mesh, stripeCount) = CrosswalkBuilder.Build(
+        var (mesh, stripeCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, 
             shape, width, stripeSpacing: 2.0, widthFraction: widthFraction, elevationOffsetSumoZ: elevation);
 
         Assert.Equal(1, stripeCount);
@@ -92,7 +92,7 @@ public class CrosswalkBuilderTests
     {
         var shape = Enumerable.Range(0, pointCount).Select(i => ((double)i, 0.0)).ToArray();
 
-        var (mesh, stripeCount) = CrosswalkBuilder.Build(shape, width: 4.0);
+        var (mesh, stripeCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, shape, width: 4.0);
 
         Assert.Equal(0, stripeCount);
         Assert.Empty(mesh.Vertices);
@@ -103,7 +103,7 @@ public class CrosswalkBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (mesh, stripeCount) = CrosswalkBuilder.Build(shape, width: 0.0);
+        var (mesh, stripeCount) = CrosswalkBuilder.Build(SumoGodotFrame.Identity, shape, width: 0.0);
 
         Assert.Equal(0, stripeCount);
         Assert.Empty(mesh.Vertices);

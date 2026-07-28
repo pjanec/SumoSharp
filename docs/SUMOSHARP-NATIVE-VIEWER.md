@@ -4,7 +4,7 @@ A native C# visualizer for **10k+ vehicle** scenarios, replacing the browser Can
 scale work. The browser viewer (`src/Sim.LiveHost`) stays as the zero-install shareable demo; this is a
 **parallel** native track. **No JSON / browser / JS on the hot path** — the remote transport is binary DDS.
 
-Rationale (from the live-viz test pass, `docs/SUMOSHARP-LIVEVIZ-OUTCOMES.md`): a 2 Hz socket feed
+Rationale (from the live-viz test pass, `docs/archive/SUMOSHARP-LIVEVIZ-OUTCOMES.md`): a 2 Hz socket feed
 reconstructed at 60 fps in a sandboxed browser is the *source* of the DR-jitter problem class, and Canvas 2D
 won't scale to 10k. Rendering the authoritative snapshot natively removes the jitter class entirely for local
 use, and DDS is the right fan-out transport for the remote case.

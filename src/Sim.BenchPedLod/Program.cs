@@ -295,7 +295,16 @@ internal static class Program
     // a lower bound on navigation cost, not a claim that navigation is free.
     private sealed class StraightLineNavigation : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => new[] { start, goal };
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return new[] { start, goal };
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     private sealed class PedSpec

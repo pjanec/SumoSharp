@@ -140,7 +140,11 @@ public sealed class LiveCitySim : IDisposable
         // instead of each re-parsing the dataset dir's JSON companions themselves.
         Scene = LiveCityScene.Load(cfg.DatasetDir);
 
-        var netPath = Path.Combine(cfg.DatasetDir, "net.xml");
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: the net path is `cfg.NetPath` when the caller set one
+        // (an explicit path, a `scenario.net.xml` cut, or a `.sumocfg`-resolved path via ForSumocfg),
+        // else the historical `<DatasetDir>/net.xml` convention -- see LiveCityConfig.ResolveNetPath.
+        // ForRepoRoot/ForDataset leave NetPath null, so the demo resolves to the identical string.
+        var netPath = cfg.ResolveNetPath();
 
         // net parsed twice (once for the vehicle-side NetworkModel, once for the ped-side PedNetwork) --
         // exactly as SceneGen.BuildLiveCity does; the two readers own disjoint models.
@@ -298,6 +302,15 @@ public sealed class LiveCitySim : IDisposable
             };
 
             _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+
+            // Perf (A3, see LiveCityConfig.PedParallelOrca): plan the high-power ORCA crowd in parallel.
+            // Bit-identical to serial (OrcaParallelStepTests) and self-gated at >=256 high-power agents, so
+            // every small scenario -- including the whole test suite -- keeps the untouched serial path.
+            _manager.UseParallelHighCrowd = cfg.PedParallelOrca;
+
+            // A22: cap the crowd's parallel degree (see LiveCityConfig.MaxParallelism). Resolves to -1 for
+            // every existing caller, so this is inert unless a host asks for headroom.
+            _manager.HighCrowdMaxParallelism = cfg.ResolveMaxParallelism();
             _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
 
             // The high-realism pocket, anchored on the crossing nearest the pocket centre (crop centre
@@ -346,6 +359,9 @@ public sealed class LiveCitySim : IDisposable
         // road-net-import datasets. Set BEFORE LoadNetwork per RegionPlan's own comment ("set before
         // LoadScenario"); false for the demo (`ForRepoRoot`) so its Engine config stays byte-identical.
         _engine.RegionPlan = cfg.RegionPlan;
+        // A22 (see LiveCityConfig.MaxParallelism): cap the car plan/willPass/emit parallel region. -1 for
+        // every existing caller, so the engine's configuration is byte-identical unless a host opts in.
+        _engine.MaxParallelism = cfg.ResolveMaxParallelism();
         // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): step-length now tracks cfg.Dt instead of the
         // old hardcoded "0.5" literal -- the live-city coupling invariant (car Dt == ped Dt) requires the
         // engine's own resolution to move with LiveCityConfig.Dt, not just the ped publisher (which
@@ -470,7 +486,11 @@ public sealed class LiveCitySim : IDisposable
                 ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
                 : _manager.HighPowerFootprints;
 
-        var routeEdges = ReadDrivableEdges(Path.Combine(cfg.DatasetDir, "scenario.rou.xml"));
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: scrape the resolved route-file LIST (a `.sumocfg`'s
+        // `<route-files>` is comma-separated and typically leads with vType files before the real
+        // demand -- see LiveCityConfig.RoutePaths). Unset => the single `<DatasetDir>/scenario.rou.xml`
+        // the demo has always used, so its scrape is byte-identical.
+        var routeEdges = ReadDrivableEdges(cfg.ResolveRoutePaths());
         if (routeEdges.Count == 0)
         {
             // docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.6: a dataset with no (or an empty)
@@ -566,6 +586,114 @@ public sealed class LiveCitySim : IDisposable
     public int CurrentCars => _engine.VehicleHandles.Length;
 
     public int CurrentPeds => _demand?.LiveCount ?? 0;
+
+    // LIVE-CITY-PERF-DESIGN.md ADD1: read-only passthrough to the live ped LOD manager's high-power
+    // (full ORCA, inside the high-realism pocket) count -- PedLodManager.HighPowerCount. 0 when peds
+    // are disabled (`_manager` null). Ped cost is dominated by how many peds are high-power, not by
+    // the raw ped count, so a ped total alone is an uninterpretable workload number; this is the split
+    // Sim.BenchLiveCity reports alongside it. Additive, read-only, never consulted by Step() -> zero
+    // behavioral effect.
+    public int PedHighPowerCount => _manager?.HighPowerCount ?? 0;
+
+    // The live pedestrian demand, or null on a net with no pedestrians (`PedestriansEnabled == false`).
+    //
+    // READ-MOSTLY. `Step()` mirrors `_cfg`'s density knobs into this object every tick (see
+    // MirrorPedDensity), so calling `SetPopulationCap`/`SetSpawnRatePerSecond` on it directly is
+    // overwritten on the next step. It is exposed for READING -- `SpawnEvents` for a determinism check,
+    // the live `PopulationCap`/`SpawnRatePerSecond` for a slider label. Drive density through
+    // `SetPedDensity` or through the config object.
+    public PedDemand? PedDemand => _demand;
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): change the pedestrian density LIVE -- takes effect on
+    // the next Step(), with no sim rebuild. This is the knob a free-style density slider drives, in
+    // BIG's Spectacle scene and the Godot City3D viewer alike; before it existed both had to rebuild
+    // the whole sim (their ped sliders were documented as "applies on Restart").
+    //
+    // Raising converges upward at the given rate; LOWERING stops new spawns but does not despawn
+    // anybody -- live peds drain as they arrive, exactly as lowering `CarTargetConcurrent` drains cars.
+    // See PedDemand.SetPopulationCap for why that asymmetry is deliberate.
+    //
+    // A silent no-op when this net has no pedestrians, so a slider handler needs no capability guard.
+    public void SetPedDensity(int populationCap, double spawnRatePerSecond)
+    {
+        // `cfg` FIRST and always -- it is the single source of truth (see MirrorPedDensity). Writing
+        // only the demand would leave `cfg` stale, so a UI that reads `cfg` to position its slider shows
+        // the old number, and the two silently disagree. Clamping happens HERE, into cfg, rather than
+        // only inside the demand setter: otherwise cfg would keep a negative that gets re-clamped on
+        // every single step.
+        _cfg.PedPopulationCap = populationCap < 0 ? 0 : populationCap;
+        _cfg.PedSpawnRatePerSecond = spawnRatePerSecond;
+
+        // Apply immediately as well as on the next Step(), so a caller that reads CurrentPeds or
+        // PedDemand.PopulationCap right after setting sees the value it just set.
+        MirrorPedDensity();
+    }
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §4 / -TASKS.md D1: push the config's ped-density knobs into the
+    // live `PedDemand`. Called at ONE fixed point at the top of `Step()`, before any spawn logic, and
+    // from `SetPedDensity` above.
+    //
+    // WHY THIS EXISTS AT ALL. `PedDemandConfig` is built once in the ctor, so before this the ped knobs
+    // were write-once: mutating `cfg.PedPopulationCap` did nothing, forever. That is exactly what the
+    // BIG/Spectacle handoff requires to work ("please keep Step() reading these off the by-reference cfg
+    // each tick ... so a slider takes effect without a sim rebuild"), and exactly what the CAR knobs have
+    // always done -- `Step()` reads `_cfg.CarTargetConcurrent` every tick. This makes the two halves obey
+    // one rule instead of two.
+    //
+    // COSTS NOTHING WHEN NOTHING CHANGED: `PedDemand.SetSpawnRatePerSecond` early-returns on an unchanged
+    // rate (so no RNG stream is disturbed and no reschedule is queued), and setting an unchanged cap is a
+    // plain field assignment. A run that never touches a knob is therefore bit-identical to one from
+    // before this method existed.
+    //
+    // CONSEQUENCE, deliberate: because this runs every step, poking `PedDemand.SetPopulationCap(...)`
+    // directly is overwritten on the next `Step()`. `PedDemand` is exposed READ-MOSTLY (for SpawnEvents
+    // and the live values); drive density through `SetPedDensity` or `cfg`, not through the demand.
+    private void MirrorPedDensity()
+    {
+        if (_demand is null)
+        {
+            return;
+        }
+
+        _demand.SetPopulationCap(_cfg.PedPopulationCap);
+        _demand.SetSpawnRatePerSecond(_cfg.PedSpawnRatePerSecond);
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b: a settable timestep, so a viewer slider can
+    // retune the tick rate at RUNTIME with no sim rebuild. `Step()` already reads `_cfg.Dt` fresh at the
+    // top of every call (see `var dt = _cfg.Dt;` there), so this property is a thin forwarding wrapper
+    // over the SAME by-reference `_cfg` the density knobs above use -- writing it here is felt on the very
+    // next `Step()`. Additive only: the default stays `LiveCityConfig.Dt`'s own default (0.5s = 2 Hz), so
+    // nothing changes unless a caller actually sets this.
+    public double Dt
+    {
+        get => _cfg.Dt;
+        set => _cfg.Dt = value;
+    }
+
+    // Whether Step() drains its own vehicle-replication bus (see the call site in Step for the full
+    // reasoning). TRUE preserves the historical single-threaded behaviour for every non-threaded consumer.
+    // A host that runs Step() on a producer thread MUST set this false and pump from its consumer thread
+    // instead, or the two threads race on the bus's history dictionaries.
+    public bool SelfPumpVehicleBus { get; set; } = true;
+
+    // The car-side twin of SetPedDensity, for symmetry at the call site. Cars needed no engine change:
+    // `Step()` already reads `CarTargetConcurrent`/`CarSpawnPerStep` off the by-reference `_cfg` every
+    // tick, so writing them here is felt on the next tick. This method exists so a viewer has ONE
+    // obvious API for "set the density" instead of having to know that trick -- and so the two
+    // densities are driven the same way from the same place.
+    //
+    // `spawnPerStep` null (the default) leaves the per-step insertion budget alone. Note the cap is
+    // IGNORED entirely while `CarInflowVehPerSec` is set (open-loop mode has no cap by design -- see
+    // that property's own header), so this is a no-op for a caller running an open-loop measurement.
+    public void SetCarDensity(int targetConcurrent, int? spawnPerStep = null)
+    {
+        _cfg.CarTargetConcurrent = targetConcurrent < 0 ? 0 : targetConcurrent;
+        if (spawnPerStep is { } perStep)
+        {
+            _cfg.CarSpawnPerStep = perStep < 0 ? 0 : perStep;
+        }
+    }
 
     // DIAGNOSTIC (#15 residual): how many vehicles hit the wrong-lane dead-end clamp in the engine's
     // last step (a turner that could not merge into its turn lane and stranded at the stop line with no
@@ -710,16 +838,280 @@ public sealed class LiveCitySim : IDisposable
         return (dx * dx) + (dy * dy) > promoteRadius * promoteRadius;
     }
 
+    // Perf diagnostics (docs/LIVE-CITY-PERF-DESIGN.md P1): opt-in per-phase wall-time accounting for
+    // Step(), mirroring Engine.ProfilePhases EXACTLY in shape (a bool gate, a name->ticks dictionary,
+    // PhaseStart/PhaseEnd via Stopwatch.GetTimestamp -- see Engine.cs's own ProfilePhases for the
+    // pattern this copies). OFF by default and then effectively free: one bool test per phase per
+    // step, GetTimestamp is never called, nothing allocates. The setter also forwards to the wrapped
+    // Engine so its own phases profile together with this host's; PhaseTicks below merges them in,
+    // prefixed "engine." to stay distinguishable. Sim.BenchLiveCity's --profile turns this on and
+    // prints the breakdown. Never read by any sim algorithm -> zero behavioral effect, parity-inert
+    // (LiveCitySim is never constructed by a golden/parity/bench path).
+    public bool ProfilePhases
+    {
+        get => _profilePhases;
+        set
+        {
+            _profilePhases = value;
+            _engine.ProfilePhases = value;
+            // B2 (LIVE-CITY-PERF-SESSION-LOG.md): also forward to the ped LOD manager AND the ped
+            // demand layer so their sub-phases -- PedLodManager's (rebuildIndex/idsSort/frozenPos/
+            // lodDecide/promoteApply/demoteApply/orcaStep/publishSamples/publishHeartbeats) and
+            // PedDemand's own (spawnDue/despawnArrivals, the work in PedDemand.Step OUTSIDE the
+            // _lodManager.Step call) -- profile alongside this host's. Both are merged in below,
+            // prefixed "ped.", as one breakdown OF this host's "pedDemandStep" phase.
+            if (_manager is not null)
+            {
+                _manager.ProfilePhases = value;
+            }
+
+            if (_demand is not null)
+            {
+                _demand.ProfilePhases = value;
+            }
+        }
+    }
+
+    private bool _profilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+    // B3 (docs/LIVE-CITY-PERF-SESSION-LOG.md): allocated-bytes counterpart to _phaseTicks, same merge
+    // shape (own + "engine." + "ped." prefixes). See Engine.cs's own PhaseBytes for the process-wide-
+    // vs-per-thread rationale (Parallel.For phases would be undercounted by a per-thread counter).
+    private readonly Dictionary<string, long> _phaseBytes = new();
+
+    // This host's own phases, plus the wrapped Engine's (prefixed "engine.") merged in. When nothing
+    // has been profiled (the common case, ProfilePhases off) `_engine.PhaseTicks` is empty and this
+    // returns `_phaseTicks` (itself empty) directly -- no allocation. The merge only happens when a
+    // caller actually reads this after a profiled run.
+    public IReadOnlyDictionary<string, long> PhaseTicks
+    {
+        get
+        {
+            var lodTicks = _manager?.PhaseTicks;
+            var demandTicks = _demand?.PhaseTicks;
+            var hasLod = lodTicks is { Count: > 0 };
+            var hasDemand = demandTicks is { Count: > 0 };
+            if (_engine.PhaseTicks.Count == 0 && !hasLod && !hasDemand)
+            {
+                return _phaseTicks;
+            }
+
+            var merged = new Dictionary<string, long>(_phaseTicks);
+            foreach (var kv in _engine.PhaseTicks)
+            {
+                merged["engine." + kv.Key] = kv.Value;
+            }
+
+            if (hasLod)
+            {
+                foreach (var kv in lodTicks!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            if (hasDemand)
+            {
+                foreach (var kv in demandTicks!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            return merged;
+        }
+    }
+
+    // B3: same merge as PhaseTicks above, for allocated bytes.
+    public IReadOnlyDictionary<string, long> PhaseBytes
+    {
+        get
+        {
+            var lodBytes = _manager?.PhaseBytes;
+            var demandBytes = _demand?.PhaseBytes;
+            var hasLod = lodBytes is { Count: > 0 };
+            var hasDemand = demandBytes is { Count: > 0 };
+            if (_engine.PhaseBytes.Count == 0 && !hasLod && !hasDemand)
+            {
+                return _phaseBytes;
+            }
+
+            var merged = new Dictionary<string, long>(_phaseBytes);
+            foreach (var kv in _engine.PhaseBytes)
+            {
+                merged["engine." + kv.Key] = kv.Value;
+            }
+
+            if (hasLod)
+            {
+                foreach (var kv in lodBytes!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            if (hasDemand)
+            {
+                foreach (var kv in demandBytes!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            return merged;
+        }
+    }
+
+    // netstandard2.1 (Unity/Godot) has no GC.GetTotalAllocatedBytes -- degrades to "always 0 bytes"
+    // there, same rationale as Engine.cs's TotalAllocatedBytes.
+#if NET8_0_OR_GREATER
+    private static long TotalAllocatedBytes() => GC.GetTotalAllocatedBytes(precise: false);
+#else
+    private static long TotalAllocatedBytes() => 0L;
+#endif
+
+    private readonly struct PhaseSample
+    {
+        public readonly long Ticks;
+        public readonly long Bytes;
+        public PhaseSample(long ticks, long bytes) { Ticks = ticks; Bytes = bytes; }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private PhaseSample PhaseStart() => _profilePhases
+        ? new PhaseSample(System.Diagnostics.Stopwatch.GetTimestamp(), TotalAllocatedBytes())
+        : default;
+
+    private void PhaseEnd(string name, PhaseSample start)
+    {
+        if (!_profilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start.Ticks;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+
+        var elapsedBytes = TotalAllocatedBytes() - start.Bytes;
+        _phaseBytes.TryGetValue(name, out var accBytes);
+        _phaseBytes[name] = accBytes + elapsedBytes;
+    }
+
     // Advances the coupled sim by one tick (Dt seconds, per LiveCityConfig.Dt), then publishes the
     // resulting frame onto both wires. Reproduces SceneGen.BuildLiveCity's per-tick order exactly:
     // (a) spawn cars up to the cap on crop drivable edges -> (b) step the ped demand -> (c) gather this
     // tick's WALKING low-power ped positions -> (d) refresh the crossing-occupancy gate -> (e) step the
     // engine (which queries the now-current CrowdSource).
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 3 / §5 "render -> sim writes become messages".
+    //
+    // A host that runs `Step()` on its own producer thread must NOT let its render/UI thread call
+    // `SetLcRealismZone` / `SetCarDensity` / `SetPedDensity` / `Dt=` directly: those mutate live sim state
+    // (`SetLcRealismZone` rebuilds the ORCA interest source; `SetPedDensity` pokes `PedDemand`), so a
+    // concurrent call lands mid-step. The `Request*` methods below instead park the value in a single slot
+    // -- LAST WRITER WINS, which is the right semantics for a UI dial or a camera-driven zone -- and the
+    // producer applies it at a defined point: the very top of the next `Step()`, before any spawn logic.
+    //
+    // Deliberately a plain `lock` rather than an interlocked/lock-free dance: it is taken at most once per
+    // rendered frame and once per step, always uncontended in practice, and it costs ~20 ns against a
+    // ~100 ms step. There is nothing to win here and correctness is obvious.
+    //
+    // Single-threaded callers (every test, every bench, the parity path -- which never constructs this
+    // host at all) keep using the `Set*` methods unchanged, so nothing existing changes behaviour.
+    private readonly object _requestLock = new();
+    private bool _reqZone;
+    private double _reqZoneX, _reqZoneY, _reqZoneR;
+    private bool _reqCars;
+    private int _reqCarTarget;
+    private int? _reqCarPerStep;
+    private bool _reqPeds;
+    private int _reqPedCap;
+    private double _reqPedRate;
+    private bool _reqDt;
+    private double _reqDtValue;
+
+    public void RequestLcRealismZone(double centreX, double centreY, double radius)
+    {
+        lock (_requestLock)
+        {
+            _reqZone = true;
+            _reqZoneX = centreX;
+            _reqZoneY = centreY;
+            _reqZoneR = radius;
+        }
+    }
+
+    public void RequestCarDensity(int targetConcurrent, int? spawnPerStep = null)
+    {
+        lock (_requestLock)
+        {
+            _reqCars = true;
+            _reqCarTarget = targetConcurrent;
+            _reqCarPerStep = spawnPerStep;
+        }
+    }
+
+    public void RequestPedDensity(int populationCap, double spawnRatePerSecond)
+    {
+        lock (_requestLock)
+        {
+            _reqPeds = true;
+            _reqPedCap = populationCap;
+            _reqPedRate = spawnRatePerSecond;
+        }
+    }
+
+    public void RequestDt(double dt)
+    {
+        lock (_requestLock)
+        {
+            _reqDt = true;
+            _reqDtValue = dt;
+        }
+    }
+
+    // Drain the request slots and apply them on THIS thread (the producer's). Copies out under the lock and
+    // applies outside it, so a `Set*` call -- which can rebuild the interest source -- never runs while a
+    // requester is blocked.
+    private void ApplyPendingRequests()
+    {
+        bool zone, cars, peds, dtSet;
+        double zx, zy, zr, rate, dt;
+        int carTarget, pedCap;
+        int? carPerStep;
+
+        lock (_requestLock)
+        {
+            zone = _reqZone; zx = _reqZoneX; zy = _reqZoneY; zr = _reqZoneR;
+            cars = _reqCars; carTarget = _reqCarTarget; carPerStep = _reqCarPerStep;
+            peds = _reqPeds; pedCap = _reqPedCap; rate = _reqPedRate;
+            dtSet = _reqDt; dt = _reqDtValue;
+            _reqZone = _reqCars = _reqPeds = _reqDt = false;
+        }
+
+        if (dtSet) Dt = dt;
+        if (cars) SetCarDensity(carTarget, carPerStep);
+        if (peds) SetPedDensity(pedCap, rate);
+        if (zone) SetLcRealismZone(zx, zy, zr);
+    }
+
     public void Step()
     {
+        // §5: apply any render-thread requests at this fixed point -- BEFORE `dt` is read, so a requested
+        // tick-rate change takes effect on the step that observes it rather than the one after.
+        ApplyPendingRequests();
+
         var dt = _cfg.Dt;
 
+        // D1: the ped-density knobs are read off the by-reference `_cfg` every tick, exactly as the car
+        // knobs below already are. One fixed point, before any spawn logic, so a mid-run config change is
+        // felt by this tick's ped spawn pass rather than the next one.
+        var tMirror = PhaseStart();
+        MirrorPedDensity();
+        PhaseEnd("pedDensityMirror", tMirror);
+
         // (a) spawn cars up to the cap on crop drivable edges.
+        var tSpawn = PhaseStart();
         if (_cropEdges.Count >= 2)
         {
             var live = _engine.VehicleHandles.Length;
@@ -781,36 +1173,67 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        PhaseEnd("carSpawn", tSpawn);
+
         // (b) step the ped demand; capture the wire-event cursor first so the batch published this tick
         // includes exactly what this Step call emits (mirrors PedSimSource.Tick). Skipped when
         // PedestriansEnabled==false -- no demand was built, `_demand` is null (docs/LIVE-CITY-
         // ARBITRARY-NET-DESIGN.md §6): cars run alone and `_pedPublisher` simply never sees an event.
+        // NOTE (LIVE-CITY-PERF-DESIGN.md P1): this one call is where ped steering, LOD promote/demote,
+        // and InterestField queries all happen (PedDemand.Step -> PedLodManager.Step, in
+        // src/Sim.Pedestrians -- out of this task's file scope), so "pedDemandStep" below is reported
+        // as ONE fused phase; it is not separable at this seam without touching Sim.Pedestrians.
         var beforeCount = _pedPublisher.Events.Count;
+        var tPedDemand = PhaseStart();
         _demand?.Step(_now, dt, _field, NoEntities);
+        PhaseEnd("pedDemandStep", tPedDemand);
         var tNext = _now + dt;
 
         // (c) gather this tick's WALKING low-power ped positions (empty when peds are disabled).
+        var tGather = PhaseStart();
         _movingLowPowerPositions.Clear();
         if (_demand is not null && _manager is not null)
         {
             foreach (var id in _demand.LiveIds)
             {
-                if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
-                    && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+                if (_manager.ModelOf(id) == PedDrModel.FreeKinematic)
                 {
-                    _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+                    continue;
+                }
+
+                // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): PedDemand.DespawnArrivals, called
+                // moments ago inside `_demand.Step(...)` above, already computed this exact (id, tNext)
+                // pose while checking arrivals -- reuse it instead of re-invoking
+                // AnimTagOf(id, tNext)+PositionOf(id, tNext) (two more ActivityTimeline.PoseAt calls).
+                // Falls back to the direct calls, byte-identical to the pre-existing behaviour, if the
+                // cache doesn't have this id/time for any reason (e.g. a future caller of this loop
+                // outside the normal Step() sequence).
+                if (!_demand.TryGetLastPose(id, tNext, out var animTag, out var pos))
+                {
+                    animTag = _manager.AnimTagOf(id, tNext);
+                    pos = _manager.PositionOf(id, tNext);
+                }
+
+                if (animTag == ActivityTimeline.WalkAnimTag)
+                {
+                    _movingLowPowerPositions.Add(pos);
                 }
             }
         }
 
+        PhaseEnd("pedLowPowerGather", tGather);
+
         // (d) refresh the crossing-occupancy gate from the current walking peds. Skipped when
         // CrossingsEnabled==false (no crossings, or peds disabled entirely) -- `_crossingOccupancy` is
         // null; `OccupiedCrossings` reads 0 and `PeakOccupiedCrossings` never advances.
+        var tCrossing = PhaseStart();
         if (_crossingOccupancy is not null)
         {
             _crossingOccupancy.Update(_movingLowPowerPositions);
             if (_crossingOccupancy.OccupiedCount > PeakOccupiedCrossings) PeakOccupiedCrossings = _crossingOccupancy.OccupiedCount;
         }
+
+        PhaseEnd("crossingOccupancy", tCrossing);
 
         // (d2) #15 per-area realism LOD (docs/LIVE-CITY-15-PER-AREA-LOD-DESIGN.md): classify each live car's
         // lane-change realism from its PREVIOUS-step position vs the static high-realism pocket, BEFORE the
@@ -820,6 +1243,7 @@ public sealed class LiveCitySim : IDisposable
         // in the previous snapshot (spawned this step) stay high-realism (cooperative) by default. Pure
         // function of the frozen previous snapshot + the static pocket => deterministic, order-independent.
         // Never runs on a golden (parity/bench drive Engine directly, not LiveCitySim) => flag stays false.
+        var tLcLod = PhaseStart();
         if (_cfg.CooperativeLaneChange && _lcZoneR > 0.0)
         {
             for (var i = 0; i < _lastSnapshot.Count; i++)
@@ -831,11 +1255,16 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        PhaseEnd("lcRealismLod", tLcLod);
+
         // (e) step the engine -- its CrowdSource query now sees the current gates + promoted peds.
+        var tEngine = PhaseStart();
         _engine.Step();
+        PhaseEnd("engineStep", tEngine);
         _now = tNext;
 
         // Tally trip completions this step (Engine.Events is fresh each Step) -- the #15 arrival signal.
+        var tArrival = PhaseStart();
         foreach (var ev in _engine.Events)
         {
             if (ev.Kind == SimEventKind.Arrived) ArrivedTotal++;
@@ -843,15 +1272,21 @@ public sealed class LiveCitySim : IDisposable
 
         if (_engine.VehicleHandles.Length > PeakCars) PeakCars = _engine.VehicleHandles.Length;
         if (_demand is not null && _demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;
+        PhaseEnd("arrivalAndPeakTally", tArrival);
 
         // Car-yield metric: for each occupied crossing disc, count it once if any car within 10 m has
         // Speed < 2.0 m/s -- a car braking beside a ped-occupied crossing.
+        var tYield = PhaseStart();
         CarYieldObservations += CountYieldObservationsThisStep();
+        PhaseEnd("carYieldMetric", tYield);
 
         // ---- publish: capture the engine snapshot, then publish both wires ----
+        var tSnapshot = PhaseStart();
         var snap = SimulationSnapshot.Capture(_engine);
         _lastSnapshot = snap;
+        PhaseEnd("snapshotCapture", tSnapshot);
 
+        var tPublishCars = PhaseStart();
         if (!_vehGeometryPublished)
         {
             _vehPublisher.PublishGeometryOnce(Network, _vehBus.Sink);
@@ -859,7 +1294,23 @@ public sealed class LiveCitySim : IDisposable
         }
 
         _vehPublisher.PublishStep(snap, _vehBus.Sink);
-        _vehBus.Source.Pump();
+
+        // THREAD SAFETY (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 1). This self-pump drains the
+        // just-published frame into the bus's `_history`/`_dims`/`_names`/`_tlState` dictionaries. That is
+        // fine while Step() and the consumer share a thread -- but once a producer thread owns Step(), the
+        // consumer (CityLib.Reconstructor) is enumerating `_history` on the RENDER thread at the same moment,
+        // and a Dictionary cannot survive an insert during enumeration. Observed on GPU: 13 x
+        // "InvalidOperationException: Collection was modified" per run at 10 000 cars, each one aborting that
+        // frame's whole car pass. Stage 2's own comment claims these dictionaries are consumer-thread-only;
+        // THIS was the call that made that false.
+        //
+        // A threaded host sets `SelfPumpVehicleBus = false` and pumps from its consumer instead (the viewer
+        // already does, once per frame, inside Reconstruct). Default TRUE so every non-threaded consumer --
+        // Sim.Host.App, Sim.Viz, the LiveCity tests -- keeps the exact behaviour it had.
+        if (SelfPumpVehicleBus)
+        {
+            _vehBus.Source.Pump();
+        }
 
         // Stage C (C1) tee: also publish this step onto the record sink, if one was supplied -- geometry
         // once (its own publish-once latch, independent of `_vehGeometryPublished` above), then the frame,
@@ -875,18 +1326,49 @@ public sealed class LiveCitySim : IDisposable
             _recordPublisher.PublishStep(snap, _recordVehSink);
         }
 
-        var newEvents = new List<PedEvent>(_pedPublisher.Events.Count - beforeCount);
-        for (var e = beforeCount; e < _pedPublisher.Events.Count; e++)
-        {
-            newEvents.Add(_pedPublisher.Events[e]);
-        }
+        PhaseEnd("publishCars", tPublishCars);
 
-        _pedWirePublisher.Publish(newEvents);
+        var tPublishPeds = PhaseStart();
+
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 3 (+ log item A6). This block used to allocate a
+        // FRESH `List<PedEvent>` every step and leave `_pedPublisher.Events` growing without bound -- one
+        // list plus one heap record per published ped per step, which at 20 000 peds is the dominant
+        // remaining per-tick allocation and, over a long session, an unbounded leak.
+        //
+        // Now: drain this step's tail into a REUSED list, forward it, then drop the history we just took.
+        // `beforeCount` above is therefore 0 on every subsequent step, which is exactly right -- the
+        // publisher holds only the current step's batch. The per-id send counters are unaffected, so every
+        // POC-3 counter assertion still reads the same numbers.
+        _pedPublisher.DrainInto(beforeCount, _pedEventBatch);
+
+        _pedWirePublisher.Publish(_pedEventBatch);
 
         // Stage E (E3) tee: also publish this tick's ped event batch through the DEDICATED
         // `_recordPedPublisher`, if a ped record/DDS sink was supplied -- mirrors the car tee just above.
-        _recordPedPublisher?.Publish(newEvents);
+        _recordPedPublisher?.Publish(_pedEventBatch);
+
+        // Both consumers have taken the batch, so the history is dead weight from here.
+        LastPedEventBatchCount = _pedEventBatch.Count;
+        _pedPublisher.ClearEvents();
+        PhaseEnd("publishPeds", tPublishPeds);
     }
+
+    // Stage 3: the reused per-step ped-event batch (see the publishPeds block). Grows once to the peak
+    // batch size and is then allocation-free.
+    private readonly List<PedEvent> _pedEventBatch = new();
+
+    // Stage 3 diagnostics (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6). Read-only, host-side, never mutate
+    // anything -- these exist so the bounded-history and pooled-buffer claims are ASSERTABLE rather than
+    // asserted in prose. `PedEventHistoryCount` should be a per-step batch size (it was a running total
+    // before A6); `PedBusBuffersAllocated` should stop climbing once the crowd stops growing.
+    public int PedEventHistoryCount => _pedPublisher.Events.Count;
+
+    // How many events the LAST step actually handed to the wire. Paired with `PedEventHistoryCount` this is
+    // what makes the bounded-history claim falsifiable: the history must be 0 after a step (drained), AND
+    // this must be non-zero (so the drain was not vacuously empty -- peds really were being published).
+    public int LastPedEventBatchCount { get; private set; }
+    public int PedBusBuffersAllocated => _pedBus.BuffersAllocated;
+    public int PedBusPendingEntries => _pedBus.PendingEntries;
 
     private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];
 
@@ -904,6 +1386,11 @@ public sealed class LiveCitySim : IDisposable
         var cpy = _engine.PosY;
         var speed = _engine.Speed;
         var carN = cpx.Length;
+
+        // With zero cars the inner loop below can never find a `near` car, so the result is provably 0
+        // either way -- skip the O(on-crossing peds) QueryNear scan entirely. Byte-identical: the counter
+        // only ever increments inside `if (near) count++`, which requires carN > 0 to reach `near = true`.
+        if (carN == 0) return 0;
 
         foreach (var p in _movingLowPowerPositions)
         {
@@ -1073,7 +1560,10 @@ public sealed class LiveCitySim : IDisposable
                 var regime = model == PedDrModel.FreeKinematic ? PedRegime.HighPower
                     : animTag == ActivityTimeline.WalkAnimTag ? PedRegime.LowPowerWalking
                     : PedRegime.Paused;
-                peds.Add(new LiveCityPed(id, p.X, p.Y, 0.0, regime, animTag));
+                // C3 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5a): the ped's real surface elevation,
+                // interpolated along the path it is walking. Exactly 0.0 on a 2-D net -- the demo and
+                // every committed 2-D scenario -- so their snapshots stay bit-identical.
+                peds.Add(new LiveCityPed(id, p.X, p.Y, _manager.ElevationOf(id, _now), regime, animTag));
             }
         }
 
@@ -1187,18 +1677,26 @@ public sealed class LiveCitySim : IDisposable
         return edges;
     }
 
-    // Read the union of drivable edge ids from a committed car route file (every `edges="..."` token).
-    // Copied from SceneGen.ReadDrivableEdges.
-    private static IReadOnlyList<string> ReadDrivableEdges(string rouPath)
+    // Read the union of drivable edge ids from the committed car route file(s) -- every `edges="..."`
+    // token, in first-seen order. Copied from SceneGen.ReadDrivableEdges and then (docs/EXTERNAL-NET-
+    // LOADING-DESIGN.md §1) generalised from one path to a LIST, because a `.sumocfg`'s `<route-files>`
+    // routinely names several files and the real demand is not the first of them. A listed file that
+    // does not exist, or that contains no `edges="..."` at all (a vType file), simply contributes
+    // nothing. With a single existing path the result is identical to the pre-list form, token for
+    // token and in the same order -- the demo's edge set is unchanged.
+    private static IReadOnlyList<string> ReadDrivableEdges(IReadOnlyList<string> rouPaths)
     {
         var edges = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        if (!File.Exists(rouPath)) return edges;
-        foreach (Match m in Regex.Matches(File.ReadAllText(rouPath), "edges=\"([^\"]*)\""))
+        foreach (var rouPath in rouPaths)
         {
-            foreach (var tok in m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            if (string.IsNullOrEmpty(rouPath) || !File.Exists(rouPath)) continue;
+            foreach (Match m in Regex.Matches(File.ReadAllText(rouPath), "edges=\"([^\"]*)\""))
             {
-                if (seen.Add(tok)) edges.Add(tok);
+                foreach (var tok in m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (seen.Add(tok)) edges.Add(tok);
+                }
             }
         }
 

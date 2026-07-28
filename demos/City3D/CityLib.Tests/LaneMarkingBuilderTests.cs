@@ -16,7 +16,7 @@ public class LaneMarkingBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (mesh, dashCount) = LaneMarkingBuilder.Build(shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
+        var (mesh, dashCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
 
         Assert.Equal(5, dashCount);
         Assert.True(mesh.Vertices.Length > 0);
@@ -30,8 +30,8 @@ public class LaneMarkingBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (_, tightCount) = LaneMarkingBuilder.Build(shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
-        var (_, looseCount) = LaneMarkingBuilder.Build(shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 3.0);
+        var (_, tightCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
+        var (_, looseCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 3.0);
 
         Assert.True(looseCount < tightCount, $"expected fewer dashes with a longer gap (tight={tightCount}, loose={looseCount})");
     }
@@ -47,7 +47,7 @@ public class LaneMarkingBuilderTests
         const double laneWidth = 3.2;
         const double elevation = 0.02;
 
-        var (mesh, dashCount) = LaneMarkingBuilder.Build(
+        var (mesh, dashCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, 
             shape, laneWidth, dashLength: 1.0, gapLength: 1.0, elevationOffsetSumoZ: elevation);
 
         Assert.True(dashCount > 0);
@@ -78,7 +78,7 @@ public class LaneMarkingBuilderTests
     {
         var shape = new (double X, double Y)[] { (5, 5) };
 
-        var (mesh, dashCount) = LaneMarkingBuilder.Build(shape, laneWidth: 3.2);
+        var (mesh, dashCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 3.2);
 
         Assert.Equal(0, dashCount);
         Assert.Empty(mesh.Vertices);
@@ -89,7 +89,7 @@ public class LaneMarkingBuilderTests
     {
         var shape = new (double X, double Y)[] { (0, 0), (10, 0) };
 
-        var (mesh, dashCount) = LaneMarkingBuilder.Build(shape, laneWidth: 0.0);
+        var (mesh, dashCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 0.0);
 
         Assert.Equal(0, dashCount);
         Assert.Empty(mesh.Vertices);
@@ -104,7 +104,7 @@ public class LaneMarkingBuilderTests
         // both segments.
         var shape = new (double X, double Y)[] { (0, 0), (5, 0), (5, 5) };
 
-        var (mesh, dashCount) = LaneMarkingBuilder.Build(shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
+        var (mesh, dashCount) = LaneMarkingBuilder.Build(SumoGodotFrame.Identity, shape, laneWidth: 3.2, dashLength: 1.0, gapLength: 1.0);
 
         Assert.True(dashCount > 0);
         Assert.True(mesh.Vertices.Length > 0);

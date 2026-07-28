@@ -126,14 +126,14 @@ public class RerouteTests
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
 
         // Baseline: the direct (unblocked) shortest path DOES use the north crossing.
-        var directPath = nav.FindPath(WestNorthArm, EastNorthArm);
+        var directPath = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(directPath);
         Assert.True(PathEntersPolygon(directPath!, northCrossing),
             "test setup invalid: the direct path is expected to cross the north crossing polygon");
 
         // Reroute: block the north crossing polygon and re-query.
         var blocked = new HashSet<int> { northCrossing.Index };
-        var reroutePath = nav.FindPath(WestNorthArm, EastNorthArm, blocked);
+        var reroutePath = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, blocked);
 
         Assert.NotNull(reroutePath);
         _out.WriteLine($"[POC-5 measured] direct path waypoints: {directPath!.Count}; reroute path waypoints: {reroutePath!.Count}");
@@ -171,7 +171,7 @@ public class RerouteTests
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
         var blocked = new HashSet<int> { northCrossing.Index };
 
-        var reroutePath = nav.FindPath(WestNorthArm, EastNorthArm, blocked);
+        var reroutePath = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, blocked);
         Assert.NotNull(reroutePath);
 
         var crowd = new OrcaCrowd();
@@ -213,8 +213,8 @@ public class RerouteTests
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
         var blocked = new HashSet<int> { northCrossing.Index };
 
-        var run1 = nav.FindPath(WestNorthArm, EastNorthArm, blocked);
-        var run2 = nav.FindPath(WestNorthArm, EastNorthArm, blocked);
+        var run1 = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, blocked);
+        var run2 = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, blocked);
 
         Assert.NotNull(run1);
         Assert.NotNull(run2);
@@ -228,16 +228,16 @@ public class RerouteTests
 
     // The unblocked overload must still be byte-identical to the two-argument overload other POCs
     // (POC-1/POC-3) depend on -- this is the "additive, not behaviour-changing" guarantee for
-    // SumoNavMesh.FindPath(start, goal). SumoBakeNavigationTests/PedLodManagerTests already cover
+    // SumoNavMesh.FindPath(start, goal, out _). SumoBakeNavigationTests/PedLodManagerTests already cover
     // this indirectly (they still pass unmodified); this test asserts it directly.
     [Fact]
     public void UnblockedOverload_MatchesTwoArgumentOverload_Exactly()
     {
         var (_, _, nav) = BuildProvider();
 
-        var twoArg = nav.FindPath(WestNorthArm, EastNorthArm);
-        var threeArgEmpty = nav.FindPath(WestNorthArm, EastNorthArm, new HashSet<int>());
-        var threeArgNull = nav.FindPath(WestNorthArm, EastNorthArm, null);
+        var twoArg = nav.FindPath(WestNorthArm, EastNorthArm, out _);
+        var threeArgEmpty = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, new HashSet<int>());
+        var threeArgNull = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, (ISet<int>?)null);
 
         Assert.NotNull(twoArg);
         Assert.NotNull(threeArgEmpty);

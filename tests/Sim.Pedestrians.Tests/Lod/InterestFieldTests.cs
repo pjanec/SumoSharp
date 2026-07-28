@@ -39,7 +39,16 @@ public class InterestFieldTests
     // routing, so no navmesh is needed (same convention as Sim.BenchPedLod's StraightLineNavigation).
     private sealed class StraightLineNavigation : IPedNavigation
     {
-        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal) => new[] { start, goal };
+        public IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces)
+        {
+        // Flat by explicit choice, not by inheriting a default: this provider has no surface model, so
+        // it reports no provenance and zero elevation, and says so here where the choice is visible.
+            vertexSurfaces = null;
+            return new[] { start, goal };
+        }
+
+        public IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces)
+            => new double[path.Count];
     }
 
     // Brute-force O(sources) reference for a single query point: independently re-derives what

@@ -247,7 +247,23 @@ public static class NetworkParser
 
                 var entryConnection = link.Connection;
 
+                // The back-walk follows ONE LANE per stage -- the lane this link's own path actually
+                // occupies, i.e. the hop's `fromLane` on the internal edge it came from -- never the
+                // whole edge.
+                //
+                // It used to map every lane of each internal edge it passed through, and to find the
+                // previous hop by matching the edge rather than the lane. On a SINGLE-lane internal
+                // edge (every cont bay in every committed net before scenarios/_ped/georef_min) the two
+                // readings coincide, which is why this stood. On a MULTI-lane internal bay they do not:
+                // at georef_min's junction 'n00', `:n00_2` has lanes 0 and 1 and only lane 1 continues
+                // through the internal junction to link 3's second stage. The edge-wide loop therefore
+                // also stamped `:n00_2_0` -- which is link 2's OWN controlling lane -- as belonging to
+                // link 3, silently overwriting a correct entry, and the edge-wide previous-hop search
+                // could then walk back along the wrong lane's connection. Caught by
+                // JunctionLinkLaneMapTests' every-committed-net sweep the moment a net with a
+                // multi-lane cont bay was committed.
                 var fromEdgeId = link.Connection.From;
+                var fromLaneIndex = link.Connection.FromLane;
                 for (var guard = 0; guard < 8 && fromEdgeId.Length > 0 && fromEdgeId[0] == ':'; guard++)
                 {
                     if (!edgesById.TryGetValue(fromEdgeId, out var internalEdge))
@@ -255,19 +271,32 @@ public static class NetworkParser
                         break;
                     }
 
+                    Lane? traversed = null;
                     foreach (var lane in internalEdge.Lanes)
                     {
-                        junctionByInternalLane[lane.Id] = junction;
-                        linkIndexByInternalLane[lane.Id] = (junction, link.Index);
+                        if (lane.Index == fromLaneIndex)
+                        {
+                            traversed = lane;
+                            break;
+                        }
                     }
 
-                    // Step one stage further back: the connection whose `via` lands on this edge.
+                    if (traversed is null)
+                    {
+                        // A hop naming a lane index the internal edge does not have -- malformed. Stop
+                        // the walk rather than guess a lane, which is what produced the bug above.
+                        break;
+                    }
+
+                    junctionByInternalLane[traversed.Id] = junction;
+                    linkIndexByInternalLane[traversed.Id] = (junction, link.Index);
+
+                    // Step one stage further back: the connection whose `via` is THIS LANE (not merely
+                    // some lane of this edge).
                     Connection? previousHop = null;
                     foreach (var c in connections)
                     {
-                        if (c.Via is { } via
-                            && lanesById.TryGetValue(via, out var viaLane)
-                            && string.Equals(viaLane.EdgeId, fromEdgeId, StringComparison.Ordinal))
+                        if (c.Via is { } via && string.Equals(via, traversed.Id, StringComparison.Ordinal))
                         {
                             previousHop = c;
                             break;
@@ -281,6 +310,7 @@ public static class NetworkParser
 
                     entryConnection = previousHop;
                     fromEdgeId = previousHop.From;
+                    fromLaneIndex = previousHop.FromLane;
                 }
 
                 entryConnectionByLink[(junction.Id, link.Index)] = entryConnection;

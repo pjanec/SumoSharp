@@ -1,5 +1,8 @@
 # NEED — two vehicles occupying the IDENTICAL lane position (engine bug, not junction-related)
 
+> **STATUS: SUPERSEDED (2026-07-28)** — Records the *symptom* (co-located vehicles). `docs/NEED-same-step-double-placement-colocation.md` supersedes it and **falsifies the candidate fix proposed here** — read that one for the mechanism. Kept in place because `tests/Sim.LiveCity.Tests/LongHorizonGridlockDiagTests.cs:620` points here as the symptom record for a case its guard deliberately does not claim to fix.
+
+
 **Found by:** F3 junction-overlap session (`docs/F3-JUNCTION-OVERLAP-DESIGN.md` §7, N2).
 **Scope:** `src/Sim.Core` longitudinal/insertion logic. **Nothing to do with junctions.**
 **Severity:** high — two cars perfectly superposed is a hard correctness violation, and it silently

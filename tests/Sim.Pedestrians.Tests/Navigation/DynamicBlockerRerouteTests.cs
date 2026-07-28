@@ -9,7 +9,7 @@ namespace Sim.Pedestrians.Tests.Navigation;
 
 // P2-2 (docs/PEDESTRIAN-TASKS.md; docs/PEDESTRIAN-DESIGN.md §4/§6): the production dynamic-blocker
 // registry (BlockerRegistry) + reroute driver (RerouteDriver) built on top of POC-5's blocked-set
-// FindPath overload (SumoNavMesh.FindPath(start, goal, blocked), covered directly by RerouteTests.cs).
+// FindPath overload (SumoNavMesh.FindPathAvoiding(start, goal, blocked), covered directly by RerouteTests.cs).
 // Reuses the same committed POC-0 fixture and junction geometry RerouteTests/SumoBakeNavigationTests
 // already rely on: junction "c"'s north crossing ":c_c0_0" sits on the shortest path between the two
 // parallel north-arm sidewalks (nc_0 / cn_0), and the junction's walkingarea/crossing ring provides a
@@ -160,11 +160,11 @@ public class DynamicBlockerRerouteTests
         var (polygons, space, nav) = BuildProvider();
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
 
-        var directPath = nav.FindPath(WestNorthArm, EastNorthArm);
+        var directPath = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(directPath);
         Assert.True(PathEntersPolygon(directPath!, northCrossing), "test setup invalid: direct path should use the north crossing");
 
-        var farPath = nav.FindPath(FarNorthA, FarNorthB);
+        var farPath = nav.FindPath(FarNorthA, FarNorthB, out _);
         Assert.NotNull(farPath);
         Assert.False(PathEntersPolygon(farPath!, northCrossing), "test setup invalid: far-north path should never approach the north crossing");
 
@@ -255,7 +255,7 @@ public class DynamicBlockerRerouteTests
         Assert.True(registry.Unregister(blockerId!.Value));
         Assert.DoesNotContain(northCrossing.Index, registry.BlockedPolygons());
 
-        var freshPath = nav.FindPath(WestNorthArm, EastNorthArm, registry.BlockedPolygons());
+        var freshPath = nav.FindPathAvoiding(WestNorthArm, EastNorthArm, registry.BlockedPolygons());
         Assert.NotNull(freshPath);
         Assert.True(PathsEqual(directPath, freshPath!), "a fresh route after unregister should be the direct path again");
 
@@ -267,7 +267,7 @@ public class DynamicBlockerRerouteTests
     {
         var (polygons, space, nav) = BuildProvider();
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
-        var directPath = nav.FindPath(WestNorthArm, EastNorthArm);
+        var directPath = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(directPath);
 
         var registry = new BlockerRegistry(polygons);
@@ -315,7 +315,7 @@ public class DynamicBlockerRerouteTests
     {
         var (polygons, space, nav) = BuildProvider();
         var northCrossing = polygons.Single(p => p.Kind == BakedPolygonKind.Crossing && p.Id == ":c_c0_0");
-        var directPath = nav.FindPath(WestNorthArm, EastNorthArm);
+        var directPath = nav.FindPath(WestNorthArm, EastNorthArm, out _);
         Assert.NotNull(directPath);
 
         var registry = new BlockerRegistry(polygons);
@@ -390,7 +390,7 @@ public class DynamicBlockerRerouteTests
     private static (IReadOnlyList<RerouteEvent> Events, IReadOnlyList<Vec2> FinalPath) RunScenario(
         IReadOnlyList<BakedPolygon> polygons, SumoWalkableSpace space, SumoNavMesh nav, BakedPolygon northCrossing)
     {
-        var directPath = nav.FindPath(WestNorthArm, EastNorthArm)!;
+        var directPath = nav.FindPath(WestNorthArm, EastNorthArm, out _)!;
         var registry = new BlockerRegistry(polygons);
         var crowd = new OrcaCrowd();
         var controller = new PedRouteController(crowd, new WaypointFollower(), ArriveRadius);

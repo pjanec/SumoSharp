@@ -54,7 +54,7 @@ public class BakedHalfWidthTests
 
         var start = new Vec2(1.0, 0.0);
         var goal = new Vec2(19.0, 0.0);
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
         Assert.NotNull(path);
 
         var widths = nav.HalfWidthsAlong(path!);
@@ -74,7 +74,7 @@ public class BakedHalfWidthTests
 
         var start = new Vec2(1.0, 0.0);
         var goal = new Vec2(19.0, 0.0);
-        var path = nav.FindPath(start, goal);
+        var path = nav.FindPath(start, goal, out _);
         Assert.NotNull(path);
 
         var widths = nav.HalfWidthsAlong(path!);

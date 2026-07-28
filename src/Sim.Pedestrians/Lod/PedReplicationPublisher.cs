@@ -179,9 +179,9 @@ public sealed class PedReplicationPublisher
         switch (evt)
         {
             case PathArcRecord r:
-                var wire = new Sim.Replication.PathArcRecord(new VehicleHandle((uint)r.Id, 0), r.Speed, r.StartTime, r.Path);
+                var wire = new Sim.Replication.PathArcRecord(new VehicleHandle((uint)r.Id, 0), r.Speed, r.StartTime, r.Path, r.PathZ);
                 _sink.PublishPathArc(wire);
-                _meter?.RecordPathArc(evt.Time, r.Path.Count);
+                _meter?.RecordPathArc(evt.Time, r.Path.Count, r.PathZ is { Count: > 0 });
                 break;
 
             case ActivityTimelineRecord a:

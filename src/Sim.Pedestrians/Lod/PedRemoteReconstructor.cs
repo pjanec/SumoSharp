@@ -64,7 +64,15 @@ public sealed class PedRemoteReconstructor
     private readonly double _playoutDelay;
 
     private readonly HashSet<int> _knownIds = new();
-    private readonly Dictionary<int, SmoothState> _smoothed = new();
+
+    // CONCURRENT because `TryGetRenderPose` is called from a PARALLEL per-ped loop by the City3D viewer
+    // (CityLib.PedReconstructor) -- ped reconstruction measured 33.0 ms of an 84.5 ms frame at 31 890 peds,
+    // and it is per-ped independent, so it fans out. The only structural mutation of this map is `Smooth`'s
+    // miss-path insert; the hit path mutates the per-ped `SmoothState` OBJECT, which is safe because a given
+    // id is handled by exactly one worker. A plain Dictionary would corrupt (or spin) on concurrent inserts,
+    // so the container -- not the per-ped state -- is what has to change. `Remove` still happens only from
+    // the serial `Pump`/prune path.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, SmoothState> _smoothed = new();
 
     private int _pathArcIdCursor;
     private int _timelineIdCursor;
@@ -100,14 +108,33 @@ public sealed class PedRemoteReconstructor
         RenderTime = Math.Max(0.0, latestServerTime - _playoutDelay);
     }
 
-    // Reconstructs `id`'s render-time pose (position, visibility, animation tag) from the wire alone,
-    // applying capped-correction smoothing to the position. Returns false if `id` has never been
-    // observed on the wire (or has since despawned) -- there is nothing to render.
-    public bool TryGetRenderPose(int id, out Vec2 pos, out bool visible, out string animTag)
+    // Reconstructs `id`'s render-time pose (position, ELEVATION, visibility, animation tag) from the
+    // wire alone, applying capped-correction smoothing to the position. Returns false if `id` has never
+    // been observed on the wire (or has since despawned) -- there is nothing to render.
+    //
+    // C5 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.5b, -TASKS.md C5) originally shipped this as an
+    // ADDITIVE sibling of a four-out-param (z-less) overload. That overload has since been REMOVED --
+    // see docs/EXTERNAL-NET-VIEWER-DESIGN.md §"z is mandatory, not additive": a renderer that silently
+    // keeps calling the 2-D form is a ped drawn at the wrong height with nothing to catch it, so the
+    // single mandatory signature makes every omission a compile error instead. A caller that genuinely
+    // does not want the height discards it explicitly with `out _`.
+    //
+    // `z` is metres in the net's own vertical datum -- raw SUMO elevation, no geoid correction, no
+    // ground clamp, no offset -- sampled at the SMOOTHED render position, so it is consistent with the
+    // `pos` returned by the same call. That matters during a reconciliation catch-up, when the smoothed
+    // and raw positions differ: taking z at the raw sample would float the ped above or sink it into
+    // ground it has not visually reached.
+    //
+    // `z == 0.0` when the stream carries no elevation -- a 2-D net, a kind-4 publisher, or a lively
+    // (ActivityTimeline) ped, whose wire record has no elevation channel at all (see
+    // HeadlessIg.ReconstructElevation's KNOWN GAP note). Per the contract's §9.1 this is deliberately
+    // NOT distinguishable from "genuinely at 0 m"; a consumer needing to tell them apart checks the net.
+    public bool TryGetRenderPose(int id, out Vec2 pos, out double z, out bool visible, out string animTag)
     {
         if (!_knownIds.Contains(id) || !_receiver.Ig.Knows(id))
         {
             pos = Vec2.Zero;
+            z = 0.0;
             visible = false;
             animTag = ActivityTimeline.IdleAnimTag;
             return false;
@@ -115,6 +142,7 @@ public sealed class PedRemoteReconstructor
 
         var sample = _receiver.Ig.ReconstructSample(id, RenderTime);
         pos = Smooth(id, sample.Pos);
+        z = _receiver.Ig.ReconstructElevationAt(id, RenderTime, pos);
         visible = sample.Visible;
         animTag = sample.AnimTag;
         return true;
@@ -180,7 +208,7 @@ public sealed class PedRemoteReconstructor
             if (lc.Kind == PedLifecycleKind.Despawn)
             {
                 _knownIds.Remove(id);
-                _smoothed.Remove(id);
+                _smoothed.TryRemove(id, out _); // ConcurrentDictionary: no single-arg Remove
             }
             else
             {

@@ -59,9 +59,27 @@ public abstract record ActivitySegment(ActivitySegmentKind Kind, double Duration
 // half-width (parallel to `Path`) the deterministic lateral weave clamps to. NULL == weave OFF: the pose is
 // exactly the centreline (byte-identical to pre-weave PathArc), which is why every existing caller/timeline
 // is unaffected until it opts in by supplying widths (W2 sources them from PedLane.Width/2).
-public sealed record WalkSegment(IReadOnlyList<Vec2> Path, double Speed, IReadOnlyList<double>? HalfWidths = null)
+public sealed record WalkSegment(
+    IReadOnlyList<Vec2> Path,
+    double Speed,
+    IReadOnlyList<double>? HalfWidths = null,
+    // Per-vertex surface elevation, index-aligned with `Path`, null on a 2-D net. Carried alongside
+    // `HalfWidths` and treated exactly like it: OUTPUT-ONLY, read at the render seam and by no steering,
+    // ORCA or timing decision -- `ComputeDuration` below deliberately still uses the 2-D path length, so
+    // a graded leg takes the same time it always did and no trajectory moves.
+    IReadOnlyList<double>? Elevations = null)
     : ActivitySegment(ActivitySegmentKind.Walk, ComputeDuration(Path, Speed))
 {
+    // PERF (docs/LIVE-CITY-PERF-SESSION-LOG.md TASK 1 / A4): cache the polyline length ONCE here so
+    // `ActivityTimeline.Evaluate`'s weave branch (`~:306`, called on every `PoseAt` while this ped is on
+    // this leg) never re-walks the polyline per call. NOT the same value as `Duration` above (Duration =
+    // length/Speed, a time; this is the raw length, independent of Speed) so it cannot reuse that call's
+    // result -- it is a second call to the SAME pure function (`PathArcMotion.PathLength`, no external
+    // state, no randomness) on the SAME `Path` reference, which is bit-for-bit identical to the call it
+    // replaces by construction. This duplicates the O(leg-vertices) walk once per segment at CONSTRUCTION
+    // time (cheap, one-off) to eliminate it from the per-step hot path.
+    public double RouteLength { get; } = PathArcMotion.PathLength(Path);
+
     private static double ComputeDuration(IReadOnlyList<Vec2> path, double speed) =>
         speed > 0.0 ? PathArcMotion.PathLength(path) / speed : 0.0;
 }
@@ -295,7 +313,7 @@ public sealed class ActivityTimeline
 
                 if (w.HalfWidths != null && Seed != 0 && hw > 0.0 && tangent.AbsSq > 0.0)
                 {
-                    var routeLen = PathArcMotion.PathLength(w.Path);
+                    var routeLen = w.RouteLength; // PERF (TASK 1): cached at construction, see WalkSegment.RouteLength above.
                     var sClamped = s > routeLen ? routeLen : s;
                     // Shared, slowly-moving interface between the two travel directions (W1: evaluated on the
                     // ped's own route arc; the true shared LANE frame + direction sign land in W2 -- see

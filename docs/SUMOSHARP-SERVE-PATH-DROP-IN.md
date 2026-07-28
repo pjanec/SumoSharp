@@ -1,7 +1,7 @@
 # SumoSharp — remaining work to fully replace vanilla SUMO in sub-area preprocessing
 
 **Audience:** the SumoSharp engine session. This is the follow-up to
-`SUMOSHARP-HIGH-DENSITY-FEATURES.md` (P0/P1/P2/X1 — now **landed & golden-verified**). It specifies the
+`archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` (P0/P1/P2/X1 — now **landed & golden-verified**). It specifies the
 **last mile**: the three things still needed so SumoSharp can be a **drop-in for the vanilla `sumo`
 binary** in the SumoData sub-area pipeline's *serve + replay* path (the *calibration* path is already
 covered by the P0/P1 work). Reader decides what to build; this is the analysis + acceptance bar.
@@ -166,7 +166,7 @@ synthetic repro of BOTH lives in `scenarios/_repro/synthetic-parity/` (from
 `experiments/subarea/synthetic_parity/`) — shareable, no real geometry.
 
 ## 6. Cross-links
-- `SUMOSHARP-HIGH-DENSITY-FEATURES.md` — the already-landed P0/P1/P2/X1 features (same repo).
+- `archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` — the already-landed P0/P1/P2/X1 features (same repo).
 - `SUBAREA-FOR-PEDESTRIAN-SESSION.md` — the sub-area/no-cheating/RealismMask compatibility brief for
   the pedestrian session (companion; SumoData repo, copy alongside this one).
 - SumoData repo: `PREPROCESSING-ENGINE-REQUIREMENTS.md` (§0c status), `SUBAREA-METHOD.md`,

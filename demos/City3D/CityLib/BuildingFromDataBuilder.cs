@@ -68,7 +68,8 @@ public static class BuildingFromDataBuilder
     // have a single, known orientation to work from -- every footprint in the committed dataset is already
     // CCW (verified against buildings.json), so this is a defensive no-op there, but keeps the builder
     // correct for hand-authored or differently-wound future data.
-    public static ExtrudedBuildingMesh Build(IReadOnlyList<(double X, double Y)> footprint, double heightM)
+    public static ExtrudedBuildingMesh Build(
+        SumoGodotFrame frame, IReadOnlyList<(double X, double Y)> footprint, double heightM)
     {
         var pts = DedupeAndNormalizeCcw(footprint);
         var n = pts.Count;
@@ -88,7 +89,7 @@ public static class BuildingFromDataBuilder
         // ---- Roof cap: n vertices at Godot Y = heightM, normal straight up. ----
         for (var i = 0; i < n; i++)
         {
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(pts[i].X, pts[i].Y, heightM);
+            var (gx, gy, gz) = frame.GroundToGodot(pts[i].X, pts[i].Y, heightM);
             vertices.Add(gx);
             vertices.Add(gy);
             vertices.Add(gz);
@@ -125,10 +126,10 @@ public static class BuildingFromDataBuilder
             var nx = dy / len;
             var ny = -dx / len;
 
-            var b0 = CoordinateTransform.SumoToGodot(p0.X, p0.Y, 0.0);
-            var b1 = CoordinateTransform.SumoToGodot(p1.X, p1.Y, 0.0);
-            var t1 = CoordinateTransform.SumoToGodot(p1.X, p1.Y, heightM);
-            var t0 = CoordinateTransform.SumoToGodot(p0.X, p0.Y, heightM);
+            var b0 = frame.GroundToGodot(p0.X, p0.Y, 0.0);
+            var b1 = frame.GroundToGodot(p1.X, p1.Y, 0.0);
+            var t1 = frame.GroundToGodot(p1.X, p1.Y, heightM);
+            var t0 = frame.GroundToGodot(p0.X, p0.Y, heightM);
 
             // SUMO (nx,ny,0) -> Godot (nx, 0, -ny), the same position mapping CoordinateTransform.
             // SumoToGodot applies to a direction vector (drop the z term, negate y).
@@ -158,8 +159,8 @@ public static class BuildingFromDataBuilder
     }
 
     // Convenience overload over the render-neutral scene record (Sim.LiveCity.SceneBuilding).
-    public static ExtrudedBuildingMesh Build(SceneBuilding building)
-        => Build(building.Footprint, building.HeightM);
+    public static ExtrudedBuildingMesh Build(SumoGodotFrame frame, SceneBuilding building)
+        => Build(frame, building.Footprint, building.HeightM);
 
     private static void AddVertex(
         List<float> vertices, List<float> normals, (float X, float Y, float Z) pos, float normalX, float normalZ)

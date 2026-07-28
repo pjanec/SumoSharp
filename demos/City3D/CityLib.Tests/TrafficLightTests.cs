@@ -41,7 +41,7 @@ public class TrafficLightTests
         // comment on the default).
         var handle = network.LaneHandleById["WJ_0"];
 
-        var heads = TrafficLightPlacer.Place(network, new[] { handle });
+        var heads = TrafficLightPlacer.Place(SumoGodotFrame.Identity, network, new[] { handle });
 
         Assert.Single(heads);
         var head = heads[0];
@@ -71,7 +71,7 @@ public class TrafficLightTests
     {
         var network = NetworkParser.Parse(Path.Combine(RepoRoot(), "scenarios", "09-traffic-light", "net.net.xml"));
 
-        var heads = TrafficLightPlacer.Place(network, new[] { -1, 999999 });
+        var heads = TrafficLightPlacer.Place(SumoGodotFrame.Identity, network, new[] { -1, 999999 });
 
         Assert.Empty(heads);
     }
@@ -107,7 +107,7 @@ public class TrafficLightTests
 
             everSawTlState = true;
 
-            var heads = TrafficLightPlacer.Place(sim.Network, tlStateByLane.Keys);
+            var heads = TrafficLightPlacer.Place(SumoGodotFrame.Identity, sim.Network, tlStateByLane.Keys);
             Assert.Equal(tlStateByLane.Count, heads.Count);
             maxHeadsSeen = Math.Max(maxHeadsSeen, heads.Count);
 
@@ -154,8 +154,8 @@ public class TrafficLightTests
         Assert.True(tlStateByLane!.Count > 0, "TlStateByLane never became non-empty");
         Assert.True(sim.Source.GeometryComplete);
 
-        var fromNetwork = TrafficLightPlacer.Place(sim.Network, tlStateByLane.Keys);
-        var fromWire = TrafficLightPlacer.Place(sim.Source.Geometry, tlStateByLane.Keys);
+        var fromNetwork = TrafficLightPlacer.Place(SumoGodotFrame.Identity, sim.Network, tlStateByLane.Keys);
+        var fromWire = TrafficLightPlacer.Place(SumoGodotFrame.Identity, sim.Source.Geometry, tlStateByLane.Keys);
 
         Assert.Equal(fromNetwork.Count, fromWire.Count);
 

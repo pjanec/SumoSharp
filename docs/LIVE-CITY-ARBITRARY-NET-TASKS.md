@@ -223,7 +223,7 @@ the F gate need the Opus accept/reject review. Delegate per `CLAUDE.md`.
 ### E1 — Offline prep recipe + `scripts/prep-ped-net.sh`  *(design §8)*
 - **Files:** `scripts/prep-ped-net.sh`, a recipe section in the fixture README / scoping.
 - **Deps:** none.
-- **Success:** the script runs `netconvert --sidewalks.guess --crossings.guess --walkingareas.all-nonspecific`
+- **Success:** the script runs `netconvert --sidewalks.guess --crossings.guess --walkingareas`
   on an input net and produces a ped-equipped output; documented; **not** referenced by `dotnet test`.
 
 ### E2 — Committed synthetic road-net fixture  *(design §9)*

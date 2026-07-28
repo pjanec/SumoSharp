@@ -27,8 +27,8 @@ by integrating, *wholesale*, the validated engine work from branch
 (`claude/city3d-live-city-mode-3yf4oc`). This doc is the HOW: the exact seams touched, the merge
 method, and the parity/determinism argument. The WHAT — the individual engine fixes and *why* they
 work — is already designed and validated on that branch; this doc **references** its docs rather than
-restating them (`docs/DENSE-FLOW-THROUGHPUT-DIAGNOSIS.md`, `docs/DISCHARGE-YIELD-RESUME.md`,
-`docs/GAP1-RESUME.md`, `docs/HIGH-DENSITY-*` on that branch).
+restating them (`docs/DENSE-FLOW-THROUGHPUT-DIAGNOSIS.md`, `docs/archive/DISCHARGE-YIELD-RESUME.md`,
+`docs/archive/GAP1-RESUME.md`, `docs/HIGH-DENSITY-*` on that branch).
 
 ## 1. Why (measured, this branch)
 A headless A/B was run through the sanctioned harness (`--mode live-city --smoke`, the #15 gridlock

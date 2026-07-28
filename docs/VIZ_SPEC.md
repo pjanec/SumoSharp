@@ -1,5 +1,8 @@
 # VIZ_SPEC.md — Offline replay & visualization tool (`Sim.Viz`)
 
+> **STATUS: ARCHIVED (2026-07-28)** — The original design brief for the offline `Sim.Viz` replay tool. Its core interpolation model (plain linear FCD interpolation) is superseded for most gallery pages by the DR / kinematic-reconstruction pipeline in `docs/VIZ-UNIFICATION-STATUS.md` (`VizReplayBuilder`, `KinematicReconstructor`), and the tool has grown well past this spec. Kept in place (code-pinned) as the record of the original done-condition.
+
+
 A self-contained briefing for building the replay tool. Read `DESIGN.md` and `CLAUDE.md`
 first for project rules. This is a **route-1 visualization**: it produces a single
 self-contained HTML file (data inlined) that you commit to the repo and open from a phone

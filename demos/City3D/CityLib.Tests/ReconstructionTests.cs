@@ -37,7 +37,7 @@ public class ReconstructionTests
     {
         var (netPath, rouPath, cfgPath) = ScenarioPaths();
         using var sim = new SimSource(netPath, rouPath, cfgPath);
-        var reconstructor = new Reconstructor();
+        var reconstructor = new Reconstructor(SumoGodotFrame.Identity);
         var bbox = ComputeGodotBBox(sim.Network);
 
         VehicleHandle? tracked = null;
@@ -114,8 +114,8 @@ public class ReconstructionTests
         // neither has any prior-frame state to smooth from -- a clean first-observation comparison), one
         // fed the LOCAL Z-aware NetworkLaneSource, one fed the wire-shaped ReplicationLaneShapeSource built
         // from the SAME bus.Source.Geometry -- exactly the local<->remote seam (design "SimSource").
-        var localReconstructor = new Reconstructor();
-        var wireReconstructor = new Reconstructor();
+        var localReconstructor = new Reconstructor(SumoGodotFrame.Identity);
+        var wireReconstructor = new Reconstructor(SumoGodotFrame.Identity);
         var wireLanes = new ReplicationLaneShapeSource(sim.Source.Geometry);
 
         var localPoses = localReconstructor.Reconstruct(sim.Source, sim.LocalLanes, PlayoutDelay);
@@ -153,7 +153,7 @@ public class ReconstructionTests
     {
         var (netPath, rouPath, cfgPath) = ScenarioPaths();
         using var sim = new SimSource(netPath, rouPath, cfgPath);
-        var reconstructor = new Reconstructor();
+        var reconstructor = new Reconstructor(SumoGodotFrame.Identity);
         var bbox = ComputeGodotBBox(sim.Network);
 
         var checkedFrames = 0;

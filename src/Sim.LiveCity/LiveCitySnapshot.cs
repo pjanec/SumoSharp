@@ -39,6 +39,12 @@ public readonly struct LiveCityCar
 }
 
 // One pedestrian's read-back pose for a viewer frame.
+//
+// `Z` is the ped's SURFACE ELEVATION in the net's own vertical datum (docs/EXTERNAL-NET-LOADING-DESIGN
+// .md §3.5a). Exactly 0.0 on a 2-D net -- the demo, and every net whose lane shapes carry no third
+// component -- and the real height on a 3-D one, where a Geneva cut's roads sit at ~370-400 m. The
+// pedestrian SIMULATION remains 2-D throughout: this is retained from ingest and read at the render
+// seam, exactly as the vehicle side's PosZ is, and it feeds no steering, ORCA or routing decision.
 public readonly struct LiveCityPed
 {
     public LiveCityPed(int id, double x, double y, double z, PedRegime regime, string animTag)

@@ -18,8 +18,8 @@ public class BuildingPlacerTests
     {
         var network = NetworkParser.Parse(Path.Combine(RepoRoot(), "scenarios", "_bench", "city-organic", "net.net.xml"));
 
-        var first = BuildingPlacer.PlaceAll(network, seed: 42);
-        var second = BuildingPlacer.PlaceAll(network, seed: 42);
+        var first = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network, seed: 42);
+        var second = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network, seed: 42);
 
         Assert.True(first.Count > 0, "expected at least one building on a real multi-edge network");
         Assert.Equal(first.Count, second.Count);
@@ -44,8 +44,8 @@ public class BuildingPlacerTests
     {
         var network = NetworkParser.Parse(Path.Combine(RepoRoot(), "scenarios", "_bench", "city-organic", "net.net.xml"));
 
-        var seedA = BuildingPlacer.PlaceAll(network, seed: 1);
-        var seedB = BuildingPlacer.PlaceAll(network, seed: 2);
+        var seedA = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network, seed: 1);
+        var seedB = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network, seed: 2);
 
         Assert.Equal(seedA.Count, seedB.Count); // placement steps are seed-independent -- only footprint/height/etc vary
 
@@ -70,7 +70,7 @@ public class BuildingPlacerTests
     {
         var network = NetworkParser.Parse(Path.Combine(RepoRoot(), "scenarios", "_bench", "city-organic", "net.net.xml"));
 
-        var boxes = BuildingPlacer.PlaceAll(network);
+        var boxes = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network);
 
         Assert.True(boxes.Count > 0);
         Assert.All(boxes, b => Assert.InRange(b.SizeY, 6f, 60f));
@@ -82,7 +82,7 @@ public class BuildingPlacerTests
     {
         var network = NetworkParser.Parse(Path.Combine(RepoRoot(), "scenarios", "_bench", "city-organic", "net.net.xml"));
 
-        var boxes = BuildingPlacer.PlaceAll(network);
+        var boxes = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network);
 
         Assert.True(boxes.Count > 0, "expected PlaceAll to generate at least one building on city-organic");
     }
@@ -108,7 +108,7 @@ public class BuildingPlacerTests
         var network = NetworkParser.ParseXml(netXml);
         const double halfWidth = (3.2 + 3.2) / 2.0; // sum of both lanes' widths / 2, per design "Buildings"
 
-        var boxes = BuildingPlacer.PlaceAll(network);
+        var boxes = BuildingPlacer.PlaceAll(SumoGodotFrame.Identity, network);
 
         Assert.True(boxes.Count > 0, "expected at least one building on a 200m straight edge");
         Assert.All(boxes, b =>

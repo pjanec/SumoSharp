@@ -73,9 +73,41 @@ public sealed class PedDemand
     private readonly List<PedSpawnEvent> _spawnEvents = new();
     private readonly List<PedArrivalEvent> _arrivalEvents = new();
 
+    // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): DespawnArrivals below already queries every
+    // live ped's pose at `now` (== the caller's `now+dt`). LiveCitySim's low-power gather
+    // (LiveCitySim.cs, immediately after `_demand.Step(...)` returns) queries the SAME instant for a
+    // subset of the SAME ids, with NO pose-affecting mutation in between: DespawnArrivals only REMOVES
+    // arrived ids from `_liveIds` (which the gather then simply never visits) and never touches a
+    // SURVIVING ped's Path/Timeline. So DespawnArrivals caches (AnimTag, Pos) here, keyed on the exact
+    // `now` it was computed for, and `TryGetLastPose` below serves that one proven-safe consumer -- a
+    // reused buffer (Clear()ed, never reallocated) rather than a fresh Dictionary per step, and guarded
+    // by an exact `now` match so a mismatch can only ever fall back to a live recompute, never return a
+    // stale value for a different instant.
+    private readonly Dictionary<int, (string AnimTag, Vec2 Pos)> _lastPoseAtNow = new();
+    private double _lastPoseAtNowTime = double.NaN;
+
     private VehicleRng _spawnTimingRng;
     private double _nextSpawnAt;
     private int _nextId = 1;
+
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3 (C3): the two density values the spawn loop reads EVERY
+    // step, promoted out of the `init`-only `PedDemandConfig` into mutable fields so a live UI dial can
+    // move them without rebuilding the sim. `PedDemandConfig` itself stays immutable -- it is the SEED
+    // configuration, and several tests depend on that -- these are seeded FROM it in the ctor and are
+    // the only two values that may subsequently diverge from it. Nothing else about spawning changes:
+    // the cap is still a loop guard and the rate is still the inverse-CDF divisor, so a run that never
+    // calls a setter draws exactly the stream it drew before this existed (the ITERON RULE).
+    private int _populationCap;
+    private double _spawnRatePerSecond;
+
+    // Set when `SetSpawnRatePerSecond` actually CHANGES the rate; consumed by the next `SpawnDue`,
+    // which redraws `_nextSpawnAt` from the current instant. Without it a rate change could not take
+    // effect until the already-drawn wait elapsed -- and in the rate==0 case never at all, because the
+    // pending wait is +Infinity, which `SpawnDue`'s "clamp a stale schedule forward to now" guard
+    // (`_nextSpawnAt < now`) cannot rescue. That would make parking the rate at 0 a ONE-WAY door,
+    // which is not acceptable for a knob a UI slider drives. Only ever set by an explicit setter call,
+    // so a run that never touches the knob is bit-identical.
+    private bool _spawnScheduleDirty;
 
     public PedDemand(PedDemandConfig config, IPedNavigation navigation, PedLodManager lodManager, double startTime = 0.0)
     {
@@ -105,8 +137,54 @@ public sealed class PedDemand
         _navigation = navigation;
         _lodManager = lodManager;
 
+        // Seed the live density fields BEFORE the first DrawInterArrivalInterval below -- it reads
+        // `_spawnRatePerSecond`, so an uninitialised 0 here would silently schedule "never spawn".
+        _populationCap = config.PopulationCap;
+        _spawnRatePerSecond = config.SpawnRatePerSecond;
+
         _spawnTimingRng = VehicleRng.SeedFor(config.Seed, entityIndex: 0, salt: SpawnTimingSalt);
         _nextSpawnAt = startTime + DrawInterArrivalInterval();
+    }
+
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: the LIVE target concurrent population -- seeded from
+    /// `PedDemandConfig.PopulationCap` and thereafter movable via `SetPopulationCap`.
+    public int PopulationCap => _populationCap;
+
+    /// The LIVE mean spawn rate in peds/sec -- seeded from `PedDemandConfig.SpawnRatePerSecond` and
+    /// thereafter movable via `SetSpawnRatePerSecond`. &lt;= 0 means "never spawn again" (reversibly).
+    public double SpawnRatePerSecond => _spawnRatePerSecond;
+
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: change the concurrent-population target live; takes
+    /// effect on the NEXT `Step`, with no rebuild.
+    ///
+    /// RAISING converges upward at the configured spawn rate. LOWERING stops new spawns but does NOT
+    /// despawn anybody -- live peds drain as they reach their destinations. That is deliberate and is
+    /// exactly how the car-side `CarTargetConcurrent` knob already behaves; deleting pedestrians
+    /// mid-stride to satisfy a slider would render as people vanishing into thin air.
+    ///
+    /// Negative values are clamped to 0 ("hold the current crowd, spawn nobody new").
+    public void SetPopulationCap(int populationCap)
+        => _populationCap = populationCap < 0 ? 0 : populationCap;
+
+    /// docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: change the mean spawn rate (peds/sec) live; takes
+    /// effect on the next inter-arrival draw, with no rebuild. &lt;= 0 parks spawning indefinitely and
+    /// is fully reversible: raising the rate later resumes from `_nextSpawnAt`, which `SpawnDue`
+    /// clamps forward to `now`, so there is no burst of catch-up spawns for the quiet interval.
+    ///
+    /// Determinism is preserved for a fixed knob trajectory: same seed + same step sequence + same
+    /// sequence of setter calls => identical spawn/arrival events. A call that CHANGES the rate costs
+    /// one extra inter-arrival draw on the next step (the reschedule); a call that sets the rate to
+    /// the value it already had costs nothing and draws nothing.
+    public void SetSpawnRatePerSecond(double spawnRatePerSecond)
+    {
+        var rate = double.IsNaN(spawnRatePerSecond) ? 0.0 : spawnRatePerSecond;
+        if (rate == _spawnRatePerSecond)
+        {
+            return;
+        }
+
+        _spawnRatePerSecond = rate;
+        _spawnScheduleDirty = true;
     }
 
     /// Number of peds currently live (spawned, not yet arrived/despawned).
@@ -132,6 +210,59 @@ public sealed class PedDemand
     /// Every arrival, in arrival order.
     public IReadOnlyList<PedArrivalEvent> ArrivalEvents => _arrivalEvents;
 
+    // Perf diagnostics (docs/LIVE-CITY-PERF-SESSION-LOG.md B2): opt-in per-sub-phase wall-time
+    // accounting for Step(), same shape as PedLodManager.ProfilePhases (a bool gate, a name->ticks
+    // dictionary, PhaseStart/PhaseEnd via Stopwatch.GetTimestamp). OFF by default and then effectively
+    // free. Covers ONLY SpawnDue/DespawnArrivals -- the work in PedDemand.Step that happens OUTSIDE
+    // _lodManager.Step (that call's own sub-phases are read via `_lodManager.PhaseTicks` directly, not
+    // duplicated here). LiveCitySim merges both into one "ped."-prefixed breakdown of its
+    // "pedDemandStep" phase, so the two live on separate dictionaries but the same key namespace.
+    // Never read by any simulation algorithm -> zero behavioral effect, parity-inert.
+    public bool ProfilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+    public IReadOnlyDictionary<string, long> PhaseTicks => _phaseTicks;
+
+    // B3 (docs/LIVE-CITY-PERF-SESSION-LOG.md): allocated-bytes counterpart to _phaseTicks. See
+    // Engine.PhaseBytes for the process-wide-vs-per-thread rationale.
+    private readonly Dictionary<string, long> _phaseBytes = new();
+    public IReadOnlyDictionary<string, long> PhaseBytes => _phaseBytes;
+
+    // netstandard2.1 (Unity/Godot) has no GC.GetTotalAllocatedBytes -- degrades to "always 0 bytes"
+    // there, same rationale as Engine.cs's TotalAllocatedBytes.
+#if NET8_0_OR_GREATER
+    private static long TotalAllocatedBytes() => GC.GetTotalAllocatedBytes(precise: false);
+#else
+    private static long TotalAllocatedBytes() => 0L;
+#endif
+
+    private readonly struct PhaseSample
+    {
+        public readonly long Ticks;
+        public readonly long Bytes;
+        public PhaseSample(long ticks, long bytes) { Ticks = ticks; Bytes = bytes; }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private PhaseSample PhaseStart() => ProfilePhases
+        ? new PhaseSample(System.Diagnostics.Stopwatch.GetTimestamp(), TotalAllocatedBytes())
+        : default;
+
+    private void PhaseEnd(string name, PhaseSample start)
+    {
+        if (!ProfilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start.Ticks;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+
+        var elapsedBytes = TotalAllocatedBytes() - start.Bytes;
+        _phaseBytes.TryGetValue(name, out var accBytes);
+        _phaseBytes[name] = accBytes + elapsedBytes;
+    }
+
     // Advances demand by one tick [now, now+dt): spawn any peds due (population permitting), let
     // PedLodManager advance the whole population by dt exactly as a bare PedLodManager.Step call
     // would (PedDemand does not re-implement or shadow LOD/promotion physics), then despawn arrivals.
@@ -140,11 +271,15 @@ public sealed class PedDemand
     // supplies the same InterestField it would to a bare PedLodManager.
     public void Step(double now, double dt, InterestField field, IReadOnlyList<WorldDisc> externalEntities)
     {
+        var tSpawnDue = PhaseStart();
         SpawnDue(now, dt);
+        PhaseEnd("spawnDue", tSpawnDue);
 
         _lodManager.Step(now, dt, field, externalEntities);
 
+        var tDespawn = PhaseStart();
         DespawnArrivals(now + dt);
+        PhaseEnd("despawnArrivals", tDespawn);
     }
 
     // Spawns every ped whose drawn spawn time falls in [now, now+dt), as long as doing so keeps the
@@ -156,13 +291,22 @@ public sealed class PedDemand
     // reproducibility.
     private void SpawnDue(double now, double dt)
     {
+        // docs/EXTERNAL-NET-VIEWER-DESIGN.md §3: a live rate change redraws the pending wait from the
+        // current instant, so the new rate is felt immediately instead of after the old rate's already-
+        // drawn interval (see `_spawnScheduleDirty`). Never true unless a setter was called.
+        if (_spawnScheduleDirty)
+        {
+            _spawnScheduleDirty = false;
+            _nextSpawnAt = now + DrawInterArrivalInterval();
+        }
+
         if (_nextSpawnAt < now)
         {
             _nextSpawnAt = now;
         }
 
         var horizon = now + dt;
-        while (_liveIds.Count < _config.PopulationCap && _nextSpawnAt < horizon)
+        while (_liveIds.Count < _populationCap && _nextSpawnAt < horizon)
         {
             TrySpawnOne(_nextSpawnAt);
             _nextSpawnAt += DrawInterArrivalInterval();
@@ -171,7 +315,7 @@ public sealed class PedDemand
 
     private double DrawInterArrivalInterval()
     {
-        if (_config.SpawnRatePerSecond <= 0.0)
+        if (_spawnRatePerSecond <= 0.0)
         {
             return double.PositiveInfinity; // a demand with no spawn rate never spawns again
         }
@@ -179,7 +323,7 @@ public sealed class PedDemand
         // Standard inverse-CDF draw for a Poisson process's exponential inter-arrival time.
         // NextDouble() is [0,1); (1 - u) keeps the log's argument in (0,1], never exactly 0.
         var u = _spawnTimingRng.NextDouble();
-        return -Math.Log(1.0 - u) / _config.SpawnRatePerSecond;
+        return -Math.Log(1.0 - u) / _spawnRatePerSecond;
     }
 
     private void TrySpawnOne(double now)
@@ -246,7 +390,10 @@ public sealed class PedDemand
             }
         }
 
-        var path = _navigation.FindPath(origin, destination);
+        // Provenance-carrying routing: the surface behind each vertex, so elevation is read off the
+        // lane the ped is actually on rather than whichever is nearest in plan view (which is a coin
+        // toss wherever surfaces stack -- a footbridge over the path beneath it).
+        var path = _navigation.FindPath(origin, destination, out var pathSurfaces);
         if (path is null)
         {
             UnreachableSkipCount++;
@@ -278,12 +425,13 @@ public sealed class PedDemand
             var timeline = BuildLivelyTimeline(
                 path, now, liveliness, pedSpeed, ref livelinessRng,
                 _config.EnableWeave, weaveSeed, globalSeed, _navigation.HalfWidthsAlong,
-                _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng);
+                _config.CrosswalkSignals, _config.CrosswalkWaitSpreadRadius, ref waitJitterRng,
+                pts => ElevationsOrNull(pts, path, pathSurfaces));
             _lodManager.AddPedLively(id, timeline, pedSpeed, _config.Radius, now);
         }
         else
         {
-            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now);
+            _lodManager.AddPed(id, path, pedSpeed, _config.Radius, now, pathSurfaces);
         }
 
         _destinationOf[id] = destination;
@@ -307,16 +455,83 @@ public sealed class PedDemand
     // values are always adjacent in the stream regardless of how many other candidates land). Accepted
     // candidates are then sorted by fraction so they always splice into the route in along-route
     // order, independent of draw order.
+    // The elevation sampler handed to BuildLivelyTimeline: the nav's channel, or NULL when it is flat.
+    // Collapsing all-zeros to null is what keeps a 2-D net's WalkSegments (and therefore its timeline
+    // wire bytes, beyond the single flag byte) identical to before elevation existed.
+    //
+    // `fullPath`/`fullSurfaces` are the ped's whole routed path and its provenance. A timeline's Walk
+    // legs are SUB-PATHS of it -- split at kerb pauses, with interpolated split points that appear in
+    // no original vertex -- so each sub-point is mapped back onto the full path to recover the surface
+    // it belongs to. That is a projection onto the ped's OWN route, not a search of the network, and it
+    // is what keeps a leg under a footbridge attributed to the ground rather than the bridge.
+    private IReadOnlyList<double>? ElevationsOrNull(
+        IReadOnlyList<Vec2> pts, IReadOnlyList<Vec2> fullPath, IReadOnlyList<int>? fullSurfaces)
+    {
+        if (pts.Count == 0)
+        {
+            return null;
+        }
+
+        var zs = _navigation.ElevationsAlong(pts, MapSurfaces(pts, fullPath, fullSurfaces));
+        for (var i = 0; i < zs.Count; i++)
+        {
+            if (zs[i] != 0.0)
+            {
+                return zs;
+            }
+        }
+
+        return null;
+    }
+
+    // Each sub-path point takes the surface of the nearest vertex of the full routed path. Nearest
+    // VERTEX rather than nearest segment because provenance is per-vertex; on a split point sitting
+    // between two vertices of the same surface either choice agrees, and at a surface boundary the
+    // nearer vertex is the right side of it. Null in, null out.
+    private static IReadOnlyList<int>? MapSurfaces(
+        IReadOnlyList<Vec2> pts, IReadOnlyList<Vec2> fullPath, IReadOnlyList<int>? fullSurfaces)
+    {
+        if (fullSurfaces is null || fullSurfaces.Count != fullPath.Count || fullPath.Count == 0)
+        {
+            return null;
+        }
+
+        var mapped = new int[pts.Count];
+        for (var i = 0; i < pts.Count; i++)
+        {
+            var best = 0;
+            var bestD2 = double.PositiveInfinity;
+            for (var k = 0; k < fullPath.Count; k++)
+            {
+                var d = pts[i] - fullPath[k];
+                var d2 = (d.X * d.X) + (d.Y * d.Y);
+                if (d2 < bestD2)
+                {
+                    bestD2 = d2;
+                    best = k;
+                }
+            }
+
+            mapped[i] = fullSurfaces[best];
+        }
+
+        return mapped;
+    }
+
     private static ActivityTimeline BuildLivelyTimeline(
         IReadOnlyList<Vec2> path, double now, PedLivelinessConfig liveliness, double maxSpeed, ref VehicleRng rng,
         bool weave, ulong seed, ulong globalSeed, Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
-        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ref VehicleRng waitRng)
+        CrosswalkSignals? crosswalkSignals, double waitSpreadRadius, ref VehicleRng waitRng,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>?>? elevationsAlong = null)
     {
         // W2: each Walk leg's per-vertex half-width, sampled from the navmesh for that exact (possibly
         // pause-split) sub-path -- so an interpolated split point gets the width of the polygon it lands in.
         // Weave off => null widths => the WalkSegment weave is inactive (pose stays on the centreline).
+        // Elevation rides every Walk leg regardless of the weave flag -- it is a render channel, not a
+        // weave input -- and is sampled for that exact (possibly pause-split) sub-path, so an
+        // interpolated split point gets the height of the surface it actually lands on.
         WalkSegment MakeWalk(IReadOnlyList<Vec2> pts) =>
-            weave ? new WalkSegment(pts, maxSpeed, halfWidthsAlong(pts)) : new WalkSegment(pts, maxSpeed);
+            new(pts, maxSpeed, weave ? halfWidthsAlong(pts) : null, elevationsAlong?.Invoke(pts));
 
         var pauses = new List<(double Fraction, double Duration)>();
         for (var i = 0; i < liveliness.MaxPausesPerTrip; i++)
@@ -562,7 +777,7 @@ public sealed class PedDemand
                 var crossPts = new List<Vec2> { blobPoint, path[i + 1] };
                 result.Add(w.HalfWidths != null
                     ? new WalkSegment(crossPts, speed, halfWidthsAlong(crossPts))
-                    : new WalkSegment(crossPts, speed)); // diagonal cross
+                    : new WalkSegment(crossPts, speed)); // diagonal cross (weave-only helper, no z channel)
                 t += (path[i + 1] - blobPoint).Abs / speed;
 
                 segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex
@@ -676,10 +891,16 @@ public sealed class PedDemand
             return;
         }
 
+        // See _lastPoseAtNow's remarks: reused (not reallocated) every call, so this stays bounded by
+        // the CURRENT live population rather than growing with every ped that has ever lived.
+        _lastPoseAtNow.Clear();
+        _lastPoseAtNowTime = now;
+
         List<int>? arrived = null;
         foreach (var id in _liveIds)
         {
-            var pos = _lodManager.PositionOf(id, now);
+            var (animTag, pos) = _lodManager.PoseInfoOf(id, now);
+            _lastPoseAtNow[id] = (animTag, pos);
             var dest = _destinationOf[id];
             if ((pos - dest).Abs <= _config.ArrivalRadius)
             {
@@ -701,6 +922,26 @@ public sealed class PedDemand
             ArrivalCount++;
             _arrivalEvents.Add(new PedArrivalEvent(id, now));
         }
+    }
+
+    // PERF (TASK 2): explicit same-instant cache lookup for the ONE proven-safe consumer (LiveCitySim's
+    // low-power gather). Returns false -- never a stale hit -- unless `now` is bit-identical to the
+    // `now` DespawnArrivals was just called with AND `id` was live at that moment; any mismatch (a
+    // different instant, or an id DespawnArrivals never saw) falls back to a direct
+    // PositionOf/AnimTagOf/PoseInfoOf recompute at the call site, so this can only ever be a fast path,
+    // never a source of wrong data.
+    public bool TryGetLastPose(int id, double now, out string animTag, out Vec2 pos)
+    {
+        if (now == _lastPoseAtNowTime && _lastPoseAtNow.TryGetValue(id, out var cached))
+        {
+            animTag = cached.AnimTag;
+            pos = cached.Pos;
+            return true;
+        }
+
+        animTag = ActivityTimeline.WalkAnimTag;
+        pos = default;
+        return false;
     }
 }
 

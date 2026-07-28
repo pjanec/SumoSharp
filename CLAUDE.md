@@ -3,8 +3,45 @@
 This repo reimplements SUMO's microscopic traffic-simulation algorithms in C# / .NET 8
 (ECS, data-oriented, parallel-ready) with **behavioral parity to SUMO** as the
 non-negotiable correctness bar. Performance matters, but a faster wrong answer is still
-wrong. Read `docs/DESIGN.md` for the architecture of record; read `docs/TASKS.md` for the current
-work queue. This file is the rules of the road.
+wrong. Read `docs/DESIGN.md` for the architecture of record and `docs/TASKS-TODO.md` for the current
+work queue (`docs/TASKS.md` is now just a redirect to it). This file is the rules of the road.
+
+## Orientation — read these first, in this order
+
+You are landing in a repo with 240+ docs. Do not start with `ls docs/`. This is the shortest path from
+cold to productive:
+
+| # | Doc | Why it is on this list |
+| --- | --- | --- |
+| 1 | **`docs/README.md`** | The docs index. Entry points per area, and the status-banner vocabulary you need to know whether a doc is trustworthy. `HISTORICAL TRAIL` means it contains claims later disproved. |
+| 2 | **`docs/TASKS-TODO.md`** | The live queue **and the authority on the current gate numbers**. If you need a test count or the bench hash, take it from here — every other doc's copy has rotted at least once. |
+| 3 | **`docs/DESIGN.md`** | The architecture of record. ECS layout, plan/execute split, command buffer, determinism. |
+| 4 | **`docs/ENV-GATES.md`** | Every `LIVECITY_*` / `SUMOSHARP_*` / `CITY3D_*` environment gate. **Read before running any A/B or benchmark.** These are process-global, several are behavioural, and one of them breaks 14 goldens when set. Completeness is enforced by a test. |
+| 5 | **`docs/CONSTRAINT-high-realism-artefact-ladder.md`** | Binding. What we may not copy from SUMO. Target its flow, never its method. |
+| 6 | `docs/TASKS-DONE.md` | The archive. Where the full characterisation of finished work lives — check here before concluding something was never done. |
+
+**Driving the engine from code?** The tutorials are a ladder, each backed by a sample `Traffic.sln`
+compiles: `docs/TUTORIAL-VEHICLES.md` → `docs/TUTORIAL-PEDESTRIANS.md` → `docs/TUTORIAL-LIVE-CITY.md`.
+**Running a tool instead?** `docs/TOOLS.md`. **Picking test data?** `scenarios/README.md` — it says which
+datasets have committed SUMO goldens and which are behavioural-only, so you don't cite a benchmark as a
+parity claim.
+
+Then the area you are actually working in: `docs/PEDESTRIANS.md` (pedestrian front door),
+`docs/LIVE-CITY-STATUS.md` + `docs/LIVE-CITY-HARNESS-GUIDE.md` (the coupled demo),
+`docs/PERF-HANDOVER.md` (perf — read before proposing any optimization),
+`docs/F3-SESSION-LOG.md` (junctions), `docs/SUMOSHARP-API.md` (the public library API).
+
+**Three traps that have each cost a session.** They are in §Measurement discipline in full, but they catch
+people on day one, so: `dotnet build -c Release` does **not** build `tests/Sim.LiveCity.Tests` or
+`demos/City3D/CityLib.Tests` (not in `Traffic.sln`) — build those csproj files explicitly or you will test
+stale code. `demos/City3D/build.sh --pack-only` always writes version `0.1.0`, so clear
+`~/.nuget/packages/sumosharp.*` before repacking or the demo builds against a stale engine. And every
+`LIVECITY_*`/`SUMOSHARP_*` gate is process-global — set every one you care about **explicitly, in both arms**
+of any comparison.
+
+**Running the tools.** Every entry point (`Sim.Viz`, `Sim.Viewer`, `Sim.LiveHost`, `sumosharp`,
+`Sim.BenchLiveCity`, …) has a working `--help`; prefer it over any doc's flag list, which can rot. The
+`--help` output is the reference; the docs are for *why* and *which tool*.
 
 ## Interaction preferences
 

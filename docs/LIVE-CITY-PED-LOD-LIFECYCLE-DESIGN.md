@@ -157,6 +157,16 @@ demote fires only after `now − OutsideSince ≥ dwellSeconds` *continuously* (
 edge — or one the camera-driven zone (`SetLcRealismZone`) intermittently re-covers — never accumulates
 `dwellSeconds` unbroken → never demotes. With #4b unfixed it also may never get outside the demote radius at all.
 
+> **DESIGNED THEN DROPPED (owner-ratified) — not built.** This subsection proposes an `outsideAccum`
+> leaky-dwell counter and a `MaxHighPowerSeconds` hard watchdog ctor knob, but neither was implemented:
+> `docs/LIVE-CITY-PED-LOD-LIFECYCLE-TRACKER.md` records T3.2 as "DROPPED (owner ratified)" because no
+> stuck-ORCA ever reproduced in the trace evidence (see `docs/TASKS-TODO.md`'s Realism #4 entry: "NO
+> server-side stuck-ORCA — demotion fires correctly ... the visible wander was the #3 wire bug"). A grep
+> of `src/` confirms neither `MaxHighPowerSeconds` nor `outsideAccum` exists anywhere in the codebase.
+> `OutsideSince` still resets to `NaN` the instant the ped re-enters any demote radius — the pre-fix
+> binary behaviour described just above — and that is what actually ships in `PedLodManager.cs`. Kept
+> below as a considered-and-dropped design, not a description of shipped code.
+
 **Fix — leaky dwell + hard watchdog (deterministic, parity-inert).** Replace the binary reset with an
 **accumulating** dwell on `PedEntry`:
 

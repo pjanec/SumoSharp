@@ -1,5 +1,8 @@
 # HANDOFF.md — Session bootstrap for the next orchestrator
 
+> **STATUS: ARCHIVED (2026-07-28)** — Session bootstrap from when the gate was **64 green** (it is now 775). The Group-D milestone it describes is recorded in `docs/TASKS-DONE.md`, and its "method that works" orchestration loop has since been codified directly into `CLAUDE.md` §Subagents. Kept in place because a `.cs` comment points here; read `docs/TASKS-TODO.md` for the live queue instead.
+
+
 You are the **orchestrator** picking up this project in a fresh session with no prior chat history.
 This is your cold-start briefing. Read it fully, then read `CLAUDE.md` (rules), `DESIGN.md`
 (architecture + "Two futures"), and `TASKS.md` (work queue — the "Realism roadmap" + "Group D"

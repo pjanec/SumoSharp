@@ -86,8 +86,26 @@ IReadOnlyList<WallSegment> BoundarySegments { get; }
 ## 3. `IPedNavigation` — method semantics
 
 ```csharp
-IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal);
+IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces);
+IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces);
 ```
+
+Both members are **mandatory, with no 2-D-defaulting sibling** — there is no `FindPath(start, goal)`
+overload that drops `vertexSurfaces`, and `ElevationsAlong` has no default interface implementation.
+This is deliberate, not an oversight:
+
+- **Elevation is required, so an omitted height is a compile error, never a silent `z=0`.** A provider
+  that could skip `ElevationsAlong` would ship a 3-D net with every pedestrian rendered at sea level and
+  nothing would say so; making it mandatory forces each provider to state its own answer (a genuinely
+  flat provider returns all zeros in its *own* body, where that choice is visible in review) instead of
+  inheriting a default nobody chose.
+- **`vertexSurfaces` carries per-vertex lane/surface provenance so stacked walkable surfaces don't
+  collapse onto one height.** Under a footbridge, the bridge deck and the path beneath it occupy the
+  same `(X, Y)` in plan view; a nearest-surface lookup from the bare point alone is a coin toss, and a
+  ped walking underneath would get lifted onto the bridge. Threading the per-vertex surface id that
+  `FindPath` resolved each vertex against back into `ElevationsAlong` removes the ambiguity. A caller
+  that genuinely has no use for the ids discards them explicitly (`out _`) — visible in review, unlike a
+  quiet omission.
 
 - Returns an **ordered polyline** from (near) `start` to (near) `goal`, already **funnel/string-pulled
   to a smooth corridor** — i.e. a walkable-space shortest path, not a raw sequence of navmesh-cell
@@ -111,33 +129,41 @@ IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal);
 - **Determinism (binding, see §4 below): same `(start, goal)` → same returned polyline, vertex for
   vertex, run after run.**
 
-### 3a. The dynamic-blocker overload (P2-2)
+### 3a. The dynamic-blocker method, `FindPathAvoiding` (P2-2)
 
 The production SUMO-bake provider additionally exposes:
 
 ```csharp
-IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, IReadOnlySet<int>? blockedPolygonIndices);
+IReadOnlyList<Vec2>? FindPathAvoiding(Vec2 start, Vec2 goal, ISet<int>? blockedPolygonIndices);
+IReadOnlyList<Vec2>? FindPathAvoiding(
+    Vec2 start, Vec2 goal, ISet<int>? blockedPolygonIndices, out IReadOnlyList<int>? vertexSurfaces);
 ```
 
-(`SumoNavMesh.cs`; the no-blocker `FindPath(start, goal)` is defined in terms of this overload with
-`blockedPolygonIndices: null`.) This is **not** part of the `IPedNavigation` interface itself — it is
-an additive, provider-specific extension that `BlockerRegistry`/`RerouteDriver`
-(`src/Sim.Pedestrians/Navigation/BlockerRegistry.cs`, `RerouteDriver.cs`) consume when they know they
-are talking to a `SumoNavMesh` concretely, to route *around* a set of dynamic obstacles (parked cars,
-temporary blockages) by excluding the polygons those obstacles occlude from the path search. A
-production navmesh that wants to participate in P2-2-style dynamic rerouting has two options, in order
-of preference:
-1. Expose an equivalent overload/parameter on its own concrete type and adapt `RerouteDriver`'s
-   blocked-set consumer to call it (the registry already produces a provider-agnostic "which regions
-   are blocked" signal — `BlockerRegistry.BlockedPolygons()` — the adaptation is in how that signal is
-   threaded into the provider's own search, not in the registry).
+(`SumoNavMesh.cs`; `IPedNavigation.FindPath(start, goal, out vertexSurfaces)` itself is defined in
+terms of the second overload, called with `blockedPolygonIndices: null`.) **This is deliberately NOT an
+overload of `FindPath`** — it is a distinctly-named method, `FindPathAvoiding`, on `SumoNavMesh`'s own
+concrete type, not part of the `IPedNavigation` interface. It was renamed away from being a same-named
+`FindPath` overload specifically to fix a `CS1615` ambiguity: with a blocked-set overload sharing the
+name `FindPath`, the compiler bound a plain 3-argument `FindPath(a, b, out _)` call to the blocked-set
+overload (matching `out _` against `blockedPolygonIndices` positionally) instead of the intended
+`out vertexSurfaces` overload — a silent miscompile risk that a distinct name removes entirely.
+`BlockerRegistry`/`RerouteDriver` (`src/Sim.Pedestrians/Navigation/BlockerRegistry.cs`,
+`RerouteDriver.cs`) consume `FindPathAvoiding` when they know they are talking to a `SumoNavMesh`
+concretely, to route *around* a set of dynamic obstacles (parked cars, temporary blockages) by
+excluding the polygons those obstacles occlude from the path search. A production navmesh that wants to
+participate in P2-2-style dynamic rerouting has two options, in order of preference:
+1. Expose an equivalent method on its own concrete type (again, not an `IPedNavigation.FindPath`
+   overload) and adapt `RerouteDriver`'s blocked-set consumer to call it (the registry already produces
+   a provider-agnostic "which regions are blocked" signal — `BlockerRegistry.BlockedPolygons()` — the
+   adaptation is in how that signal is threaded into the provider's own search, not in the registry).
 2. Simulate the same effect at the `IWalkableSpace` boundary — e.g. temporarily marking the blocked
    region non-walkable and forcing a `FindPath` re-query — accepting the cost of whatever
    recomputation that requires internally.
-Either way, the **caller-visible contract stays exactly `IPedNavigation.FindPath(start, goal)`** — the
-reroute mechanism (registry, debounce/hysteresis in `RerouteDriver`) lives above the seam and does not
-require the interface itself to grow a blocker parameter; adding one is a convenience the bake
-provider took, not a requirement.
+Either way, the **caller-visible contract stays exactly `IPedNavigation.FindPath(start, goal, out
+vertexSurfaces)`** — the reroute mechanism (registry, debounce/hysteresis in `RerouteDriver`) lives
+above the seam and does not require the interface itself to grow a blocker parameter; adding
+`FindPathAvoiding` as a separate, differently-named method is a convenience the bake provider took, not
+a requirement.
 
 ## 4. Determinism requirement (binding, both interfaces)
 

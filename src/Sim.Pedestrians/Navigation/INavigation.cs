@@ -37,10 +37,26 @@ public readonly record struct WallSegment(Vec2 A, Vec2 B);
 public interface IPedNavigation
 {
     /// Find a path from <paramref name="start"/> to <paramref name="goal"/> as an ordered polyline of
-    /// waypoints that lies within walkable space (already funnel/string-pulled to a smooth corridor), or
-    /// <c>null</c> when the goal is unreachable. The first point is (near) <paramref name="start"/> and
-    /// the last is (near) <paramref name="goal"/>. Deterministic: the same inputs return the same path.
-    IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal);
+    /// The returned waypoints lie within walkable space (already funnel/string-pulled to a smooth
+    /// corridor); the first is (near) <paramref name="start"/> and the last is (near)
+    /// <paramref name="goal"/>.
+    /// Routes `start` -> `goal`, returning the waypoints AND, per waypoint, an OPAQUE identifier for
+    /// the walkable surface (lane / polygon / node) that produced it -- or <c>null</c> when the goal is
+    /// unreachable. Deterministic: the same inputs return the same path.
+    ///
+    /// PROVENANCE IS NOT OPTIONAL, and this is deliberately the ONLY routing entry point. Elevation
+    /// cannot be recovered from a bare 2-D point wherever surfaces STACK -- under a footbridge the
+    /// bridge and the path beneath it are the same point in plan view, so a nearest-surface lookup is a
+    /// coin toss and a ped walking underneath gets lifted onto the bridge. An overload that dropped the
+    /// provenance would let any call site re-introduce that silently; with one form the compiler makes
+    /// every caller decide what to do with it.
+    ///
+    /// A caller that genuinely has no use for the ids discards them explicitly (`out _`) -- visible in
+    /// review, unlike an omission.
+    ///
+    /// The ids are OPAQUE and PROVIDER-LOCAL: meaningless except to the instance that issued them, no
+    /// ordering, and only ever handed back to that same instance. Index-aligned with the returned path.
+    IReadOnlyList<Vec2>? FindPath(Vec2 start, Vec2 goal, out IReadOnlyList<int>? vertexSurfaces);
 
     /// W2 (docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md §4): the sidewalk half-width (metres) at each vertex of
     /// `path` -- the per-vertex clamp width the deterministic low-power weave rides within. Default: a safe
@@ -53,6 +69,35 @@ public interface IPedNavigation
         Array.Fill(widths, 0.5);
         return widths;
     }
+
+    /// docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4 (C2): the surface elevation (metres, the net's own
+    /// vertical datum) at each vertex of `path`, index-aligned with it -- the channel a pedestrian's
+    /// rendered height is interpolated from as it walks.
+    ///
+    /// Default: ALL ZEROS, so a provider with no elevation model (DotRecast, every test double) keeps
+    /// today's flat behaviour and needs no edit. Deliberately the same shape and the same rationale as
+    /// `HalfWidthsAlong` above -- this follows that precedent rather than inventing a second convention.
+    /// `SumoNavMesh` and `SumoRouteGraphNav` override it from the elevation channels
+    /// `PedNetworkParser` retains.
+    ///
+    /// OUTPUT-ONLY: the returned elevations are consumed at the render seam and by no steering, ORCA or
+    /// routing decision, which is what keeps every 2-D scenario bit-identical.
+
+    /// Per-vertex surface elevation (metres, the net's own vertical datum) along `path`, index-aligned
+    /// with it, using the provenance `FindPath` returned.
+    ///
+    /// NO DEFAULT IMPLEMENTATION, deliberately: a provider that silently inherited "all zeros" would
+    /// render its pedestrians at sea level on a 3-D net and nothing would say so. Implementing it is a
+    /// decision each provider has to make and state -- a genuinely flat provider returns zeros in its
+    /// OWN body, where that choice is visible.
+    ///
+    /// `vertexSurfaces` may be null when the caller derived `path` itself rather than routing it (a
+    /// re-anchored or spliced polyline); implementations then fall back to locating each point, which is
+    /// correct wherever surfaces do not overlap and ambiguous where they do.
+    ///
+    /// OUTPUT-ONLY: consumed at the render seam, never by steering, ORCA or routing, which is what keeps
+    /// every 2-D scenario bit-identical.
+    IReadOnlyList<double> ElevationsAlong(IReadOnlyList<Vec2> path, IReadOnlyList<int>? vertexSurfaces);
 }
 
 /// Tactical steering: turn a path + current pose into a PREFERRED velocity. This is the single point the

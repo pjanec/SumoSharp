@@ -1,6 +1,10 @@
 # Lane-change smoothing in the DR viewers — design
 
-**Status:** design (design-first; no code until agreed). **Scope:** the dead-reckoning viewers
+**Status:** implemented — `src/Sim.Viewer.Motion/DrClock.cs` implements exactly the mechanism proposed
+below: the two-bracketing-packet `Resolved` ctor (`SecondState`, ~line 96), the a→b blend fraction
+(`Blend`, assigned ~line 84 for the single-packet case and ~line 105 for the two-packet straddle case;
+consumed by the caller's Cartesian pose lerp per §4.2), and `IsLateralStraddle => SecondState.HasValue`
+(~line 128). **Scope:** the dead-reckoning viewers
 (`--mode loopback`, `--mode remote`) only. **Builds on:** `SUMOSHARP-VIEWER-DR-SMOOTHING.md`
 (the motion pipeline of record) — read §5 (DR pipeline) and §6.1 (arc-window straddle) first; this
 doc reuses that vocabulary and does **not** restate it. **Parity:** viewer-only, zero engine/golden

@@ -122,12 +122,29 @@ public readonly struct PedFreeKinematicRecord
 public readonly struct PathArcRecord
 {
     public PathArcRecord(VehicleHandle handle, double speed, double startTime, IReadOnlyList<Vec2> path)
+        : this(handle, speed, startTime, path, pathZ: null)
     {
-        Handle = handle; Speed = speed; StartTime = startTime; Path = path;
+    }
+
+    // C4 (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.6): the ADDITIVE overload carrying the path's
+    // per-vertex elevation. The 4-argument ctor above stays and simply passes null, so every existing
+    // construction site is untouched.
+    public PathArcRecord(
+        VehicleHandle handle, double speed, double startTime, IReadOnlyList<Vec2> path, IReadOnlyList<double>? pathZ)
+    {
+        Handle = handle; Speed = speed; StartTime = startTime; Path = path; PathZ = pathZ;
     }
 
     public VehicleHandle Handle { get; }
     public double Speed { get; }
     public double StartTime { get; }
     public IReadOnlyList<Vec2> Path { get; }
+
+    // Per-vertex elevation (metres), index-aligned with `Path`, or null when the source net is 2-D.
+    //
+    // NULL IS THE WIRE DECISION, not just a data one: the publisher emits the ORIGINAL frame kind 4
+    // whenever this is null, so a 2-D net's bytes are byte-for-byte what they were before elevation
+    // existed. Only a 3-D net pays the extra 4 B/point, on a record sent once per ped path lifetime on
+    // the durable topic -- never on the per-step hot path.
+    public IReadOnlyList<double>? PathZ { get; }
 }

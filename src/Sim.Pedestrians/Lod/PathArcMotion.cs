@@ -22,6 +22,17 @@ public static class PathArcMotion
 
     // Direction of the segment the walk currently sits on, times `speed` -- Vec2.Zero once clamped at
     // the final vertex (the agent has arrived and stopped).
+    // C3: elevation at the ped's arc position at `now`, from a per-vertex channel index-aligned with
+    // `path` (what IPedNavigation.ElevationsAlong returns). Same ArcLength + Walk the position uses, so
+    // the two are consistent by construction. 0.0 with a null channel.
+    public static double ElevationAt(
+        IReadOnlyList<Vec2> path, IReadOnlyList<double>? elevations, double startTime, double speed, double now)
+    {
+        var s = ArcLength(startTime, speed, now);
+        SampleAt(path, halfWidths: null, elevations, s, out _, out _, out var elevation);
+        return elevation;
+    }
+
     public static Vec2 VelocityAt(IReadOnlyList<Vec2> path, double startTime, double speed, double now)
     {
         var s = ArcLength(startTime, speed, now);
@@ -38,7 +49,30 @@ public static class PathArcMotion
     // (HeadlessIg.ReconstructSample -> the decoded PoseAt) call, so server==IG holds by construction.
     public static Vec2 SampleAt(
         IReadOnlyList<Vec2> path, IReadOnlyList<double>? halfWidths, double s, out Vec2 tangent, out double halfWidth)
+        => SampleAt(path, halfWidths, elevations: null, s, out tangent, out halfWidth, out _);
+
+    // docs/EXTERNAL-NET-LOADING-DESIGN.md §3.4 (C3): the same walk, additionally interpolating a
+    // per-vertex ELEVATION channel.
+    //
+    // Elevation rides the identical arc-length walk and the identical segment fraction `t` the position
+    // and half-width already use, which is the whole point: a ped's reported height cannot disagree with
+    // its reported position, because one traversal produces both. It is also why the remote (wire) and
+    // in-process surfaces agree -- both call THIS evaluator.
+    //
+    // `elevations` null (a 2-D net, or any caller that does not want it) => `elevation` is 0.0 and the
+    // returned position is bit-identical to the four-argument overload above, which now delegates here.
+    // Same "channel must be path.Count long" guard `halfWidths` uses -- a mismatched channel is ignored
+    // rather than indexed.
+    public static Vec2 SampleAt(
+        IReadOnlyList<Vec2> path,
+        IReadOnlyList<double>? halfWidths,
+        IReadOnlyList<double>? elevations,
+        double s,
+        out Vec2 tangent,
+        out double halfWidth,
+        out double elevation)
     {
+        elevation = 0.0;
         tangent = Vec2.Zero;
         halfWidth = 0.0;
 
@@ -50,6 +84,7 @@ public static class PathArcMotion
         if (path.Count == 1)
         {
             halfWidth = halfWidths is { Count: > 0 } ? halfWidths[0] : 0.0;
+            elevation = elevations is { Count: > 0 } ? elevations[0] : 0.0;
             return path[0];
         }
 
@@ -74,6 +109,11 @@ public static class PathArcMotion
                     halfWidth = halfWidths[i] + ((halfWidths[i + 1] - halfWidths[i]) * t);
                 }
 
+                if (elevations != null && elevations.Count == path.Count)
+                {
+                    elevation = elevations[i] + ((elevations[i + 1] - elevations[i]) * t);
+                }
+
                 return new Vec2(a.X + (seg.X * t), a.Y + (seg.Y * t));
             }
 
@@ -82,6 +122,7 @@ public static class PathArcMotion
 
         // clamped at the final vertex (arrived): tangent stays Zero, half-width is the last vertex's.
         halfWidth = halfWidths is { Count: > 0 } ? halfWidths[^1] : 0.0;
+        elevation = elevations is { Count: > 0 } ? elevations[^1] : 0.0;
         return path[^1];
     }
 

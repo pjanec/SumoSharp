@@ -45,15 +45,34 @@ public sealed record PedConnection(string AId, string BId);
 
 // A pedestrian-usable sidewalk lane on a normal (non-internal, non-crossing, non-walkingarea)
 // edge, i.e. a <lane allow="pedestrian" .../> child of an edge with no "function" attribute.
+//
+// `ShapeZ` is the OUTPUT-ONLY per-vertex elevation channel (metres), index-aligned with the 2-D shape
+// above and `null` on a 2-D net -- deliberately the same pattern, and the same discipline, as the
+// vehicle side's `Sim.Ingest.Lane.ShapeZ`: it is read by the RENDER seam only and by no routing,
+// steering, ORCA or ActivityTimeline decision anywhere. That is what keeps every committed 2-D scenario
+// bit-identical (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.2/§3.3). Null, never an empty array and never
+// zeros, so "this net has no elevation" is distinguishable from "this net is at sea level".
 public sealed record PedLane(
     string Id,
     string EdgeId,
     double Width,
-    IReadOnlyList<Vec2> Shape);
+    IReadOnlyList<Vec2> Shape,
+    IReadOnlyList<double>? ShapeZ = null);
 
 // A signalized-or-not pedestrian crossing: an edge with function="crossing". TlLogicId is set
 // only when the crossing's junction has a matching <tlLogic>, i.e. the crossing is
 // TLS-controlled (its lane carries a signal-link mapping via <connection tl="..." .../>).
+//
+// `ShapeZ` is the OUTPUT-ONLY per-vertex elevation channel (metres), index-aligned with the 2-D shape
+// above and `null` on a 2-D net -- deliberately the same pattern, and the same discipline, as the
+// vehicle side's `Sim.Ingest.Lane.ShapeZ`: it is read by the RENDER seam only and by no routing,
+// steering, ORCA or ActivityTimeline decision anywhere. That is what keeps every committed 2-D scenario
+// bit-identical (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.2/§3.3). Null, never an empty array and never
+// zeros, so "this net has no elevation" is distinguishable from "this net is at sea level".
+//
+// `OutlineZ` is the same channel for `Outline` (C1.SC4): the outline is what a consumer extrudes into a
+// crosswalk polygon, so a 3-D net's zebra would sit at z=0 without it. Index-aligned with `Outline`,
+// null when the outline is 2-D or absent.
 public sealed record PedCrossing(
     string Id,
     string JunctionId,
@@ -61,15 +80,25 @@ public sealed record PedCrossing(
     IReadOnlyList<Vec2> Shape,
     IReadOnlyList<Vec2> Outline,
     IReadOnlyList<string> CrossingEdges,
-    string? TlLogicId);
+    string? TlLogicId,
+    IReadOnlyList<double>? ShapeZ = null,
+    IReadOnlyList<double>? OutlineZ = null);
 
 // A walkingarea: an edge with function="walkingarea". The lane's shape is the walkable polygon
 // covering the junction corner.
+//
+// `PolygonZ` is the OUTPUT-ONLY per-vertex elevation channel (metres), index-aligned with the 2-D shape
+// above and `null` on a 2-D net -- deliberately the same pattern, and the same discipline, as the
+// vehicle side's `Sim.Ingest.Lane.ShapeZ`: it is read by the RENDER seam only and by no routing,
+// steering, ORCA or ActivityTimeline decision anywhere. That is what keeps every committed 2-D scenario
+// bit-identical (docs/EXTERNAL-NET-LOADING-DESIGN.md §3.2/§3.3). Null, never an empty array and never
+// zeros, so "this net has no elevation" is distinguishable from "this net is at sea level".
 public sealed record PedWalkingArea(
     string Id,
     string JunctionId,
     double Width,
-    IReadOnlyList<Vec2> Polygon);
+    IReadOnlyList<Vec2> Polygon,
+    IReadOnlyList<double>? PolygonZ = null);
 
 // An open walkable surface from walkable.add.xml (e.g. a plaza or parking-lot polygon) that SUMO
 // does not model as pedestrian infrastructure but the navmesh providers must still consume.

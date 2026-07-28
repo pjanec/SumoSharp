@@ -245,7 +245,7 @@ SUMO 1.20.0**, wired into `dotnet test`:
 
 The definitive acceptance run (spec §7) passed the no-cheating audit but found two aggregate-parity
 divergences. Per the owner's split, **Issue 1 (serve-path) is fixed here; Issue 2 (junction
-deadlock/jam-teleport, sumo-core) is delegated** to the core session (`docs/CORE-SESSION-ISSUE2-PROMPT.md`).
+deadlock/jam-teleport, sumo-core) is delegated** to the core session (`docs/archive/CORE-SESSION-ISSUE2-PROMPT.md`).
 
 **Issue 1 — a park-and-stay sink (`<stop parkingArea duration=100000>`) on a 2-lane edge (parkingArea
 on lane 0) wrongly "arrived"** because the car reached the parking edge on lane 1, never

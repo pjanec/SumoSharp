@@ -37,7 +37,7 @@ public sealed class PedReplicationReceiver
             // Sim.Replication.PathArcRecord has no separate "Time" field (only StartTime); every
             // publisher in this codebase calls PedPublisher.PublishPathArc with Time == StartTime (see
             // PedLodManager.AddPed / the demotion branch of Step), so StartTime doubles for both here.
-            _ig.Apply(new PathArcRecord((int)r.Handle.Index, r.StartTime, r.Path, r.StartTime, r.Speed));
+            _ig.Apply(new PathArcRecord((int)r.Handle.Index, r.StartTime, r.Path, r.StartTime, r.Speed, r.PathZ));
         }
 
         for (; _timelineCursor < _source.ActivityTimelines.Count; _timelineCursor++)

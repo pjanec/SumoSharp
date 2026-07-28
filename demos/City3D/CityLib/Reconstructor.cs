@@ -48,11 +48,36 @@ public readonly struct ReconstructedVehicle
 // CENTER (half a length behind the front), which is exactly what City3D's center-anchored box wants.
 public sealed class Reconstructor
 {
+    // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the SUMO->Godot placement frame. Required rather than
+    // defaulted so every construction site has to state its origin -- a car silently placed with the
+    // identity frame on a georeferenced net would render 90 km from the road it is driving on, and a
+    // default would let exactly that compile.
+    private readonly SumoGodotFrame _frame;
+
     private readonly DrClock _clock = new();
     private readonly KinematicReconstructor _recon = new() { CoarseFeed = true };
+
+    // Preallocated buffers for the PARALLEL per-vehicle pass (see Reconstruct). Grown only when the vehicle
+    // population exceeds capacity => no steady-state allocation on the render path.
+    private VehicleHandle[] _handleBuf = new VehicleHandle[512];
+    private IVehicleSampleHistory[] _histBuf = new IVehicleSampleHistory[512];
+    private ReconstructedVehicle[] _slotBuf = new ReconstructedVehicle[512];
+    private bool[] _keepBuf = new bool[512];
+
+    // Leave headroom for the render thread and the display driver -- this loop runs ON the render thread
+    // (same reasoning as A22's engine-side cap, and as CityLib.PedReconstructor's).
+    private readonly System.Threading.Tasks.ParallelOptions _carParallelOptions = new()
+    {
+        MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 4),
+    };
     private readonly List<ReconstructedVehicle> _scratch = new();
     private readonly Stopwatch _wall = Stopwatch.StartNew();
     private double _lastWallSec = -1.0;
+
+    public Reconstructor(SumoGodotFrame frame)
+    {
+        _frame = frame;
+    }
 
     // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent): the render-time instant THIS call
     // resolved vehicles against -- `_clock.RenderSim - delaySeconds` in the normal (wall-clock) path, or
@@ -76,8 +101,30 @@ public sealed class Reconstructor
     // (`LatestVehicleSampleTime - delay` via `ResolveAt`, the same deterministic seam IgBridge uses), never the
     // Stopwatch. That makes the whole pass a pure function of (packet stream, dt schedule) -- the only way to
     // assert determinism (identical transforms across two runs) without a wall clock to diverge.
+    // `renderSimClock`: the CALLER's own continuously-advancing render clock, in sim-time seconds. Supply it
+    // when the host already owns a render clock -- the threaded live-city path does
+    // (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §5 "Render clock": free-running by real `delta`, CLAMPED to the
+    // newest PUBLISHED sim time + one step). The query instant then becomes `renderSimClock - delaySeconds`,
+    // resolved via the same `ResolveAt` seam the deterministic path uses, so the vehicles ride the caller's
+    // clock instead of this class's private Stopwatch + rate fit.
+    //
+    // WHY this exists (measured on GPU, 2026-07-28): with the tick moved to a producer thread, cars kicked
+    // once per publish and then decelerated -- "caterpillar" motion, worse at higher density, while the frame
+    // loop itself was provably clean (16.7 ms p50, sim_ticks 0). Root cause: Stage 2 gave the PEDS the new
+    // clamped clock (`pedNow = _renderSimClock`) but left the CARS on `DrClock`, which fits its own wall<->sim
+    // rate from `LatestVehicleSampleTime`. Publishes now land at an arbitrary phase relative to frames, and at
+    // load the true sim rate drifts below real time, so that fit chases a moving target -- two clocks over two
+    // handoffs in one scene, which cannot stay in agreement. Sharing ONE clock is the fix.
+    //
+    // NOTE this is deliberately NOT `frameDtOverride`'s deterministic branch, which derives the instant as
+    // `LatestVehicleSampleTime - delay`: that only moves when a packet ARRIVES, so at 2 Hz it would freeze for
+    // ~0.5 s and then jump -- worse than the symptom it would be trying to cure.
     public IReadOnlyList<ReconstructedVehicle> Reconstruct(
-        IReplicationSource source, ILaneShapeSource lanes, double delaySeconds, float? frameDtOverride = null)
+        IReplicationSource source,
+        ILaneShapeSource lanes,
+        double delaySeconds,
+        float? frameDtOverride = null,
+        double? renderSimClock = null)
     {
         source.Pump();
 
@@ -93,14 +140,123 @@ public sealed class Reconstructor
         }
         else
         {
+            // Still pump the clock so its diagnostics (AvgSampleInterval, BackSteps, the rate fit) stay live
+            // and a later call without `renderSimClock` behaves exactly as before.
             _clock.Pump(source.LatestVehicleSampleTime);
             var nowWall = _wall.Elapsed.TotalSeconds;
             frameDt = _lastWallSec >= 0.0 ? (float)(nowWall - _lastWallSec) : 0f;
             _lastWallSec = nowWall;
-            LastQueryTime = _clock.RenderSim - delaySeconds;
+
+            if (renderSimClock is { } hostClock)
+            {
+                // Ride the caller's clock (see the header note). `frameDt` stays the measured wall delta --
+                // it drives the no-slip rear-axle drag, which wants real elapsed time, not sim time.
+                deterministicSampleT = hostClock - delaySeconds;
+                LastQueryTime = deterministicSampleT.Value;
+            }
+            else
+            {
+                LastQueryTime = _clock.RenderSim - delaySeconds;
+            }
         }
 
         _scratch.Clear();
+
+        // PARALLEL per-vehicle pass, but ONLY on the pure branch. Measured on GPU: car reconstruction was
+        // ~1.7 us/car => ~17 ms/frame at 10 000 cars, view-independent, and the largest reconstruction cost
+        // once peds were parallelised. Per-vehicle independent: `DrClock.ResolveAt` is PURE (verified -- no
+        // field writes), and the two pieces of per-vehicle state it feeds (`KinematicReconstructor
+        // ._lookAheadPrev`, `KinematicHeading._state`) are now ConcurrentDictionary, one handle per worker.
+        //
+        // GATED on `deterministicSampleT` because the OTHER branch calls `_clock.Resolve(...)`, whose purity
+        // I have NOT established -- it is the Stopwatch/rate-fit path used by the DDS and replay call sites.
+        // Those stay serial rather than being parallelised on an unverified assumption. The live-city viewer
+        // always supplies `renderSimClock`, so it always takes the parallel path.
+        //
+        // Snapshotting the history keys first is also defensive: it keeps the dictionary enumeration short
+        // instead of holding an enumerator across the whole heavy pass (cf. the HistoryView race fixed in
+        // LiveCitySim.SelfPumpVehicleBus).
+        if (deterministicSampleT is { } parallelSampleT)
+        {
+            var count = 0;
+            foreach (var kv in source.History)
+            {
+                if (count >= _handleBuf.Length)
+                {
+                    var cap = _handleBuf.Length * 2;
+                    Array.Resize(ref _handleBuf, cap);
+                    Array.Resize(ref _histBuf, cap);
+                    Array.Resize(ref _slotBuf, cap);
+                    Array.Resize(ref _keepBuf, cap);
+                }
+
+                _handleBuf[count] = kv.Key;
+                _histBuf[count] = kv.Value;
+                count++;
+            }
+
+            var handles = _handleBuf;
+            var hists = _histBuf;
+            var slots = _slotBuf;
+            var keep = _keepBuf;
+
+            System.Threading.Tasks.Parallel.For(0, count, _carParallelOptions, i =>
+            {
+                keep[i] = false;
+                var h = handles[i];
+                var hist = hists[i];
+                if (hist.Count == 0 || !source.Dims.TryGetValue(h, out var d))
+                {
+                    return;
+                }
+
+                DrClock.Resolved res;
+                try
+                {
+                    res = _clock.ResolveAt(hist, parallelSampleT, lanes);
+                }
+                catch (KeyNotFoundException)
+                {
+                    return; // lane geometry not arrived yet -- skip this vehicle this frame (as serial did)
+                }
+
+                var rr = _recon.Resolve(h, res, lanes, (d.Length, d.Width), frameDt);
+                if (!rr.Ok)
+                {
+                    return;
+                }
+
+                var (px, py, pz) = _frame.ToGodot(rr.CenterX, rr.CenterY, rr.Z);
+                var yaw = CoordinateTransform.NaviDegToGodotYawRad(rr.HeadingDeg);
+
+                var st = res.State with { Length = d.Length, Width = d.Width };
+                Span<int> upBuf = stackalloc int[UpcomingLanes.Count];
+                var un = res.Upcoming.CopyTo(upBuf);
+                if (un == 0)
+                {
+                    upBuf[0] = st.LaneHandle;
+                    un = 1;
+                }
+
+                var pitch = ComputePitchRad(lanes, st, upBuf[..un]);
+
+                slots[i] = new ReconstructedVehicle(
+                    h, px, py, pz, yaw, pitch, d.Length, d.Width, (float)rr.Speed);
+                keep[i] = true;
+            });
+
+            // Serial compaction in snapshot order -- the MultiMesh assigns instance index by position, so a
+            // reshuffled list would reshuffle which instance draws which car every frame.
+            for (var i = 0; i < count; i++)
+            {
+                if (keep[i])
+                {
+                    _scratch.Add(slots[i]);
+                }
+            }
+
+            return _scratch;
+        }
 
         Span<int> upcomingBuf = stackalloc int[UpcomingLanes.Count];
 
@@ -142,7 +298,7 @@ public sealed class Reconstructor
             // Feed the box the CENTER (not the front): City3D's box is centered on the point, so before this
             // fix it drew the body at the front reference (~half a length too far forward). r.CenterX/Y is the
             // true geometric center KinematicHeading tows behind the front, which lands the box correctly.
-            var (gx, gy, gz) = CoordinateTransform.SumoToGodot(r.CenterX, r.CenterY, r.Z);
+            var (gx, gy, gz) = _frame.ToGodot(r.CenterX, r.CenterY, r.Z);
             var yawRad = CoordinateTransform.NaviDegToGodotYawRad(r.HeadingDeg);
 
             // Pitch (tilt on ramps) still comes from the lane's own z-gradient along travel, walked down the

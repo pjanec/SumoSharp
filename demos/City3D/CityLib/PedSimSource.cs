@@ -82,7 +82,8 @@ public sealed class PedSimSource : IDisposable
 
         foreach (var (a, b) in candidates)
         {
-            var path = nav.FindPath(a, b);
+            // Explicit discard: this seeding pass builds no elevation channel.
+            var path = nav.FindPath(a, b, out _);
             if (path is { Count: >= 2 })
             {
                 var fwd = path.ToArray();

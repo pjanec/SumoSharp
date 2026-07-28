@@ -58,7 +58,7 @@ public class SubareaBoxBakeTests
         // corners of the 0,0 -> 800,800 box (their centroids are guaranteed to lie on walkable surface).
         var lo = polygons.OrderBy(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
         var hi = polygons.OrderByDescending(p => p.Centroid.X + p.Centroid.Y).First().Centroid;
-        var path = nav.FindPath(lo, hi);
+        var path = nav.FindPath(lo, hi, out _);
         Assert.True(path is { Count: >= 2 },
             $"navmesh could not path across the box from ({lo.X:F1},{lo.Y:F1}) to ({hi.X:F1},{hi.Y:F1})");
 

@@ -1,5 +1,8 @@
 # PEDESTRIAN-P8-3-POI-REQUEST.md — POI fields the ped demand needs from the sub-area OSM fetch
 
+> **STATUS: SUPERSEDED (2026-07-28)** — The initial field-spec request sent to the SumoData sub-area session for the POI data ped demand needed. **Superseded twice over:** `docs/PEDESTRIAN-PLANNING-INTENTS.md` §10 records the schema actually agreed (separate `pois.json`/`edge_fields.json`, a different field shape), and the delivered demo-city `pois/v2` shipped with yet another (`docs/SUMOSHARP-DEMO-CITY-REQUIREMENTS.md`). Kept in place (code-pinned); read the two successors for what the data really looks like.
+
+
 Reply to the SumoData sub-area session's offer: *"For P8-3 demand, tell us what POI fields you want and
 we'll extend the OSM fetch + share `deduce_weights.py`."* This is the field spec. It maps to the POI net-data
 schema in `PEDESTRIAN-LIVELINESS-DESIGN.md` §8 and the appearance-legitimacy gate in
