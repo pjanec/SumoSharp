@@ -491,9 +491,15 @@ throwaway probe. It also sizes A10 as a side effect. **This is the gate on all r
 - I reasoned the 840 m demo box "physically cannot host 20 000 peds (~28/m²)". **False.** With the fill
   fix the default net reaches **19 996 / 20 000 peds**. The 1391 ceiling was *purely* a fill-rate
   artifact. (Also: the net extent is **4758 m**, not 840 m — I had misread the crop as the net.)
-- Geneva was my candidate big net. **It is unusable for peds:** cars fill 4999/5000, but concurrent peds
-  plateau at **~40** regardless of fill time or spawn rate — that cut has essentially no pedestrian
-  infrastructure. Cars saturate at **3084/5000** on the default net (genuine gridlock, not fill rate).
+- Geneva was my candidate big net. I recorded it as "unusable for peds — plateaus at ~40 concurrent, no
+  pedestrian infrastructure". **⛔ THAT WAS WRONG — CORRECTED 2026-07-28 by the owner on GPU: Geneva
+  carries ~10 000 peds spread along its arterial streets.** The "~40" came from a short-run headless probe,
+  and **its own data contradicted the conclusion** (requesting 5 000 returned 1 216 and was still climbing)
+  — it was fill-rate-limited, not a capacity ceiling. I passed the claim on without reconciling that
+  inconsistency. **Lesson: a "plateau" asserted from short runs is not a plateau; check whether the series
+  is still rising before calling a ceiling.** Geneva's real blocker is unrelated to capacity — most of its
+  ped crowd renders at **z = 0** instead of ~400 m (see `TASKS-TODO.md`, the showstopper item).
+  Cars saturate at **3084/5000** on the default net (genuine gridlock, not fill rate).
   ⇒ **A12 (new): no committed scenario can host 5 000 cars AND 20 000 peds simultaneously.** Needs a
   purpose-built net (netgenerate grid with `--sidewalks.guess --crossings.guess`, committed under
   `scenarios/_bench/` like `city-3000`), or a Geneva re-cut with sidewalks. Until then the target

@@ -331,6 +331,32 @@ Everything in this cluster is **built, gated and pushed**; what is left is the o
 environment structurally cannot do. Design/tasks/tracker:
 `docs/EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md` (the follow-ups are **Stage E**, E1–E5).
 
+- [ ] **⛔ SHOWSTOPPER — most of the Geneva ped crowd renders at z = 0 (deep underground).** Owner,
+  on-GPU, 2026-07-28: Geneva's long arterial streets carry **~10 000 peds spread along them and spaced
+  well**, but **most of them sit at elevation 0** instead of Geneva's ~400 m, with only a few correctly on
+  the sidewalks at the right altitude. This is the single biggest blocker for the external-net viewer.
+  ⚠ **Correction to an earlier claim in this file's cluster and in the perf log: Geneva does NOT cap at
+  ~40 peds.** That number came from a short-run headless probe whose own data contradicted it (requesting
+  5 000 returned 1 216 and was still climbing); it was fill-rate-limited, not a net-capacity ceiling.
+  Geneva has usable ped infrastructure — treat ~10 k as the real figure.
+  - **Partially fixed already** (`789a4b8`): `HeadlessIg.ReconstructElevationAt` was reordered so
+    timeline-bearing peds — including ones **promoted** to high-power, which keep their timeline and
+    previously fell through to `return 0.0` — read the surface off the timeline channel. That fixed the
+    promoted high-power population only.
+  - **Still open: the low-power crowd** (the thousands). Working hypothesis, **not yet confirmed**: their
+    `ActivityTimeline` walk legs carry an **empty `Elevations` channel** on the RouteGraph (external-net)
+    path, so `HeadlessIg.TimelineElevationAt` finds no channel and returns `0.0`. If so the real fix is
+    upstream in the ped timeline elevation bake, not in `HeadlessIg`.
+  - **NEXT STEP IS AN INSTRUMENT, NOT A HYPOTHESIS** (CLAUDE.md measurement-discipline #2). Log, per ped:
+    `PedDrModel`, whether `Timeline.Elevations` / `PathZ` are populated, and the returned z — on the
+    Geneva cut. Two of my three attempts at this bug so far were reasoned rather than traced, and both
+    were incomplete. Files: `src/Sim.Pedestrians/Lod/{HeadlessIg,ActivityTimeline,ActivityTimelineWire,
+    PathArcMotion}.cs`, and wherever `WalkSegment.Elevations` is populated for RouteGraph nav vs the demo
+    Navmesh path. Background: `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md` §7.
+  - Note the perf interaction: widening that branch in `789a4b8` sends **more** peds through
+    `TimelineElevationAt`, which rescans the whole timeline + each leg polyline per ped per frame — so the
+    fix should land together with the single-scan cleanup noted in `LIVE-CITY-PERF-TRACKER.md` (V1).
+
 - [ ] **E5 — visual sign-off on a GPU, against the Geneva data.** *(needs a Windows desktop session; not
   doable here)* Every claim in this cluster is asserted **headlessly** — the terrain field reproduces
   each lane vertex's own height to **0.326 m** on `scenarios/_ped/georef_min` (27.5 m of relief, 693
@@ -357,6 +383,58 @@ environment structurally cannot do. Design/tasks/tracker:
   NuGet's global cache serves a **stale** package and City3D silently builds against an old engine.
   Always `rm -rf ~/.nuget/packages/sumosharp.*` before repacking — CLAUDE.md measurement-discipline #9's
   failure mode by a different mechanism.
+
+## Engine performance — coupled cars+peds live-city (overnight 2026-07-28)
+
+**Detail lives in `docs/LIVE-CITY-PERF-SESSION-LOG.md`** (append-only: goals, the harness with every
+command + why to run it, the measurement protocol, and one entry per attempt with BEFORE/AFTER numbers —
+including the NULLs and the failed hypotheses). Companions: `LIVE-CITY-PERF-{DESIGN,TRACKER}.md`.
+Threaded-tick work has its own doc: `LIVE-CITY-THREADED-TICK-DESIGN.md`.
+
+**Shipped overnight** (all gated: parity 775/4, bench `BF3794A4704BCD79` par==single, LiveCity 80/80,
+Pedestrians 317/317, city-3000 0-stuck + aggregate PASS; each paired-A/B'd with behavioural counters
+proven identical): target **5 000 cars + 20 000 peds now runs at ~114 ms/step, RTF ~4.4× at 2 Hz, with
+0/60 frames over 3× median** (was 11/60). Ped-only 20 k: 110.5 → 47.5 ms/step. Car-side allocation
+10.17 MB → 586 KB/step; coupled 264 → 48 MB/step; GC pause 9.0% → 2.5%.
+
+**NOT STARTED — open items, each one line + its log ID:**
+- [ ] **A19 · `MaxNeighbours` is uncapped — the largest remaining lever, but BEHAVIOURAL.** ORCA considers
+  *every* agent within 15 m (~283 at pocket density) where RVO2 ships a default of **10**; `orcaCrowdStep`
+  is still ~50% of wall on the ORCA-heavy scenario. Changes ped trajectories ⇒ must ship **opt-in, off by
+  default** (CLAUDE.md rule 3) with a behavioural argument, not just a speed number. **Owner decision.**
+- [ ] **A18 · attribute the residual allocation.** `engine.plan` ~520 B/car/step and `engine.execute`
+  ~370 B/car/step are **unexplained**. Note `PERF-ROADMAP.md`'s "the plan phase is allocation-free" claim
+  is **falsified for this host** (it was measured car-only with `CrowdSource` null). Do not guess — my
+  source-reasoned guesses went 0-for-3 before a gate bisection found the real cause.
+- [ ] **A21 · ped spawn is O(ped-graph size) per spawn**, and the graph scales with **junction count**. A
+  40×40 grid cost ~390 ms/step for ~12 spawns. **This is why a Geneva tick is 100–200 ms at only ~160
+  cars** — directly relevant to the viewer hiccup.
+- [ ] **A10 · `Engine._bestLanesCache` is silently defeated** in this host: `SpawnVehicle` mints a unique
+  `RouteId` per vehicle, so the memo never shares across vehicles and also **never shrinks** (unbounded
+  growth). Re-key on edge-sequence content — byte-identical by `ComputeBestLanes`' own signature (it takes
+  the edge list, never a route id). ⚠ **Also check first:** the key ignores `stopOverride`, which changes
+  the result — if any live caller passes it, the cache is returning **wrong values** today (a correctness
+  bug that outranks the perf work).
+- [ ] **A6 · `PedPublisher._events` is never cleared** — one heap record per sample/switch/heartbeat, for
+  every ped that ever lived, retained for the whole process lifetime. Unbounded gen2 growth. Consumers read
+  a cursor into it, so a drain design must update them together. (Stage 3 of the threaded-tick work covers
+  this.)
+- [ ] **A5 · per-step O(N) allocation in `PedLodManager.Step`** — `new List<int>(_peds.Keys)` +
+  `new Dictionary<int,Vec2>(N)` **every step** (~755 KB/step at 20 k peds). Reusable buffers; byte-identical
+  provided iteration order is untouched (ids are sorted ascending for determinism).
+- [ ] **A16 · `engine.insert` is O(pending × active)** — failed insertions are retried every step and each
+  retry runs `ResolveBestDepartLane`, which scans `ActiveVehicles()` (live because the host spawns with
+  `departBestLane: true`). **Saturation-only:** 15.8% of wall on the gridlocked demo net, 0.8% at the
+  target. Bites exactly when a user cranks density past capacity. Fix = per-edge memo invalidated on each
+  successful insertion (a plain within-step memo would *not* be byte-identical).
+- [ ] **A20 · sweep for other `stackalloc … : new …[]` thresholds.** This defect class produced the two
+  biggest wins of the night (17.4× and 5.5×): a threshold that silently stopped covering its caller's
+  runtime-sized span. Finding a third by accident would be luck, not method.
+- [ ] **A7 · pack ORCA's hot neighbour triple** (`pos`, `vel`, `radius` — read together, currently in three
+  separate arrays) onto one cache line. Only if it still dominates after A19. Note this is the **opposite**
+  of per-field SoA, which `PERF-HANDOVER.md` #4 measured and rejected for the car foe reads.
+- [ ] **A14 was a NULL** (ORCA `ScratchSet` pooling, −0.8%, reverted) and **ped region decomposition was
+  measured at 1.08× vs a 1.4× target** — do not re-attempt either.
 
 ## Viewer / demo bugs
 - [ ] **Raylib replay: scrubbing the timeline makes cars jerk/jump-back** and never recover. (task #10)
