@@ -99,7 +99,8 @@ dotnet test Traffic.sln -c Release                                   # expect 77
                                                                      #   (incl. Sim.Pedestrians.Tests 324/324)
 dotnet run --project src\Sim.Bench -c Release                        # expect hash BF3794A4704BCD79, par == single
 dotnet test tests\Sim.LiveCity.Tests -c Release                      # expect 90/90
-dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 187 pass / 3 fail (see §6)
+dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 190/190 (~2 m 20 s: its
+                                                                     #   render-loop tests are real-time paced)
 ```
 
 ---

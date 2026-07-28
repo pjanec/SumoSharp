@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -34,7 +35,22 @@ public class ReconstructorS2Tests
     public ReconstructorS2Tests(ITestOutputHelper output) => _output = output;
 
     private const int FramesPerTick = 3;
-    private const int FrameMillis = 15;
+
+    // Every scenario these tests drive has `step-length = 1` in its sumocfg, so ONE `sim.Tick()` advances the
+    // sim by a whole second. The wall-clock frame loop below therefore has to sleep dt/FramesPerTick to be
+    // what this class's header claims it is -- a REAL-TIME render loop.
+    //
+    // It used to sleep a hardcoded 15 ms, which drove the sim at ~22x real time, and that is not a detail:
+    // `DrClock` advances its render clock at WALL rate scaled by a fitted wall<->sim rate, and caps catch-up
+    // at `frameDt * simRate * 3` (a deliberate anti-jump guard, DrClock.cs:255) with `frameDt` clamped to
+    // 0.1 s. At 15 ms/frame that cap is 0.045 sim-s per frame against a feed of 0.333, so the render clock
+    // fell ~1 s behind the sample stream and never recovered inside a test's span. Measured consequence: the
+    // query instant sat ~0.95 s in the past, i.e. where the car was still approaching the stop line -- the
+    // stopped-pivot distance read 6.57 m instead of L/2 = 2.50, and the junction center read 1.01 m off the
+    // centreline instead of 0.13. Both are pure clock lag; the reconstructor was right the whole time.
+    private const double SimStepSeconds = 1.0;
+    private const int FrameMillis = (int)(SimStepSeconds * 1000 / FramesPerTick);
+
     private const float FixedDt = 1f / 60f;
     private const double Delay = 0.4;
 
@@ -83,7 +99,9 @@ public class ReconstructorS2Tests
         var behind = new List<double>();
         double length = 0;
 
-        for (var t = 0; t < 48; t++)
+        // 31 ticks: veh0 reaches the red at sim t ~26 and is released at ~30, so this covers the stop with
+        // margin. Kept as tight as the assertion allows because the loop is now real-time (see FrameMillis).
+        for (var t = 0; t < 31; t++)
         {
             sim.Tick();
             for (var f = 0; f < FramesPerTick; f++)
@@ -100,6 +118,17 @@ public class ReconstructorS2Tests
 
                     var si = Array.IndexOf(snap.Handles, v.Handle);
                     if (si < 0)
+                    {
+                        continue;
+                    }
+
+                    // ...and only while the SNAPSHOT is stopped too. The filter above is on the RECONSTRUCTED
+                    // speed, which is a pose from `Delay` seconds ago, while the front below is read from the
+                    // LIVE snapshot -- so on the frames right after the light turns green the car has already
+                    // pulled away in the snapshot while the reconstruction still shows it at rest. Those
+                    // frames measure the playout delay, not the pivot, and they dragged the max from 2.65 m
+                    // to 4.83 m. Comparing two instants requires both of them to satisfy the premise.
+                    if (snap.Speed[si] >= 0.05)
                     {
                         continue;
                     }
@@ -138,7 +167,11 @@ public class ReconstructorS2Tests
         double minZ = double.MaxValue, maxZ = double.MinValue, maxBackJump = 0;
         float? prevX = null;
 
-        for (var t = 0; t < 60; t++)
+        // 40 ticks, trimmed for the same reason as the other wall-clock loops: one tick is now one second of
+        // real time. This test already passed at the old 15 ms pacing -- its assertions (presence, no back
+        // jump, lateral span) survive clock lag -- but it is paced correctly here too, so the whole class
+        // exercises one honest render loop rather than two different ones.
+        for (var t = 0; t < 40; t++)
         {
             sim.Tick();
             for (var f = 0; f < FramesPerTick; f++)
@@ -216,7 +249,9 @@ public class ReconstructorS2Tests
         double? prevYaw = null;
         (float X, float Z)? prevPos = null;
 
-        for (var t = 0; t < 44; t++)
+        // 36 ticks covers the whole turn (measured: >90 deg of net yaw by then). Trimmed because the loop is
+        // real-time now -- one tick is one second of wall clock.
+        for (var t = 0; t < 36; t++)
         {
             sim.Tick();
             for (var f = 0; f < FramesPerTick; f++)
@@ -294,15 +329,30 @@ public class ReconstructorS2Tests
         var target = new VehicleHandle(0, 1);
         (float X, float Z)? prev = null;
         var prevStopped = false;
-        double maxCreep = 0;
-        var stoppedPairs = 0;
+        var creepSpeeds = new List<double>();
 
-        for (var t = 0; t < 48; t++)
+        // The frame duration is MEASURED, not assumed: `Thread.Sleep(333)` overshoots on a loaded box, and
+        // dividing by the nominal 0.333 s would then overstate the speed by however much it overshot -- a
+        // flakiness source built into the metric. A Stopwatch costs nothing here and removes it.
+        var frameWall = Stopwatch.StartNew();
+
+        // The creep metric is a SPEED, not a per-frame distance. It used to be `max per-frame metres < 0.12`,
+        // with the threshold reasoned from a 60 Hz loop ("~0.2 m at 13 m/s / 60 Hz") -- so the bound was
+        // frame-rate dependent while being written as an absolute. That only held at the old (wrong) 15 ms
+        // pacing by coincidence: at the correct dt/3 = 333 ms/frame the SAME physical hold covers 20x the
+        // distance per frame, and the test failed at 0.61 m/frame while the body was in fact settling at
+        // centimetres per second. Dividing by the frame's own duration makes the assertion mean what its
+        // comment always said, at any frame rate.
+
+        for (var t = 0; t < 31; t++)
         {
             sim.Tick();
             for (var f = 0; f < FramesPerTick; f++)
             {
                 Thread.Sleep(FrameMillis);
+                var frameSeconds = Math.Max(frameWall.Elapsed.TotalSeconds, 1e-3);
+                frameWall.Restart();
+                var snap = sim.Snapshot;
                 foreach (var v in recon.Reconstruct(sim.Source, sim.LocalLanes, Delay))
                 {
                     if (v.Handle != target)
@@ -310,24 +360,45 @@ public class ReconstructorS2Tests
                         continue;
                     }
 
-                    var stopped = v.Speed < 0.05f;
+                    // Stopped means stopped in BOTH the reconstruction and the snapshot -- same reasoning as
+                    // the pivot test's filter. The reconstructed speed alone admits the frames right after the
+                    // light turns green, where the body is legitimately accelerating away and its "creep" is
+                    // just motion (measured: 0.22 m/frame with this filter, 0.61 m/frame without it).
+                    var si = Array.IndexOf(snap.Handles, v.Handle);
+                    var stopped = v.Speed < 0.05f && si >= 0 && snap.Speed[si] < 0.05;
+
                     if (stopped && prevStopped && prev is { } pp)
                     {
-                        var d = Math.Sqrt((v.X - pp.X) * (v.X - pp.X) + (v.Z - pp.Z) * (v.Z - pp.Z));
-                        if (d > maxCreep) maxCreep = d;
-                        stoppedPairs++;
+                        var d = Math.Sqrt(((v.X - pp.X) * (v.X - pp.X)) + ((v.Z - pp.Z) * (v.Z - pp.Z)));
+                        creepSpeeds.Add(d / frameSeconds);
                     }
+
                     prev = (v.X, v.Z);
                     prevStopped = stopped;
                 }
             }
         }
 
-        _output.WriteLine($"stopped pairs={stoppedPairs} maxCreep={maxCreep:F4} m/frame");
-        Assert.True(stoppedPairs >= 5, $"expected the vehicle to sit stopped at the red for several frames, got {stoppedPairs}");
-        // Far below a driving car's per-frame travel (~0.2 m at 13 m/s / 60 Hz): the body holds at the stop
-        // (KinematicHeading's HoldSpeed) instead of creeping forward.
-        Assert.True(maxCreep < 0.12, $"vehicle crept {maxCreep:F4} m/frame while stopped (expected it to hold)");
+        creepSpeeds.Sort();
+        var maxCreep = creepSpeeds.Count > 0 ? creepSpeeds[^1] : 0.0;
+        var medianCreep = creepSpeeds.Count > 0 ? creepSpeeds[creepSpeeds.Count / 2] : 0.0;
+        _output.WriteLine(
+            $"stopped pairs={creepSpeeds.Count} creep max={maxCreep:F4} m/s median={medianCreep:F4} m/s "
+            + $"(frames measured, nominal {FrameMillis} ms)");
+
+        Assert.True(creepSpeeds.Count >= 5,
+            $"expected the vehicle to sit stopped at the red for several frames, got {creepSpeeds.Count}");
+
+        // Two bounds, because they catch different things. A driving car here does ~13 m/s, so a body that
+        // "holds at the stop" (KinematicHeading's HoldSpeed) must be an order of magnitude below that even on
+        // its worst frame -- that is the original bug this test was written for. The MEDIAN pins the steady
+        // state separately: a single settle frame as the smoother's 0.6 s time constant converges onto the
+        // stop is not creep, but sustained motion would be, and only the median can tell them apart.
+        Assert.True(maxCreep < 1.5,
+            $"vehicle crept at {maxCreep:F3} m/s while stopped (expected it to hold; a driving car is ~13 m/s)");
+        Assert.True(medianCreep < 0.2,
+            $"vehicle creeps CONTINUOUSLY at {medianCreep:F3} m/s while stopped -- a settle frame is fine, a "
+            + "steady drift is not");
     }
 
     // ---- determinism: the same scripted packet stream + fixed frame-dt schedule yields identical

@@ -60,21 +60,41 @@ step — every "done" is unverified until proven).
 
 | Suite | Result |
 | ----- | ------ |
-| `tests/Sim.LiveCity.Tests` | 80/80 pass |
-| `tests/Sim.Pedestrians.Tests` | 317/317 pass |
-| `demos/City3D/CityLib.Tests` | 176 pass / 3 fail, all **pre-existing** (see below) |
+| `tests/Sim.LiveCity.Tests` | 90/90 pass |
+| `tests/Sim.Pedestrians.Tests` | 324/324 pass |
+| `demos/City3D/CityLib.Tests` | **190/190** (the three `ReconstructorS2Tests` failures were test bugs — fixed, see below) |
 | `Traffic.sln` (parity) | 775 pass, 0 fail, 4 skip |
 | `Sim.Bench` determinism hash | `BF3794A4704BCD79`, par == single |
 
-The three `CityLib.Tests` failures (`ReconstructorS2Tests.Reconstructor_StoppedVehicle_DoesNotCreep`,
-`…_CenterIsHalfLengthBehindSnapshotFront`, `…_JunctionTurn_FollowsConnectingLaneArc_Smoothly`) were
-confirmed failing on a clean worktree at the pre-change commit `7985647`, and **re-confirmed** at
-`4bf36e5` (146/3/149 — identical counts to the post-change run) after clearing the stale
-`~/.nuget/packages/sumosharp.*` entries, which had been masking them. They are vehicle-reconstructor
-tests (stopped-vehicle pivot, junction-arc following), unrelated to this work, and are left as found
-rather than silently retuned. Their messages are concrete enough to be worth a separate task: center
-sitting 6.484 m behind the front bumper where L/2 = 2.50 m is expected, 0.1250 m/frame creep while
-stopped, and 0.996 m of stray off the connecting-lane centreline through a turn.
+### The three `ReconstructorS2Tests` failures — FIXED, and they were TEST bugs
+
+They were long-standing (confirmed failing on clean worktrees at `7985647` and `4bf36e5`), masked by the
+stale-NuGet-cache trap below, and initially left as found rather than retuned — correctly, because
+retuning a threshold to make a red test green is how a real defect gets buried. Traced instead, and all
+three turned out to be assertions that did not measure what their own comments claimed:
+
+1. **Wrong pacing** (root cause of two of the three). The wall-clock frame loop slept a hardcoded 15 ms,
+   but every scenario it drives has `step-length = 1` — one `Tick()` is a whole second, so the loop ran
+   the sim at **~22× real time**. `DrClock` advances the render clock at *wall* rate × a fitted wall↔sim
+   rate, capping catch-up at `frameDt · simRate · 3` (`DrClock.cs:255`, a deliberate anti-jump guard)
+   with `frameDt` clamped to 0.1 s; at 15 ms/frame that is 0.045 sim-s/frame against a 0.333 feed, so the
+   clock fell ~1 s behind and never recovered within a test's span. Sleeping `dt / FramesPerTick` moved
+   the stopped-pivot median from **6.57 m to 2.49 m** (L/2 = 2.50) and the junction stray from **1.01 m to
+   0.13 m** (bound 0.6). **The reconstructor was correct throughout** — this was measurement error.
+2. **Stoppedness filtered on the wrong side.** Both stopped-vehicle tests filtered on the *reconstructed*
+   speed (a pose from `Delay` seconds ago) while comparing against the *live* snapshot, so the frames just
+   after the light turned green — car already pulling away in the snapshot, still at rest in the
+   reconstruction — counted as "stopped". Worth 4.83 m of the pivot max and 0.61 m/frame of the creep max.
+3. **A frame-rate-dependent threshold written as an absolute.** Creep was bounded as `max per-frame metres
+   < 0.12`, reasoned from a 60 Hz loop; at the correct 333 ms pacing the same physical hold covers 20× the
+   distance. It is a **speed** now, divided by the frame's own measured Stopwatch duration (not the nominal
+   sleep, which overshoots under load and would inflate the number), with max < 1.5 m/s catching the gross
+   bug the test was written for (a driving car is ~13 m/s) and median < 0.2 m/s separately pinning the
+   steady state — one settle frame as the 0.6 s smoothing constant converges is not creep, and only the
+   median distinguishes them. Measured: max 0.53, median 0.035.
+
+**Cost, since it is not free:** the wall-clock loops are real-time now, so this suite went from **28 s to
+2 m 18 s**. Tick counts were trimmed to the minimum each assertion needs (48→31, 44→36, 60→40).
 
 > **Repacking caveat.** `demos/City3D/build.sh --pack-only` writes `SumoSharp.*.0.1.0.nupkg` at a
 > version that never changes, so NuGet's global cache will happily serve a **stale** package and the

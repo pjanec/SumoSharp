@@ -9,9 +9,10 @@ Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **775/4** with all 66
 `Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
 (⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
 you will test stale code). `Sim.Pedestrians.Tests` = **324/324**. `demos/City3D/CityLib.Tests` (also not in
-the sln) = **187 pass / 3 fail**, the three being the documented pre-existing `ReconstructorS2Tests`
-vehicle-reconstructor bugs — and ⚠ **clear `~/.nuget/packages/sumosharp.*` before repacking City3D**, or
-the version-pinned local feed serves a stale engine and you measure code you are not looking at.
+the sln) = **190/190** — and ⚠ **clear `~/.nuget/packages/sumosharp.*` before repacking City3D**, or the
+version-pinned local feed serves a stale engine and you measure code you are not looking at. That suite
+takes ~2 m 20 s because its render-loop tests are paced in REAL TIME (they drive `step-length = 1`
+scenarios and `DrClock` tracks wall time — see `ReconstructorS2Tests.FrameMillis`).
 
 > **The bench hash moved with PR #13** (`D96213B7BB4021A7` → `BF3794A4704BCD79`) because the seven
 > junction/overlap gates now default **ON**. Verified attributable by stashing only the `Engine` defaults and
@@ -31,7 +32,7 @@ the version-pinned local feed serves a stale engine and you measure code you are
 | ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle-bylitj` | **STARTED** | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored) + #6 (idle clustering). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side surface**. Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`** |
 | F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **MERGED to main (PR #13)** | junction overlap + gridlock + **junction DISCHARGE**. Seven junction/overlap gates now default **ON**; the arm-14 four-way circular wait is fixed; the density-diff harness (vs *honest* SUMO) is in. Discharge is measured but NOT fixed — next step is a per-vehicle SUMO-oracle trace, see `F3-SESSION-LOG.md` §6. Docs: `F3-SESSION-LOG.md` · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — merged (PR #11)** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` · fixture + tests. Detail: `TASKS-DONE.md` → "Arbitrary road-net import" |
-| external-net viewer / 3-D elevation + engine perf + threaded tick | `claude/handoff-docs-implementation-pmdu9z` | **PR CANDIDATE for main** — code done, gated, and Stage 2 GPU-verified | arbitrary-net loading in City3D (`NetPath`/`ForSumocfg`), float recenter, live density dials, ped elevation end-to-end, lane provenance, **z made mandatory** (breaking), baked **terrain field**; **coupled cars+peds engine perf** (5 k + 20 k at ~114 ms/step, RTF ~4.4×, alloc 17.4×/5.5× down); **threaded engine tick** (Stages 1–3 + A22) with the render-clock and self-pump fixes the GPU run required; **parallel car+ped reconstruction** and road-mesh tiling in the viewer. Gate: parity **775/4**, bench `BF3794A4704BCD79` par==single, `Sim.Pedestrians.Tests` **324/324**, `Sim.LiveCity.Tests` **90/90**, `CityLib.Tests` **187 pass / 3 pre-existing**. GPU: 3 858 cars + 20 726 peds, **0/2000 spikes**, p99 = 1.20× p50. Docs: **`EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md`** · **`LIVE-CITY-PERF-{DESIGN,TRACKER,SESSION-LOG}.md`** · **`LIVE-CITY-THREADED-TICK-DESIGN.md`** (§8 = what actually landed). GPU sign-off **DONE** (owner) for both halves. Open items below: Geneva low-power ped z=0 (downgraded — the target IG ground-clamps), three unexercised §8.2 GPU items. |
+| external-net viewer / 3-D elevation + engine perf + threaded tick | `claude/handoff-docs-implementation-pmdu9z` | **PR CANDIDATE for main** — code done, gated, and Stage 2 GPU-verified | arbitrary-net loading in City3D (`NetPath`/`ForSumocfg`), float recenter, live density dials, ped elevation end-to-end, lane provenance, **z made mandatory** (breaking), baked **terrain field**; **coupled cars+peds engine perf** (5 k + 20 k at ~114 ms/step, RTF ~4.4×, alloc 17.4×/5.5× down); **threaded engine tick** (Stages 1–3 + A22) with the render-clock and self-pump fixes the GPU run required; **parallel car+ped reconstruction** and road-mesh tiling in the viewer. Gate: parity **775/4**, bench `BF3794A4704BCD79` par==single, `Sim.Pedestrians.Tests` **324/324**, `Sim.LiveCity.Tests` **90/90**, `CityLib.Tests` **190/190**. GPU: 3 858 cars + 20 726 peds, **0/2000 spikes**, p99 = 1.20× p50. Docs: **`EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md`** · **`LIVE-CITY-PERF-{DESIGN,TRACKER,SESSION-LOG}.md`** · **`LIVE-CITY-THREADED-TICK-DESIGN.md`** (§8 = what actually landed). GPU sign-off **DONE** (owner) for both halves. Open items below: Geneva low-power ped z=0 (downgraded — the target IG ground-clamps), three unexercised §8.2 GPU items. |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
 not a repo-wide board; other `claude/*` branches are not tracked here.*
@@ -369,15 +370,36 @@ environment structurally cannot do. Design/tasks/tracker:
       `out _`; the contract's success condition said they would compile unedited. Owner's call, reasoning
       in `EXTERNAL-NET-VIEWER-DESIGN.md` §4.1.1. No conflict risk remains.
 
-- [ ] **Three `CityLib.Tests` failures are real, pre-existing, and were being MASKED** — worth their own
-  task. `ReconstructorS2Tests`: stopped car's center sits **6.484 m** behind the front bumper where
-  L/2 = 2.50 m is expected; **0.1250 m/frame** creep while stopped; **0.996 m** of stray off the
-  connecting-lane centreline through a turn. Confirmed failing on a clean worktree at `4bf36e5`. They
-  are vehicle-reconstructor bugs, unrelated to elevation, and may be visible on screen during E5.
-  ⚠ **Why they were invisible:** `demos/City3D/build.sh --pack-only` always writes version `0.1.0`, so
-  NuGet's global cache serves a **stale** package and City3D silently builds against an old engine.
-  Always `rm -rf ~/.nuget/packages/sumosharp.*` before repacking — CLAUDE.md measurement-discipline #9's
-  failure mode by a different mechanism.
+- [x] **The three `CityLib.Tests` `ReconstructorS2Tests` failures — FIXED. They were TEST bugs, not
+      reconstructor bugs.** Traced rather than reasoned about, and the trace is worth keeping because all
+      three had the same shape: the assertion did not measure what its own comment said.
+      1. **Wrong pacing (the root cause of two of them).** The wall-clock frame loop slept a hardcoded
+         **15 ms**, but every scenario it drives has `step-length = 1`, so one `sim.Tick()` is a whole
+         second — the loop ran the sim at **~22× real time**. `DrClock` advances its render clock at *wall*
+         rate scaled by a fitted wall↔sim rate and caps catch-up at `frameDt · simRate · 3` (`DrClock.cs:255`,
+         a deliberate anti-jump guard) with `frameDt` clamped to 0.1 s. At 15 ms/frame that cap is 0.045
+         sim-s/frame against a 0.333 feed, so the clock fell ~1 s behind and never recovered. Measured:
+         stopped-pivot **6.57 m → 2.49 m** (L/2 = 2.50) and junction stray **1.01 m → 0.13 m** purely by
+         sleeping `dt / FramesPerTick`. **The reconstructor was correct the whole time.**
+      2. **Stoppedness filtered on the wrong side.** Both stopped-vehicle tests filtered on the
+         *reconstructed* speed — a pose from `Delay` seconds ago — while comparing against the *live*
+         snapshot. So the frames right after the light turns green, where the car has already pulled away in
+         the snapshot, were admitted as "stopped". Worth 4.83 m of the pivot max and 0.61 m/frame of the
+         creep max. Comparing two instants needs both to satisfy the premise.
+      3. **A frame-rate-dependent threshold written as an absolute.** The creep bound was `max per-frame
+         metres < 0.12`, reasoned from a 60 Hz loop ("~0.2 m at 13 m/s / 60 Hz") — so at the correct 333 ms
+         pacing the same physical hold covers 20× the distance and it failed at 0.61 while the body was
+         settling at centimetres per second. Now a **speed**, measured against the frame's own Stopwatch
+         duration (not the nominal sleep, which overshoots under load), with two bounds: max < 1.5 m/s
+         catches the original gross bug (a driving car is ~13 m/s), median < 0.2 m/s separately pins the
+         steady state, because one settle frame as the 0.6 s smoothing constant converges is not creep and
+         only the median can tell them apart. Measured: max 0.53, median 0.035.
+      **Cost, stated because it is not free:** the wall-clock loops are real-time now, so `CityLib.Tests`
+      went from **28 s to 2 m 18 s**. Tick counts were trimmed to the minimum each assertion needs
+      (48→31, 44→36, 60→40). `CityLib.Tests` is **190/190**.
+      ⚠ These failures had been **masked** for an unknown period: `demos/City3D/build.sh` writes
+      `SumoSharp.*.0.1.0.nupkg` at a version that never changes, so NuGet's global cache served a stale
+      engine. Always clear `~/.nuget/packages/sumosharp.*` before repacking.
 
 ## Viewer: decouple the engine tick from the render thread (owner will execute Stages 2–3 later)
 
