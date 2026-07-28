@@ -797,14 +797,47 @@ Ped-only 20 000: **110.5 → 47.5 ms/step (2.33×)**. Car-only 500: alloc **10.1
 
 ### Remaining known targets (measured, ranked)
 
-- **A16 · `engine.insert` = 15.8% of wall + 1 546 MiB (6.3% alloc)** at 3 009 cars — unexplained; the car
-  population is at its cap during the measured window so few departures should occur. Next up.
+- **A16 · `engine.insert` = 15.8% of wall + 1 546 MiB (6.3% alloc)** — **DIAGNOSED (orchestrator, by
+  reading; NOT yet measured or fixed).** It is an **O(pending × active) per-step scan** — the same shape as
+  `PERF-ROADMAP.md`'s L2 finding (`FindFoeVehicle`/KeepClear, where indexing gave ~44×):
+  - `InsertDepartingVehicles` (`Engine.cs`) rebuilds `candidates` by scanning **all** `_vehicles` each step,
+    and a vehicle that fails insertion stays `!Inserted`, so it is **retried every step**. On a saturated
+    net the pending backlog is large (≈1 500 here: ~4 500 spawn attempts over the fill against a 3 000 cap).
+  - For **every** pending candidate, **before** any cheap blocked-lane check, the loop resolves
+    `route`/`edge` (two string-keyed dict lookups) and then `ResolveBestDepartLane`, which contains
+    `foreach (var other in ActiveVehicles())` — an **O(active)** occupancy scan.
+  - It is live in this host: `LiveCitySim.cs:1021` spawns with **`departBestLane: true`** ⇒ SUMO's
+    `departLane="best"` ⇒ the `Best` branch, not the cheap `Given` literal. (`CLAUDE.md` rule 3 satisfied:
+    writer, reader, and the reader's caller all checked.)
+  - ⇒ ~1 500 pending × ~3 000 active ≈ 4.5 M ops/step, matching the observed ~60 ms/step.
+  - **Fix design — memoize `ResolveBestDepartLane` per edge WITHIN the insertion loop, and invalidate the
+    whole memo on every SUCCESSFUL insertion.** A naive within-step memo would NOT be byte-identical,
+    because each successful insertion mutates occupancy that `ResolveBestDepartLane` reads — but at
+    saturation the overwhelming majority of attempts FAIL, so an invalidate-on-success memo keeps a high hit
+    rate while remaining provably exact. Candidates share a small set of spawn edges here, so hits should
+    dominate. **Measure before shipping** (my mechanism guesses went 0-for-3 earlier tonight).
 - **A12 · no scenario can host the TARGET** (5 000 cars + 20 000 peds together). Demo net gridlocks at
   ~3 084 cars; Geneva has no ped infrastructure (~40 peds). Needs a purpose-built committed bench net.
   **Without this the target is unmeasurable and every coupled number is a proxy.**
 - **A17 · `carYieldMetric` = 4.7% of wall** with cars present (the O(on-crossing peds × cars) structure
   left deliberately unrestructured in B1). Fix by indexing slow cars spatially once per step.
 - **A18 · residual 47.9 MB/step** — where is it now? Re-attribute with `--profile` before guessing.
+- **A19 · `MaxNeighbours` is UNCAPPED — potentially the single largest remaining lever, but BEHAVIOURAL.**
+  `OrcaCrowd.MaxNeighbours` defaults to **0 = unlimited** (`OrcaCrowd.cs:189-197`) and `PedLodManager` never
+  sets it, so **every** agent within the 15 m `NeighbourDist` contributes an ORCA half-plane. At the measured
+  pocket density that is ~283 neighbours per agent, whereas **RVO2 itself ships a default of 10**. Since
+  `ped.orcaCrowdStep` is still ~50% of wall *after* A15 fixed its allocation, capping neighbours is plausibly
+  a multiple-× win on the dominant phase — ORCA's own literature treats nearest-k as standard, not a
+  degradation.
+  **BUT it changes ped trajectories, so it is NOT byte-identical** ⇒ `CLAUDE.md` rule 3 requires it ship as
+  an **opt-in flag, OFF by default**, with a behavioural argument (crowd flow / no interpenetration /
+  arrival equivalence), not just a speed number. Note `GatherAgentNeighbours` already implements the exact
+  RVO2 `insertAgentNeighbor` nearest-k path when `maxN > 0`, so the code exists and is untested only in the
+  sense that production never sets it. Prototype, measure, and report to the owner as an available trade —
+  do not silently turn it on.
+- **A20 · grep every remaining `stackalloc … : new …[]` threshold in the codebase.** Two of tonight's biggest
+  wins (A13, A15) were this exact defect class: a threshold that silently stopped covering its caller's
+  runtime-sized span. This should be a one-off sweep, not discovered a third time by accident.
 
 ---
 
