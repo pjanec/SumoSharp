@@ -50,6 +50,17 @@ public partial class Main : Node3D
 
     // Dark asphalt (design "Roads": "Dark asphalt material") -- one shared material, every road
     // MeshInstance3D reuses it (a single StandardMaterial3D resource, not one per lane).
+    // Road-geometry merge granularity (see BuildRoadMeshesFromRibbons). The trade-off is draw calls vs
+    // frustum-culling resolution: one mesh for the whole net would be 1 draw call but would never cull, so a
+    // close-up view would still submit all of Geneva. 800 m keeps a city-scale view culling usefully while
+    // collapsing a 28 276-lane net to a few hundred meshes.
+    private const float RoadTileSizeMetres = 800f;
+
+    // Reused MultiMesh instance-buffer scratch (see UpdatePeds/UpdateCars). Sized to InstanceCount * 16 and
+    // reallocated only when that high-water mark moves => no per-frame allocation.
+    private float[] _pedBufferScratch = System.Array.Empty<float>();
+    private float[] _carBufferScratch = System.Array.Empty<float>();
+
     private static readonly Color AsphaltColor = new(0.08f, 0.085f, 0.09f);
 
     // docs/LIVE-CITY-VISUALS-NOTES.md "Sidewalks" row / DESIGN-live-city-2d-viz.md §2 layer 2b -- a
@@ -3439,6 +3450,21 @@ public partial class Main : Node3D
         var laneCount = 0;
         var pedLaneCount = 0;
 
+        // PERF: MERGE lanes into spatial TILES instead of one MeshInstance3D per lane.
+        //
+        // Why: a Geneva cut is 28 276 lanes, so the old one-node-per-lane emit produced 28 276 individually
+        // culled MeshInstance3D draw calls. Measured on GPU by the owner: FPS tracked how much of the net was
+        // in frustum -- 25 fps looking steeply down at a small area, 17 fps low and flat, 12 fps with all of
+        // Geneva in view at 10 000 cars + 30 000 peds. That view-DEPENDENCE is the tell: car/ped MultiMeshes
+        // are culled as ONE object each and reconstruction is view-independent, so neither can vary with the
+        // camera -- only the per-lane road nodes can. Merging by tile collapses the draw calls ~100x while
+        // KEEPING useful frustum culling (a tile is dropped whole when off-screen), which a single merged
+        // mesh for the whole net would have thrown away.
+        //
+        // Bucketed by (tile, material): the two materials cannot share a surface, and splitting them here is
+        // what keeps sidewalk/asphalt colouring identical to the per-lane version.
+        var buckets = new Dictionary<(int Tx, int Tz, bool Ped), (List<Vector3> V, List<Vector3> N, List<int> I)>();
+
         foreach (var (handle, mesh) in perLane)
         {
             if (mesh.Vertices.Length == 0)
@@ -3447,16 +3473,36 @@ public partial class Main : Node3D
                 continue;
             }
 
+            var isPed = pedByHandle is not null && pedByHandle.TryGetValue(handle, out var pedFlag) && pedFlag;
+            if (isPed)
+            {
+                pedLaneCount++;
+            }
+
+            // Tile key from the lane's FIRST vertex: a lane is short relative to the tile, so keeping a lane
+            // whole in one tile (rather than splitting its triangles across tiles) keeps the merge trivial and
+            // the seams invisible. Worst case a lane overhangs its tile's bounds slightly, which only makes
+            // that tile's AABB marginally larger -- it cannot drop geometry.
+            var tx = Mathf.FloorToInt(mesh.Vertices[0] / RoadTileSizeMetres);
+            var tz = Mathf.FloorToInt(mesh.Vertices[2] / RoadTileSizeMetres);
+            var key = (tx, tz, isPed);
+            if (!buckets.TryGetValue(key, out var bucket))
+            {
+                bucket = (new List<Vector3>(), new List<Vector3>(), new List<int>());
+                buckets[key] = bucket;
+            }
+
+            // Index offset: merged surfaces must have every lane's indices rebased onto the running vertex
+            // count of ITS bucket, or the triangles reference the wrong lane's vertices.
+            var baseIndex = bucket.V.Count;
             var vertexCount = mesh.Vertices.Length / 3;
-            var vertices = new Vector3[vertexCount];
-            var normals = new Vector3[vertexCount];
             for (var i = 0; i < vertexCount; i++)
             {
                 var vx = mesh.Vertices[i * 3 + 0];
                 var vy = mesh.Vertices[i * 3 + 1];
                 var vz = mesh.Vertices[i * 3 + 2];
-                vertices[i] = new Vector3(vx, vy, vz);
-                normals[i] = new Vector3(mesh.Normals[i * 3 + 0], mesh.Normals[i * 3 + 1], mesh.Normals[i * 3 + 2]);
+                bucket.V.Add(new Vector3(vx, vy, vz));
+                bucket.N.Add(new Vector3(mesh.Normals[i * 3 + 0], mesh.Normals[i * 3 + 1], mesh.Normals[i * 3 + 2]));
 
                 min.X = Mathf.Min(min.X, vx);
                 min.Y = Mathf.Min(min.Y, vy);
@@ -3466,34 +3512,45 @@ public partial class Main : Node3D
                 max.Z = Mathf.Max(max.Z, vz);
             }
 
+            foreach (var idx in mesh.Indices)
+            {
+                bucket.I.Add(baseIndex + idx);
+            }
+
+            laneCount++;
+        }
+
+        var tileCount = 0;
+        foreach (var (key, bucket) in buckets)
+        {
+            if (bucket.I.Count == 0)
+            {
+                continue;
+            }
+
             var arrays = new Godot.Collections.Array();
             arrays.Resize((int)Mesh.ArrayType.Max);
-            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
-            arrays[(int)Mesh.ArrayType.Index] = mesh.Indices;
+            arrays[(int)Mesh.ArrayType.Vertex] = bucket.V.ToArray();
+            arrays[(int)Mesh.ArrayType.Normal] = bucket.N.ToArray();
+            arrays[(int)Mesh.ArrayType.Index] = bucket.I.ToArray();
 
             var arrayMesh = new ArrayMesh();
             arrayMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
-            var isPed = pedByHandle is not null && pedByHandle.TryGetValue(handle, out var pedFlag) && pedFlag;
-            if (isPed)
-            {
-                pedLaneCount++;
-            }
-
             var instance = new MeshInstance3D
             {
                 Mesh = arrayMesh,
-                Name = $"Lane_{handle}",
+                Name = $"RoadTile_{key.Tx}_{key.Tz}_{(key.Ped ? "walk" : "road")}",
             };
-            instance.SetSurfaceOverrideMaterial(0, isPed ? concreteMaterial : asphaltMaterial);
+            instance.SetSurfaceOverrideMaterial(0, key.Ped ? concreteMaterial : asphaltMaterial);
             AddChild(instance);
-            laneCount++;
+            tileCount++;
         }
 
         GD.Print(
-            $"Main: built {laneCount} road ribbon mesh(es) from {totalLaneCount} lane(s) " +
-            $"({pedLaneCount} sidewalk/concrete).");
+            $"Main: built {laneCount} road ribbon(s) from {totalLaneCount} lane(s) " +
+            $"({pedLaneCount} sidewalk/concrete), MERGED into {tileCount} tile mesh(es) " +
+            $"at {RoadTileSizeMetres:F0}m -- draw calls {laneCount} -> {tileCount}.");
 
         if (laneCount == 0)
         {
@@ -4179,6 +4236,19 @@ public partial class Main : Node3D
         _carHandles.Clear();
         _carWorldPositions.Clear();
 
+        // PERF: one bulk `Buffer` assignment instead of 2 marshalled calls per car -- same change as
+        // UpdatePeds (see its remarks for the layout and why the array is sized to InstanceCount). Cars DO
+        // carry a heading, so the basis is built the same way as before (ScaledLocal, R*S) and its columns are
+        // written into the 3x4 row-major block; the maths is unchanged, only how it reaches Godot.
+        const int stride = 16;
+        var need = _carMultiMesh.InstanceCount * stride;
+        if (_carBufferScratch.Length != need)
+        {
+            _carBufferScratch = new float[need];
+        }
+
+        var buf = _carBufferScratch;
+
         for (var i = 0; i < vehicles.Count; i++)
         {
             var v = vehicles[i];
@@ -4189,14 +4259,24 @@ public partial class Main : Node3D
             var scale = new Vector3(car.ScaleX, car.ScaleY, car.ScaleZ);
             var basis = new Basis(Vector3.Up, car.YawRad).ScaledLocal(scale);
             var origin = new Vector3(car.PosX, car.PosY, car.PosZ);
-            _carMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
+
+            // Row-major 3x4: row r is (basis.X[r], basis.Y[r], basis.Z[r], origin[r]). Godot's Basis indexer
+            // is COLUMN-major (basis.X/Y/Z are the columns), hence the transpose here.
+            var o = i * stride;
+            buf[o + 0] = basis.X.X; buf[o + 1] = basis.Y.X; buf[o + 2] = basis.Z.X; buf[o + 3] = origin.X;
+            buf[o + 4] = basis.X.Y; buf[o + 5] = basis.Y.Y; buf[o + 6] = basis.Z.Y; buf[o + 7] = origin.Y;
+            buf[o + 8] = basis.X.Z; buf[o + 9] = basis.Y.Z; buf[o + 10] = basis.Z.Z; buf[o + 11] = origin.Z;
 
             var paletteIndex = (int)(v.Handle.Index % (uint)CarPalette.Length);
-            _carMultiMesh.SetInstanceColor(i, CarPalette[paletteIndex]);
+            var c = CarPalette[paletteIndex];
+            buf[o + 12] = c.R; buf[o + 13] = c.G; buf[o + 14] = c.B; buf[o + 15] = c.A;
 
             _carHandles.Add(v.Handle);
             _carWorldPositions.Add(origin);
         }
+
+        _carMultiMesh.Buffer = buf;
+        _carMultiMesh.VisibleInstanceCount = vehicles.Count;
     }
 
     // docs/DEMO-CITY3D-DESIGN.md "#### Pedestrians (P7-3)" -- ONE ped MultiMeshInstance3D, the ped analog of
@@ -4254,21 +4334,49 @@ public partial class Main : Node3D
             _pedMultiMesh.InstanceCount = peds.Count;
         }
 
-        _pedMultiMesh.VisibleInstanceCount = peds.Count;
+        // PERF: ONE bulk `Buffer` assignment instead of two marshalled setter calls per instance.
+        //
+        // Measured on GPU at 10 000 cars + 29 999 peds: this method was 44.2 ms of a 76.9 ms frame (57.4%) --
+        // the single largest cost in the viewer once reconstruction was parallelised and the road meshes were
+        // merged. It is 30 000 iterations x 2 interop calls = 60 000 marshalled Godot calls per frame, and it
+        // is VIEW-INDEPENDENT, which is exactly why FPS had gone flat at ~14 regardless of camera direction.
+        //
+        // `MultiMesh.Buffer` takes the whole instance array in one call. Layout for
+        // TransformFormat=Transform3D with UseColors=true is 16 floats per instance: the 3x4 transform in
+        // ROW-major order, then RGBA. Because a ped's basis is a pure diagonal scale (no yaw -- a slim upright
+        // avatar reads fine without heading), the 12 transform floats can be written directly, so this also
+        // drops the per-ped Basis/Transform3D construction entirely.
+        //
+        // The array length must equal InstanceCount * 16 exactly, so the buffer is sized to the (only-growing)
+        // InstanceCount high-water mark and reused; slots beyond VisibleInstanceCount are never drawn, so
+        // their contents are irrelevant. VisibleInstanceCount is set AFTER the assignment.
+        const int stride = 16;
+        var need = _pedMultiMesh.InstanceCount * stride;
+        if (_pedBufferScratch.Length != need)
+        {
+            _pedBufferScratch = new float[need];
+        }
+
+        var buf = _pedBufferScratch;
+        var hi = _liveCityPedPalette ? LiveCityPedHighPowerColor : PedHighPowerColor; // orange (ORCA) vs cyan
+        var lo = _liveCityPedPalette ? LiveCityPedLowPowerColor : PedLowPowerColor;   // grey vs slate
 
         for (var i = 0; i < peds.Count; i++)
         {
             var inst = CityLib.PedTransform.ForPed(peds[i], PedRenderHeightMeters, PedRenderWidthMeters);
+            var o = i * stride;
 
-            // No yaw needed (a slim upright avatar reads fine without heading, per design) -- an axis-aligned
-            // scaled box.
-            var basis = Basis.Identity.Scaled(new Vector3(inst.ScaleX, inst.ScaleY, inst.ScaleZ));
-            var origin = new Vector3(inst.PosX, inst.PosY, inst.PosZ);
-            _pedMultiMesh.SetInstanceTransform(i, new Transform3D(basis, origin));
-            _pedMultiMesh.SetInstanceColor(i, inst.IsHighPower
-                ? (_liveCityPedPalette ? LiveCityPedHighPowerColor : PedHighPowerColor)   // orange (ORCA) vs cyan
-                : (_liveCityPedPalette ? LiveCityPedLowPowerColor : PedLowPowerColor));   // grey vs slate
+            // 3x4 transform, ROW-major: diagonal scale on the basis, translation in the 4th column.
+            buf[o + 0] = inst.ScaleX; buf[o + 1] = 0f;          buf[o + 2] = 0f;          buf[o + 3] = inst.PosX;
+            buf[o + 4] = 0f;          buf[o + 5] = inst.ScaleY; buf[o + 6] = 0f;          buf[o + 7] = inst.PosY;
+            buf[o + 8] = 0f;          buf[o + 9] = 0f;          buf[o + 10] = inst.ScaleZ; buf[o + 11] = inst.PosZ;
+
+            var c = inst.IsHighPower ? hi : lo;
+            buf[o + 12] = c.R; buf[o + 13] = c.G; buf[o + 14] = c.B; buf[o + 15] = c.A;
         }
+
+        _pedMultiMesh.Buffer = buf;
+        _pedMultiMesh.VisibleInstanceCount = peds.Count;
     }
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.1, -TASKS.md D3 -- the REPLAY analog of UpdatePeds: consumes
