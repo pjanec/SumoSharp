@@ -3,6 +3,22 @@
 **Audience:** a Claude Code session on a **Windows desktop with a real GPU** and the **Geneva SumoData**
 on local disk. **Branch:** `claude/handoff-docs-implementation-pmdu9z`.
 
+> ## ✅ SIGNED OFF (owner, on-GPU, 2026-07-28)
+> **Part A** — 3-D terrain, ped heights, the baked grid and the tinted zones all confirmed working on the
+> Geneva data. **Part B** — the threaded tick verified at **3 858 cars + 20 726 peds**: 0/2000 spikes,
+> p50/p95/p99 = 46.3/50.0/55.6 ms (p99 = 1.20× p50), `sim_ticks` 0 on ~91% of frames, 2 Hz sustained in
+> real time; smooth motion confirmed at 4 k cars + 20 k peds. Stage 2 did **not** pass as originally
+> landed — it required `5159667` (one shared render clock for cars and peds) and `9987aba`
+> (`SelfPumpVehicleBus`, which fixed the `HistoryView` race).
+>
+> **The T4 ped z = 0 finding is downgraded, not fixed:** the target IG ground-clamps, so the wrong
+> elevation is hidden downstream. Still tracked in `TASKS-TODO.md` — we are shipping a z we know is wrong.
+>
+> **Still unexercised** (§8.2): the sim-Hz sweep 1 → 20 with achieved-Hz tracking, the `H` zone cycle with
+> ring tracking, and repeated quits including while dragging a slider at high density.
+>
+> The checklists below are kept as the record of what was checked and as the recipe for re-running it.
+
 Everything in this work was built and asserted **headlessly** — the numbers are in
 `docs/EXTERNAL-NET-VIEWER-DESIGN.md` §4.1/§7.2, `docs/LIVE-CITY-THREADED-TICK-DESIGN.md` §8, and the
 test suites. What no headless VM can do is tell you whether the scene *looks* right, or whether the

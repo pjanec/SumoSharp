@@ -331,15 +331,12 @@ Everything in this cluster is **built, gated and pushed**; what is left is the o
 environment structurally cannot do. Design/tasks/tracker:
 `docs/EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md` (the follow-ups are **Stage E**, E1–E5).
 
-- [ ] **⛔ SHOWSTOPPER — most of the Geneva ped crowd renders at z = 0 (deep underground).** Owner,
-  on-GPU, 2026-07-28: Geneva's long arterial streets carry **~10 000 peds spread along them and spaced
-  well**, but **most of them sit at elevation 0** instead of Geneva's ~400 m, with only a few correctly on
-  the sidewalks at the right altitude. This is the single biggest blocker for the external-net viewer.
-  ⚠ **Correction to an earlier claim in this file's cluster and in the perf log: Geneva does NOT cap at
-  ~40 peds.** That number came from a short-run headless probe whose own data contradicted it (requesting
-  5 000 returned 1 216 and was still climbing); it was fill-rate-limited, not a net-capacity ceiling.
-  Geneva has usable ped infrastructure — treat ~10 k as the real figure.
-  - **Partially fixed already** (`789a4b8`): `HeadlessIg.ReconstructElevationAt` was reordered so
+- [ ] **Geneva low-power peds still report z = 0 — DOWNGRADED from showstopper (owner, on-GPU).** The
+  original report was that ~10 000 peds on Geneva's arterials sit at elevation 0 instead of ~400 m.
+  **It is no longer a blocker: the target IG GROUND-CLAMPS**, so the wrong height is hidden downstream
+  and the scene looks right. Still worth fixing — we are shipping a z we know is wrong, and any consumer
+  that does NOT clamp (or that needs the height for anything but placement) gets a bad number.
+  - **Partially fixed** (`789a4b8`): `HeadlessIg.ReconstructElevationAt` was reordered so
     timeline-bearing peds — including ones **promoted** to high-power, which keep their timeline and
     previously fell through to `return 0.0` — read the surface off the timeline channel. That fixed the
     promoted high-power population only.
@@ -349,30 +346,25 @@ environment structurally cannot do. Design/tasks/tracker:
     upstream in the ped timeline elevation bake, not in `HeadlessIg`.
   - **NEXT STEP IS AN INSTRUMENT, NOT A HYPOTHESIS** (CLAUDE.md measurement-discipline #2). Log, per ped:
     `PedDrModel`, whether `Timeline.Elevations` / `PathZ` are populated, and the returned z — on the
-    Geneva cut. Two of my three attempts at this bug so far were reasoned rather than traced, and both
-    were incomplete. Files: `src/Sim.Pedestrians/Lod/{HeadlessIg,ActivityTimeline,ActivityTimelineWire,
+    Geneva cut. Two of three attempts at this bug so far were reasoned rather than traced, and both were
+    incomplete. Files: `src/Sim.Pedestrians/Lod/{HeadlessIg,ActivityTimeline,ActivityTimelineWire,
     PathArcMotion}.cs`, and wherever `WalkSegment.Elevations` is populated for RouteGraph nav vs the demo
     Navmesh path. Background: `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md` §7.
-  - Note the perf interaction: widening that branch in `789a4b8` sends **more** peds through
-    `TimelineElevationAt`, which rescans the whole timeline + each leg polyline per ped per frame — so the
-    fix should land together with the single-scan cleanup noted in `LIVE-CITY-PERF-TRACKER.md` (V1).
+  - Perf interaction: widening that branch in `789a4b8` sends **more** peds through
+    `TimelineElevationAt`. The per-ped double geometry scan that made costly has since been fixed
+    (`9987aba`, single-scan + parallel ped reconstruction), so this no longer gates on it.
 
-- [ ] **E5 — visual sign-off on a GPU, against the Geneva data.** *(needs a Windows desktop session; not
-  doable here)* Every claim in this cluster is asserted **headlessly** — the terrain field reproduces
-  each lane vertex's own height to **0.326 m** on `scenarios/_ped/georef_min` (27.5 m of relief, 693
-  vertices), the grid drape is exact, two bakes are bitwise identical. None of that says the scene
-  *looks* right. Step-by-step checklist, run recipes for both `--sumocfg` and `--dataset`, the
-  expected-not-a-bug list, and the two traps that have already bitten this work:
-  **`docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`**.
-  ⚠ The Geneva data is **local to that machine and access-restricted** — nothing in this repo may
-  reference it by path or env var; it is typed on the command line for that session only.
+- [x] **E5 — visual sign-off on a GPU. DONE (owner, on-GPU).** Part A (3-D terrain, ped heights, the
+      baked grid, tinted zones) confirmed working on the Geneva data; Part B (the threaded tick) verified
+      at 3 858 cars + 20 726 peds — **0/2000 spikes**, p99 = 1.20× p50, 2 Hz sustained in real time, with
+      smooth motion after the render-clock fix (`5159667`). Checklist:
+      `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`. Three §8.2 items remain unexercised —
+      see below.
 
-- [ ] **Flag to the parallel ped-engine session: this branch BREAKS contract C5·SC1 on purpose.** The
-  contract's success condition was "the existing 4-out-param `TryGetRenderPose` overload's body is
-  untouched, and all 15 call sites compile unedited"; the overload is now **deleted** and every call
-  site edited to `out _`. Owner's call ("no dual interfaces when we need to pass z coord everywhere…
-  compiler will catch"). The *behaviour* C5 specifies is unchanged. Reasoning + what replaced SC2:
-  `EXTERNAL-NET-VIEWER-DESIGN.md` §4.1.1. Needs an explicit ack, not a merge conflict.
+- [x] **The deliberate C5·SC1 contract break needs no ack — owner confirms no session has unmerged
+      work.** The 4-out-param `TryGetRenderPose` overload is deleted and every call site edited to
+      `out _`; the contract's success condition said they would compile unedited. Owner's call, reasoning
+      in `EXTERNAL-NET-VIEWER-DESIGN.md` §4.1.1. No conflict risk remains.
 
 - [ ] **Three `CityLib.Tests` failures are real, pre-existing, and were being MASKED** — worth their own
   task. `ReconstructorS2Tests`: stopped car's center sits **6.484 m** behind the front bumper where
