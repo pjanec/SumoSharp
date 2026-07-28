@@ -1,9 +1,13 @@
 # UNIFIED-SOLVER.md — design of record for the unified two-population solver
 
-**Status: PROPOSED — awaiting owner go-ahead before the committed lane/bridge path is re-routed.**
-This document is the approval artifact. A gated *standalone prototype* (a parallel driver that does NOT
-replace the committed path) may be built and validated ahead of approval; wiring it into the shipped
-coupling is the architectural commitment this doc asks you to authorize.
+**Status: DECLINED — the real-Engine integration was attempted, measured as no benefit and slight harm,
+and reverted; the owner decided to keep the existing `LockstepBridge`.** See the "Integration attempt"
+and "DECIDED (owner)" passage immediately below for the record of why. This document, and the standalone
+prototype it discusses, stand as the refuted-hypothesis record — not a pending proposal. This document
+was originally the approval artifact. A gated *standalone prototype* (a parallel driver that does NOT
+replace the committed path) was built and validated ahead of that decision; wiring it into the shipped
+coupling is the architectural commitment this doc had asked the owner to authorize, and which the owner
+declined.
 
 **Integration attempt (real Engine — DONE, then REVERTED with an empirical finding).** The real-Engine
 integration was attempted: `Engine.CrowdReactionSubSteps` sub-stepping a laneless-RVO vehicle's lateral

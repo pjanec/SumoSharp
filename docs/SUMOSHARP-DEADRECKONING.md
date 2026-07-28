@@ -1,7 +1,9 @@
 # SUMOSHARP-DEADRECKONING.md — networked dead-reckoning & production-render design
 
-**Status: design for review. Nothing here is implemented yet except the two foundational read-surface
-inputs (§4.1, landed).** This is the document to read *before* deciding scope. It is a companion to
+**Status: implemented.** §4.2–§11 record Replication, Replication.Dds, RenderRealism, PublishPolicy and
+the `Sim.LiveHost` wiring as landed, and §12 ("Decisions (owner) & remaining open items") closes with
+"All owner decisions are now made and implemented." This is the document to read *before* deciding
+scope. It is a companion to
 `SUMOSHARP-API.md` (§5 read surface, §7 async runner, §9 runtime demand) and coordinates with
 `docs/LANELESS-DIRECTION.md` on the sibling branch `claude/sumo-phase-2-planning-p3w7kh` (see §9 below).
 

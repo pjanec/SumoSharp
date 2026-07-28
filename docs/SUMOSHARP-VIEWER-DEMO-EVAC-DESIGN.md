@@ -31,9 +31,17 @@ doc is the mechanism; the task breakdown + success conditions are in
 ```
 Sim.Core (in Traffic.sln)         SimulationRunner.OnAfterStep  ← the ONE additive seam (§2)
 Sim.Evac (out of solution)        EvacDirector + Evac*Scenario.Build  ← reused verbatim
-Sim.Viewer.Core (out of solution) EngineHost (evac path), EvacRenderSnapshot, DemoCatalog
-Sim.Viewer (out of solution)      Program (picker plumbing), Renderer (evac draw pass + Demos panel)
+Sim.Viewer.Core (out of solution) EngineHost (evac path)
+Sim.Viewer (out of solution)      Program (picker plumbing), Renderer (evac draw pass + Demos panel),
+                                   EvacRenderSnapshot, DemoCatalog
 ```
+
+`EvacRenderSnapshot` and `DemoCatalog` are shown here in `Sim.Viewer`, not `Sim.Viewer.Core` as
+originally proposed below (§1, §3): `docs/SUMOSHARP-PACKAGING-DESIGN.md` §3 (D5) later relocated both
+into the demo layer (confirmed: `src/Sim.Viewer/DemoCatalog.cs`, `src/Sim.Viewer/EvacRenderSnapshot.cs`)
+so the packaged, reusable viewer (`Sim.Viewer.Core`) stays generic and does not carry the demo-only
+`DemoCatalog`/evac wiring. `SimulationRunner.OnAfterStep` is unaffected by that move and is still
+correct as described below.
 
 ## §1 — Demo catalog (`Sim.Viewer.Core/DemoCatalog.cs`, new)
 

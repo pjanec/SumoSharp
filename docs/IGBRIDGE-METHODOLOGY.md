@@ -20,8 +20,10 @@ them is instrumented wrong** — reconcile them before touching the algorithm (s
 
 A change is **rejected or reverted** unless it keeps every one of these true. Check them before accepting:
 
-1. **Parity byte-identical.** `dotnet test tests/Sim.ParityTests` stays **654 pass / 4 skip**, byte-for-byte.
-   IgBridge is render-side; it must never perturb the engine's committed trajectories. This is the iron law.
+1. **Parity byte-identical.** `dotnet test tests/Sim.ParityTests` stays byte-for-byte against the current
+   gate (**775 pass / 4 skip**, all 661 goldens — a dated snapshot; the live number lives in
+   `docs/TASKS-TODO.md`). IgBridge is render-side; it must never perturb the engine's committed
+   trajectories. This is the iron law.
 2. **Engine core untouched.** No edits under `Sim.Core` (car-following, lane-change, junctions, teleport).
    Other sessions own those. IgBridge only *calls* public engine APIs (`DefineVType`, `SpawnVehicle`,
    `GetUpcomingLanes`, the SoA read spans) and reconstructs render-side.

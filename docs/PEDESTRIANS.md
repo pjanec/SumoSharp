@@ -12,7 +12,7 @@ lives in the design docs linked at the bottom.
 > so the vehicle parity goldens and the determinism hash are byte-unchanged with pedestrians unused.
 > The whole subsystem lives outside the hermetic parity gate's assertions but ships in the same repo.
 
-The pedestrian test suite is **214 tests, all green** (`tests/Sim.Pedestrians.Tests`), plus a
+The pedestrian test suite is **324 tests, all green** (`tests/Sim.Pedestrians.Tests`), plus a
 cross-provider navmesh suite (`tests/Sim.Pedestrians.Nav.DotRecast.Tests`).
 
 ---

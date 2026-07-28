@@ -1,7 +1,13 @@
 # PEDESTRIAN-DESIGN.md — the HOW of the pedestrian subsystem
 
-**Status: design for review. No code yet.** Companion to `PEDESTRIAN-OVERVIEW.md` (the WHAT — read it
-first) and `PEDESTRIAN-POC-PLAN.md` (the experiments that de-risk this). This document is the reasoning:
+**Status: implemented.** This is the foundational design of record for the pedestrian subsystem — the
+whole subsystem it describes has shipped: `src/Sim.Pedestrians/` (the `IWalkableSpace`/`IPedNavigation`/
+`ILocalSteering` seams in `Navigation/INavigation.cs`, LOD switching in `Lod/PedLodManager.cs`, the
+ORCA-based crowd), DDS pedestrian transport in `src/Sim.Replication.Dds/`, and the DotRecast navmesh
+provider in `Sim.Pedestrians.Nav.DotRecast`. See `docs/PEDESTRIAN-TRACKER.md` for the per-stage
+done/parked map and `docs/PEDESTRIANS.md` for the front-door status. Companion to
+`PEDESTRIAN-OVERVIEW.md` (the WHAT — read it first) and `PEDESTRIAN-POC-PLAN.md` (the experiments that
+de-risked this). This document is the reasoning:
 the architecture, the mechanisms, and — the load-bearing part — the *principles* that must hold for the
 subsystem to be performant, believable, interactive, evac-capable, and network-distributable at the
 10k-high / 100k-total / 10k-cars scale.

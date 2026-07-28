@@ -36,7 +36,7 @@
 
 **Superseded status line:** STEP 3 check-in (verification complete, awaiting owner steer before implementation).
 **Branch:** `claude/sumosharp-high-density-0r91xo`.
-**Source of truth:** `docs/SUMOSHARP-HIGH-DENSITY-FEATURES.md` (committed to this branch).
+**Source of truth:** `docs/archive/SUMOSHARP-HIGH-DENSITY-FEATURES.md` (committed to this branch).
 **Baseline (this checkout):** `dotnet build` clean (0 errors); `dotnet test` green —
 `Sim.ParityTests` 466 passed / 3 skipped / 0 failed. SDK provisioned via
 `apt-get install -y dotnet-sdk-8.0` (8.0.129) on the fresh VM. SUMO **not** installed
@@ -272,18 +272,31 @@ when I first need to regenerate a golden. OK to do that as part of landing the f
     regression test. Benchmarks + Windows instructions: docs/BENCHMARK-INSTRUCTIONS.md +
     scripts/bench-coordinated.ps1 (+ scripts/bench-scaling.ps1). GATE SPLIT (§3.8, session 4): the Windows
     benchmark showed the informFollower half degraded organic flow + cost perf, so it moved behind its OWN
-    gate (Engine.CooperativeInformFollower / --inform-follower, default OFF). PRODUCT DEFAULT is now
-    AGGRESSIVE DENSE LC ONLY (CoordinatedLaneChange=true in the hosts: best organic flow 21<24 vs parity,
-    no perf penalty, believable overtaking); --inform-follower opts into the saturated-grid coordination;
-    --parity is the deterministic anchor. Engine library default stays false (golden-suite anchor). DONE.
-    Bit-exact de-prioritised (owner: believable+fast > bit-exact).
-    **informFollower RETIRED (owner decision 2026-07):** the serve-path P2-G traffic-light junction fixes
-    (Bug-2 RBL traffic_light exclusion, Bug-3 red-held-foe WillPass) now flow the saturated grid at the
-    engine level, so the informFollower's only benefit was gone while its costs (organic-flow degradation +
-    Windows perf) remained. Removed the CooperativeInformFollower gate, its LC-phase production, the
-    CoopSpeedAdvice channel, and the --inform-follower CLI opt-ins. Dense LC (CoordinatedLaneChange)
-    unchanged and still the host default for FIDELITY; gate-OFF parity default byte-identical (all goldens
-    green). See docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md top note.
+    gate (`Engine.CooperativeInformFollower`, default OFF at the bare-`Engine` level). At the time this
+    passage was written, PRODUCT DEFAULT was believed to be AGGRESSIVE DENSE LC ONLY
+    (CoordinatedLaneChange=true in the hosts: best organic flow 21<24 vs parity, no perf penalty,
+    believable overtaking) with informFollower opt-in only via a separate flag; --parity is the
+    deterministic anchor. Engine library default stays false (golden-suite anchor). Bit-exact
+    de-prioritised (owner: believable+fast > bit-exact).
+    **informFollower RETIRED — owner DECIDED (2026-07) to retire it, but the code removal was never
+    carried out.** The rationale stands: the serve-path P2-G traffic-light junction fixes (Bug-2 RBL
+    traffic_light exclusion, Bug-3 red-held-foe WillPass) now flow the saturated grid at the engine
+    level, so the informFollower's only benefit was gone while its costs (organic-flow degradation +
+    Windows perf) remained. **Verified in source (2026-07-28): `CooperativeInformFollower` was NOT
+    removed** — it appears 13 times in `src/Sim.Core/Engine.cs` (`grep -c CooperativeInformFollower
+    src/Sim.Core/Engine.cs` → `13`), including its property declaration (still a plain settable `bool`,
+    defaulting to `false` for a bare `Engine`), its LC-phase production, and the `CoopSpeedAdvice`
+    channel it feeds (`Engine.cs:5418-5423`) — none of that was deleted. There is also no standalone
+    `--inform-follower` CLI flag anywhere in the codebase today (a repo-wide grep finds none); the actual
+    live wiring is `LiveCityConfig.CooperativeLaneChange` (`src/Sim.LiveCity/LiveCityConfig.cs`), which
+    **defaults to `true`** for the LiveCity demo host and sets **both** `Engine.CoordinatedLaneChange`
+    **and** `Engine.CooperativeInformFollower` together (overridable via `LIVECITY_COOP=0`) — so, contrary
+    to the "AGGRESSIVE DENSE LC ONLY" default claimed two paragraphs up, the demo host's actual live
+    default turns informFollower **ON**, bundled with dense LC, not off-by-default-with-a-separate-opt-in.
+    Only the bare `Sim.Core` `Engine` class itself (no host config layered on top) defaults it to `false`,
+    which is what keeps every committed parity golden byte-identical regardless of this decision's status.
+    See docs/HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md top note for the design-doc side of the same
+    (also unretracted) retirement decision.
   - [~] P2G-3 scenario-46 speedGain residual -- DIAGNOSED (docs/HIGH-DENSITY-P2G3-DESIGN.md). Root
     cause is NOT the neighDist gate (proven: continuation distance implemented + instrumented, gate
     passes at 82.5 but the speedGain still never fires) and NOT cooperative LC (SUMO log: reason

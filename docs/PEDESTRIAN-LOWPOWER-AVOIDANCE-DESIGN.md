@@ -1,10 +1,14 @@
 # PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md — low-power peds must stop passing through each other (PROBLEM + directions)
 
 **Status: mechanism validated in a single-corridor prototype (§7); production seam requirements captured
-(§8); not yet promoted into the real multi-segment low-power motion path.** Priority: **high** (a visible,
+(§8); promoted into the real multi-segment low-power motion path — see
+`docs/PEDESTRIAN-WEAVE-PRODUCTION-DESIGN.md`, whose tasks W1–W4 are all DONE.** `PedDemandConfig.EnableWeave`
+/ `WeaveSalt` are wired in `src/Sim.Pedestrians/Demand/PedDemand.cs`, with
+`tests/Sim.Pedestrians.Tests/Lod/WeaveEvaluatorTests.cs` covering it. Priority: **high** (a visible,
 pervasive realism failure). §1–6 are the original problem + directions; §7 is the validated `LateralWeave`
-prototype; §8 is what the real product must add (route continuity, endpoint anchoring, junction hand-off).
-Tracked in `PEDESTRIAN-TRACKER.md` as **PED-REALISM-1**.
+prototype; §8 is what the real product needed to add (route continuity, endpoint anchoring, junction
+hand-off) — delivered by the production design above. Tracked in `PEDESTRIAN-TRACKER.md` as
+**PED-REALISM-1**.
 
 ## 1. The problem (observed)
 
