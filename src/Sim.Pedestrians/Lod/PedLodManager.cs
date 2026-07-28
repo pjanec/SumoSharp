@@ -614,6 +614,28 @@ public sealed class PedLodManager
         };
     }
 
+    // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): fuses AnimTagOf(id, now) + PositionOf(id, now)
+    // into ONE call. A caller that needs both (PedDemand.DespawnArrivals; LiveCitySim's low-power
+    // gather, which called AnimTagOf then PositionOf back-to-back for the SAME id at the SAME `now`)
+    // was invoking ActivityTimeline.PoseAt(now) TWICE per ActivityTimeline ped -- computing the
+    // identical PoseSample twice with nothing mutating in between. Bit-identical to calling
+    // AnimTagOf(id, now) then PositionOf(id, now) separately: same three branches (mirroring
+    // PositionOf's switch exactly), same expressions, evaluated once instead of twice.
+    public (string AnimTag, Vec2 Pos) PoseInfoOf(int id, double now)
+    {
+        var e = _peds[id];
+        switch (e.Model)
+        {
+            case PedDrModel.FreeKinematic:
+                return (ActivityTimeline.WalkAnimTag, _highCrowd.Position(e.HighIndex));
+            case PedDrModel.ActivityTimeline:
+                var pose = e.Timeline!.PoseAt(now);
+                return (pose.AnimTag, pose.Pos);
+            default:
+                return (ActivityTimeline.WalkAnimTag, PathArcMotion.PositionAt(e.Path, e.PathStartTime, e.MaxSpeed, now));
+        }
+    }
+
     // Perf diagnostics (docs/LIVE-CITY-PERF-SESSION-LOG.md B2): opt-in per-sub-phase wall-time
     // accounting for Step(), mirroring Engine.ProfilePhases / LiveCitySim.ProfilePhases EXACTLY in
     // shape (a bool gate, a name->ticks dictionary, PhaseStart/PhaseEnd via Stopwatch.GetTimestamp).

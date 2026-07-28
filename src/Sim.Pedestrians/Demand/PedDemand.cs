@@ -73,6 +73,19 @@ public sealed class PedDemand
     private readonly List<PedSpawnEvent> _spawnEvents = new();
     private readonly List<PedArrivalEvent> _arrivalEvents = new();
 
+    // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): DespawnArrivals below already queries every
+    // live ped's pose at `now` (== the caller's `now+dt`). LiveCitySim's low-power gather
+    // (LiveCitySim.cs, immediately after `_demand.Step(...)` returns) queries the SAME instant for a
+    // subset of the SAME ids, with NO pose-affecting mutation in between: DespawnArrivals only REMOVES
+    // arrived ids from `_liveIds` (which the gather then simply never visits) and never touches a
+    // SURVIVING ped's Path/Timeline. So DespawnArrivals caches (AnimTag, Pos) here, keyed on the exact
+    // `now` it was computed for, and `TryGetLastPose` below serves that one proven-safe consumer -- a
+    // reused buffer (Clear()ed, never reallocated) rather than a fresh Dictionary per step, and guarded
+    // by an exact `now` match so a mismatch can only ever fall back to a live recompute, never return a
+    // stale value for a different instant.
+    private readonly Dictionary<int, (string AnimTag, Vec2 Pos)> _lastPoseAtNow = new();
+    private double _lastPoseAtNowTime = double.NaN;
+
     private VehicleRng _spawnTimingRng;
     private double _nextSpawnAt;
     private int _nextId = 1;
@@ -878,10 +891,16 @@ public sealed class PedDemand
             return;
         }
 
+        // See _lastPoseAtNow's remarks: reused (not reallocated) every call, so this stays bounded by
+        // the CURRENT live population rather than growing with every ped that has ever lived.
+        _lastPoseAtNow.Clear();
+        _lastPoseAtNowTime = now;
+
         List<int>? arrived = null;
         foreach (var id in _liveIds)
         {
-            var pos = _lodManager.PositionOf(id, now);
+            var (animTag, pos) = _lodManager.PoseInfoOf(id, now);
+            _lastPoseAtNow[id] = (animTag, pos);
             var dest = _destinationOf[id];
             if ((pos - dest).Abs <= _config.ArrivalRadius)
             {
@@ -903,6 +922,26 @@ public sealed class PedDemand
             ArrivalCount++;
             _arrivalEvents.Add(new PedArrivalEvent(id, now));
         }
+    }
+
+    // PERF (TASK 2): explicit same-instant cache lookup for the ONE proven-safe consumer (LiveCitySim's
+    // low-power gather). Returns false -- never a stale hit -- unless `now` is bit-identical to the
+    // `now` DespawnArrivals was just called with AND `id` was live at that moment; any mismatch (a
+    // different instant, or an id DespawnArrivals never saw) falls back to a direct
+    // PositionOf/AnimTagOf/PoseInfoOf recompute at the call site, so this can only ever be a fast path,
+    // never a source of wrong data.
+    public bool TryGetLastPose(int id, double now, out string animTag, out Vec2 pos)
+    {
+        if (now == _lastPoseAtNowTime && _lastPoseAtNow.TryGetValue(id, out var cached))
+        {
+            animTag = cached.AnimTag;
+            pos = cached.Pos;
+            return true;
+        }
+
+        animTag = ActivityTimeline.WalkAnimTag;
+        pos = default;
+        return false;
     }
 }
 

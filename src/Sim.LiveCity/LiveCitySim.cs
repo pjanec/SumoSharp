@@ -1075,10 +1075,27 @@ public sealed class LiveCitySim : IDisposable
         {
             foreach (var id in _demand.LiveIds)
             {
-                if (_manager.ModelOf(id) != PedDrModel.FreeKinematic
-                    && _manager.AnimTagOf(id, tNext) == ActivityTimeline.WalkAnimTag)
+                if (_manager.ModelOf(id) == PedDrModel.FreeKinematic)
                 {
-                    _movingLowPowerPositions.Add(_manager.PositionOf(id, tNext));
+                    continue;
+                }
+
+                // PERF (TASK 2, docs/LIVE-CITY-PERF-SESSION-LOG.md): PedDemand.DespawnArrivals, called
+                // moments ago inside `_demand.Step(...)` above, already computed this exact (id, tNext)
+                // pose while checking arrivals -- reuse it instead of re-invoking
+                // AnimTagOf(id, tNext)+PositionOf(id, tNext) (two more ActivityTimeline.PoseAt calls).
+                // Falls back to the direct calls, byte-identical to the pre-existing behaviour, if the
+                // cache doesn't have this id/time for any reason (e.g. a future caller of this loop
+                // outside the normal Step() sequence).
+                if (!_demand.TryGetLastPose(id, tNext, out var animTag, out var pos))
+                {
+                    animTag = _manager.AnimTagOf(id, tNext);
+                    pos = _manager.PositionOf(id, tNext);
+                }
+
+                if (animTag == ActivityTimeline.WalkAnimTag)
+                {
+                    _movingLowPowerPositions.Add(pos);
                 }
             }
         }
