@@ -91,6 +91,10 @@ doesn't have. Highlights below; precise scope after that.
   and whether it is behavioural, refuted, perf-only or diagnostic. They are **process-global**, so an
   inherited shell value is indistinguishable from a deliberate one; one gate silently breaks 14 goldens
   when set. The inventory is completeness-checked by a test, so it cannot drift out of date.
+- **🗃️ The test data:** [`scenarios/README.md`](scenarios/README.md) — 89 numbered parity scenarios plus
+  six underscore groups, grouped by what they exercise. Says which datasets have committed SUMO goldens and
+  which are behavioural-only (so you don't cite a benchmark as a parity claim), and which one to pick when
+  you need pedestrians, rail, saturation, or real elevation.
 - **📋 The live work queue:** [`docs/TASKS-TODO.md`](docs/TASKS-TODO.md) — open items with evidence, and
   the single authority on the current gate numbers (every other doc's copy of a test count has rotted at
   least once).

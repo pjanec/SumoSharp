@@ -17,6 +17,7 @@ The organising rules (and the measurement that produced them) are in
 | [`TASKS-TODO.md`](TASKS-TODO.md) | **The live queue.** Open items only, with the current standing gate at the top. The single authority on what is in flight and who owns it. |
 | [`TASKS-DONE.md`](TASKS-DONE.md) | The archive of completed work, with the full characterisation of each item. |
 | [`ENV-GATES.md`](ENV-GATES.md) | **Every environment gate**, what it sets, and what an *unset* value means. Read before any A/B or benchmark: they are process-global, several are behavioural, and one breaks 14 goldens when set. Completeness enforced by a test. |
+| [`../scenarios/README.md`](../scenarios/README.md) | **The test data.** What each scenario group is, which have committed SUMO goldens and which are behavioural-only, and which dataset to pick for a given need. |
 | [`../README.md`](../README.md) | What the project is and how to run it. |
 
 ## How to read a doc in here
