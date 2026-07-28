@@ -302,6 +302,11 @@ public sealed class LiveCitySim : IDisposable
             };
 
             _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
+
+            // Perf (A3, see LiveCityConfig.PedParallelOrca): plan the high-power ORCA crowd in parallel.
+            // Bit-identical to serial (OrcaParallelStepTests) and self-gated at >=256 high-power agents, so
+            // every small scenario -- including the whole test suite -- keeps the untouched serial path.
+            _manager.UseParallelHighCrowd = cfg.PedParallelOrca;
             _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
 
             // The high-realism pocket, anchored on the crossing nearest the pocket centre (crop centre

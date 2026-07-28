@@ -260,6 +260,21 @@ public sealed class LiveCityConfig
     public double PedMaxSpeed { get; set; } = 1.3;
     public double PedRadius { get; set; } = 0.3;
     public double PedArrivalRadius { get; set; } = 0.6;
+
+    // Perf (docs/LIVE-CITY-PERF-SESSION-LOG.md A3): plan the high-power (ORCA) crowd in parallel.
+    // `OrcaCrowd.UseParallelStep` is documented and TESTED bit-identical to serial
+    // (tests/Sim.ParityTests/OrcaParallelStepTests.cs) -- every new velocity is a pure function of the
+    // FROZEN start-of-step state and each worker writes only its own slots, so which agents a worker
+    // processes together cannot change any result. It is ALSO self-gating: `OrcaCrowd` engages it only at
+    // `_count >= ParallelStepThreshold` (256), so small scenarios and the whole test suite keep the exact
+    // serial path. Default TRUE because it is byte-identical -- this is not a fast-mode/lossy knob.
+    //
+    // Measured need (20k peds, 1189-1832 high-power, dt=0.5): `ped.orcaStep` was 37.4% of wall and 79.4%
+    // of all allocation -- the single largest phase. It had NEVER been enabled in production: a grep showed
+    // `UseParallelHighCrowd` was set only by `src/Sim.BenchPedLod`, never by LiveCitySim.
+    // Overridable via LIVECITY_PEDPARALLELORCA=0 for paired A/B. A real config knob rather than an env read
+    // in LiveCitySim's ctor, so a test can A/B it without mutating process-global state.
+    public bool PedParallelOrca { get; set; } = true;
     public bool PedEnableWeave { get; set; } = true;
 
     // Bug #6 (crosswalk-wait kerb clustering; docs cross-ref: PedDemandConfig.CrosswalkWaitSpreadRadius):
@@ -479,6 +494,14 @@ public sealed class LiveCityConfig
         if (coopEnv != null)
         {
             cfg.CooperativeLaneChange = coopEnv != "0";
+        }
+
+        // LIVECITY_PEDPARALLELORCA: parallel-plan the high-power ORCA crowd (A3). Bit-identical either way
+        // (OrcaParallelStepTests), so this exists purely for paired A/B measurement of the speedup.
+        var pedParOrcaEnv = Environment.GetEnvironmentVariable("LIVECITY_PEDPARALLELORCA");
+        if (pedParOrcaEnv != null)
+        {
+            cfg.PedParallelOrca = pedParOrcaEnv != "0";
         }
 
         // LIVECITY_HZ: same env-knob convention as LIVECITY_CARS/LCMIN above, expressed in Hz (via
