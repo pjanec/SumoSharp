@@ -601,6 +601,84 @@ proven identical): target **5 000 cars + 20 000 peds now runs at ~114 ms/step, R
   is both the demo dataset and a committed regression fixture. Detail: `TASKS-DONE.md` → "Deferred — detach
   the live-city DEMO data".
 
+## Surfaced by the docs audit (2026-07-28) — real open work that lived only in a doc
+
+These were found by the housekeeping pass described in `docs/DOCS-HOUSEKEEPING-PLAN.md`, which read all
+268 docs and asked of each whether it still holds. Each item below was **verified against the source
+first-hand** before being listed here — a doc claiming something is broken is a lead, not a fact. They are
+recorded here because their detail lives in a doc that is now archived or banner-stamped, and the one
+outcome the audit was not allowed to produce was losing a known bug.
+
+### Engine correctness (each has a `NEED-*` note with the full trace)
+- [ ] **`Engine.LinkStateChar` reads the wrong hop for a `cont` link** — it misses SUMO's
+  `getCorrespondingEntryLink()`, so a continuation link inside a junction is asked for its own state
+  rather than its entry link's. Full write-up, including why it matters for signal-driven yielding:
+  **`docs/NEED-linkstatechar-cont-entry-link.md`**. Method at `Engine.cs:~14098`.
+- [ ] **The stuck-reroute is blind to vehicles inside junctions** — `Engine.cs:10169` hard-`return`s when
+  the stuck vehicle sits on an internal lane, so the one recovery path that could clear a wedged junction
+  never fires for exactly the vehicles that wedge it. Accounts for 2 of the 5 vehicles in the recorded
+  repro, and where it *does* fire it is one-shot. **`docs/NEED-stuck-reroute-blind-inside-junctions.md`**
+  §"the fix"; cross-referenced from `F3-SESSION-LOG.md` §19 as a pre-existing root cause. Related to the
+  **F3** item above — read that first.
+
+### Determinism / configuration hygiene
+- [ ] **`scenarios/44-multilane-junction-turn/config.sumocfg` does not pin the integrator.** Every other
+  phase-1 scenario sets `<step-method.ballistic value="false"/>` explicitly; this one relies on the
+  default. It passes today, so this is a latent tripwire rather than a live bug — but CLAUDE.md's
+  determinism rule is that these are set *in the scenario config*, not inherited. Add the element and
+  confirm the golden stays byte-identical.
+- [ ] **`SumoShim.cs:259` reads `SUMOSHARP_CONTTURNFIX` straight from the environment**, bypassing any
+  config surface, and `SumoShim.cs:60`/`:262` document the choice as deliberate. That is exactly the
+  process-global gate pattern CLAUDE.md measurement-discipline #10 warns about: an inherited shell value
+  is indistinguishable from a measured one, so any A/B that forgets to set it explicitly in *both* arms is
+  silently invalid. Either fold it into the config object or add it to the gate-echo list the benches print.
+
+### Pedestrians
+- [ ] **PED-REALISM-1 — low-power peds pass through each other.** The `LateralWeave` production promotion
+  shipped (W1–W4, `PedDemandConfig.EnableWeave`), which addresses the *appearance* of interaction, but the
+  underlying pass-through is not solved: low-power peds have no mutual avoidance at all. Design and the
+  §8 production-seam requirements: **`docs/PEDESTRIAN-LOWPOWER-AVOIDANCE-DESIGN.md`**; tracked in
+  `PEDESTRIAN-TRACKER.md` as PED-REALISM-1.
+- [ ] **P8-2 — `PedSpawnPolicy` is built but has no consumer.** The appearance-legitimacy gate exists as a
+  mechanism and is unreferenced from `PedDemand.cs` / `PedLodManager.cs`, so nothing enforces it yet.
+  `docs/PEDESTRIAN-P8-2-APPEARANCE-LEGITIMACY-DESIGN.md` (the doc is honest about this; the tracker marks
+  it `[~]`).
+- [ ] **P8-4b — dynamic per-crossing throughput guard**, deferred pending the vehicle-calibration seam.
+  `docs/PEDESTRIAN-P8-4-DENSITY-DESIGN.md`.
+- [ ] **P6-2 phase 2 — the ORCA SoA reorder**, deliberately deferred after phase 1 measured **1.08×**
+  against a 1.4× target. `docs/PEDESTRIAN-P6-2-RESULTS.md` carries the numbers. ⚠ Do not re-attempt phase 1
+  (region decomposition) — that is the measured NULL recorded as A14's sibling above.
+
+### Trailing items on otherwise-finished work
+- [ ] **VIEWER-KINEMATIC-SMOOTHING T3.3 — owner desktop sign-off still pending** (Godot 3D + Raylib 2D).
+  Everything else in that tracker is done; the box is `[~]` for the sign-off alone.
+  `docs/VIEWER-KINEMATIC-SMOOTHING-TRACKER.md`.
+- [ ] **IgBridge F3 (optional) — look-ahead is under-used on sustained curvature** (roundabouts): the
+  current hard-reject should become a temporal smooth. `docs/IGBRIDGE-RESUME.md` §F3, which the other
+  IgBridge docs treat as the live working state.
+- [ ] **HIGH-DENSITY-CALIBRATION Stage 4 residual + Stage 6 re-run.** Stage 4 is `[~]`: main throughput was
+  cracked in session 2 but a residual remains. Stage 6 landed (`ca8d515`) and is **PENDING** one thing this
+  repo cannot do — SumoData re-running the real box against it. `docs/HIGH-DENSITY-CALIBRATION-TRACKER.md`,
+  design §2.3.9.
+- [ ] **`docs/CALIBRATION-KNEE-INDEX.md` records a falsified conclusion as its finding.** Its
+  `arterial-tjunction` row (line ~62, repeated ~79) still cites "turn-lane mis-segregation" as the
+  FCD-traced root cause. `docs/GETBESTLANES-RESUME.md`'s own session-5 update **falsified** that
+  ("the knee's dominant cause is NOT lane-choice") and re-attributed it to keep-right rule 2 — but the
+  correction was never propagated to the index, so the index is now the more prominent and more wrong of
+  the two. Fix the index; keep the refuted hypothesis in the resume doc, per CLAUDE.md
+  measurement-discipline #2.
+- [ ] **`docs/LIVE-CITY-PERF-TRACKER.md` has 16 unticked boxes and 0 ticked**, including **P0**
+  (`src/Sim.BenchLiveCity`), which demonstrably exists and is the instrument every perf number in the
+  section above was measured with. The tracker was never updated as the work landed, so it now reads as
+  "nothing started" for work that hit its target. Reconcile it against the "Engine performance" section
+  above — but tick only what can be substantiated first-hand, per that tracker's own stated rule.
+
+### Not a bug — a reviewer claim that did NOT survive checking
+`F3-JUNCTION-OVERLAP-TRACKER.md`'s **T1.6–T1.9** were reported by the audit as "unchecked but actually
+done". **False** — they are genuinely open and explicitly blocked on each other (T1.5a's flag is blocked on
+T1.7; T1.9 is blocked on T1.8). The unticked boxes are correct and must stay unticked. Recorded here so the
+next pass does not "fix" the tracker by ticking them.
+
 ## Parity / realism roadmap — characterized, NOT yet briefed
 Future SUMO-parity + realism ladder. Each is a one-liner here; the full characterization (references,
 scenarios, scope) is in `TASKS-DONE.md`. Pick one → write its briefing → move the detail's status there.
