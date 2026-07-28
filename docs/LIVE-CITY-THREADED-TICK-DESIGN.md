@@ -20,10 +20,17 @@ while (_liveCityAccumulator >= _liveCityDt) { _liveCitySource.Tick(); _liveCityA
 for a whole engine step. The `while` makes it worse: if a frame's `delta` covers several `dt`, several
 steps run in one frame, so falling behind *compounds*.
 
-Why a Geneva tick costs 100–200 ms at only ~160 cars / ~40 peds: that net has **28 276 lanes** and a very
-high junction count, and ped spawning is **O(ped-graph size) per spawn** (log item A21), with the graph
-scaling on junction count. Geneva is near the worst case for that. Fixing A21 would shrink the hiccup;
-threading removes it from the render path regardless, which is the durable fix.
+**The hiccup magnitude needs no exotic explanation.** It was measured at **~4 000 vehicles + 8 000 peds**
+(owner, 2026-07-28), where a 100–200 ms step is simply ordinary step cost — the headless bench measures
+114 ms/step at 5 000 cars + 20 000 peds. So the hiccup *is* one engine step, landing on the render thread.
+*(An earlier draft of this section attributed it to A21's O(ped-graph) spawn cost at ~160 cars — wrong on
+both counts: I took the 160-car default from the startup log rather than asking what the sliders were set
+to, and no exotic cause is needed. A21 remains a real spawn-cost bug; its share of this hiccup is
+unmeasured.)*
+
+The consequence for this design is mildly reassuring: since the hiccup is just step cost, threading moves
+it off the render path in full, and **no engine optimization is a prerequisite** — engine work only shortens
+how long the producer thread is busy, which affects the achievable tick rate, not render smoothness.
 
 ## 2. Why this is tractable — the seam is already right
 

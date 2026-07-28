@@ -384,6 +384,46 @@ environment structurally cannot do. Design/tasks/tracker:
   Always `rm -rf ~/.nuget/packages/sumosharp.*` before repacking — CLAUDE.md measurement-discipline #9's
   failure mode by a different mechanism.
 
+## Viewer: decouple the engine tick from the render thread (owner will execute Stages 2–3 later)
+
+Design of record, with the full architecture, the hazard list and per-stage success conditions:
+**`docs/LIVE-CITY-THREADED-TICK-DESIGN.md`**.
+
+**The measured symptom.** Owner, timed with a metronome at ~**4 000 vehicles + 8 000 peds**: a **100–200 ms
+hiccup ~110 times per minute**, smooth in between. 110/min = **1.83 Hz** ≈ the **2 Hz** tick. **Not GC**
+(pause ~0.9% of wall, zero gen2). Cause: `Tick()` → `LiveCitySim.Step()` runs **synchronously on the Godot
+main thread** inside `_Process` (`demos/City3D/Viewer/Main.cs:1740-1745`), so the frame blocks for a whole
+engine step — and the surrounding `while` runs *several* steps in one frame when behind, so falling behind
+compounds. The magnitude is simply one engine step at that scale (headless: 114 ms/step at 5 k + 20 k), so
+no engine optimization is a prerequisite for fixing the smoothness.
+
+- [x] **Stage 1 — frame-time instrument + 1–20 Hz engine tick-rate slider.** *(in flight this session)*
+      HUD + `--frame-log` CSV (frame ms, p50/p95/p99, **count of frames > 3× p50**, sim ticks per frame);
+      slider showing **requested vs ACHIEVED** Hz (20 Hz needs a ≤50 ms step, so the ceiling at 5 k + 20 k
+      is ~8.8 Hz). Needs a settable timestep on `LiveCitySim` — `Step()` currently takes no `dt`.
+- [ ] **Stage 2 — run the tick on its own thread; zero-alloc car handoff.** *This is where the stutter
+      dies.* Producer thread runs `Step()` in a loop; publish by **triple buffering + `Interlocked.Exchange`**
+      (three preallocated `VehicleRecord[]` slots + count/simTime/step; producer fills the spare, consumer
+      claims one and holds it so it can never be overwritten mid-read; grow only on warmup ⇒ **zero
+      steady-state allocation**). Also replaces `PublishFrame`'s existing per-step `movers.ToArray()`.
+      Handoff volume is **≤ ~800 KB/tick ≈ 30–60 µs of memcpy** (~0.05% of a step), so copying is free —
+      the only requirement is preallocated destinations. Render clock = published sim time + wall delta,
+      **never allowed past the newest published sim time**, with the existing playout-delay slider (default
+      1 s) as the jitter absorber; otherwise DR extrapolates past known state and you get rubber-banding
+      instead of stutter. **Four things are NOT thread-safe today and must be fixed, not assumed:**
+      (1) `InMemoryReplicationBus._queue` is a plain `Queue<Entry>`, **not** concurrent;
+      (2) `PedPublisher._events` is a plain `List<PedEvent>` of **reference types** appended per ped per step;
+      (3) the render thread currently **writes** to the sim — `PushLcZone()` → `SetLcRealismZone(...)`, and
+      `SampleCars()` hands back `LiveCitySim`'s **shared reused scratch buffer**; (4) `TlStateByLane` is a
+      `Dictionary` read every frame while the tick mutates it.
+      *Success:* on Stage 1's numbers, at the same scenario/counts, **frames > 3× p50 → ~0** and p99
+      approaches p50; no DR regression (must not reintroduce the #7 cruise stutter or #8 backward creep).
+- [ ] **Stage 3 — zero-alloc ped handoff.** Replace the per-ped-per-step reference-type `PedEvent` batch
+      with preallocated struct arrays (id/pos/vel/anim/time + count), double-buffered; give `HeadlessIg` a
+      struct-batch apply path alongside the event path; bounds the never-cleared `_events` list (**A6**).
+      *Success:* handoff allocation per tick ≈ 0 by `Sim.BenchLiveCity`'s per-phase byte accounting, with
+      ped reconstruction numerically unchanged (paired counters identical).
+
 ## Engine performance — coupled cars+peds live-city (overnight 2026-07-28)
 
 **Detail lives in `docs/LIVE-CITY-PERF-SESSION-LOG.md`** (append-only: goals, the harness with every
@@ -407,8 +447,11 @@ proven identical): target **5 000 cars + 20 000 peds now runs at ~114 ms/step, R
   is **falsified for this host** (it was measured car-only with `CrowdSource` null). Do not guess — my
   source-reasoned guesses went 0-for-3 before a gate bisection found the real cause.
 - [ ] **A21 · ped spawn is O(ped-graph size) per spawn**, and the graph scales with **junction count**. A
-  40×40 grid cost ~390 ms/step for ~12 spawns. **This is why a Geneva tick is 100–200 ms at only ~160
-  cars** — directly relevant to the viewer hiccup.
+  40×40 grid cost ~390 ms/step for ~12 spawns, which is what forced the committed bench net down to 15×15.
+  ⚠ *Earlier note that this explained the Geneva viewer hiccup was WRONG* — the owner measured that hiccup
+  at **~4 000 vehicles + 8 000 peds**, not the 160-car default I assumed from the startup log, and a
+  100–200 ms step at that scale is ordinary step cost (cf. 5 k + 20 k = 114 ms/step). A21 stands on its own
+  merits as a spawn-cost bug; its contribution to that hiccup is unmeasured.
 - [ ] **A10 · `Engine._bestLanesCache` is silently defeated** in this host: `SpawnVehicle` mints a unique
   `RouteId` per vehicle, so the memo never shares across vehicles and also **never shrinks** (unbounded
   growth). Re-key on edge-sequence content — byte-identical by `ComputeBestLanes`' own signature (it takes
