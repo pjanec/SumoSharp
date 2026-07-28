@@ -795,6 +795,54 @@ reused buffer is not zeroed whereas both current paths are.
 
 Ped-only 20 000: **110.5 → 47.5 ms/step (2.33×)**. Car-only 500: alloc **10.17 MB → 586 KB/step (17.4×)**.
 
+### ⭐ A12 · TARGET SCENARIO BUILT (`4759b03`) AND THE TARGET IS MET — 5 000 cars + 20 000 peds
+
+`scenarios/_bench/livecity-mega/` — committed scenario input (net 3.9 MB), **8 999 lanes, 7 016.8 m ×
+7 016.8 m**, 15×15 grid @ 500 m, `-L 2`, `--sidewalks.guess --crossings.guess --walkingareas --tls.guess
+--no-turnarounds --seed 42`, netgenerate 1.20.0. Provenance committed.
+
+**MEASURED AT THE FULL TARGET (achieved, not requested): `cars=5000 peds=20000 fill_ok=1`**
+
+    mean 124.755 ms/step   p50 87.939   p95 277.513   p99 283.806   max 283.806
+    RTF 4.01x   REALTIME: yes (mean AND p99 <= the 500 ms budget @ dt=0.5)
+    alloc 8.83 MB/step (505 MiB total)   GC pause 0.915% of wall   gen2 = 0   peak WS 968 MiB
+    ped LOD: 114 high-power / 19 886 low-power (static 70 m pocket, sparse on a 7 km net)
+    prefill: 1071/1800 steps to reach 95% cars, 100% peds
+
+**Caveats stated honestly:**
+- `REALTIME: yes` is against a **500 ms** budget (dt=0.5 → 2 Hz). At **10 Hz** the budget is 100 ms and
+  mean 124.8 ms would **FAIL**. So: comfortably real-time at 2 Hz with 4× headroom; **not yet** at 10 Hz.
+- **There is a TAIL: 7/60 steps exceeded 3× p50**, and p95/p50 = 3.2×. GC does not explain it (pause 0.92%,
+  gen2 = 0), so it is algorithmic — most likely the periodic O(N) sweeps. Worth chasing for smoothness even
+  though the mean is fine.
+- Only **114** peds are high-power here (the 70 m pocket is sparse on a 7 km net), versus **6 134** on the
+  small demo net. So this run barely exercises ORCA — **the two scenarios probe genuinely different
+  regimes** and both matter: the demo net is the ORCA-heavy case, this is the population-heavy case. Neither
+  alone is "the" answer.
+
+**Phase split AT THE TARGET (the ranking is different from every earlier run — read it before optimizing):**
+
+    carYieldMetric      1918.6 ms  25.6% wall    <-- #1, and it is a DIAGNOSTIC counter
+    pedDemandStep       2390.9 ms  31.9%  (of which ped.frozenPos 1106.7 ms = 14.8%)
+    engineStep          1628.1 ms  21.8%  (engine.plan 9.3%, willPass 5.0%, insert only 0.8%)
+    crossingOccupancy    821.3 ms  11.0%    <-- new, not previously visible
+    publishPeds          316.0 ms   4.2%
+    pedLowPowerGather    196.2 ms   2.6%
+
+- **`engine.insert` is 0.8% here vs 15.8% on the demo net** ⇒ A16 is a **saturation artifact**, not a
+  general cost: this net is not gridlocked so there is no pending-insertion backlog. A16 still worth fixing
+  (it bites whenever demand exceeds capacity, which is exactly what a user cranking a slider does) but it is
+  **not** on the target's critical path. Good example of why one scenario cannot rank the work.
+
+**Bonus finding from the scenario build (a real scaling defect, worth its own task):** ped spawning under
+`LiveCityConfig.ForSumocfg`'s RouteGraph nav (`SumoRouteGraphNav`) is **O(ped-graph size) per spawn**, and
+the graph scales with **JUNCTION COUNT** (each junction adds crossings/walkingareas/connections). A 40×40
+grid (1 600 junctions, 67 999 lanes) cost ~**390 ms/step for only ~12 spawns/step**, making 20 000 peds
+unreachable; 15×15 @ 500 m (225 junctions) fixed it with **no loss of car capacity** (which tracks lane-km,
+not junction count). ⇒ **A21: make ped spawn not O(graph).** This is why the committed net is 15×15.
+Also: `PERF-HANDOVER.md` §5's `-L2` `ResolveSequenceCore` connection defect did **not** fire on this net at
+up to ~4 920 concurrent cars over 1 000+ steps, so `-L1` was not needed.
+
 ### Remaining known targets (measured, ranked)
 
 - **A16 · `engine.insert` = 15.8% of wall + 1 546 MiB (6.3% alloc)** — **DIAGNOSED (orchestrator, by
