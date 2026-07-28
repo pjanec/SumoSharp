@@ -12,8 +12,9 @@ dotnet run --project samples/HelloTraffic
 dotnet run --project samples/HelloTraffic -- path/to/your/net.net.xml
 ```
 
-Next: [`TOOLS.md`](TOOLS.md) if you want a CLI instead of code · [`SUMOSHARP-API.md`](SUMOSHARP-API.md)
-for the API of record. The pedestrian and live-city tutorials land next, each with its own runnable sample.
+Next: [`TUTORIAL-PEDESTRIANS.md`](TUTORIAL-PEDESTRIANS.md) · [`TUTORIAL-LIVE-CITY.md`](TUTORIAL-LIVE-CITY.md)
+· [`TOOLS.md`](TOOLS.md) if you want a CLI instead of code · [`SUMOSHARP-API.md`](SUMOSHARP-API.md) for the
+API of record.
 
 ## Two ways in, and they are not interchangeable
 
@@ -161,10 +162,8 @@ measurement-discipline #4, and it has already produced one retracted claim.
 
 ## Where to go next
 
-- **Add pedestrians:** [`PEDESTRIANS.md`](PEDESTRIANS.md) is the front door today; a tutorial with a
-  runnable sample lands next.
-- **Couple both into one scene:** [`LIVE-CITY-HARNESS-GUIDE.md`](LIVE-CITY-HARNESS-GUIDE.md) and
-  `src/Sim.LiveCity/README.md`; a tutorial with a runnable sample lands next.
+- **Add pedestrians:** [`TUTORIAL-PEDESTRIANS.md`](TUTORIAL-PEDESTRIANS.md)
+- **Couple both into one scene:** [`TUTORIAL-LIVE-CITY.md`](TUTORIAL-LIVE-CITY.md)
 - **Stream it to a renderer:** [`samples/StreamingLoopback`](../samples/StreamingLoopback) then
   [`samples/MotionReconstruction`](../samples/MotionReconstruction) — the transport contract, then turning
   a sparse low-rate stream into smooth per-frame poses.

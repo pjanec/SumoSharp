@@ -134,7 +134,7 @@ internal static class Program
             : "WARNING: no ped ever promoted -- the interest source or timing needs retuning.");
 
         // 6) Read back a pose with its elevation -- the mandatory-z API every navigation provider
-        //    implements (docs/EXTERNAL-NET-LOADING-DESIGN.md sec3): IPedNavigation.ElevationsAlong for a
+        //    implements (docs/EXTERNAL-NET-VIEWER-DESIGN.md sec4.1 + docs/PEDESTRIAN-NAVMESH-CONTRACT.md): IPedNavigation.ElevationsAlong for a
         //    whole route, and PedLodManager.ElevationOf for one live ped's CURRENT position (resolved
         //    along its own path, never by a nearest-lane search -- so a ped on a bridge follows the
         //    bridge). This fixture's net is 2-D, so every value below is exactly 0.0; the API is the same

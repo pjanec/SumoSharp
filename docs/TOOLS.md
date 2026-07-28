@@ -8,9 +8,10 @@ difference between a measurement and a retraction**.
 a flag list copied into a doc rots, and this repo has already paid for that once. Run `--help`, come here
 for *which tool* and *what to watch out for*.
 
-If you want to drive the engine from your own code rather than a CLI, start with
-[`TUTORIAL-VEHICLES.md`](TUTORIAL-VEHICLES.md). The pedestrian and live-city tutorials are being written
-against their runnable samples and land next.
+If you want to drive the engine from your own code rather than a CLI, the tutorials are a ladder and are
+meant to be read in order: [`TUTORIAL-VEHICLES.md`](TUTORIAL-VEHICLES.md) →
+[`TUTORIAL-PEDESTRIANS.md`](TUTORIAL-PEDESTRIANS.md) → [`TUTORIAL-LIVE-CITY.md`](TUTORIAL-LIVE-CITY.md).
+Each is backed by a runnable sample that `Traffic.sln` compiles.
 
 ## ⚠ Read before you measure anything
 

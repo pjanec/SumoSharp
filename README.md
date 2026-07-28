@@ -80,6 +80,14 @@ doesn't have. Highlights below; precise scope after that.
   à-la-carte package map, "which packages do I install?", and composition diagrams. Runnable
   consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
   `MotionReconstruction`, `EvacDemo`, `GameHostSample`).
+- **📘 Tutorials — drive the engine from your own code:** a three-step ladder, each backed by a runnable
+  sample that `Traffic.sln` compiles (so the snippets cannot rot):
+  [`docs/TUTORIAL-VEHICLES.md`](docs/TUTORIAL-VEHICLES.md) (load a net, spawn traffic, inject external
+  agents cars react to) → [`docs/TUTORIAL-PEDESTRIANS.md`](docs/TUTORIAL-PEDESTRIANS.md) (bake a navmesh,
+  O/D demand, the two-level LOD) → [`docs/TUTORIAL-LIVE-CITY.md`](docs/TUTORIAL-LIVE-CITY.md) (couple both,
+  and measure the coupling causally rather than with a speed threshold). CLI-side companion:
+  [`docs/TOOLS.md`](docs/TOOLS.md) — which of the 17 entry points to run, and the caveats that have each
+  invalidated a real measurement here.
 - **🗂️ Index of the design docs:** [`docs/README.md`](docs/README.md) — `docs/` holds 240+ files (the
   design-first workflow produces a design + tasks + tracker set per feature), so start with the index
   rather than `ls`. It gives entry points per area and explains the status banners, including

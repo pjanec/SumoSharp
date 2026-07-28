@@ -3,8 +3,8 @@
 This repo reimplements SUMO's microscopic traffic-simulation algorithms in C# / .NET 8
 (ECS, data-oriented, parallel-ready) with **behavioral parity to SUMO** as the
 non-negotiable correctness bar. Performance matters, but a faster wrong answer is still
-wrong. Read `docs/DESIGN.md` for the architecture of record; read `docs/TASKS.md` for the current
-work queue. This file is the rules of the road.
+wrong. Read `docs/DESIGN.md` for the architecture of record and `docs/TASKS-TODO.md` for the current
+work queue (`docs/TASKS.md` is now just a redirect to it). This file is the rules of the road.
 
 ## Orientation — read these first, in this order
 
@@ -19,6 +19,12 @@ cold to productive:
 | 4 | **`docs/ENV-GATES.md`** | Every `LIVECITY_*` / `SUMOSHARP_*` / `CITY3D_*` environment gate. **Read before running any A/B or benchmark.** These are process-global, several are behavioural, and one of them breaks 14 goldens when set. Completeness is enforced by a test. |
 | 5 | **`docs/CONSTRAINT-high-realism-artefact-ladder.md`** | Binding. What we may not copy from SUMO. Target its flow, never its method. |
 | 6 | `docs/TASKS-DONE.md` | The archive. Where the full characterisation of finished work lives — check here before concluding something was never done. |
+
+**Driving the engine from code?** The tutorials are a ladder, each backed by a sample `Traffic.sln`
+compiles: `docs/TUTORIAL-VEHICLES.md` → `docs/TUTORIAL-PEDESTRIANS.md` → `docs/TUTORIAL-LIVE-CITY.md`.
+**Running a tool instead?** `docs/TOOLS.md`. **Picking test data?** `scenarios/README.md` — it says which
+datasets have committed SUMO goldens and which are behavioural-only, so you don't cite a benchmark as a
+parity claim.
 
 Then the area you are actually working in: `docs/PEDESTRIANS.md` (pedestrian front door),
 `docs/LIVE-CITY-STATUS.md` + `docs/LIVE-CITY-HARNESS-GUIDE.md` (the coupled demo),

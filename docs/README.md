@@ -20,6 +20,14 @@ The organising rules (and the measurement that produced them) are in
 | [`../scenarios/README.md`](../scenarios/README.md) | **The test data.** What each scenario group is, which have committed SUMO goldens and which are behavioural-only, and which dataset to pick for a given need. |
 | [`../README.md`](../README.md) | What the project is and how to run it. |
 
+## Tutorials — driving the engine from your own code
+
+A three-step ladder, each backed by a runnable sample that `Traffic.sln` compiles, so the snippets cannot
+rot: [`TUTORIAL-VEHICLES.md`](TUTORIAL-VEHICLES.md) (load a net, spawn traffic, inject external agents) →
+[`TUTORIAL-PEDESTRIANS.md`](TUTORIAL-PEDESTRIANS.md) (bake a navmesh, O/D demand, the two-level LOD) →
+[`TUTORIAL-LIVE-CITY.md`](TUTORIAL-LIVE-CITY.md) (couple both, and measure the coupling causally).
+[`TOOLS.md`](TOOLS.md) is the CLI-side companion: which of the 17 entry points to run, and the caveats.
+
 ## How to read a doc in here
 
 **The triad convention.** `CLAUDE.md` mandates design-first, so most features have three files:
