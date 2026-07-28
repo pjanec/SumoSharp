@@ -1,11 +1,20 @@
-# Visual sign-off on a GPU — 3-D terrain, ped elevation, and the baked grid
+# GPU sign-off — 3-D terrain, ped elevation, the baked grid, and the threaded tick
 
 **Audience:** a Claude Code session on a **Windows desktop with a real GPU** and the **Geneva SumoData**
 on local disk. **Branch:** `claude/handoff-docs-implementation-pmdu9z`.
 
 Everything in this work was built and asserted **headlessly** — the numbers are in
-`docs/EXTERNAL-NET-VIEWER-DESIGN.md` §4.1/§7.2 and in `demos/City3D/CityLib.Tests`. What no headless
-VM can do is tell you whether the scene *looks* right. That is the entire job of this session.
+`docs/EXTERNAL-NET-VIEWER-DESIGN.md` §4.1/§7.2, `docs/LIVE-CITY-THREADED-TICK-DESIGN.md` §8, and the
+test suites. What no headless VM can do is tell you whether the scene *looks* right, or whether the
+frame-time hiccup is gone. That is the entire job of this session.
+
+**Two independent things to sign off**, and they are separable — do §4 (looks) and §8 (feels) in
+either order, but do §8's *before* numbers before touching anything:
+
+| | What | Where |
+|---|---|---|
+| **A** | 3-D terrain, ped heights, the baked grid, tinted zones | §4 checklist |
+| **B** | The threaded engine tick — did the 100–200 ms hiccup actually die? | §8 checklist |
 
 > **Read `CLAUDE.md` at the repo root before changing anything.** Design-first; parity is the iron law;
 > never edit `Sim.Core` for viewer work. If you find a bug here, **report it with a screenshot and the
@@ -25,7 +34,13 @@ Three things landed, all of them about **height**:
 2. **`SumoNavMesh` is no longer a flat provider.** It records which baked polygon each waypoint came
    from and reads the height off that polygon. This matters because City3D's `PedSimSource` routes on
    it.
-3. **The viewer's ground datum is no longer flat.** A `TerrainField`, baked on net load from
+3. **The engine tick runs on its own thread.** `Tick()` → `LiveCitySim.Step()` used to run *inside*
+   `_Process`, so every frame that crossed a tick boundary blocked for a whole engine step — the
+   100–200 ms hiccup ~110×/minute you timed with a metronome, which is exactly the 2 Hz tick. The sim
+   now runs on a producer thread and the render thread reads only published state. Engine parallelism
+   is also capped (4 cores reserved for render + driver), because a producer saturating every core
+   would have starved the renderer and left the hitch in place.
+4. **The viewer's ground datum is no longer flat.** A `TerrainField`, baked on net load from
    `Lane.ShapeZ`, defines a ground height everywhere. The grey grid is baked over the net and draped
    over it; the zone tint subdivides so its interior follows it; POI markers, doors, building bases,
    traffic-light poles and the realism ring follow it for free (they all go through
@@ -240,3 +255,86 @@ Reference docs, if you need to go deeper:
   the headless assertions behind T1/T2.
 - `tests/Sim.Pedestrians.Tests/PedElevationMultiLevelTests.cs` — the synthetic stacked-deck fixture
   behind T4's last item.
+
+
+---
+
+## 8. Part B — did the threaded tick actually kill the hiccup?
+
+Design of record: **`docs/LIVE-CITY-THREADED-TICK-DESIGN.md`** — §1 the measured problem, §8 what
+landed and every deviation from the original plan. Stages 2 and 3 are implemented and headlessly
+gated; **this is the half no VM can settle.**
+
+### 8.1 Get a BEFORE number first — do this before anything else
+
+The instrument (Stage 1) is already in: an on-screen HUD plus `--frame-log=<path>`, one CSV row per
+frame with header `frame,frame_ms,sim_ticks,live_cars,live_peds,sim_time`. The headline figure is
+**frames > 3× p50**, shown live on the HUD as `spikes(>3x p50)`.
+
+If you can still get at the pre-threading build (the commit before `61c4085`, or a stash), capture a
+before-run at the **same** scenario and the **same** slider settings you'll use after. If you can't,
+say so — the design's §1 records the metronome observation (100–200 ms, ~110/min at ~4 000 cars +
+8 000 peds) and that is the baseline to beat, but a measured before-run is much better.
+
+```powershell
+godot --path <repo>\demos\City3D\Viewer -- --live-city --sumocfg "<geneva>\<cut>\scenario.sumocfg" ^
+      --frame-log=before.csv
+```
+
+### 8.2 The checklist
+
+Run at a density where the hiccup was obvious — **~4 000 cars + ~8 000 peds** is the configuration
+it was reported at. Use the sliders, let it settle, then let it run a few minutes with the log open.
+
+- [ ] **THE headline: `spikes(>3x p50)` stops climbing.** Watch the counter. Before, it should have
+      been accumulating ~2 per second (one per tick). After, it should be near-static once the scene
+      has settled. **Report the count and the elapsed time**, not "it looks better".
+- [ ] **p99 approaches p50.** Both are on the HUD. A p99 that is still several × p50 means something
+      is still blocking the frame — report both numbers with the car/ped counts.
+- [ ] **`sim ticks this frame` is 0 on most frames.** This field changed meaning: it is now *steps
+      the producer completed since the last frame*, so at 2 Hz against 60 fps it should read 0 on ~29
+      of every 30 frames and 1 occasionally. **If it reads 1 every single frame, the producer is not
+      running and you are on a stale build** — see §6 trap 1.
+- [ ] **`achieved Hz` is a real number and tracks the slider.** Drag the sim-Hz slider 1 → 20. The
+      achieved figure must move with it and must *stop* below the request when the step cost can't
+      keep up (at 4 k + 8 k the honest ceiling is single-digit Hz). A figure that always equals the
+      request, or is pinned at 0, is a bug.
+- [ ] **Motion is still smooth between ticks.** This is the regression risk and it is the one worth
+      the most attention: the render clock was rewritten. Watch a car cruising in a straight line and
+      a car through a junction turn. **Must not** reintroduce the #7 cruise stutter or #8 backward
+      creep. Peds too — they should walk continuously, not step once per tick.
+- [ ] **No rubber-banding.** The new failure mode, distinct from stutter: cars/peds drifting ahead
+      then being yanked back. If you see it, note the sim-Hz setting and the playout-delay slider
+      value — the clock is clamped to published state + one step and the playout delay (default 1 s)
+      is the absorber, so both matter.
+- [ ] **The density and zone dials still work.** They are messages now, applied by the producer at a
+      step boundary rather than immediately. Drag cars, peds, fill-speed, sim-Hz; cycle the realism
+      zone with `H` (Central → Follow → Locked) and fly around in Follow. Everything must respond
+      within a tick or two — and the highlight **ring** must track the camera, since it now draws the
+      zone the sim has *applied* rather than the one just requested.
+- [ ] **Quit cleanly, several times.** Shutdown stops the producer before disposing the sim; a fault
+      here would be a silent process death rather than an error dialog. Also quit *while* dragging a
+      slider at high density.
+- [ ] **Startup log line.** It should now report `tick on producer thread, engine parallelism capped
+      at N of M cores`. **Paste that line** — it tells us the A22 cap resolved sensibly on your box.
+
+### 8.3 If the hiccup is still there
+
+Don't guess — the design has a specific next step. Capture `--frame-log` and check `sim_ticks`
+against `frame_ms`: if the spike frames are the ones with `sim_ticks >= 1`, the sim is somehow still
+on the render thread (stale build). If the spikes are on frames with `sim_ticks == 0`, the tick is
+genuinely off the frame path and the remaining hitch is something else — the renderer, the driver, or
+GC — and that is a new finding worth its own trace rather than more threading.
+
+### 8.4 Known and expected for Part B
+
+1. **`sim ticks this frame` changed meaning** (steps observed since the last frame, not steps
+   executed in it). 0 is the healthy value.
+2. **The achieved rate is now capped by step cost, not by the frame loop.** At high density the
+   slider will visibly fail to reach 20 Hz. That is honest, not broken.
+3. **Engine parallelism is capped at `cores - 4`.** So the headless throughput numbers in
+   `LIVE-CITY-PERF-SESSION-LOG.md` (measured uncapped) do not transfer to the viewer. Proven not to
+   change any trajectory — 11 889 car+ped samples bitwise identical, capped vs uncapped.
+4. **`Tick`/`Sample`/`SampleCars`/`SampleCrossingSignals` throw** once the producer is running. If
+   you see one of those exceptions, it is a viewer call site that still reaches into the live sim —
+   report the stack, it is a real bug and a one-line fix.
