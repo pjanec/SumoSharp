@@ -416,6 +416,10 @@ no engine optimization is a prerequisite for fixing the smoothness.
       (3) the render thread currently **writes** to the sim — `PushLcZone()` → `SetLcRealismZone(...)`, and
       `SampleCars()` hands back `LiveCitySim`'s **shared reused scratch buffer**; (4) `TlStateByLane` is a
       `Dictionary` read every frame while the tick mutates it.
+      ⚠ **Do Stage 2 together with A22 (cap engine parallelism).** Both parallel regions are currently
+      unbounded (up to all 24 logical cores), so the producer thread will crowd out the renderer and the
+      display driver — a threaded tick that still saturates every core can leave frame hitches in place.
+      Leave ~2–4 cores for render + driver.
       *Success:* on Stage 1's numbers, at the same scenario/counts, **frames > 3× p50 → ~0** and p99
       approaches p50; no DR regression (must not reintroduce the #7 cruise stutter or #8 backward creep).
 - [ ] **Stage 3 — zero-alloc ped handoff.** Replace the per-ped-per-step reference-type `PedEvent` batch
@@ -470,6 +474,33 @@ proven identical): target **5 000 cars + 20 000 peds now runs at ~114 ms/step, R
   `departBestLane: true`). **Saturation-only:** 15.8% of wall on the gridlocked demo net, 0.8% at the
   target. Bites exactly when a user cranks density past capacity. Fix = per-edge memo invalidated on each
   successful insertion (a plain within-step memo would *not* be byte-identical).
+- [ ] **A22 · engine parallelism is UNCAPPED in the live-city host — likely using too many cores.**
+  `Engine.MaxParallelism` (`Engine.cs:926`) and `OrcaCrowd.MaxParallelism` (`OrcaCrowd.cs:272`) both default
+  to `MaxDegreeOfParallelism = -1` (TPL default ⇒ up to **all 24 logical processors**), and **nothing in
+  `LiveCitySim`, the viewer, or `Sim.BenchLiveCity` sets either** — only `Sim.BenchCity`/`BenchCrowd`/
+  `BenchPedLod`/`SumoShim` expose a cap. There are now **two** unbounded parallel regions per step: car
+  `plan`+`willPass` (auto ≥256 vehicles) and ped ORCA plan (auto ≥256 high-power agents, enabled in
+  `1c51c25`).
+  **Evidence that 24 is too many** — `PERF-HANDOVER.md`'s on-target sweep on this box (city-3000, car-only):
+  serial 11.48 s · 2t 7.90 · 4t 6.34 · 8t **5.68** · 16t 5.67 · 24t **6.13**; efficiency 73% / 45% / 25% /
+  13% / 8%. So **24 is slower than 8**, 16 buys nothing, and the efficiency knee is ~4 — matching the
+  owner's recollection that ~4 cores was most effective before peds. Aggravating: this box is a **hybrid**
+  Core Ultra 9 275HX (8 P-cores at logical `{0,1,10,11,12,13,22,23}` + E-cores), and unbounded TPL schedules
+  a bandwidth-bound loop onto E-cores.
+  **Viewer-specific and the reason this matters beyond throughput:** the tick currently runs *on the render
+  thread*, so during a tick the engine saturates all 24 logical cores including those Godot and the display
+  driver need — plausibly **lengthening the measured hiccup**. It does not fully go away with threading
+  either: a producer thread's `Parallel.For` still crowds out the renderer, so a cap belongs **inside** the
+  Stage-2 design (leave ~2–4 cores for render + driver), not beside it.
+  **Actions:** (a) add `MaxParallelism` to `LiveCityConfig`, plumbed to **both** `Engine` and `OrcaCrowd`
+  (they are separate settings); (b) expose it in the viewer next to the tick-rate slider; (c) add
+  `--max-parallelism` to `Sim.BenchLiveCity`; (d) sweep **4/6/8/12/24 at ~4 000 cars + 8 000 peds** (the
+  owner's actual viewer configuration) and pick the knee. `DOTNET_PROCESSOR_COUNT` can sweep this with
+  **zero code change** as a first read. Measure on a quiet box — never during a build.
+  **Safety:** thread count must never change results. `Sim.Bench`'s `hashA == hashPar` covers the car side,
+  and `tests/Sim.ParityTests/OrcaParallelStepTests.cs:119` already asserts ORCA bit-identity **under an
+  explicit `MaxParallelism` cap**, so both surfaces are guarded.
+
 - [ ] **A20 · sweep for other `stackalloc … : new …[]` thresholds.** This defect class produced the two
   biggest wins of the night (17.4× and 5.5×): a threshold that silently stopped covering its caller's
   runtime-sized span. Finding a third by accident would be luck, not method.
