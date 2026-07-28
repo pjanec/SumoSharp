@@ -677,6 +677,83 @@ sweeps, and each `PoseAt` does up to **three** O(leg-vertices) polyline walks un
 
 ### A14 (new) · pool the parallel-ORCA per-task scratch — see the A3 regression above.
 
+### A4 · redundant pose recomputation — **WIN, SHIPPED `b6cfcb1` + `c2ff38e`** (−22.4% wall at 20k peds)
+
+- **`b6cfcb1`** — `WalkSegment.RouteLength` cached at construction, replacing a `PathArcMotion.PathLength`
+  re-walk on **every** `Evaluate` call. Implementor correctly found the ctor's existing value was a
+  *different quantity* (Duration = length/speed, not length), so rather than hand-roll a second summation
+  (which could differ in the last bits and drift trajectories) it caches a construction-time call to the
+  **identical pure function** — bit-for-bit what the hot path used to compute.
+- **`c2ff38e`** — a same-instant pose memo. The implementor did the important thing and **declined the
+  unsafe part**: `PedLodManager.Step`'s `frozenPos` queries **start-of-step** (`PedLodManager.cs:699-705`)
+  and was therefore EXCLUDED, while `PedDemand.DespawnArrivals` (`PedDemand.cs:265,268`) and
+  `LiveCitySim`'s low-power gather (`LiveCitySim.cs:1069,1076-1082`) both query **end-of-step** `now+dt`
+  with no pose-affecting mutation between them (despawn only removes arrived ids, which the gather then
+  never visits) — a provably safe overlap. Guarded by a `now` equality check with a byte-identical
+  direct-recompute fallback on any miss. Bonus find from the same reading: `AnimTagOf` and `PositionOf`
+  each invoked `PoseAt` separately for the same `(id, now)`; fused into one `PoseInfoOf` call.
+- **BEFORE / AFTER — orchestrator's OWN paired A/B at 20k peds** (`git checkout 428aac9 -- src/`, rebuild,
+  measure, restore, rebuild, measure), 120 steps, 2 rounds each:
+
+      mean/step  60.827 / 61.367  ->  47.532 / 47.493 ms   (-22.4%, 4/4 paired wins, no overlap)
+      ALL counters identical: peds=19998 ped_hi_end=1296 ped_hi_max=1832 ped_lo_end=18702
+                             ped_lo_max=18702 arrived=0
+
+  I verified this myself rather than trusting the implementor's 400-ped check, because a pose memo is the
+  one change tonight with real behaviour-change risk and 400 peds barely exercises it.
+- **Gates:** ParityTests 775/4 skips, LiveCity 80/80, Pedestrians 317/317, `Sim.Bench BF3794A4704BCD79`
+  `hashA == hashPar`. **Verdict: WIN.**
+
+### A14 · pool the ORCA worker `ScratchSet` — **NULL, REVERTED** (hypothesis falsified)
+
+- **Hypothesis:** `Parallel.For`'s `localInit: () => new ScratchSet()` (`OrcaCrowd.cs:578`, `:623`) runs per
+  TASK; with per-index partitioning that could be ~one fresh scratch set per agent per step, each re-growing
+  every buffer from capacity 1 → the 222 MB/step.
+- **Change:** a `ConcurrentBag<ScratchSet>` pool rented in `localInit` / returned in `localFinally`.
+- **AFTER:** alloc/step **255,517,684 → 253,523,736 (−0.8%)** — noise. Counters identical (so it was safe,
+  just pointless). **Verdict: NULL, reverted.**
+- **Lesson:** the falsifying observation was available and I should have taken it FIRST — the **serial**
+  path uses a single `_scratch` instance for the whole run and allocated the same ~243 MB/step. That alone
+  ruled out scratch construction before I wrote a line. Cheap disproof beats plausible mechanism.
+
+### A15 · `HalfPlaneLp.LinearProgram3` projected-lines buffer — IN PROGRESS (delegated)
+
+**Localized by splitting the phase, after THREE successive source-reasoned guesses were all wrong**
+(I chased `CompositeFootprintSource.QueryNear`, then `CrosswalkSignals`, then `ScratchSet` pooling).
+Splitting `ped.orcaStep` into `orcaDiscs` / `orcaRouteGoals` / `orcaCrowdStep` settled it in one run:
+
+    ped.orcaCrowdStep   6866 ms  50.1% wall   13801.63 MiB  92.2% alloc
+    ped.orcaRouteGoals    54 ms   0.4% wall       0.00 MiB   0.0% alloc
+    ped.orcaDiscs          0 ms   0.0% wall       0.00 MiB   0.0% alloc
+
+**Root cause — the SAME BUG SHAPE AS A13, in a second place.** `HalfPlaneLp.cs:141-145`:
+`projLines = lines.Length <= 64 ? stackalloc OrcaLine[lines.Length] : new OrcaLine[lines.Length]`.
+`MaxNeighbours` is **uncapped** in production (`OrcaCrowd.cs:189-197`; `PedLodManager` never sets it), so at
+this pocket density an agent has ~283 agent-lines inside the 15 m `NeighbourDist` plus obstacle lines —
+far over 64. `OrcaLine` is 32 B, and LP3 runs whenever `LinearProgram2` reports infeasible, which is
+constant in a dense jam ⇒ tens of KB heap per call, ≈38 KB per agent per step.
+Fix (delegated): thread a caller-owned `ProjLineScratch` from `OrcaCrowd.ScratchSet` (per-worker on the
+parallel path, single instance on serial) through `OrcaSolver` into LP3, keeping today's stackalloc/heap
+path as the fallback so `ShapedVoSolver` is unaffected. Byte-identity rests entirely on "LP3 never reads a
+`projLines` index it did not write this call" — the implementor is required to verify that, because a
+reused buffer is not zeroed whereas both current paths are.
+
+### Coupled measurement — 3 009 cars + 19 993 peds (the closest available proxy to the target)
+
+    mean 226.0 ms/step  p50 216.7  p99 358.6  RTF 2.21x  REALTIME yes (vs 500 ms budget @ dt=0.5)
+    alloc 255 MB/step (24.4 GiB total)  GC pause 8.9% of wall  gen0 1261  peak WS 910 MiB
+    ped_hi_end 6388 high-power / 13605 low-power
+
+- **`ped_hi_end` is 6 388 here vs 1 296 in the ped-only run at the SAME static 70 m pocket** — cars cause
+  peds to queue at crossings and accumulate inside the pocket, so **adding cars multiplies the ORCA
+  workload ~5×**. This is a genuine coupling effect and it is exactly why the design doc forbade assuming
+  the coupled cost is additive.
+- **Parallel ORCA is worth 5× HERE, not 30%:** serial 1154.5 ms vs parallel 232.0 ms/step at 6 134
+  high-power (`LIVECITY_PEDPARALLELORCA` A/B). The ped-only run understated A3's value by 4×.
+- `engine.insert` = 15.8% of wall and 1 546 MiB (6.3% alloc) — **new, unexplained, worth a look** (A16).
+- `carYieldMetric` = 4.7% of wall now that cars exist (the O(on-crossing peds × cars) structure I
+  deliberately did not restructure in B1) ⇒ A17.
+
 ---
 
 ## REVISED PLAN (post-A1) — the ladder must be made VALID before any optimization

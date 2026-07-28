@@ -856,6 +856,11 @@ public sealed class PedLodManager
         var tOrcaStep = PhaseStart();
         if (_highPowerLiveCount > 0)
         {
+            // A14: split into three sub-phases -- `ped.orcaStep` was 50.4% of wall and 91.7% of ALL
+            // allocation at 6 388 high-power agents, but it wraps three distinct calls, so the aggregate
+            // could not be aimed at. Attributing them separately is what the measurement discipline
+            // requires (three successive source-reasoned guesses at the allocator were all wrong).
+            var tOrcaDiscs = PhaseStart();
             var discs = new WorldDisc[externalEntities.Count];
             for (var i = 0; i < discs.Length; i++)
             {
@@ -863,8 +868,15 @@ public sealed class PedLodManager
             }
 
             _highCrowd.SetExternalObstacles(discs);
+            PhaseEnd("orcaDiscs", tOrcaDiscs);
+
+            var tOrcaGoals = PhaseStart();
             _highController.Update();
+            PhaseEnd("orcaRouteGoals", tOrcaGoals);
+
+            var tOrcaCrowd = PhaseStart();
             _highCrowd.Step(dt);
+            PhaseEnd("orcaCrowdStep", tOrcaCrowd);
         }
         PhaseEnd("orcaStep", tOrcaStep);
 
