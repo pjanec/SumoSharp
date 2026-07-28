@@ -56,6 +56,20 @@ public sealed class Reconstructor
 
     private readonly DrClock _clock = new();
     private readonly KinematicReconstructor _recon = new() { CoarseFeed = true };
+
+    // Preallocated buffers for the PARALLEL per-vehicle pass (see Reconstruct). Grown only when the vehicle
+    // population exceeds capacity => no steady-state allocation on the render path.
+    private VehicleHandle[] _handleBuf = new VehicleHandle[512];
+    private IVehicleSampleHistory[] _histBuf = new IVehicleSampleHistory[512];
+    private ReconstructedVehicle[] _slotBuf = new ReconstructedVehicle[512];
+    private bool[] _keepBuf = new bool[512];
+
+    // Leave headroom for the render thread and the display driver -- this loop runs ON the render thread
+    // (same reasoning as A22's engine-side cap, and as CityLib.PedReconstructor's).
+    private readonly System.Threading.Tasks.ParallelOptions _carParallelOptions = new()
+    {
+        MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 4),
+    };
     private readonly List<ReconstructedVehicle> _scratch = new();
     private readonly Stopwatch _wall = Stopwatch.StartNew();
     private double _lastWallSec = -1.0;
@@ -147,6 +161,102 @@ public sealed class Reconstructor
         }
 
         _scratch.Clear();
+
+        // PARALLEL per-vehicle pass, but ONLY on the pure branch. Measured on GPU: car reconstruction was
+        // ~1.7 us/car => ~17 ms/frame at 10 000 cars, view-independent, and the largest reconstruction cost
+        // once peds were parallelised. Per-vehicle independent: `DrClock.ResolveAt` is PURE (verified -- no
+        // field writes), and the two pieces of per-vehicle state it feeds (`KinematicReconstructor
+        // ._lookAheadPrev`, `KinematicHeading._state`) are now ConcurrentDictionary, one handle per worker.
+        //
+        // GATED on `deterministicSampleT` because the OTHER branch calls `_clock.Resolve(...)`, whose purity
+        // I have NOT established -- it is the Stopwatch/rate-fit path used by the DDS and replay call sites.
+        // Those stay serial rather than being parallelised on an unverified assumption. The live-city viewer
+        // always supplies `renderSimClock`, so it always takes the parallel path.
+        //
+        // Snapshotting the history keys first is also defensive: it keeps the dictionary enumeration short
+        // instead of holding an enumerator across the whole heavy pass (cf. the HistoryView race fixed in
+        // LiveCitySim.SelfPumpVehicleBus).
+        if (deterministicSampleT is { } parallelSampleT)
+        {
+            var count = 0;
+            foreach (var kv in source.History)
+            {
+                if (count >= _handleBuf.Length)
+                {
+                    var cap = _handleBuf.Length * 2;
+                    Array.Resize(ref _handleBuf, cap);
+                    Array.Resize(ref _histBuf, cap);
+                    Array.Resize(ref _slotBuf, cap);
+                    Array.Resize(ref _keepBuf, cap);
+                }
+
+                _handleBuf[count] = kv.Key;
+                _histBuf[count] = kv.Value;
+                count++;
+            }
+
+            var handles = _handleBuf;
+            var hists = _histBuf;
+            var slots = _slotBuf;
+            var keep = _keepBuf;
+
+            System.Threading.Tasks.Parallel.For(0, count, _carParallelOptions, i =>
+            {
+                keep[i] = false;
+                var h = handles[i];
+                var hist = hists[i];
+                if (hist.Count == 0 || !source.Dims.TryGetValue(h, out var d))
+                {
+                    return;
+                }
+
+                DrClock.Resolved res;
+                try
+                {
+                    res = _clock.ResolveAt(hist, parallelSampleT, lanes);
+                }
+                catch (KeyNotFoundException)
+                {
+                    return; // lane geometry not arrived yet -- skip this vehicle this frame (as serial did)
+                }
+
+                var rr = _recon.Resolve(h, res, lanes, (d.Length, d.Width), frameDt);
+                if (!rr.Ok)
+                {
+                    return;
+                }
+
+                var (px, py, pz) = _frame.ToGodot(rr.CenterX, rr.CenterY, rr.Z);
+                var yaw = CoordinateTransform.NaviDegToGodotYawRad(rr.HeadingDeg);
+
+                var st = res.State with { Length = d.Length, Width = d.Width };
+                Span<int> upBuf = stackalloc int[UpcomingLanes.Count];
+                var un = res.Upcoming.CopyTo(upBuf);
+                if (un == 0)
+                {
+                    upBuf[0] = st.LaneHandle;
+                    un = 1;
+                }
+
+                var pitch = ComputePitchRad(lanes, st, upBuf[..un]);
+
+                slots[i] = new ReconstructedVehicle(
+                    h, px, py, pz, yaw, pitch, d.Length, d.Width, (float)rr.Speed);
+                keep[i] = true;
+            });
+
+            // Serial compaction in snapshot order -- the MultiMesh assigns instance index by position, so a
+            // reshuffled list would reshuffle which instance draws which car every frame.
+            for (var i = 0; i < count; i++)
+            {
+                if (keep[i])
+                {
+                    _scratch.Add(slots[i]);
+                }
+            }
+
+            return _scratch;
+        }
 
         Span<int> upcomingBuf = stackalloc int[UpcomingLanes.Count];
 
