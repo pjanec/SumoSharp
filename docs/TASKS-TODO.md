@@ -601,6 +601,46 @@ proven identical): target **5 000 cars + 20 000 peds now runs at ~114 ms/step, R
   is both the demo dataset and a committed regression fixture. Detail: `TASKS-DONE.md` → "Deferred — detach
   the live-city DEMO data".
 
+## ⚠ The drop-in binary runs three junction gates OFF that everything else runs ON
+
+**Found 2026-07-28 while inventorying the env gates for `docs/ENV-GATES.md`. Verified in source, not
+inferred.** This is an engine-behaviour bug in the `sumosharp` drop-in CLI — the binary the SumoData
+pipeline invokes via `SUMO_BINARY` — not a documentation problem.
+
+`src/Sim.Sumo/SumoShim.cs` sets three gates with the two-state form
+`GetEnvironmentVariable(name) == "1"`, which **forces `false` whenever the variable is absent**. All three
+`Engine` defaults are now `true`:
+
+| Gate | `Engine` default | via `SumoShim`, env unset |
+| --- | --- | --- |
+| `SUMOSHARP_CONTTURNFIX` → `ContTurnInsideJunctionGate` (`Engine.cs:12968`) | `true` | **`false`** (`SumoShim.cs:260`) |
+| `SUMOSHARP_ISLEADERFIX` → `JunctionIsLeaderGate` (`Engine.cs:13110`) | `true` | **`false`** (`SumoShim.cs:267`) |
+| `SUMOSHARP_INTERNALJUNCTIONFIX` → `InternalJunctionAdmissionGate` (`Engine.cs:13148`) | `true` | **`false`** (`SumoShim.cs:274`) |
+
+All three source comments still assert `Unset/non-"1" => false, the Engine default`. That was true when
+written and false from the same commit onward.
+
+**The irony is the useful part of the diagnosis.** PR #13 (`604ad72`) both flipped the seven gates ON *and*
+introduced `LiveCitySim.EnvGate` specifically to prevent this, with a comment naming the failure mode
+exactly: a two-state override "silently FORCES OFF whenever the variable is absent… became a live bug the
+moment the defaults flipped to true", and the resulting report "would have looked like a failed fix rather
+than a wiring mistake." `LiveCitySim` was fixed in that commit. `SumoShim` was not.
+
+**Why CI is green:** the tests that touch these gates (`InternalJunctionAdmissionEndToEndTests`,
+`LowDensityTeleportTests`) set them explicitly to `"1"`, so nothing exercises the unset shim path. The
+goldens go through `Engine` directly, so they are unaffected — which is exactly why this survived.
+
+**The fix is one line each** (switch to `EnvGate`-style fallback), **but it is behavioural**: it changes the
+drop-in binary's default trajectories. So it needs the full treatment, not a quiet edit — goldens **and**
+the open-loop discharge test, per the two hard constraints in the discharge section below. Worth checking
+whether it explains any SumoData-side measurement taken through `SUMO_BINARY`, since every one of those
+runs had three gates off.
+
+- [ ] **Fix the three `SumoShim` gates to fall back to the engine default**, correct the three now-false
+      comments, and add a test covering the **unset** shim path (nothing does today). Then tighten
+      `EnvGateDocumentationTests` to also assert the safe read form, which it deliberately does not assert
+      while this bug is open. Reference: `docs/ENV-GATES.md` §"The three-state trap".
+
 ## Surfaced by the docs audit (2026-07-28) — real open work that lived only in a doc
 
 These were found by the housekeeping pass described in `docs/DOCS-HOUSEKEEPING-PLAN.md`, which read all

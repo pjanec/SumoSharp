@@ -16,6 +16,7 @@ The organising rules (and the measurement that produced them) are in
 | [`DESIGN.md`](DESIGN.md) | **The architecture of record.** ECS layout, the plan/execute split, the command buffer, determinism. |
 | [`TASKS-TODO.md`](TASKS-TODO.md) | **The live queue.** Open items only, with the current standing gate at the top. The single authority on what is in flight and who owns it. |
 | [`TASKS-DONE.md`](TASKS-DONE.md) | The archive of completed work, with the full characterisation of each item. |
+| [`ENV-GATES.md`](ENV-GATES.md) | **Every environment gate**, what it sets, and what an *unset* value means. Read before any A/B or benchmark: they are process-global, several are behavioural, and one breaks 14 goldens when set. Completeness enforced by a test. |
 | [`../README.md`](../README.md) | What the project is and how to run it. |
 
 ## How to read a doc in here

@@ -84,6 +84,16 @@ doesn't have. Highlights below; precise scope after that.
   design-first workflow produces a design + tasks + tracker set per feature), so start with the index
   rather than `ls`. It gives entry points per area and explains the status banners, including
   `HISTORICAL TRAIL` for docs that record a hypothesis later disproved.
+- **🧭 Landing cold?** [`CLAUDE.md`](CLAUDE.md) opens with a six-doc reading order plus the three traps
+  that most often waste a first session — including the two test projects `dotnet build` does *not* build.
+- **🎚️ Before you benchmark or A/B anything:** [`docs/ENV-GATES.md`](docs/ENV-GATES.md) — all 34
+  `LIVECITY_*` / `SUMOSHARP_*` / `CITY3D_*` environment gates, what each sets, what an *unset* value means,
+  and whether it is behavioural, refuted, perf-only or diagnostic. They are **process-global**, so an
+  inherited shell value is indistinguishable from a deliberate one; one gate silently breaks 14 goldens
+  when set. The inventory is completeness-checked by a test, so it cannot drift out of date.
+- **📋 The live work queue:** [`docs/TASKS-TODO.md`](docs/TASKS-TODO.md) — open items with evidence, and
+  the single authority on the current gate numbers (every other doc's copy of a test count has rotted at
+  least once).
 - **📐 Design of record:** [`docs/DESIGN.md`](docs/DESIGN.md) (engine & parity) ·
   [`docs/SUMOSHARP-PACKAGING-DESIGN.md`](docs/SUMOSHARP-PACKAGING-DESIGN.md) (packaging) ·
   [`docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md`](docs/SUMOSHARP-VIEWER-DR-SMOOTHING.md) (dead-reckoning &
