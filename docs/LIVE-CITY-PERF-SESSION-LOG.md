@@ -843,6 +843,69 @@ not junction count). ⇒ **A21: make ped spawn not O(graph).** This is why the c
 Also: `PERF-HANDOVER.md` §5's `-L2` `ResolveSequenceCore` connection defect did **not** fire on this net at
 up to ~4 920 concurrent cars over 1 000+ steps, so `-L1` was not needed.
 
+### A17 · spatial index for `CrossingOccupancySource.QueryNear` — **WIN, SHIPPED `a9a69b2`** (tail ELIMINATED)
+
+- **Problem:** `QueryNear` was a **linear scan over every occupied disc**
+  (`CrossingOccupancySource.cs:131`), called once per moving low-power ped per step by the
+  `carYieldObservations` diagnostic ⇒ **O(peds × occupied discs)**, measured at **25.6% of wall** at the
+  target. The same `QueryNear` is also a child of the `CompositeFootprintSource` on `Engine.CrowdSource`, so
+  all four vehicle crowd-query sites (`Engine.cs:9908, 10026, 10325, 10694`) paid it too — fixed at the
+  source rather than special-casing the metric.
+- **Change:** uniform spatial grid over `_occupied`, rebuilt once per `Update()`, mirroring
+  `OrcaCrowd.RebuildGrid`/`GridCandidates`; per-call `ring = ceil((radius + pedRadius) / CellSize)` because
+  `radius` varies per call site (0.01 m for the metric's point probe up to `speed*3 + len + 5` for vehicles).
+- **Two correctness catches by the implementor, both load-bearing:**
+  1. **`WorldDiscQuery.InsertNearest` breaks distance ties by keeping the INCUMBENT** (its guard is `>=`,
+     not `>`), so **visit order is part of the result**. Restored by sorting the gathered candidate indices
+     ascending — which exactly reproduces the brute-force scan order because `RebuildGrid` puts each disc in
+     exactly one cell. Had this been missed, results would have diverged only at high density, where no
+     small test would have caught it.
+  2. **`QueryNear` is called from `Parallel.For` workers** — `Engine.UseParallelPlan` auto-enables above
+     `ParallelPlanThreshold = 256` vehicles, so it is ON for the 5 000-car target, and `ComputeMoveIntent`
+     calls `QueryNear` concurrently. `ICrowdFootprintSource.QueryNear` has no per-worker scratch parameter
+     (unlike `OrcaCrowd.ScratchSet`), so a shared instance buffer would have been a **data race**. Used
+     `ArrayPool<int>.Shared`. I did not flag this in the brief; the implementor found it.
+- **BEFORE / AFTER — orchestrator's paired A/B at the FULL TARGET** (`cars=5000 peds=20000`, `arrived=733`
+  identical in every arm):
+
+      mean/step   133.1 / 124.8  ->  114.1 / 113.2 / 115.1 ms   (~-12%)
+      p99         337.3 / 283.8  ->  207.2 / 202.6 / 213.3 ms   (~-33%)
+      steps >3x p50   11/60, 7/60  ->  0/60, 0/60, 0/60          <-- THE TAIL IS GONE
+      RTF          3.76 / 4.01   ->  4.38 / 4.42 / 4.34
+
+- **This is the smoothness fix, not just a throughput fix.** The A12 entry flagged an algorithmic tail
+  (7/60 steps over 3× p50, GC ruled out at 0.92% pause). That tail was this: the metric's cost spikes with
+  the number of occupied crossing discs, which fluctuates as ped platoons hit crossings. Indexing removed
+  the spikes entirely — **0/60 in three consecutive runs**.
+- **Gates:** ParityTests 775/4 skips, LiveCity 80/80, Pedestrians 317/317, `Sim.Bench BF3794A4704BCD79`
+  `hashA == hashPar`. Paired identity at two densities including the **`CarYieldObservations` counter
+  itself** (1 789 — matching B1's historical baseline exactly — and 14 606), since that counter is the
+  direct output of the changed code and a single-unit move would mean changed behaviour. **Verdict: WIN.**
+
+---
+
+## ⭐ FINAL STATE AT THE OWNER'S TARGET (5 000 cars + 20 000 peds, both fully achieved)
+
+    mean 113-115 ms/step   p50 ~94   p99 ~203-213   steps>3x p50: 0/60
+    RTF 4.34-4.42x real-time   alloc 8.83 MB/step   GC pause ~0.9%   gen2 = 0
+
+**Cumulative session deltas (all byte-identical or behaviour-verified, all gated):**
+
+| surface | before | after | factor |
+|---|---|---|---|
+| ped-only 20 000, mean ms/step | 110.5 | 47.5 | **2.33×** |
+| ped-only 20 000, p99 ms | 201.4 | ~61 | **3.3×** |
+| target 5 000+20 000, mean ms/step | 133.1 | ~114 | **1.17×** |
+| target 5 000+20 000, p99 ms | 337.3 | ~207 | **1.63×** |
+| target, spike steps (>3× p50) | 11/60 | **0/60** | eliminated |
+| car-only 500, alloc/step | 10,167,913 B | 585,744 B | **17.4×** |
+| coupled 3 000+20 000, alloc/step | 264 MB | 48 MB | **5.5×** |
+| coupled 3 000+20 000, GC pause | 9.0% of wall | 2.5% | **3.6×** |
+
+**The honest headline:** the target runs at **~4.4× real-time at 2 Hz with a flat step-time distribution**.
+It does **not** yet meet a 10 Hz budget (100 ms) — mean ~114 ms is just over. Closing that needs roughly a
+further 1.2×, and the ranked candidates below (A19 neighbour cap is the big one) plausibly cover it.
+
 ### Remaining known targets (measured, ranked)
 
 - **A16 · `engine.insert` = 15.8% of wall + 1 546 MiB (6.3% alloc)** — **DIAGNOSED (orchestrator, by
