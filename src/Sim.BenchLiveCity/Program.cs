@@ -717,6 +717,11 @@ static double Mean(double[] values)
 // PhaseTicks merges them in, prefixed "engine.") are a SUB-DIVISION of the single "engineStep" entry
 // above (the one call into _engine.Step()), not siblings of it -- summing both would double-count
 // engineStep's wall time. They are printed separately, as a nested breakdown OF engineStep.
+//
+// B2 (LIVE-CITY-PERF-SESSION-LOG.md): same treatment for PedLodManager.Step's sub-phases, merged in
+// prefixed "ped." -- a breakdown OF the single "pedDemandStep" top-level entry, printed with its own
+// explicit remainder line (sum of ped.* vs pedDemandStep itself) so a gap in the ped-side
+// instrumentation is visible rather than silently absorbed into "unaccounted" above.
 static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, CultureInfo inv)
 {
     var toMs = 1000.0 / Stopwatch.Frequency;
@@ -730,16 +735,21 @@ static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, CultureInfo inv)
 
     var own = new List<KeyValuePair<string, long>>();
     var enginePhases = new List<KeyValuePair<string, long>>();
+    var pedPhases = new List<KeyValuePair<string, long>>();
     foreach (var kv in sim.PhaseTicks)
     {
-        (kv.Key.StartsWith("engine.", StringComparison.Ordinal) ? enginePhases : own).Add(kv);
+        if (kv.Key.StartsWith("engine.", StringComparison.Ordinal)) enginePhases.Add(kv);
+        else if (kv.Key.StartsWith("ped.", StringComparison.Ordinal)) pedPhases.Add(kv);
+        else own.Add(kv);
     }
 
     var sumMs = 0.0;
+    var pedDemandStepMs = 0.0;
     foreach (var kv in own.OrderByDescending(kv => kv.Value))
     {
         var ms = kv.Value * toMs;
         sumMs += ms;
+        if (kv.Key == "pedDemandStep") pedDemandStepMs = ms;
         var pct = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
         Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pct.ToString("F1", inv),6}% of wall");
     }
@@ -759,6 +769,25 @@ static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, CultureInfo inv)
             var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
             Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pctWall.ToString("F1", inv),6}% of wall");
         }
+    }
+
+    if (pedPhases.Count > 0)
+    {
+        Console.WriteLine("  ped sub-phases (breakdown OF pedDemandStep above, not additional wall time):");
+        var pedSumMs = 0.0;
+        foreach (var kv in pedPhases.OrderByDescending(kv => kv.Value))
+        {
+            var ms = kv.Value * toMs;
+            pedSumMs += ms;
+            var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
+            Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pctWall.ToString("F1", inv),6}% of wall");
+        }
+
+        var pedRemainder = pedDemandStepMs - pedSumMs;
+        var pedRemainderPct = wallMs > 0 ? 100.0 * pedRemainder / wallMs : 0.0;
+        Console.WriteLine(
+            $"    {"remainder",-28} {pedRemainder.ToString("F1", inv),10} ms   {pedRemainderPct.ToString("F1", inv),6}% of wall"
+            + "   (pedDemandStep - sum of the ped.* sub-phases above)");
     }
 }
 

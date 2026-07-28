@@ -614,6 +614,33 @@ public sealed class PedLodManager
         };
     }
 
+    // Perf diagnostics (docs/LIVE-CITY-PERF-SESSION-LOG.md B2): opt-in per-sub-phase wall-time
+    // accounting for Step(), mirroring Engine.ProfilePhases / LiveCitySim.ProfilePhases EXACTLY in
+    // shape (a bool gate, a name->ticks dictionary, PhaseStart/PhaseEnd via Stopwatch.GetTimestamp).
+    // OFF by default and then effectively free: one bool test per phase per step, GetTimestamp is
+    // never called, nothing allocates. LiveCitySim's ProfilePhases setter forwards to this manager
+    // (like it already does to the wrapped Engine) and merges these ticks in prefixed "ped.", so
+    // `pedDemandStep`'s formerly-opaque 60.9% becomes an aimable breakdown. Never read by any
+    // simulation algorithm -> zero behavioral effect, parity-inert.
+    public bool ProfilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+    public IReadOnlyDictionary<string, long> PhaseTicks => _phaseTicks;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private long PhaseStart() => ProfilePhases ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+
+    private void PhaseEnd(string name, long start)
+    {
+        if (!ProfilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+    }
+
     // Advances every ped by `dt`, from time `now` to `now + dt`:
     //   1. Evaluate promotion/demotion (pure function of frozen ped/source positions + dwell timers),
     //      in ascending ped-id order.
@@ -634,17 +661,24 @@ public sealed class PedLodManager
         // a pure function of frozen state (source positions are start-of-step)") -- every ped queried
         // below sees the exact same source snapshot, regardless of evaluation order. See
         // InterestField.RebuildIndex remarks for why this is O(sources), not O(peds).
+        var tRebuildIndex = PhaseStart();
         interestField.RebuildIndex();
+        PhaseEnd("rebuildIndex", tRebuildIndex);
 
+        var tIdsSort = PhaseStart();
         var ids = new List<int>(_peds.Keys);
         ids.Sort(); // ascending ped-id order -- deterministic evaluation and application
+        PhaseEnd("idsSort", tIdsSort);
 
+        var tFrozenPos = PhaseStart();
         var frozenPos = new Dictionary<int, Vec2>(ids.Count);
         foreach (var id in ids)
         {
             frozenPos[id] = PositionOf(id, now);
         }
+        PhaseEnd("frozenPos", tFrozenPos);
 
+        var tLodDecide = PhaseStart();
         var toPromote = new List<int>();
         var toDemote = new List<int>();
         foreach (var id in ids)
@@ -685,10 +719,12 @@ public sealed class PedLodManager
                 }
             }
         }
+        PhaseEnd("lodDecide", tLodDecide);
 
         // Promotions: PathArc -> FreeKinematic. Adds ONLY this ped to the persistent high-power
         // OrcaCrowd (carrying its frozen position + PathArc-derived velocity forward) and registers
         // ONLY its route -- every already-high ped's handle/route is untouched (P0-3).
+        var tPromoteApply = PhaseStart();
         foreach (var id in toPromote)
         {
             var e = _peds[id];
@@ -712,11 +748,13 @@ public sealed class PedLodManager
 
             _publisher.PublishSwitch(id, PedDrModel.PathArc, PedDrModel.FreeKinematic, now);
         }
+        PhaseEnd("promoteApply", tPromoteApply);
 
         // Demotions: FreeKinematic -> PathArc. Re-routes from the ped's CURRENT (frozen) position to
         // its destination via IPedNavigation (see the class remarks for why re-route rather than
         // resume), then Removes ONLY this ped's OrcaCrowd handle and route -- every other high-power
         // ped's handle/route/waypoint cursor is untouched (P0-3).
+        var tDemoteApply = PhaseStart();
         foreach (var id in toDemote)
         {
             var e = _peds[id];
@@ -765,7 +803,9 @@ public sealed class PedLodManager
                 _publisher.PublishSwitch(id, PedDrModel.FreeKinematic, PedDrModel.PathArc, now);
             }
         }
+        PhaseEnd("demoteApply", tDemoteApply);
 
+        var tOrcaStep = PhaseStart();
         if (_highPowerLiveCount > 0)
         {
             var discs = new WorldDisc[externalEntities.Count];
@@ -778,6 +818,7 @@ public sealed class PedLodManager
             _highController.Update();
             _highCrowd.Step(dt);
         }
+        PhaseEnd("orcaStep", tOrcaStep);
 
         var newNow = now + dt;
 
@@ -791,6 +832,7 @@ public sealed class PedLodManager
         // publisher's documented "samples are consecutive => one crowd frame per step" contract. Both passes
         // keep ascending-id order, so the wire event sequence stays fully deterministic; heartbeats carry no
         // pose, so their relative position does not affect any reconstruction.
+        var tPublishSamples = PhaseStart();
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -799,7 +841,9 @@ public sealed class PedLodManager
                 _publisher.PublishSample(id, newNow, _highCrowd.Position(e.HighIndex), _highCrowd.Velocity(e.HighIndex));
             }
         }
+        PhaseEnd("publishSamples", tPublishSamples);
 
+        var tPublishHeartbeats = PhaseStart();
         foreach (var id in ids)
         {
             var e = _peds[id];
@@ -808,6 +852,7 @@ public sealed class PedLodManager
                 _publisher.MaybePublishHeartbeat(id, newNow);
             }
         }
+        PhaseEnd("publishHeartbeats", tPublishHeartbeats);
     }
 
 }

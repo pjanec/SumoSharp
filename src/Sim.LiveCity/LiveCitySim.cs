@@ -824,6 +824,21 @@ public sealed class LiveCitySim : IDisposable
         {
             _profilePhases = value;
             _engine.ProfilePhases = value;
+            // B2 (LIVE-CITY-PERF-SESSION-LOG.md): also forward to the ped LOD manager AND the ped
+            // demand layer so their sub-phases -- PedLodManager's (rebuildIndex/idsSort/frozenPos/
+            // lodDecide/promoteApply/demoteApply/orcaStep/publishSamples/publishHeartbeats) and
+            // PedDemand's own (spawnDue/despawnArrivals, the work in PedDemand.Step OUTSIDE the
+            // _lodManager.Step call) -- profile alongside this host's. Both are merged in below,
+            // prefixed "ped.", as one breakdown OF this host's "pedDemandStep" phase.
+            if (_manager is not null)
+            {
+                _manager.ProfilePhases = value;
+            }
+
+            if (_demand is not null)
+            {
+                _demand.ProfilePhases = value;
+            }
         }
     }
 
@@ -838,7 +853,11 @@ public sealed class LiveCitySim : IDisposable
     {
         get
         {
-            if (_engine.PhaseTicks.Count == 0)
+            var lodTicks = _manager?.PhaseTicks;
+            var demandTicks = _demand?.PhaseTicks;
+            var hasLod = lodTicks is { Count: > 0 };
+            var hasDemand = demandTicks is { Count: > 0 };
+            if (_engine.PhaseTicks.Count == 0 && !hasLod && !hasDemand)
             {
                 return _phaseTicks;
             }
@@ -847,6 +866,22 @@ public sealed class LiveCitySim : IDisposable
             foreach (var kv in _engine.PhaseTicks)
             {
                 merged["engine." + kv.Key] = kv.Value;
+            }
+
+            if (hasLod)
+            {
+                foreach (var kv in lodTicks!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            if (hasDemand)
+            {
+                foreach (var kv in demandTicks!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
             }
 
             return merged;

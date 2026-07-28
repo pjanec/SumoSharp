@@ -197,6 +197,33 @@ public sealed class PedDemand
     /// Every arrival, in arrival order.
     public IReadOnlyList<PedArrivalEvent> ArrivalEvents => _arrivalEvents;
 
+    // Perf diagnostics (docs/LIVE-CITY-PERF-SESSION-LOG.md B2): opt-in per-sub-phase wall-time
+    // accounting for Step(), same shape as PedLodManager.ProfilePhases (a bool gate, a name->ticks
+    // dictionary, PhaseStart/PhaseEnd via Stopwatch.GetTimestamp). OFF by default and then effectively
+    // free. Covers ONLY SpawnDue/DespawnArrivals -- the work in PedDemand.Step that happens OUTSIDE
+    // _lodManager.Step (that call's own sub-phases are read via `_lodManager.PhaseTicks` directly, not
+    // duplicated here). LiveCitySim merges both into one "ped."-prefixed breakdown of its
+    // "pedDemandStep" phase, so the two live on separate dictionaries but the same key namespace.
+    // Never read by any simulation algorithm -> zero behavioral effect, parity-inert.
+    public bool ProfilePhases;
+    private readonly Dictionary<string, long> _phaseTicks = new();
+    public IReadOnlyDictionary<string, long> PhaseTicks => _phaseTicks;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private long PhaseStart() => ProfilePhases ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+
+    private void PhaseEnd(string name, long start)
+    {
+        if (!ProfilePhases)
+        {
+            return;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        _phaseTicks.TryGetValue(name, out var acc);
+        _phaseTicks[name] = acc + elapsed;
+    }
+
     // Advances demand by one tick [now, now+dt): spawn any peds due (population permitting), let
     // PedLodManager advance the whole population by dt exactly as a bare PedLodManager.Step call
     // would (PedDemand does not re-implement or shadow LOD/promotion physics), then despawn arrivals.
@@ -205,11 +232,15 @@ public sealed class PedDemand
     // supplies the same InterestField it would to a bare PedLodManager.
     public void Step(double now, double dt, InterestField field, IReadOnlyList<WorldDisc> externalEntities)
     {
+        var tSpawnDue = PhaseStart();
         SpawnDue(now, dt);
+        PhaseEnd("spawnDue", tSpawnDue);
 
         _lodManager.Step(now, dt, field, externalEntities);
 
+        var tDespawn = PhaseStart();
         DespawnArrivals(now + dt);
+        PhaseEnd("despawnArrivals", tDespawn);
     }
 
     // Spawns every ped whose drawn spawn time falls in [now, now+dt), as long as doing so keeps the
