@@ -440,12 +440,48 @@ no engine optimization is a prerequisite for fixing the smoothness.
       (reference types, one per published ped per step) — a wide change through `HeadlessIg`'s pattern
       matching and many tests, so it is its own task.
 
-- [ ] **The Stage-2 ON-SCREEN verification (needs a GPU).** *Everything above is headless.* The design's
-      actual success condition is **frames > 3× p50 → ~0 and p99 approaching p50**, at the same
-      scenario/counts as the Stage-1 before-numbers, with **no DR regression** (must not reintroduce the #7
-      cruise stutter or #8 backward creep). Run `--frame-log <path>` before/after and compare the spike
-      count. Fold into the same Windows GPU session as
-      `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`.
+- [x] **The Stage-2 ON-SCREEN verification — DONE ON GPU 2026-07-28. PASS, after one required fix.**
+      Geneva cut (28 276 lanes), RTX 5080, startup line
+      `tick on producer thread, engine parallelism capped at 20 of 24 cores`.
+      Measured at **3 858 cars + 20 726 peds**, last 2 000 settled frames:
+
+          spikes(>3x p50)   0 / 2000          (was accumulating ~2/s, one per tick)
+          p50 / p95 / p99   46.3 / 50.0 / 55.6 ms      (p99 = 1.20x p50)
+          sim_ticks         184 / 2000 frames (0 on ~91%)
+          sim_time          0.5 s per ~10-11 frames = 2 Hz sustained in real time
+
+      Owner confirms 4 k cars + 20 k peds now move smoothly. Both §8.2 headline criteria met. Logs:
+      `<scratchpad>/run3_oneclock.csv` (after), `run1_jumpy_evidence.csv` (the broken intermediate).
+      ⚠ **A measured BEFORE run was NOT captured** — threading was already the default when this session
+      started, so the baseline is the design §1 metronome observation (100–200 ms, ~110/min at ~4 k cars +
+      8 k peds), not a CSV.
+- [x] **Stage-2 follow-up fix — ONE render clock for cars AND peds** (`5159667`). **This was required to
+      make Stage 2 pass**, so anyone reading the ticked box above should read this too. Stage 2 wired the
+      new clamped `_renderSimClock` to the **peds** only (`pedNow = _renderSimClock`) and left the **cars**
+      on `Reconstructor`'s private `DrClock`, which fits its own wall↔sim rate from
+      `LatestVehicleSampleTime` off the replication bus — two clocks over two handoffs in one scene, which
+      cannot stay in agreement. Symptom on GPU: cars took a kick impulse per publish then decelerated
+      ("caterpillar", worse with density, **not smooth even at low load**) while the frame loop was
+      provably clean (16.7 ms p50, `sim_ticks` 0, 60 fps). Fix: optional `renderSimClock` on
+      `Reconstructor.Reconstruct`; query instant becomes `renderSimClock − delaySeconds` through the
+      existing `DrClock.ResolveAt` seam. Default path untouched (DDS/replay/scenario unchanged).
+      **Note for anyone revisiting:** `frameDtOverride`'s deterministic branch is *not* the fix — its
+      instant only moves when a packet arrives, so at 2 Hz it would freeze ~0.5 s then jump.
+- [ ] **⚠ OPEN BUG — `InMemoryReplicationBus.HistoryView` concurrent modification.** Seen once on GPU
+      during car spawn-in:
+      `InvalidOperationException: Collection was modified; enumeration operation may not execute`
+      at `HistoryView.GetEnumerator()+MoveNext()` ← `CityLib.Reconstructor.Reconstruct`
+      (`Reconstructor.cs:118`) ← `Main.ProcessLiveCity`. `HistoryView` wraps the **live** `_history`
+      dictionary and it gained a key mid-enumeration. Stage 2's own comment asserts *"every dictionary
+      `PumpCore` mutates … is touched exclusively on the consuming thread"* — this exception **proves that
+      invariant is violated**. **Which thread does the offending pump is not yet identified** (the producer
+      only enqueues, so it is not obvious); did not recur in two later runs, so it is timing-dependent and
+      most likely a spawn-in window. Fix direction: hand the consumer an immutable history snapshot rather
+      than a live view. Stack trace + `<scratchpad>/run1_jumpy_evidence.csv`.
+- [ ] **Remaining §8.2 items not yet exercised on GPU:** the sim-Hz slider swept 1 → 20 with achieved-Hz
+      tracking and *stopping* below the request under load; `H` zone cycle (Central → Follow → Locked) with
+      the ring tracking the camera; repeated clean quits including *while* dragging a slider at high
+      density. Cars/peds/fill sliders and one clean quit were exercised.
 
 ## Engine performance — coupled cars+peds live-city (overnight 2026-07-28)
 
