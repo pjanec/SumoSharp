@@ -28,7 +28,7 @@ you will test stale code). `Sim.Pedestrians.Tests` = **277/277**.
 | ped-LOD-lifecycle | `claude/livecity-ped-lod-lifecycle-bylitj` | **STARTED** | **ped LOD promote/demote switching** (low↔high power): #3 (promote handoff — ped vanishes) + #4 (demote doesn't fire / route not restored) + #6 (idle clustering). Edit surface = `src/Sim.Pedestrians/Lod/` (+ demand + viz snapshot); **does NOT touch any car-side surface**. Brief: **`docs/LIVE-CITY-PED-LOD-LIFECYCLE-HANDOFF.md`** |
 | F3 junction / density | `claude/f3-junction-overlap-handoff-okf5nu` | **MERGED to main (PR #13)** | junction overlap + gridlock + **junction DISCHARGE**. Seven junction/overlap gates now default **ON**; the arm-14 four-way circular wait is fixed; the density-diff harness (vs *honest* SUMO) is in. Discharge is measured but NOT fixed — next step is a per-vehicle SUMO-oracle trace, see `F3-SESSION-LOG.md` §6. Docs: `F3-SESSION-LOG.md` · `DENSITY-DIFF-HARNESS-{DESIGN,TASKS,TRACKER}.md` |
 | arbitrary-net | `claude/discussion-eqp53m` | **complete — merged (PR #11)** | net import · `SumoRouteGraphNav` · capability degrade · single zone · `RegionPlan` · fixture + tests. Detail: `TASKS-DONE.md` → "Arbitrary road-net import" |
-| external-net viewer / 3-D elevation | `claude/handoff-docs-implementation-pmdu9z` | **code DONE + gated — awaiting GPU sign-off** | arbitrary-net loading in City3D (`NetPath`/`ForSumocfg`), float recenter, live density dials, ped elevation end-to-end, lane provenance, **z made mandatory** (breaking), baked **terrain field** (grid + zones + all ground overlays follow it). Parity 775/4, bench `BF3794A4704BCD79`, `Sim.Pedestrians.Tests` **317/317**, `Sim.LiveCity.Tests` **80/80**, `CityLib.Tests` 176/3-pre-existing. Docs: **`EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md`** (Stage E). Open item below. |
+| external-net viewer / 3-D elevation + engine perf + threaded tick | `claude/handoff-docs-implementation-pmdu9z` | **PR CANDIDATE for main** — code done, gated, and Stage 2 GPU-verified | arbitrary-net loading in City3D (`NetPath`/`ForSumocfg`), float recenter, live density dials, ped elevation end-to-end, lane provenance, **z made mandatory** (breaking), baked **terrain field**; **coupled cars+peds engine perf** (5 k + 20 k at ~114 ms/step, RTF ~4.4×, alloc 17.4×/5.5× down); **threaded engine tick** (Stages 1–3 + A22) with the render-clock and self-pump fixes the GPU run required; **parallel car+ped reconstruction** and road-mesh tiling in the viewer. Gate: parity **775/4**, bench `BF3794A4704BCD79` par==single, `Sim.Pedestrians.Tests` **324/324**, `Sim.LiveCity.Tests` **90/90**, `CityLib.Tests` **187 pass / 3 pre-existing**. GPU: 3 858 cars + 20 726 peds, **0/2000 spikes**, p99 = 1.20× p50. Docs: **`EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md`** · **`LIVE-CITY-PERF-{DESIGN,TRACKER,SESSION-LOG}.md`** · **`LIVE-CITY-THREADED-TICK-DESIGN.md`** (§8 = what actually landed). Open items below: the Geneva ped z=0 showstopper, three unexercised §8.2 GPU items, Part A of the visual sign-off. |
 
 *W4 (multi-camera zones) = unallocated. Sections below without a session tag are unclaimed backlog —
 not a repo-wide board; other `claude/*` branches are not tracked here.*
@@ -467,17 +467,22 @@ no engine optimization is a prerequisite for fixing the smoothness.
       existing `DrClock.ResolveAt` seam. Default path untouched (DDS/replay/scenario unchanged).
       **Note for anyone revisiting:** `frameDtOverride`'s deterministic branch is *not* the fix — its
       instant only moves when a packet arrives, so at 2 Hz it would freeze ~0.5 s then jump.
-- [ ] **⚠ OPEN BUG — `InMemoryReplicationBus.HistoryView` concurrent modification.** Seen once on GPU
-      during car spawn-in:
-      `InvalidOperationException: Collection was modified; enumeration operation may not execute`
-      at `HistoryView.GetEnumerator()+MoveNext()` ← `CityLib.Reconstructor.Reconstruct`
-      (`Reconstructor.cs:118`) ← `Main.ProcessLiveCity`. `HistoryView` wraps the **live** `_history`
-      dictionary and it gained a key mid-enumeration. Stage 2's own comment asserts *"every dictionary
-      `PumpCore` mutates … is touched exclusively on the consuming thread"* — this exception **proves that
-      invariant is violated**. **Which thread does the offending pump is not yet identified** (the producer
-      only enqueues, so it is not obvious); did not recur in two later runs, so it is timing-dependent and
-      most likely a spawn-in window. Fix direction: hand the consumer an immutable history snapshot rather
-      than a live view. Stack trace + `<scratchpad>/run1_jumpy_evidence.csv`.
+- [x] **`InMemoryReplicationBus.HistoryView` concurrent modification — FOUND AND FIXED** (`9987aba`,
+      `LiveCitySim.SelfPumpVehicleBus`). Recorded in full because the diagnosis matters more than the fix:
+      `InvalidOperationException: Collection was modified` at `HistoryView.GetEnumerator()+MoveNext()` ←
+      `CityLib.Reconstructor.Reconstruct` ← `Main.ProcessLiveCity`, escalating to **13 per run at 10 000
+      cars**, each aborting that frame's whole car pass.
+      **The offending pump was `LiveCitySim.Step()`'s own `_vehBus.Source.Pump()`** — the sim self-pumped
+      the bus it publishes to, harmless while `Step()` and the consumer shared a thread and a straight race
+      once a producer thread owned `Step()`. So Stage 2's claim that *"every dictionary `PumpCore` mutates is
+      touched exclusively on the consuming thread"* was **false as landed**, and that comment was the reason
+      nobody looked here. Fix: `SelfPumpVehicleBus` (default **true**, so `Sim.Host.App` / `Sim.Viz` / the
+      LiveCity tests are unchanged); the threaded viewer sets it **false** and pumps from its consumer, once
+      per frame, inside `Reconstruct`.
+      ⚠ **The originally-guessed fix direction — "hand the consumer an immutable history snapshot" — would
+      have hidden this rather than fixed it**: a snapshot per frame removes the *symptom* while leaving two
+      threads mutating the same dictionaries. Worth remembering next time a concurrency symptom invites a
+      defensive copy.
 - [ ] **Remaining §8.2 items not yet exercised on GPU:** the sim-Hz slider swept 1 → 20 with achieved-Hz
       tracking and *stopping* below the request under load; `H` zone cycle (Central → Follow → Locked) with
       the ring tracking the camera; repeated clean quits including *while* dragging a slider at high
