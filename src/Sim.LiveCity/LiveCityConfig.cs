@@ -277,6 +277,47 @@ public sealed class LiveCityConfig
     public bool PedParallelOrca { get; set; } = true;
     public bool PedEnableWeave { get; set; } = true;
 
+    // A22 (docs/LIVE-CITY-PERF-SESSION-LOG.md; docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2): the cap
+    // on BOTH of this host's parallel regions -- `Engine.MaxParallelism` (car plan/willPass/emit) and
+    // `OrcaCrowd.MaxParallelism` (the high-power ped crowd). Both default to TPL's -1 == every logical
+    // processor, and nothing in this host had ever set either.
+    //
+    // Leaving them uncapped is fine for a HEADLESS bench (the whole machine is the sim), and wrong for an
+    // INTERACTIVE viewer: once the tick runs on its own thread (Stage 2) a sim step that saturates all 24
+    // logical cores starves the render thread and the display driver, so the frame hitch survives the very
+    // change that was supposed to remove it. Hence a cap that leaves headroom.
+    //
+    // <= 0 means "leave TPL's default" (uncapped) -- so a bench, a test, and every existing caller are
+    // byte-identical to before this knob existed. `LeaveCoresFree`/`ResolveMaxParallelism` below is how an
+    // interactive host asks for "all but N cores" without hardcoding a machine's core count.
+    //
+    // Trajectory-invariant either way: both knobs are scheduling-only (results are order-independent), so
+    // this changes wall-clock and nothing else. Verified by the standing `Sim.Bench` par == single hash.
+    public int MaxParallelism { get; set; } = 0;
+
+    // The interactive form of `MaxParallelism`: reserve this many logical processors for whatever else the
+    // process is doing (render thread + GPU driver + OS). 0 (the default) reserves nothing, so a headless
+    // caller is unaffected. `ResolveMaxParallelism` turns it into a concrete cap.
+    public int LeaveCoresFree { get; set; } = 0;
+
+    // The cap actually handed to the two knobs: an explicit `MaxParallelism` wins; otherwise
+    // `LeaveCoresFree` is subtracted from the machine's logical processor count (never below 1); otherwise
+    // -1 (TPL's default, uncapped).
+    public int ResolveMaxParallelism()
+    {
+        if (MaxParallelism > 0)
+        {
+            return MaxParallelism;
+        }
+
+        if (LeaveCoresFree > 0)
+        {
+            return Math.Max(1, Environment.ProcessorCount - LeaveCoresFree);
+        }
+
+        return -1;
+    }
+
     // Bug #6 (crosswalk-wait kerb clustering; docs cross-ref: PedDemandConfig.CrosswalkWaitSpreadRadius):
     // 0.0 (the default) => byte-identical to before this knob existed (no rng stream drawn). Only
     // `ForRepoRoot` (the demo) turns this on, so goldens/other configs/`ForDataset` stay at 0.

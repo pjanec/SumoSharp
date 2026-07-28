@@ -401,8 +401,15 @@ no engine optimization is a prerequisite for fixing the smoothness.
       HUD + `--frame-log` CSV (frame ms, p50/p95/p99, **count of frames > 3× p50**, sim ticks per frame);
       slider showing **requested vs ACHIEVED** Hz (20 Hz needs a ≤50 ms step, so the ceiling at 5 k + 20 k
       is ~8.8 Hz). Needs a settable timestep on `LiveCitySim` — `Step()` currently takes no `dt`.
-- [ ] **Stage 2 — run the tick on its own thread; zero-alloc car handoff.** *This is where the stutter
-      dies.* Producer thread runs `Step()` in a loop; publish by **triple buffering + `Interlocked.Exchange`**
+- [x] **Stage 2 — run the tick on its own thread; zero-alloc car handoff.** **IMPLEMENTED + gated; the
+      ON-SCREEN half is NOT verified** (needs a GPU + Stage 1's instrument — see the new item below).
+      What landed, and the deviations, are in **`LIVE-CITY-THREADED-TICK-DESIGN.md` §8**: the published
+      snapshot is a **lock**, not the lock-free triple buffer §5 proposed (the hand-rolled version had a
+      real stale-slot bug when the consumer polls faster than the producer — a test caught it, §8.1); the
+      vehicle records are **not** triple-buffered, the replication bus was made concurrent + pooled instead
+      (§8.2); `Tick`/`Sample`/`SampleCars`/`SampleCrossingSignals` now **throw** once threaded (§8.6).
+      A22 shipped with it, and capping parallelism was proven trajectory-inert: **11 889 car+ped samples
+      bitwise identical**, uncapped vs capped. *Original spec, for the record:* Producer thread runs `Step()` in a loop; publish by **triple buffering + `Interlocked.Exchange`**
       (three preallocated `VehicleRecord[]` slots + count/simTime/step; producer fills the spare, consumer
       claims one and holds it so it can never be overwritten mid-read; grow only on warmup ⇒ **zero
       steady-state allocation**). Also replaces `PublishFrame`'s existing per-step `movers.ToArray()`.
@@ -422,11 +429,23 @@ no engine optimization is a prerequisite for fixing the smoothness.
       Leave ~2–4 cores for render + driver.
       *Success:* on Stage 1's numbers, at the same scenario/counts, **frames > 3× p50 → ~0** and p99
       approaches p50; no DR regression (must not reintroduce the #7 cruise stutter or #8 backward creep).
-- [ ] **Stage 3 — zero-alloc ped handoff.** Replace the per-ped-per-step reference-type `PedEvent` batch
-      with preallocated struct arrays (id/pos/vel/anim/time + count), double-buffered; give `HeadlessIg` a
-      struct-batch apply path alongside the event path; bounds the never-cleared `_events` list (**A6**).
-      *Success:* handoff allocation per tick ≈ 0 by `Sim.BenchLiveCity`'s per-phase byte accounting, with
-      ped reconstruction numerically unchanged (paired counters identical).
+- [x] **Stage 3 — zero-alloc ped handoff.** **IMPLEMENTED, scoped down (§8.3).** The `_events` history is
+      drained + cleared every step (**A6** closed), the per-step batch list is reused, and the ped bus is
+      concurrent with pooled payload buffers. Measured: **0 new buffers over 60 steps after warmup**,
+      retained history **0 after every one of 120 steps** (4 151 events genuinely published, peak batch 67),
+      wire-vs-sim ped poses agreeing to **0.092 m** worst over 15 161 paired samples.
+      **NOT done, deliberately:** the struct-array payload + a second `HeadlessIg` apply path. That bus
+      exists to round-trip the real wire codecs, and a parallel apply path doubles the surface the
+      server==IG identity rests on. The remaining per-tick allocation is the `PedEvent` records themselves
+      (reference types, one per published ped per step) — a wide change through `HeadlessIg`'s pattern
+      matching and many tests, so it is its own task.
+
+- [ ] **The Stage-2 ON-SCREEN verification (needs a GPU).** *Everything above is headless.* The design's
+      actual success condition is **frames > 3× p50 → ~0 and p99 approaching p50**, at the same
+      scenario/counts as the Stage-1 before-numbers, with **no DR regression** (must not reintroduce the #7
+      cruise stutter or #8 backward creep). Run `--frame-log <path>` before/after and compare the spike
+      count. Fold into the same Windows GPU session as
+      `docs/handoffs/WIN-GPU-VISUAL-TEST-terrain-and-ped-z.md`.
 
 ## Engine performance — coupled cars+peds live-city (overnight 2026-07-28)
 

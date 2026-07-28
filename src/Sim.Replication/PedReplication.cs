@@ -106,17 +106,61 @@ public sealed class InMemoryPedReplicationBus
 
     private readonly struct Entry
     {
-        public Entry(Topic topic, byte[] bytes)
+        // `bytes` is a POOLED buffer that may be LONGER than the payload -- `Length` is the authority. Only
+        // the ActivityTimeline branch actually needs it (its payload is sliced by length rather than read
+        // through a self-describing header), but carrying it makes every branch's intent explicit.
+        public Entry(Topic topic, byte[] bytes, int length)
         {
             Topic = topic;
             Bytes = bytes;
+            Length = length;
         }
 
         public Topic Topic { get; }
         public byte[] Bytes { get; }
+        public int Length { get; }
     }
 
-    private readonly Queue<Entry> _queue = new();
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 1 / §6 Stage 3. Two changes, same motivation as the
+    // vehicle bus in InMemoryReplication.cs:
+    //
+    //   THREAD SAFETY -- this was a plain `Queue<Entry>`, so once the sim ticks on a producer thread while
+    //   the render thread Pumps, it would corrupt. Concurrent now. Everything PumpCore mutates
+    //   (`_latestCrowdFrame`, `_pathArcs`, `_timelines`, `_lifecycles`) is consumer-thread-only, so this
+    //   queue is the whole cross-thread surface.
+    //
+    //   ALLOCATION -- every publish allocated a fresh `byte[]`, once per ped batch per step. This bus
+    //   deliberately round-trips through the real wire codecs (that is its stated purpose, see the type's
+    //   own remarks), so the bytes stay; they are just RECYCLED. PumpCore decodes each payload into retained
+    //   objects and then has no further use for the buffer, so it returns it.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Entry> _queue = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<byte[]> _bufferPool = new();
+
+    // Diagnostics: a count that keeps climbing after warmup means the pool is being defeated (nothing is
+    // pumping, so nothing is returned) -- visible rather than guessed at.
+    private int _buffersAllocated;
+    public int BuffersAllocated => System.Threading.Volatile.Read(ref _buffersAllocated);
+    public int PendingEntries => _queue.Count;
+
+    private byte[] Rent(int length)
+    {
+        if (_bufferPool.TryDequeue(out var buf) && buf.Length >= length)
+        {
+            return buf;
+        }
+
+        System.Threading.Interlocked.Increment(ref _buffersAllocated);
+        return new byte[Math.Max(length, 256)];
+    }
+
+    private void Return(byte[] buf)
+    {
+        // Bounded, so a consumer that stops pumping cannot turn the pool into the leak.
+        if (_bufferPool.Count < 16)
+        {
+            _bufferPool.Enqueue(buf);
+        }
+    }
 
     private uint _latestCrowdStep;
     private float _latestCrowdTime;
@@ -141,17 +185,19 @@ public sealed class InMemoryPedReplicationBus
 
         public void PublishCrowdFrame(uint step, float time, ReadOnlySpan<PedFreeKinematicRecord> records)
         {
-            var bytes = new byte[FrameCodec.PedFreeKinematicFrameSize(records.Length)];
+            var size = FrameCodec.PedFreeKinematicFrameSize(records.Length);
+            var bytes = _bus.Rent(size);
             FrameCodec.WritePedFreeKinematicFrame(bytes, step, time, records);
-            _bus._queue.Enqueue(new Entry(Topic.CrowdFrame, bytes));
+            _bus._queue.Enqueue(new Entry(Topic.CrowdFrame, bytes, size));
         }
 
         public void PublishPathArc(in PathArcRecord record)
         {
             var recs = new[] { record };
-            var bytes = new byte[FrameCodec.PathArcFrameSize(recs)];
+            var size = FrameCodec.PathArcFrameSize(recs);
+            var bytes = _bus.Rent(size);
             FrameCodec.WritePathArcFrame(bytes, step: 0, time: 0f, recs);
-            _bus._queue.Enqueue(new Entry(Topic.PathArc, bytes));
+            _bus._queue.Enqueue(new Entry(Topic.PathArc, bytes, size));
         }
 
         public void PublishActivityTimeline(VehicleHandle handle, ReadOnlySpan<byte> timelineBytes)
@@ -160,11 +206,12 @@ public sealed class InMemoryPedReplicationBus
             // ActivityTimelineWire-encoded blob) -- this bus only needs to know WHICH ped it belongs to,
             // so it prefixes the opaque payload with the handle (index + generation), mirroring the
             // handle-first layout every other wire record in FrameCodec.cs uses.
-            var bytes = new byte[6 + timelineBytes.Length];
+            var size = 6 + timelineBytes.Length;
+            var bytes = _bus.Rent(size);
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0, 4), handle.Index);
             BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(4, 2), handle.Generation);
-            timelineBytes.CopyTo(bytes.AsSpan(6));
-            _bus._queue.Enqueue(new Entry(Topic.ActivityTimeline, bytes));
+            timelineBytes.CopyTo(bytes.AsSpan(6, timelineBytes.Length));
+            _bus._queue.Enqueue(new Entry(Topic.ActivityTimeline, bytes, size));
         }
 
         public void PublishPedLifecycle(in PedLifecycleRecord record)
@@ -172,12 +219,12 @@ public sealed class InMemoryPedReplicationBus
             // index(4) + generation(2) + kind(1) + time(8), little-endian -- mirrors the vehicle stack's
             // LifecycleRecord in spirit (IReplication.cs), which similarly has no FrameCodec entry of its
             // own since it is a low-rate keyed event, not a per-frame mover record.
-            var bytes = new byte[15];
+            var bytes = _bus.Rent(15);
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0, 4), record.Handle.Index);
             BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(4, 2), record.Handle.Generation);
             bytes[6] = (byte)record.Kind;
             WriteF64(bytes.AsSpan(7, 8), record.Time);
-            _bus._queue.Enqueue(new Entry(Topic.Lifecycle, bytes));
+            _bus._queue.Enqueue(new Entry(Topic.Lifecycle, bytes, 15));
         }
 
         public void Dispose()
@@ -206,9 +253,8 @@ public sealed class InMemoryPedReplicationBus
 
     private void PumpCore()
     {
-        while (_queue.Count > 0)
+        while (_queue.TryDequeue(out var e))
         {
-            var e = _queue.Dequeue();
             switch (e.Topic)
             {
                 case Topic.CrowdFrame:
@@ -228,7 +274,11 @@ public sealed class InMemoryPedReplicationBus
                 case Topic.ActivityTimeline:
                     var index = BinaryPrimitives.ReadUInt32LittleEndian(e.Bytes.AsSpan(0, 4));
                     var gen = BinaryPrimitives.ReadUInt16LittleEndian(e.Bytes.AsSpan(4, 2));
-                    var payload = e.Bytes.AsSpan(6).ToArray();
+                    // Sliced by the entry's own LENGTH, not to the end of the buffer: a pooled buffer can be
+                    // longer than the payload, and the trailing slack is stale bytes from a previous publish.
+                    // This copy is retained by `_timelines`, so it must be exact -- and because it IS a copy,
+                    // the pooled buffer is free to be recycled below.
+                    var payload = e.Bytes.AsSpan(6, e.Length - 6).ToArray();
                     _timelines.Add((new VehicleHandle(index, gen), payload));
                     break;
 
@@ -240,6 +290,10 @@ public sealed class InMemoryPedReplicationBus
                     _lifecycles.Add(new PedLifecycleRecord(new VehicleHandle(lcIndex, lcGen), kind, time));
                     break;
             }
+
+            // Every branch above decoded the payload into retained OBJECTS (records, or an exact-length copy
+            // for the timeline blob), so nothing references the buffer any more -- recycle it.
+            Return(e.Bytes);
         }
     }
 

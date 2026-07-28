@@ -307,6 +307,10 @@ public sealed class LiveCitySim : IDisposable
             // Bit-identical to serial (OrcaParallelStepTests) and self-gated at >=256 high-power agents, so
             // every small scenario -- including the whole test suite -- keeps the untouched serial path.
             _manager.UseParallelHighCrowd = cfg.PedParallelOrca;
+
+            // A22: cap the crowd's parallel degree (see LiveCityConfig.MaxParallelism). Resolves to -1 for
+            // every existing caller, so this is inert unless a host asks for headroom.
+            _manager.HighCrowdMaxParallelism = cfg.ResolveMaxParallelism();
             _demand = new PedDemand(config, nav, _manager, startTime: 0.0);
 
             // The high-realism pocket, anchored on the crossing nearest the pocket centre (crop centre
@@ -355,6 +359,9 @@ public sealed class LiveCitySim : IDisposable
         // road-net-import datasets. Set BEFORE LoadNetwork per RegionPlan's own comment ("set before
         // LoadScenario"); false for the demo (`ForRepoRoot`) so its Engine config stays byte-identical.
         _engine.RegionPlan = cfg.RegionPlan;
+        // A22 (see LiveCityConfig.MaxParallelism): cap the car plan/willPass/emit parallel region. -1 for
+        // every existing caller, so the engine's configuration is byte-identical unless a host opts in.
+        _engine.MaxParallelism = cfg.ResolveMaxParallelism();
         // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): step-length now tracks cfg.Dt instead of the
         // old hardcoded "0.5" literal -- the live-city coupling invariant (car Dt == ped Dt) requires the
         // engine's own resolution to move with LiveCityConfig.Dt, not just the ped publisher (which
@@ -990,8 +997,104 @@ public sealed class LiveCitySim : IDisposable
     // (a) spawn cars up to the cap on crop drivable edges -> (b) step the ped demand -> (c) gather this
     // tick's WALKING low-power ped positions -> (d) refresh the crossing-occupancy gate -> (e) step the
     // engine (which queries the now-current CrowdSource).
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 3 / §5 "render -> sim writes become messages".
+    //
+    // A host that runs `Step()` on its own producer thread must NOT let its render/UI thread call
+    // `SetLcRealismZone` / `SetCarDensity` / `SetPedDensity` / `Dt=` directly: those mutate live sim state
+    // (`SetLcRealismZone` rebuilds the ORCA interest source; `SetPedDensity` pokes `PedDemand`), so a
+    // concurrent call lands mid-step. The `Request*` methods below instead park the value in a single slot
+    // -- LAST WRITER WINS, which is the right semantics for a UI dial or a camera-driven zone -- and the
+    // producer applies it at a defined point: the very top of the next `Step()`, before any spawn logic.
+    //
+    // Deliberately a plain `lock` rather than an interlocked/lock-free dance: it is taken at most once per
+    // rendered frame and once per step, always uncontended in practice, and it costs ~20 ns against a
+    // ~100 ms step. There is nothing to win here and correctness is obvious.
+    //
+    // Single-threaded callers (every test, every bench, the parity path -- which never constructs this
+    // host at all) keep using the `Set*` methods unchanged, so nothing existing changes behaviour.
+    private readonly object _requestLock = new();
+    private bool _reqZone;
+    private double _reqZoneX, _reqZoneY, _reqZoneR;
+    private bool _reqCars;
+    private int _reqCarTarget;
+    private int? _reqCarPerStep;
+    private bool _reqPeds;
+    private int _reqPedCap;
+    private double _reqPedRate;
+    private bool _reqDt;
+    private double _reqDtValue;
+
+    public void RequestLcRealismZone(double centreX, double centreY, double radius)
+    {
+        lock (_requestLock)
+        {
+            _reqZone = true;
+            _reqZoneX = centreX;
+            _reqZoneY = centreY;
+            _reqZoneR = radius;
+        }
+    }
+
+    public void RequestCarDensity(int targetConcurrent, int? spawnPerStep = null)
+    {
+        lock (_requestLock)
+        {
+            _reqCars = true;
+            _reqCarTarget = targetConcurrent;
+            _reqCarPerStep = spawnPerStep;
+        }
+    }
+
+    public void RequestPedDensity(int populationCap, double spawnRatePerSecond)
+    {
+        lock (_requestLock)
+        {
+            _reqPeds = true;
+            _reqPedCap = populationCap;
+            _reqPedRate = spawnRatePerSecond;
+        }
+    }
+
+    public void RequestDt(double dt)
+    {
+        lock (_requestLock)
+        {
+            _reqDt = true;
+            _reqDtValue = dt;
+        }
+    }
+
+    // Drain the request slots and apply them on THIS thread (the producer's). Copies out under the lock and
+    // applies outside it, so a `Set*` call -- which can rebuild the interest source -- never runs while a
+    // requester is blocked.
+    private void ApplyPendingRequests()
+    {
+        bool zone, cars, peds, dtSet;
+        double zx, zy, zr, rate, dt;
+        int carTarget, pedCap;
+        int? carPerStep;
+
+        lock (_requestLock)
+        {
+            zone = _reqZone; zx = _reqZoneX; zy = _reqZoneY; zr = _reqZoneR;
+            cars = _reqCars; carTarget = _reqCarTarget; carPerStep = _reqCarPerStep;
+            peds = _reqPeds; pedCap = _reqPedCap; rate = _reqPedRate;
+            dtSet = _reqDt; dt = _reqDtValue;
+            _reqZone = _reqCars = _reqPeds = _reqDt = false;
+        }
+
+        if (dtSet) Dt = dt;
+        if (cars) SetCarDensity(carTarget, carPerStep);
+        if (peds) SetPedDensity(pedCap, rate);
+        if (zone) SetLcRealismZone(zx, zy, zr);
+    }
+
     public void Step()
     {
+        // §5: apply any render-thread requests at this fixed point -- BEFORE `dt` is read, so a requested
+        // tick-rate change takes effect on the step that observes it rather than the one after.
+        ApplyPendingRequests();
+
         var dt = _cfg.Dt;
 
         // D1: the ped-density knobs are read off the by-reference `_cfg` every tick, exactly as the car
@@ -1204,19 +1307,46 @@ public sealed class LiveCitySim : IDisposable
         PhaseEnd("publishCars", tPublishCars);
 
         var tPublishPeds = PhaseStart();
-        var newEvents = new List<PedEvent>(_pedPublisher.Events.Count - beforeCount);
-        for (var e = beforeCount; e < _pedPublisher.Events.Count; e++)
-        {
-            newEvents.Add(_pedPublisher.Events[e]);
-        }
 
-        _pedWirePublisher.Publish(newEvents);
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 3 (+ log item A6). This block used to allocate a
+        // FRESH `List<PedEvent>` every step and leave `_pedPublisher.Events` growing without bound -- one
+        // list plus one heap record per published ped per step, which at 20 000 peds is the dominant
+        // remaining per-tick allocation and, over a long session, an unbounded leak.
+        //
+        // Now: drain this step's tail into a REUSED list, forward it, then drop the history we just took.
+        // `beforeCount` above is therefore 0 on every subsequent step, which is exactly right -- the
+        // publisher holds only the current step's batch. The per-id send counters are unaffected, so every
+        // POC-3 counter assertion still reads the same numbers.
+        _pedPublisher.DrainInto(beforeCount, _pedEventBatch);
+
+        _pedWirePublisher.Publish(_pedEventBatch);
 
         // Stage E (E3) tee: also publish this tick's ped event batch through the DEDICATED
         // `_recordPedPublisher`, if a ped record/DDS sink was supplied -- mirrors the car tee just above.
-        _recordPedPublisher?.Publish(newEvents);
+        _recordPedPublisher?.Publish(_pedEventBatch);
+
+        // Both consumers have taken the batch, so the history is dead weight from here.
+        LastPedEventBatchCount = _pedEventBatch.Count;
+        _pedPublisher.ClearEvents();
         PhaseEnd("publishPeds", tPublishPeds);
     }
+
+    // Stage 3: the reused per-step ped-event batch (see the publishPeds block). Grows once to the peak
+    // batch size and is then allocation-free.
+    private readonly List<PedEvent> _pedEventBatch = new();
+
+    // Stage 3 diagnostics (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6). Read-only, host-side, never mutate
+    // anything -- these exist so the bounded-history and pooled-buffer claims are ASSERTABLE rather than
+    // asserted in prose. `PedEventHistoryCount` should be a per-step batch size (it was a running total
+    // before A6); `PedBusBuffersAllocated` should stop climbing once the crowd stops growing.
+    public int PedEventHistoryCount => _pedPublisher.Events.Count;
+
+    // How many events the LAST step actually handed to the wire. Paired with `PedEventHistoryCount` this is
+    // what makes the bounded-history claim falsifiable: the history must be 0 after a step (drained), AND
+    // this must be non-zero (so the drain was not vacuously empty -- peds really were being published).
+    public int LastPedEventBatchCount { get; private set; }
+    public int PedBusBuffersAllocated => _pedBus.BuffersAllocated;
+    public int PedBusPendingEntries => _pedBus.PendingEntries;
 
     private readonly WorldDisc[] _gateProbeScratch = new WorldDisc[4];
 

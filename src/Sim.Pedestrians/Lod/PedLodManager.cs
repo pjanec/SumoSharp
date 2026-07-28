@@ -183,6 +183,16 @@ public sealed class PedLodManager
         set => _highCrowd.RegionCellSizeMultiplier = value;
     }
 
+    // A22 (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2) passthrough: cap the high-power crowd's
+    // parallel plan/execute degree. -1 (TPL's default) == uncapped, which is what this was implicitly
+    // before the knob was reachable from a host. Scheduling-only, so the trajectory is unchanged --
+    // an interactive host caps it so a sim step cannot starve the render thread.
+    public int HighCrowdMaxParallelism
+    {
+        get => _highCrowd.MaxParallelism;
+        set => _highCrowd.MaxParallelism = value;
+    }
+
     public PedLodManager(
         IPedNavigation navigation,
         PedPublisher publisher,

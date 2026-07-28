@@ -514,8 +514,38 @@ public partial class Main : Node3D
     // (design §6).
     private bool _liveCity;
     private LiveCitySource? _liveCitySource;
-    private double _liveCityAccumulator;
+    private double _liveCityAccumulator; // REPLAY path only -- the live path's tick loop is gone (Stage 2)
     private int _liveCityFrame;
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2 -- the render clock, now that this thread no longer
+    // ticks the sim. Advances by real `delta` every frame and is clamped to the newest PUBLISHED sim time
+    // plus one step, so it never extrapolates past state the producer has actually computed (see
+    // ProcessLiveCity's own remarks). `_lastSeenStepIndex` turns the producer's monotonic step counter into
+    // "steps completed since the previous frame", which is what the Stage-1 instrument reports.
+    private double _renderSimClock;
+    private long _lastSeenStepIndex;
+
+    // How far behind the published sim time the render clock is allowed to drift (in steps) before it is
+    // snapped forward. Generous: the playout delay is normally 1 s == 2 steps at the 2 Hz default, and this
+    // must never fight it -- it exists only to recover from a real stall, not to trim ordinary lag.
+    private const double MaxRenderClockLagSeconds = 20.0;
+
+    // Reused destination for LiveCitySource.CopyCrossingSignals -- the published crossing states, copied
+    // once per frame into a list that is never reallocated.
+    private readonly List<(int LaneHandle, char State)> _crossingSignalScratch = new();
+
+    // A22: logical processors reserved for the render thread + GPU driver + OS, i.e. NOT given to the
+    // engine's two parallel regions. 4 on a many-core box leaves comfortable headroom; on a 4-core machine
+    // `ResolveMaxParallelism` floors the cap at 1, so this never over-subtracts.
+    private const int LeaveCoresFreeForRender = 4;
+
+    // Stage 2: the density dials' CURRENT settings, held render-side. They used to be re-read off the live
+    // sim/config (`LiveCitySource.CarTarget` / `PedCap`), which in threaded mode is state the producer
+    // writes -- and, worse, reading back a value that was only just REQUESTED returns the pre-request one,
+    // so the fill-speed dial would silently re-apply a stale target. The render thread owns these because
+    // the render thread is what sets them.
+    private int _carTargetSetting;
+    private int _pedCapSetting;
 
     // Ped-smoothing fix (docs/LIVE-CITY-VISUALS-NOTES.md-adjacent), PIVOTED from snapshot-interpolation to
     // wire reconstruction: peds used to be drawn straight from LiveCitySource.Sample().Peds (the raw
@@ -1068,6 +1098,14 @@ public partial class Main : Node3D
 
             liveCfg.SimHz = _simHz;
             _liveCityDt = liveCfg.Dt;
+
+            // A22 (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2): cap engine parallelism BEFORE the sim
+            // is constructed. Both parallel regions -- the car plan and the high-power ORCA crowd -- default
+            // to every logical processor, which is right for a headless bench and wrong here: a producer
+            // thread that saturates all 24 cores starves the render thread and the display driver, so the
+            // frame hitch would survive the very change meant to remove it. Reserving cores is what makes
+            // Stage 2 actually land on screen rather than only in the numbers.
+            liveCfg.LeaveCoresFree = LeaveCoresFreeForRender;
             _liveCitySource = new LiveCitySource(liveCfg);
 
             // docs/EXTERNAL-NET-VIEWER-DESIGN.md §5 (T2): the recenter origin, computed ONCE here, before
@@ -1196,9 +1234,20 @@ public partial class Main : Node3D
 
         SetupOrbitCamera(liveOverviewCamera, frameBbox);
 
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2 -- START THE PRODUCER. Deliberately the LAST
+        // thing _Ready does for this path: everything above reads live sim state freely (building road
+        // meshes, framing the camera, seeding the signal heads), which is only safe while nothing else is
+        // stepping. From this line on, the render thread reads published frames only.
+        _renderSimClock = _liveCitySource.Published.SimTime;
+        _lastSeenStepIndex = _liveCitySource.Published.StepIndex;
+        _liveCitySource.StartThreadedTick();
+
         GD.Print(
             $"Main: --live-city active (coupled cars+peds+crossing-yield, transport=local, " +
-            $"sim-hz={_simHz} dt={_liveCityDt.ToString("F3", CultureInfo.InvariantCulture)} render-hz={_renderHz}).");
+            $"sim-hz={_simHz} dt={_liveCityDt.ToString("F3", CultureInfo.InvariantCulture)} render-hz={_renderHz}, "
+            + $"tick on producer thread, engine parallelism capped at "
+            + $"{Math.Max(1, System.Environment.ProcessorCount - LeaveCoresFreeForRender)} of "
+            + $"{System.Environment.ProcessorCount} cores).");
 
         _shotPath = ParseShotArg();
         if (_shotPath is not null)
@@ -1799,35 +1848,63 @@ public partial class Main : Node3D
         // #15 camera-driven LC-realism zone: push the current-mode zone (Central/Follow/Locked) BEFORE the
         // sim steps, so this frame's per-area lane-change classification uses it; then move/recolour the
         // highlight ring to match. Camera pose is stable within a frame, so one push covers all sub-steps.
+        // Stage 2: claim the newest published frame ONCE, here, before anything reads it. Every subsequent
+        // read this frame (the render clock, the HUD counts, the LC-zone ring, the crossing signals) uses
+        // THIS snapshot, so they cannot disagree with each other -- and `CopyCrossingSignals` below is
+        // reading the very slot this claim took.
+        var published = _liveCitySource.Published;
+
         PushLcZone();
-        UpdateLcZoneVisual();
+        UpdateLcZoneVisual(published);
 
-        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- reset THIS frame's tick counter; the
-        // instrument at the tail of this method reports it (and RecordFrameInstrument's rolling window
-        // turns the running total into an achieved-Hz figure for the Stage 1b slider's label).
-        _simTicksThisFrame = 0;
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 2 -- THE STUTTER FIX.
+        //
+        // This used to be:
+        //     _liveCityAccumulator += delta;
+        //     while (_liveCityAccumulator >= _liveCityDt) { _liveCitySource.Tick(); ... }
+        // i.e. a whole engine step (100-200 ms at the owner's density) executed INSIDE the frame, and
+        // several of them in one frame whenever we were behind -- so falling behind compounded. The sim now
+        // runs on its own producer thread (LiveCitySource.StartThreadedTick) and this body only READS what
+        // has been published. There is no tick here at all any more; `_simTicksThisFrame` becomes the number
+        // of steps the producer completed since the previous frame, which is what the Stage-1 instrument
+        // actually wants to report.
+        _simTicksThisFrame = (int)Math.Max(0L, published.StepIndex - _lastSeenStepIndex);
+        _lastSeenStepIndex = published.StepIndex;
 
-        _liveCityAccumulator += delta;
-        while (_liveCityAccumulator >= _liveCityDt)
+        // §5 "Render clock". Free-running (advances by real `delta`, so between publishes the DR/timeline
+        // playout stays smooth exactly as the old `Time + accumulator` expression did -- that sum was also
+        // just wall time), but CLAMPED so it can never run past the newest state the producer has actually
+        // computed, plus one step of legitimate extrapolation. Without the clamp a producer running below
+        // real-time would have the render clock extrapolate into the void: rubber-banding instead of
+        // stutter, which is worse. The playout-delay slider (default 1 s, applied inside both
+        // reconstructors) is the jitter absorber that normally keeps the clamp from binding at all.
+        var dt = Math.Max(_liveCityDt, 1e-3);
+        _renderSimClock += delta;
+        var newest = published.SimTime + dt;
+        if (_renderSimClock > newest)
         {
-            _liveCitySource.Tick();
-            _liveCityAccumulator -= _liveCityDt;
-            _simTicksThisFrame++;
+            _renderSimClock = newest;
+        }
+
+        // ...and catch up rather than crawl if we ever fall a long way behind (a stall, a slider jump).
+        var floor = published.SimTime - (MaxRenderClockLagSeconds * dt);
+        if (_renderSimClock < floor)
+        {
+            _renderSimClock = floor;
         }
 
         var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds);
         UpdateCars(vehicles);
 
-        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table (LiveCityCar.
-        // Name is the real SUMO id, straight off Engine.VehicleIds -- design §3.1's "local/live viewers can
-        // also read the name directly from LiveCitySim ... without the wire"). Entries are never removed,
-        // so a car that despawns between this frame and a later click still resolves to its last-known name
-        // rather than the raw handle.
-        // Cars-only readback (SampleCars, reused buffer) -- NOT Sample(), which also materialises the whole
-        // ped crowd every frame (the dominant GC pressure at large LIVECITY_PEDS; only Cars is used here).
-        foreach (var car in _liveCitySource.SampleCars())
+        // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table. This used to
+        // call `_liveCitySource.SampleCars()`, which hands back LiveCitySim's own REUSED scratch buffer --
+        // §4 hazard 3, a straight data race against the producer refilling it. The same names are already on
+        // the published wire (`LifecycleRecord.Name` -> `IReplicationSource.Names`, populated by the Pump
+        // the reconstructor just did), which is render-thread-owned state. So this is now both thread-safe
+        // AND cheaper: a dictionary the bus maintains incrementally instead of a full car scan every frame.
+        foreach (var kv in _liveCitySource.Source.Names)
         {
-            _vehicleNames[car.Handle] = car.Name;
+            _vehicleNames[kv.Key] = kv.Value;
         }
 
         // Ped-smoothing fix (pivoted to wire reconstruction, see `_liveCityPedReconstructor`'s doc comment):
@@ -1845,7 +1922,12 @@ public partial class Main : Node3D
         // HeadlessIg.ReconstructSample's continuous PathArc/ActivityTimeline evaluation needs to render
         // smoothly between ticks (measured: peak per-frame acceleration drops by ~4 orders of magnitude,
         // and the at-tick-boundary/mid-tick asymmetry disappears -- see the PR notes for both numbers).
-        var pedNow = _liveCitySource.Time + _liveCityAccumulator;
+        // Stage 2: `_renderSimClock` (computed above) replaces the old `Time + _liveCityAccumulator` sum.
+        // Mathematically the same thing while the producer keeps up -- both are wall time in sim seconds --
+        // but it is anchored to the PUBLISHED sim time rather than to a tick loop that no longer exists, and
+        // it is clamped so it cannot outrun computed state. `_liveCitySource.Time` must not be read here at
+        // all: it is a live sim field the producer thread mutates.
+        var pedNow = _renderSimClock;
         var peds = _liveCityPedReconstructor.Reconstruct(_liveCitySource.PedSource, pedNow);
         UpdatePeds(peds);
         UpdateSelectionHighlight();
@@ -1880,10 +1962,15 @@ public partial class Main : Node3D
         // measurement. `delta * 1000.0` is Godot's own measured wall-clock interval since the last
         // _Process call (i.e. THIS frame's real duration, hiccup included) -- not a self-timed Stopwatch,
         // no extra timing mechanism needed.
-        RecordFrameInstrument(delta, delta * 1000.0, _simTicksThisFrame, _liveCitySource.CurrentCars, _liveCitySource.CurrentPeds, _liveCitySource.Time);
+        // Counts and sim time come off the PUBLISHED frame, not off live sim fields (§4 hazard 3). The
+        // achieved-Hz figure is now the producer's own measurement, which is the only honest source once the
+        // frame loop no longer ticks: `_simTicksThisFrame` is steps-observed-per-frame, and a 60 Hz frame
+        // loop watching a 2 Hz producer sees 0 for most frames.
+        _achievedSimHz = published.AchievedSimHz;
+        RecordFrameInstrument(delta, delta * 1000.0, _simTicksThisFrame, published.Cars, published.Peds, published.SimTime);
 
         GD.Print(
-            $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
+            $"Main: frame={_liveCityFrame} liveCityTime={published.SimTime:F2} " +
             $"cars={vehicles.Count} peds={peds.Count}");
 
         _liveCityFrame++;
@@ -2530,7 +2617,12 @@ public partial class Main : Node3D
             var carRow = new HBoxContainer();
             vbox.AddChild(carRow);
 
-            _carDensityLabel = new Label { Text = $"cars: {_liveCitySource.CarTarget}" };
+            // Seed the render-side settings from the live config -- safe here because the UI is built
+            // BEFORE StartThreadedTick, while nothing else is stepping the sim.
+            _carTargetSetting = _liveCitySource.CarTarget;
+            _pedCapSetting = _liveCitySource.PedCap;
+
+            _carDensityLabel = new Label { Text = $"cars: {_carTargetSetting}" };
             carRow.AddChild(_carDensityLabel);
 
             _carDensitySlider = new HSlider
@@ -2538,7 +2630,7 @@ public partial class Main : Node3D
                 MinValue = 0,
                 MaxValue = MaxCarDensity,
                 Step = 10,
-                Value = Math.Clamp(_liveCitySource.CarTarget, 0, MaxCarDensity),
+                Value = Math.Clamp(_carTargetSetting, 0, MaxCarDensity),
                 CustomMinimumSize = new Vector2(180f, 20f),
                 SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             };
@@ -2551,7 +2643,7 @@ public partial class Main : Node3D
             _pedDensityLabel = new Label
             {
                 Text = _liveCitySource.PedestriansEnabled
-                    ? $"peds: {_liveCitySource.PedCap}"
+                    ? $"peds: {_pedCapSetting}"
                     : "peds: n/a (net has no sidewalks)",
             };
             pedRow.AddChild(_pedDensityLabel);
@@ -2561,7 +2653,7 @@ public partial class Main : Node3D
                 MinValue = 0,
                 MaxValue = MaxPedDensity,
                 Step = 10,
-                Value = Math.Clamp(_liveCitySource.PedCap, 0, MaxPedDensity),
+                Value = Math.Clamp(_pedCapSetting, 0, MaxPedDensity),
                 CustomMinimumSize = new Vector2(180f, 20f),
                 SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
                 // A net with no pedestrian infrastructure cannot grow a crowd at any cap (the engine-side
@@ -2706,10 +2798,12 @@ public partial class Main : Node3D
         }
 
         var target = (int)Math.Clamp(value, 0, MaxCarDensity);
+        _carTargetSetting = target;
         _liveCitySource.SetCarTarget(target, CarSpawnPerStepForFill());
         if (_carDensityLabel is not null)
         {
-            _carDensityLabel.Text = $"cars: {target} (live {_liveCitySource.CurrentCars})";
+            // Live count off the PUBLISHED frame, not the live sim (§4 hazard 3).
+            _carDensityLabel.Text = $"cars: {target} (live {_liveCitySource.Published.Cars})";
         }
     }
 
@@ -2727,10 +2821,11 @@ public partial class Main : Node3D
         }
 
         var cap = (int)Math.Clamp(value, 0, MaxPedDensity);
+        _pedCapSetting = cap;
         _liveCitySource.SetPedDensity(cap, PedRateForFill(cap));
         if (_pedDensityLabel is not null)
         {
-            _pedDensityLabel.Text = $"peds: {cap} (live {_liveCitySource.CurrentPeds})";
+            _pedDensityLabel.Text = $"peds: {cap} (live {_liveCitySource.Published.Peds})";
         }
     }
 
@@ -2747,10 +2842,10 @@ public partial class Main : Node3D
         }
 
         _fillSpeed = Math.Clamp(value, 1, MaxFillSpeed);
-        _liveCitySource.SetCarTarget(_liveCitySource.CarTarget, CarSpawnPerStepForFill());
+        _liveCitySource.SetCarTarget(_carTargetSetting, CarSpawnPerStepForFill());
         if (_liveCitySource.PedestriansEnabled)
         {
-            _liveCitySource.SetPedDensity(_liveCitySource.PedCap, PedRateForFill(_liveCitySource.PedCap));
+            _liveCitySource.SetPedDensity(_pedCapSetting, PedRateForFill(_pedCapSetting));
         }
 
         if (_fillSpeedLabel is not null)
@@ -2773,7 +2868,11 @@ public partial class Main : Node3D
 
         _requestedSimHz = Math.Clamp((int)value, 1, 20);
         _liveCitySource.SimHz = _requestedSimHz;
-        _liveCityDt = _liveCitySource.Dt;
+
+        // Derive `_liveCityDt` from the value we just REQUESTED, not by reading `LiveCitySource.Dt` back:
+        // in threaded mode the request is applied by the producer at the top of its next step, so the
+        // read-back would return the previous rate and the render clock's clamp would use a stale dt.
+        _liveCityDt = 1.0 / _requestedSimHz;
 
         if (_simHzSliderLabel is not null)
         {
@@ -4329,7 +4428,10 @@ public partial class Main : Node3D
             return;
         }
 
-        var crossings = _liveCitySource.SampleCrossingSignals();
+        // Build-once, from the frame the render thread has already claimed (Stage 2: the live
+        // `SampleCrossingSignals()` is not render-thread-safe -- see LiveCitySource.CopyCrossingSignals).
+        _liveCitySource.CopyCrossingSignals(_crossingSignalScratch);
+        var crossings = _crossingSignalScratch;
         if (crossings.Count == 0)
         {
             return;
@@ -4396,7 +4498,11 @@ public partial class Main : Node3D
             return;
         }
 
-        foreach (var (laneHandle, state) in _liveCitySource.SampleCrossingSignals())
+        // Stage 2 (§4 hazard 3): `SampleCrossingSignals()` reads live engine columns, so in threaded mode it
+        // throws rather than racing the producer. `CopyCrossingSignals` hands back the states carried on the
+        // frame the render thread already claimed this frame, into a reused list (no per-frame allocation).
+        _liveCitySource.CopyCrossingSignals(_crossingSignalScratch);
+        foreach (var (laneHandle, state) in _crossingSignalScratch)
         {
             if (_pedSignalMatByLane.TryGetValue(laneHandle, out var material))
             {
@@ -4677,15 +4783,21 @@ public partial class Main : Node3D
     // Reposition + XZ-scale the ring to the live LC-realism zone (LiveCitySource.LcZone{X,Y,Radius}) and
     // recolour by mode. The ring geometry is a unit circle in the XZ plane (y=0), so scaling Y is a no-op
     // and the 0.2 m lift stays constant via the translation.
-    private void UpdateLcZoneVisual()
+    // Stage 2: the ring follows the zone as the PRODUCER has it, off the frame `ProcessLiveCity` already
+    // claimed -- not the live `LcZone*` fields, which the producer writes when it applies a pending zone
+    // request. Passing the frame in (rather than re-claiming here) keeps every read this frame on ONE
+    // snapshot, which is also what `CopyCrossingSignals` depends on. `null` means "no published frame to
+    // hand over" (the build-time call), which falls back to the pre-thread live read.
+    private void UpdateLcZoneVisual(LiveCitySource.PublishedFrame? frame = null)
     {
         if (_highRealismNode is null || _liveCitySource is null)
         {
             return;
         }
 
-        var (gx, _, gz) = _sumoFrame.GroundToGodot(_liveCitySource.LcZoneX, _liveCitySource.LcZoneY, 0.0);
-        var r = Mathf.Max(0.001f, (float)_liveCitySource.LcZoneRadius);
+        var zone = frame ?? _liveCitySource.Published;
+        var (gx, _, gz) = _sumoFrame.GroundToGodot(zone.LcZoneX, zone.LcZoneY, 0.0);
+        var r = Mathf.Max(0.001f, (float)zone.LcZoneRadius);
         _highRealismNode.Transform = new Transform3D(
             Basis.Identity.Scaled(new Vector3(r, 1f, r)), new Vector3(gx, 0.2f, gz));
         if (_lcZoneRing?.MaterialOverride is StandardMaterial3D m)

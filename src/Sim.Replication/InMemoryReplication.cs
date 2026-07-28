@@ -1,3 +1,4 @@
+using System.Threading;
 using Sim.Core;
 
 namespace Sim.Replication;
@@ -19,27 +20,77 @@ public sealed class InMemoryReplicationBus
     private readonly struct Entry
     {
         public Entry(IReadOnlyList<GeometryCodec.LaneGeo> lanes)
-        { Kind = EntryKind.Geometry; Lanes = lanes; Lifecycle = default; Movers = default; Lights = default; Step = 0; Time = 0; }
+        { Kind = EntryKind.Geometry; Lanes = lanes; Lifecycle = default; Movers = default; Lights = default; Step = 0; Time = 0; MoverCount = 0; }
 
         public Entry(in LifecycleRecord lifecycle)
-        { Kind = EntryKind.Lifecycle; Lanes = default; Lifecycle = lifecycle; Movers = default; Lights = default; Step = 0; Time = 0; }
+        { Kind = EntryKind.Lifecycle; Lanes = default; Lifecycle = lifecycle; Movers = default; Lights = default; Step = 0; Time = 0; MoverCount = 0; }
 
-        public Entry(uint step, double time, VehicleRecord[] movers)
-        { Kind = EntryKind.Frame; Lanes = default; Lifecycle = default; Movers = movers; Lights = default; Step = step; Time = time; }
+        // `movers` is a POOLED buffer that may be LONGER than the frame -- `MoverCount` is the authority
+        // (see the pool's own remarks below). It is returned to the pool by PumpCore once consumed.
+        public Entry(uint step, double time, VehicleRecord[] movers, int moverCount)
+        { Kind = EntryKind.Frame; Lanes = default; Lifecycle = default; Movers = movers; Lights = default; Step = step; Time = time; MoverCount = moverCount; }
 
         public Entry(uint step, double time, IReadOnlyList<TlCodec.TlEntry> lights, bool isTl)
-        { Kind = EntryKind.TrafficLights; Lanes = default; Lifecycle = default; Movers = default; Lights = lights; Step = step; Time = time; }
+        { Kind = EntryKind.TrafficLights; Lanes = default; Lifecycle = default; Movers = default; Lights = lights; Step = step; Time = time; MoverCount = 0; }
 
         public EntryKind Kind { get; }
         public IReadOnlyList<GeometryCodec.LaneGeo>? Lanes { get; }
         public LifecycleRecord Lifecycle { get; }
         public VehicleRecord[]? Movers { get; }
+        public int MoverCount { get; }
         public IReadOnlyList<TlCodec.TlEntry>? Lights { get; }
         public uint Step { get; }
         public double Time { get; }
     }
 
-    private readonly Queue<Entry> _queue = new();
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 1. This was a plain `Queue<Entry>`, so a threaded
+    // producer (publishing from a sim thread) racing the consumer's `Pump()` would corrupt it. Concurrent
+    // now, which is what makes the Stage-2 producer/consumer split legal: the producer only ever ENQUEUES
+    // and the consumer only ever DEQUEUES, and every dictionary PumpCore mutates (`_history`, `_tlState`,
+    // `_dims`, `_names`, `_geometry`) is touched exclusively on the consuming thread -- so this one queue
+    // is the entire cross-thread surface.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Entry> _queue = new();
+
+    // §3/§6 Stage 2: `PublishFrame` used to do `movers.ToArray()` -- a fresh heap array EVERY step, ~360 KB
+    // at 5 000 cars. The records are consumed by PumpCore and then never referenced again (they are copied
+    // into `_history`), so the buffer can simply be recycled. Concurrent because the producer rents and the
+    // consumer returns. Buffers grow only while a frame exceeds every pooled capacity, i.e. during warmup
+    // => ZERO steady-state allocation on the car handoff, which is the owner's stated constraint.
+    //
+    // A rented buffer may be LONGER than the frame, hence Entry.MoverCount rather than Movers.Length.
+    private readonly System.Collections.Concurrent.ConcurrentQueue<VehicleRecord[]> _moverPool = new();
+
+    // Diagnostics for a threaded host: how deep the handoff queue got, and how many buffers the pool had to
+    // allocate. A steadily-growing `MoverBuffersAllocated` after warmup means the pool is being defeated
+    // (consumer not pumping, so nothing is ever returned) -- worth seeing rather than guessing.
+    private int _moverBuffersAllocated;
+    public int MoverBuffersAllocated => Volatile.Read(ref _moverBuffersAllocated);
+    public int PendingEntries => _queue.Count;
+
+    private VehicleRecord[] RentMovers(int length)
+    {
+        // One probe, not a search: the pool is homogeneous in practice (the frame size barely changes step
+        // to step), so a single dequeue either fits or is grown and re-pooled at the larger size.
+        if (_moverPool.TryDequeue(out var buf))
+        {
+            if (buf.Length >= length)
+            {
+                return buf;
+            }
+        }
+
+        Interlocked.Increment(ref _moverBuffersAllocated);
+        return new VehicleRecord[Math.Max(length, 64)];
+    }
+
+    private void ReturnMovers(VehicleRecord[] buf)
+    {
+        // Bounded, so a consumer that stops pumping cannot make this the leak instead of the queue.
+        if (_moverPool.Count < 8)
+        {
+            _moverPool.Enqueue(buf);
+        }
+    }
 
     private readonly Dictionary<int, GeometryCodec.LaneGeo> _geometry = new();
     private bool _geometryComplete;
@@ -108,8 +159,12 @@ public sealed class InMemoryReplicationBus
         public void PublishLifecycle(in LifecycleRecord record) =>
             _bus._queue.Enqueue(new Entry(record));
 
-        public void PublishFrame(uint step, double time, ReadOnlySpan<VehicleRecord> movers) =>
-            _bus._queue.Enqueue(new Entry(step, time, movers.ToArray()));
+        public void PublishFrame(uint step, double time, ReadOnlySpan<VehicleRecord> movers)
+        {
+            var buf = _bus.RentMovers(movers.Length);
+            movers.CopyTo(buf);
+            _bus._queue.Enqueue(new Entry(step, time, buf, movers.Length));
+        }
 
         public void PublishTrafficLights(uint step, double time, IReadOnlyList<TlCodec.TlEntry> lights) =>
             _bus._queue.Enqueue(new Entry(step, time, lights, isTl: true));
@@ -158,10 +213,10 @@ public sealed class InMemoryReplicationBus
 
     private void PumpCore()
     {
-        var sawAny = _queue.Count > 0;
-        while (_queue.Count > 0)
+        var sawAny = false;
+        while (_queue.TryDequeue(out var e))
         {
-            var e = _queue.Dequeue();
+            sawAny = true;
             switch (e.Kind)
             {
                 case EntryKind.Geometry:
@@ -191,7 +246,7 @@ public sealed class InMemoryReplicationBus
 
                 case EntryKind.Frame:
                     var movers = e.Movers!;
-                    for (var i = 0; i < movers.Length; i++)
+                    for (var i = 0; i < e.MoverCount; i++)
                     {
                         var rec = movers[i];
                         if (!_history.TryGetValue(rec.Handle, out var hist))
@@ -209,6 +264,7 @@ public sealed class InMemoryReplicationBus
                         srcImpl.LatestVehicleSampleTime = e.Time;
                     }
 
+                    ReturnMovers(movers); // consumed -- nothing retains it, so recycle it for the producer
                     break;
 
                 case EntryKind.TrafficLights:

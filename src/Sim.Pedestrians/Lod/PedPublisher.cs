@@ -63,6 +63,44 @@ public sealed class PedPublisher
 
     public IReadOnlyList<PedEvent> Events => _events;
 
+    // ---- A6 / docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 3 -------------------------------------
+    //
+    // `_events` is an APPEND-ONLY history: nothing ever removed an entry, and the live-city host emits one
+    // event per published ped per step. At 20 000 peds over a long run that is an unbounded list of heap
+    // records -- the log's item A6, and the reason the ped handoff was the one path still allocating per
+    // tick after the car side was pooled.
+    //
+    // It is a HISTORY on purpose for POC-3's counters and for every test that inspects the whole stream, so
+    // it is not silently changed. Instead a host that has already forwarded a batch onto the wire says so:
+    // `DrainInto` copies the tail into a caller-owned (reused) list, and `ClearEvents` drops the history it
+    // just took. The per-id send COUNTERS are untouched by clearing -- they are what the POC success
+    // conditions are measured against, and they are O(peds), not O(steps).
+    //
+    // A caller that never calls `ClearEvents` (every test, every other host) behaves exactly as before.
+
+    /// Append `Events[fromIndex..]` to `into` (cleared first) and return how many were copied. No
+    /// allocation once `into` has grown to its steady-state size.
+    public int DrainInto(int fromIndex, List<PedEvent> into)
+    {
+        into.Clear();
+        if (fromIndex < 0)
+        {
+            fromIndex = 0;
+        }
+
+        for (var i = fromIndex; i < _events.Count; i++)
+        {
+            into.Add(_events[i]);
+        }
+
+        return _events.Count - fromIndex;
+    }
+
+    /// Drop the accumulated event history. Only for a caller that has already forwarded everything in it
+    /// (the live-city host, which publishes each step's batch onto the wire and keeps nothing). Send
+    /// counters and heartbeat bookkeeping survive.
+    public void ClearEvents() => _events.Clear();
+
     public IReadOnlyDictionary<int, int> FreeKinematicSamplesSent => _freeKinematicSamplesSent;
     public IReadOnlyDictionary<int, int> PathArcRecordsSent => _pathArcRecordsSent;
     public IReadOnlyDictionary<int, int> ActivityTimelineRecordsSent => _activityTimelineRecordsSent;
