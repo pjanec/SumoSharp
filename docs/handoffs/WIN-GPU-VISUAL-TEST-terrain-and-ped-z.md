@@ -80,9 +80,10 @@ Then the headless suites, so you know the machine agrees with CI before you judg
 ```powershell
 cd <repo>
 dotnet test Traffic.sln -c Release                                   # expect 775 pass / 0 fail / 4 skip
+                                                                     #   (incl. Sim.Pedestrians.Tests 324/324)
 dotnet run --project src\Sim.Bench -c Release                        # expect hash BF3794A4704BCD79, par == single
-dotnet test tests\Sim.LiveCity.Tests -c Release                      # expect 80/80
-dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 176 pass / 3 fail (see §6)
+dotnet test tests\Sim.LiveCity.Tests -c Release                      # expect 90/90
+dotnet test demos\City3D\CityLib.Tests -c Release                    # expect 187 pass / 3 fail (see §6)
 ```
 
 ---
