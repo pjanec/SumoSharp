@@ -546,6 +546,137 @@ pocket, dt=0.5, 150 steps, 30 warmup, prefill 39/500 steps:**
    20 000 peds we are already at roughly the 10 Hz boundary — the honest statement is "real-time at 2 Hz
    with 4.5× headroom; marginal at 10 Hz; and cars are not even in this measurement yet."
 
+### A13 · `CompositeFootprintSource` scratch threshold — **WIN, SHIPPED `b1c9d7f`** (17.4× less allocation)
+
+**⚠ CORRECTION TO THIS FILE'S HARNESS SECTION: the expected `Sim.Bench` hash is `BF3794A4704BCD79`, NOT
+`909605E965BFFE59`.** The latter is inherited from `PERF-HANDOVER.md` and is STALE (the bench scenario
+changed since). `BF3794A4704BCD79` with `hashA == hashPar` is the current baseline — measured twice this
+session.
+
+- **Hypothesis / why now:** B3's new per-phase ALLOCATION accounting showed `engine.plan` = 471.9 MiB and
+  `engine.willPass` = 94.1 MiB at 500 cars — >96% of allocation — contradicting `PERF-ROADMAP.md`'s claim
+  that the plan phase is allocation-free. So something **LiveCity-specific** allocated inside plan.
+- **How it was localized — bisection, not reasoning.** Ran the bench across existing `LIVECITY_*` gates
+  (all set explicitly in every arm, rule 10), comparing `alloc_bytes_per_step` at a fixed 507 cars:
+
+      baseline(all on)  10,167,913     COOP=0  10,230,087     WRONGLANE=0     10,063,257
+      YIELD=0              585,699     PEDYIELD=0 9,745,665    DRIVETHROUGH=0 10,168,136
+
+  `LIVECITY_YIELD=0` alone cut allocation **17.4×**. A `--profile` diff of the two arms then pinned it to
+  `engine.plan` 471.9 → 12.2 MiB and `engine.willPass` 94.1 → 5.2 MiB.
+  **My source-reasoning was wrong twice on the way** (I chased `CompositeFootprintSource.QueryNear` and
+  then `CrosswalkSignals`, both dead ends — the latter isn't even referenced in `Engine.cs`). The gate
+  bisection found it in two commands. `CLAUDE.md` rule 2 holds yet again.
+- **ROOT CAUSE (a stale comment, not a design flaw).** `CompositeFootprintSource.QueryNear`
+  (`src/Sim.Core/Bridge/CompositeFootprintSource.cs`) allocated its merge scratch on the heap whenever the
+  caller's span exceeded 64: `into.Length <= 64 ? stackalloc WorldDisc[64] : new WorldDisc[into.Length]`.
+  Its header asserted *"Zero-alloc for spans up to 64 (every current consumer passes 16)"* — but
+  **`Engine.MaxCrowdDiscs` was later raised 16 → 256 (commit `f9c837c`)** and this threshold/comment was
+  never updated. So every live-city crowd query heap-allocated a **`WorldDisc[256]` ≈ 10 KB, per query,
+  per vehicle, per step**, across 4 engine call sites (`Engine.cs:9908, 10026, 10325, 10694`).
+  10 KB × 507 cars × ~2 calls ≈ 10 MB/step — matches the measured 9.15 MB/step. Only fires with ≥2
+  children, which is exactly what `YieldEnabled` wires (the composite of ORCA footprints + crossing
+  occupancy), which is why the YIELD gate isolated it.
+- **BEFORE / AFTER (paired, same build settings, `git stash` A/B):**
+
+      500 cars / 0 peds, 60 steps, 507 cars both arms:
+        alloc/step   10,167,913 -> 585,744 B   (-94.2%, 17.4x)   [== the YIELD=0 floor: yield path now alloc-free]
+        GC pause     12-21% of wall -> 0.43-0.91%
+        mean/step    8.694 -> 7.15-7.95 ms     (~12-15%)
+      200 cars / 400 peds, 100 steps, stash A/B:
+        alloc/step   3,891,017 -> 306,235 B    (-92.1%, 12.7x);  gen0 20 -> 2
+        BEHAVIOUR IDENTICAL: cars=201 peds=400 ped_hi_end=11 ped_hi_max=26 ped_lo_end=389 arrived=7
+
+- **Change:** named constant `ScratchDiscs = 256` (must stay ≥ `Engine.MaxCrowdDiscs`), threshold raised to
+  it, and the 16→256 drift documented in the header so it cannot silently recur.
+- **Gates (all four, run first-hand by the orchestrator):** `dotnet test -c Release` → ParityTests 775
+  passed / 4 pre-existing skips, Host 6/6, DotRecast 2/2, Pedestrians 317/317, IgBridge 11/11, **0 failed
+  anywhere**; `Sim.Bench` **`BF3794A4704BCD79`, hashA == hashPar**; LiveCity.Tests **80/80**;
+  Pedestrians.Tests **317/317**; city-3000 **0 stuck (ever and at end) + AGGREGATE PASS** (arrived
+  relError 0.057, meanDuration 0.011, meanSpeed 0.030, KS 0.023, all tol 0.35).
+- **Verdict: WIN — shipped `b1c9d7f`.** Byte-identical on the parity path (no golden sets `CrowdSource`)
+  and behaviour-identical on the coupled path (paired counters above).
+- **Lesson:** a *comment* asserting a performance property is not a test. This one was true when written
+  and was falsified by a change 2 files away, silently, for however long. Any "zero-alloc for spans up to
+  N" invariant needs the N tied to its consumer by a named constant (done) or asserted by a test.
+  Also: the win came from a 2-command gate bisection after ~2 hours of source reading had produced only a
+  ~350 KB partial explanation of a 20 MB problem.
+
+### B1/B2/B3 — instruments + yield early-out, SHIPPED
+
+- **B1 `a09fb29`** — `if (carN == 0) return 0;` in `CountYieldObservationsThisStep`. Verified
+  bit-identical by stash A/B: `CarYieldObservations = 1789` before and after. Reclaims the measured 22.1%
+  of wall that ped-heavy, car-free runs spent on ~18 000 discarded spatial queries per step. Gates 80/80,
+  317/317.
+- **B2 `7cfe273`** — 9 `ped.*` sub-phases in `PedLodManager.Step` + 2 in `PedDemand.Step`, default-off,
+  reconciling to within 0.0–0.1% of `pedDemandStep`. **New finding it exposed:** `ped.despawnArrivals`
+  ≈ 20% and `ped.frozenPos` ≈ 19% — both O(live-peds) `PositionOf` scans, i.e. **direct confirmation of
+  A4** (redundant pose re-evaluation), previously invisible inside the opaque bucket.
+- **B3 `fc5c2e8`** — per-phase allocation bytes via process-wide `GC.GetTotalAllocatedBytes(precise:false)`
+  (never per-thread: several phases run `Parallel.For`). This instrument is what found A13.
+
+### A3 · parallel-plan the high-power ORCA crowd — **WIN, SHIPPED `1c51c25`** (−30.4% wall at 20k peds)
+
+- **Why now (and why NOT earlier):** at the invalid first ladder only **72** peds were high-power, so this
+  would have been worthless — I explicitly refused to ship it on `BenchPedLod`'s borrowed 3.4× figure. The
+  valid 20k measurement then showed `ped.orcaStep` = **37.4% of wall and 79.4% of all allocation** at
+  1 189–1 832 high-power agents, which is what justified it.
+- **The find:** `OrcaCrowd.UseParallelStep` is a long-shipped, documented, **tested** bit-identical parallel
+  plan (`tests/Sim.ParityTests/OrcaParallelStepTests.cs`) — and a grep shows it was set **only** by
+  `src/Sim.BenchPedLod`, never by `LiveCitySim`. Production ped ORCA had always run single-threaded on a
+  24-core box; `PedLodManager.cs:209` set only `UseSpatialHash`.
+- **Change:** new `LiveCityConfig.PedParallelOrca` (default **true**, because byte-identical — this is not a
+  fast-mode knob) wired at `LiveCitySim.cs` where `_manager` is built, plus `LIVECITY_PEDPARALLELORCA` for
+  paired A/B. **Self-gating:** `OrcaCrowd` engages the parallel plan only at
+  `_count >= ParallelStepThreshold` (**256**, `OrcaCrowd.cs:277`), so every small scenario and the whole
+  test suite keep the untouched serial path — which is why 80/80 + 317/317 + 775 stayed green unchanged.
+- **BEFORE / AFTER — interleaved paired A/B, 20k peds (19 998 achieved, `ped_hi_max=1832` in BOTH arms),
+  120 steps, 2 rounds:**
+
+      mean/step   87.7 / 87.0  ->  60.9 / 60.8 ms   (-30.4%)
+      p99        132.8 / 119.7 ->  72.3 / 83.2 ms   (-38%)
+      RTF          5.70 / 5.75 ->   8.21 / 8.22
+
+- **Gates:** ParityTests 775 / 4 pre-existing skips (includes `OrcaParallelStepTests`); LiveCity 80/80;
+  Pedestrians 317/317; `Sim.Bench` `BF3794A4704BCD79`, `hashA == hashPar`. city-3000 deliberately not
+  re-run: this touches only `LiveCityConfig` + `LiveCitySim` wiring, and city-3000 drives `Engine` through
+  `Sim.BenchCity` with no ped manager and no `CrowdSource` — stated so a reviewer can check the reasoning
+  rather than wonder whether a gate was skipped from laziness.
+- **⚠ KNOWN REGRESSION (follow-up A14, not a blocker):** alloc/step **8.19 → 10.85 MB (+32%)**, and it
+  becomes run-to-run VARIABLE (the serial arm was bit-stable at exactly 8,189,582 B/step, the parallel arm
+  gave 10,845,678 then 10,943,820). The parallel path allocates per-task scratch. GC pause stays < 1% of
+  wall so it is not currently costing time, but it should be pooled — and note the *variability* also means
+  allocation totals can no longer be used as a determinism proxy in the parallel arm.
+- **Verdict: WIN.** Cumulative with A13 + B1, the 20k-ped headline is **110.5 → 60.8 ms/step
+  (1.82×)**, p99 **201 → ~78 ms (2.6×)**.
+
+### Cumulative scoreboard (20 000 peds, dt=0.5, static 70 m pocket, 19 996–19 998 achieved)
+
+| stage | mean ms/step | p99 ms | RTF | alloc/step |
+|---|---|---|---|---|
+| baseline (first valid measurement) | 110.5 | 201.4 | 4.52× | 7.94 MB |
+| + B1 yield early-out (`a09fb29`) | 87.1 | 129.2 | 5.74× | 7.94 MB |
+| + A3 parallel ORCA (`1c51c25`) | **60.8** | **~78** | **8.22×** | 10.85 MB ⚠ |
+
+Car side, separately (500 cars, 0 peds): **A13 `b1c9d7f`** cut alloc/step **10,167,913 → 585,744 B
+(17.4×)** and GC pause **12–21% → <1%** of wall.
+
+### A4 · redundant pose recomputation — IN PROGRESS (delegated)
+
+Now the dominant cost: `pedLowPowerGather` 19.0% + `ped.frozenPos` 16.9% + `ped.despawnArrivals` 15.3%
+were >50% of wall before A3 and are ~73% of what remains. All three are O(all-peds) `PositionOf`/`PoseAt`
+sweeps, and each `PoseAt` does up to **three** O(leg-vertices) polyline walks under weave — one of which
+(`PathLength`, `ActivityTimeline.cs:306`) recomputes a total the `WalkSegment` ctor already computed.
+- Task 1: kill the redundant `PathLength` walk — must be **bit**-identical, so the cached value has to come
+  from the same function over the same sequence (a hand-rolled second summation could differ in the last
+  bits and drift trajectories).
+- Task 2: a per-step pose memo, **only if** two sweeps provably query the same `now` with no pose-affecting
+  mutation between them. `frozenPos` is start-of-step; the gather runs after `_demand.Step` and after ORCA
+  has moved agents — so a naive "compute once, reuse everywhere" memo would hand some consumer a
+  one-step-stale pose. The implementor is instructed to prove the same-`now` property or decline.
+
+### A14 (new) · pool the parallel-ORCA per-task scratch — see the A3 regression above.
+
 ---
 
 ## REVISED PLAN (post-A1) — the ladder must be made VALID before any optimization
