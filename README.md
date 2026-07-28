@@ -282,8 +282,10 @@ snapshot** (order-independent, no arrival-time race).
   ingest (exact parity), and `<flow probability=>` inserted per step by a **per-flow seeded** RNG
   (deterministic & reproducible; statistical parity with SUMO — see *Not simulated → \[net\] tail*)
 - ✅ **Warm-start snapshot** — `WarmUp(steps)` deterministically pre-populates a live, already-running
-  network in memory; `SaveSnapshot` / `LoadSnapshot` round-trips **all** vehicles (incl. trains) plus
-  the engine state machines, so a run can start from a live-traffic snapshot (in-memory or from file)
+  network in memory; `SaveSnapshot` / `LoadSnapshot` round-trips vehicles (incl. trains) plus the engine
+  state machines, so a run can start from a live-traffic snapshot (in-memory or from file). Snapshotting
+  needs a loaded *scenario* (not a bare network) and throws rather than mis-restoring on the state it does
+  not yet capture — actuated TLS, and vehicles with scheduled stops, reroutes or `departLane="best"`
 
 ---
 
@@ -482,7 +484,7 @@ tuning story: `docs/VIEWER-KINEMATIC-SMOOTHING-DESIGN.md`, `docs/IGBRIDGE-METHOD
 - **Flow demand:** `<flow>` (period/vehsPerHour/number, exact parity) and probabilistic
   `<flow probability=>` (per-flow seeded RNG, deterministic & reproducible).
 - **Warm-start:** `WarmUp(steps)` deterministically precomputes a populated, already-driving network;
-  `SaveSnapshot`/`LoadSnapshot` persists the whole live state — every vehicle (cars **and** trains)
+  `SaveSnapshot`/`LoadSnapshot` persists the live state — vehicles (cars **and** trains)
   plus the engine's rail-crossing/clock machines — so a simulation can begin from a live-traffic
   snapshot rather than an empty map.
 
