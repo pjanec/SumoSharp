@@ -671,6 +671,12 @@ public sealed class LiveCitySim : IDisposable
         set => _cfg.Dt = value;
     }
 
+    // Whether Step() drains its own vehicle-replication bus (see the call site in Step for the full
+    // reasoning). TRUE preserves the historical single-threaded behaviour for every non-threaded consumer.
+    // A host that runs Step() on a producer thread MUST set this false and pump from its consumer thread
+    // instead, or the two threads race on the bus's history dictionaries.
+    public bool SelfPumpVehicleBus { get; set; } = true;
+
     // The car-side twin of SetPedDensity, for symmetry at the call site. Cars needed no engine change:
     // `Step()` already reads `CarTargetConcurrent`/`CarSpawnPerStep` off the by-reference `_cfg` every
     // tick, so writing them here is felt on the next tick. This method exists so a viewer has ONE
@@ -1288,7 +1294,23 @@ public sealed class LiveCitySim : IDisposable
         }
 
         _vehPublisher.PublishStep(snap, _vehBus.Sink);
-        _vehBus.Source.Pump();
+
+        // THREAD SAFETY (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §4 hazard 1). This self-pump drains the
+        // just-published frame into the bus's `_history`/`_dims`/`_names`/`_tlState` dictionaries. That is
+        // fine while Step() and the consumer share a thread -- but once a producer thread owns Step(), the
+        // consumer (CityLib.Reconstructor) is enumerating `_history` on the RENDER thread at the same moment,
+        // and a Dictionary cannot survive an insert during enumeration. Observed on GPU: 13 x
+        // "InvalidOperationException: Collection was modified" per run at 10 000 cars, each one aborting that
+        // frame's whole car pass. Stage 2's own comment claims these dictionaries are consumer-thread-only;
+        // THIS was the call that made that false.
+        //
+        // A threaded host sets `SelfPumpVehicleBus = false` and pumps from its consumer instead (the viewer
+        // already does, once per frame, inside Reconstruct). Default TRUE so every non-threaded consumer --
+        // Sim.Host.App, Sim.Viz, the LiveCity tests -- keeps the exact behaviour it had.
+        if (SelfPumpVehicleBus)
+        {
+            _vehBus.Source.Pump();
+        }
 
         // Stage C (C1) tee: also publish this step onto the record sink, if one was supplied -- geometry
         // once (its own publish-once latch, independent of `_vehGeometryPublished` above), then the frame,

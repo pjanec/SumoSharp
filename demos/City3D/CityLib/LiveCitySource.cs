@@ -303,6 +303,13 @@ public sealed class LiveCitySource : IDisposable
             throw new InvalidOperationException("LiveCitySource.StartThreadedTick() called twice.");
         }
 
+        // §4 hazard 1: from here on Step() runs on the producer thread while the consumer enumerates the
+        // vehicle bus's history on the render thread, so the sim must STOP draining that bus itself -- the
+        // consumer's own per-frame pump (inside CityLib.Reconstructor.Reconstruct) is the only legal one.
+        // Without this the two threads insert into / enumerate the same Dictionary: measured on GPU as 13 x
+        // "Collection was modified" per run at 10 000 cars, each aborting that frame's car pass.
+        _sim.SelfPumpVehicleBus = false;
+
         // Publish an initial frame so the consumer has a valid snapshot before the first step completes --
         // otherwise the render clock has nothing to anchor to on frame 1.
         PublishSlot();

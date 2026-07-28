@@ -64,7 +64,15 @@ public sealed class PedRemoteReconstructor
     private readonly double _playoutDelay;
 
     private readonly HashSet<int> _knownIds = new();
-    private readonly Dictionary<int, SmoothState> _smoothed = new();
+
+    // CONCURRENT because `TryGetRenderPose` is called from a PARALLEL per-ped loop by the City3D viewer
+    // (CityLib.PedReconstructor) -- ped reconstruction measured 33.0 ms of an 84.5 ms frame at 31 890 peds,
+    // and it is per-ped independent, so it fans out. The only structural mutation of this map is `Smooth`'s
+    // miss-path insert; the hit path mutates the per-ped `SmoothState` OBJECT, which is safe because a given
+    // id is handled by exactly one worker. A plain Dictionary would corrupt (or spin) on concurrent inserts,
+    // so the container -- not the per-ped state -- is what has to change. `Remove` still happens only from
+    // the serial `Pump`/prune path.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, SmoothState> _smoothed = new();
 
     private int _pathArcIdCursor;
     private int _timelineIdCursor;
@@ -200,7 +208,7 @@ public sealed class PedRemoteReconstructor
             if (lc.Kind == PedLifecycleKind.Despawn)
             {
                 _knownIds.Remove(id);
-                _smoothed.Remove(id);
+                _smoothed.TryRemove(id, out _); // ConcurrentDictionary: no single-arg Remove
             }
             else
             {

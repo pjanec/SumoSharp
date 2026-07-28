@@ -167,8 +167,19 @@ public sealed class HeadlessIg
     // timeline yields 0.0 exactly as before.
     private static double TimelineElevationAt(ActivityTimeline timeline, Vec2 at)
     {
+        // PERF: resolve the WINNING leg first, then read its elevation ONCE -- instead of re-walking a leg's
+        // whole polyline (AtNearestPoint) every time the running minimum improved. Exactly equivalent by
+        // construction: `AtNearestPoint` is a pure function of (path, elevations, at), so evaluating it once
+        // for the final winner yields the same double the old loop's last assignment did; only the discarded
+        // intermediate evaluations are gone. Worst case (legs ordered nearest-last) this halves the polyline
+        // walks; best case it is unchanged.
+        //
+        // Why it matters: this runs per ped PER RENDER FRAME. Measured on GPU at 31 890 peds, ped
+        // reconstruction was 33.0 ms of an 84.5 ms frame (39%), ~1.0 us/ped -- far more than interpolation
+        // should cost, because this method re-derives geometry the pose query already scanned. Commit
+        // 789a4b8 widened the branch that reaches here, so MORE peds pay it.
         var best = double.PositiveInfinity;
-        var bestZ = 0.0;
+        WalkSegment? bestWalk = null;
 
         foreach (var segment in timeline.Segments)
         {
@@ -182,11 +193,13 @@ public sealed class HeadlessIg
             if (d2 < best)
             {
                 best = d2;
-                bestZ = Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(walk.Path, walk.Elevations, at);
+                bestWalk = walk;
             }
         }
 
-        return bestZ;
+        return bestWalk is null
+            ? 0.0
+            : Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(bestWalk.Path, bestWalk.Elevations!, at);
     }
 
     private static double NearestDistanceSquared(IReadOnlyList<Vec2> shape, Vec2 p)
