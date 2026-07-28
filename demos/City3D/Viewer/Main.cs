@@ -737,7 +737,9 @@ public partial class Main : Node3D
             try
             {
                 _frameLogWriter = new StreamWriter(_frameLogPath, append: false) { AutoFlush = false };
-                _frameLogWriter.WriteLine("frame,frame_ms,sim_ticks,live_cars,live_peds,sim_time");
+                _frameLogWriter.WriteLine(
+                    "frame,frame_ms,sim_ticks,live_cars,live_peds,sim_time," +
+                    "car_recon_ms,car_update_ms,ped_recon_ms,ped_update_ms");
                 GD.Print($"Main: --frame-log writing to '{_frameLogPath}'.");
             }
             catch (Exception ex)
@@ -1899,9 +1901,13 @@ public partial class Main : Node3D
         // decelerated ("caterpillar", worse with density) while the frame loop was clean. Passing the same
         // clock the peds use makes car and ped playout share one timebase. See Reconstructor.Reconstruct's
         // `renderSimClock` remarks for the full diagnosis.
+        var tCarRecon = System.Diagnostics.Stopwatch.GetTimestamp();
         var vehicles = _reconstructor.Reconstruct(
             _liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds, null, _renderSimClock);
+        var tCarUpdate = System.Diagnostics.Stopwatch.GetTimestamp();
+        _phCarReconTicks = tCarUpdate - tCarRecon;
         UpdateCars(vehicles);
+        _phCarUpdateTicks = System.Diagnostics.Stopwatch.GetTimestamp() - tCarUpdate;
 
         // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table. This used to
         // call `_liveCitySource.SampleCars()`, which hands back LiveCitySim's own REUSED scratch buffer --
@@ -1935,8 +1941,12 @@ public partial class Main : Node3D
         // it is clamped so it cannot outrun computed state. `_liveCitySource.Time` must not be read here at
         // all: it is a live sim field the producer thread mutates.
         var pedNow = _renderSimClock;
+        var tPedRecon = System.Diagnostics.Stopwatch.GetTimestamp();
         var peds = _liveCityPedReconstructor.Reconstruct(_liveCitySource.PedSource, pedNow);
+        var tPedUpdate = System.Diagnostics.Stopwatch.GetTimestamp();
+        _phPedReconTicks = tPedUpdate - tPedRecon;
         UpdatePeds(peds);
+        _phPedUpdateTicks = System.Diagnostics.Stopwatch.GetTimestamp() - tPedUpdate;
         UpdateSelectionHighlight();
 
         // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- mirrors RenderFrame's own
@@ -2887,6 +2897,25 @@ public partial class Main : Node3D
         }
     }
 
+    // RENDER-PHASE breakdown. Once the tick moved to the producer thread the frame cost stopped being the
+    // engine and became the per-frame RECONSTRUCTION of every entity -- and the owner measured 8 fps at
+    // 10 000 cars + 30 000 peds while the engine still held 2 Hz with sim_ticks == 0, i.e. 125 ms/frame
+    // entirely on the render thread. The arithmetic that motivates this: the sim computes each entity ONCE
+    // per tick (40 k x 2 = 80 k updates/s at 2 Hz) while the viewer reconstructs EVERY entity EVERY frame
+    // (40 k x 8 = 320 k/s at 8 fps; 2.4 M/s if it hit 60), so at high counts reconstruction dwarfs
+    // simulation. Four candidate homes -- car reconstruct, car MultiMesh write, ped reconstruct, ped
+    // MultiMesh write -- and a total-frame-ms figure cannot tell them apart.
+    //
+    // Ticks only (Stopwatch.GetTimestamp), converted at HUD-refresh/CSV time; no allocation, no Stopwatch
+    // object, and the probes are unconditional but cost two timestamp reads each, mirroring the engine's
+    // own PhaseStart/PhaseEnd pattern (Engine.ProfilePhases).
+    private long _phCarReconTicks;
+    private long _phCarUpdateTicks;
+    private long _phPedReconTicks;
+    private long _phPedUpdateTicks;
+
+    private static double TicksToMs(long ticks) => ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
     // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- push one more sample into the fixed-capacity
     // rolling ring buffer. O(1), no allocation, called every frame.
     private void PushFrameMs(double ms)
@@ -2963,6 +2992,14 @@ public partial class Main : Node3D
             _frameLogWriter.Write(livePeds);
             _frameLogWriter.Write(',');
             _frameLogWriter.Write(simTime.ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(TicksToMs(_phCarReconTicks).ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(TicksToMs(_phCarUpdateTicks).ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(TicksToMs(_phPedReconTicks).ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(TicksToMs(_phPedUpdateTicks).ToString("F3", CultureInfo.InvariantCulture));
             _frameLogWriter.Write('\n');
             if ((_frameLogIndex % 30) == 0)
             {
@@ -2986,7 +3023,13 @@ public partial class Main : Node3D
                     $"p50/p95/p99: {_lastP50Ms:F1}/{_lastP95Ms:F1}/{_lastP99Ms:F1}ms\n" +
                     $"spikes(>3x p50): {_frameSpikeCount}\n" +
                     $"sim ticks this frame: {simTicksThisFrame}  sim: req {_requestedSimHz:F0}Hz achieved {_achievedSimHz:F1}Hz\n" +
-                    $"cars: {liveCars}  peds: {livePeds}";
+                    $"cars: {liveCars}  peds: {livePeds}\n" +
+                    // Render-phase split: which of the four per-frame passes actually costs the frame.
+                    // `rest` is everything else in the frame (TLs, signals, camera, zone ring, Godot's own
+                    // draw) -- shown explicitly so an unattributed cost is visible rather than hidden.
+                    $"car recon/upd: {TicksToMs(_phCarReconTicks):F1}/{TicksToMs(_phCarUpdateTicks):F1}ms  " +
+                    $"ped recon/upd: {TicksToMs(_phPedReconTicks):F1}/{TicksToMs(_phPedUpdateTicks):F1}ms\n" +
+                    $"rest: {Math.Max(0.0, frameMs - TicksToMs(_phCarReconTicks + _phCarUpdateTicks + _phPedReconTicks + _phPedUpdateTicks)):F1}ms";
             }
 
             if (_simHzSliderLabel is not null)
