@@ -93,7 +93,38 @@ legitimate to keep — a considered-and-parked idea saves the next person the an
 them as descriptions of the current system is how a reader ends up looking for code that was never
 written.
 
-## 5. What this pass deliberately does NOT do
+## 5. What the pass actually did
+
+Seven reviewers read all 268 docs, one batch each, and returned a verdict per doc with a named reason.
+Every staleness finding was then **re-verified against the source before being acted on**. That check
+earned its keep: one reported that `F3-JUNCTION-OVERLAP-TRACKER`'s T1.6–T1.9 were "done but unticked", and
+they are in fact genuinely open and explicitly blocked on each other. Acting on the report would have
+ticked four boxes over real work. That case is now recorded in `TASKS-TODO.md` so the next pass does not
+repeat it.
+
+Outcome:
+
+| Action | Count | Where it landed |
+| --- | --- | --- |
+| Moved to `docs/archive/` | 22 | Freely movable, superseded session ephemera. Each stamped with what superseded it *and* why it was kept. |
+| Banner-stamped in place | 11 | Code-pinned, so the path must keep resolving. 3 are `HISTORICAL TRAIL` — they carry claims later disproved. |
+| Corrected | 16 | Named false claims fixed, including two consumer-facing API docs that would not have compiled. |
+| Deleted | **0** | See the bias in §3. |
+| Open work folded into `TASKS-TODO.md` | 14 items | Two engine correctness bugs, two config-hygiene items, four pedestrian items, five trailing items, plus the false-positive above. |
+
+The two corrections worth singling out, because they are the class that costs someone real time:
+`PEDESTRIAN-NAVMESH-CONTRACT.md` documented a two-argument `FindPath` that no longer exists, and
+`EXTERNAL-AGENTS-VIZ.md` — a public integration guide — documented a string-keyed obstacle API against a
+handle-based one. Anyone following either would have failed to compile.
+
+Two docs asserted the *reverse* of the truth rather than merely being out of date:
+`LIVE-CITY-PED-LOD-LIFECYCLE-DESIGN.md` §3.2 presented a fix that was designed and then dropped, and
+`HIGH-DENSITY-PLAN.md` recorded a gate as removed that appears 13 times in `Engine.cs` — and stated a
+default the wiring contradicts. Those are the ones a status banner cannot fix; the body had to change.
+
+The resulting map is [`README.md`](README.md).
+
+## 6. What this pass deliberately does NOT do
 
 - **It does not consolidate the triads.** Merging 67 designs into a handful of documents would lose
   the per-feature cross-references from code, and the triad structure is what `CLAUDE.md` mandates for
