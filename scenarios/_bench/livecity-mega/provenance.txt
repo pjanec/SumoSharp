@@ -1,0 +1,76 @@
+sumo_version=1.20.0
+sumo_version_reported=Eclipse SUMO netgenerate Version 1.20.0
+generated_utc=2026-07-28T02:05:43Z
+purpose=A12 (docs/LIVE-CITY-PERF-SESSION-LOG.md): a committed net big enough to host
+  5,000 concurrent cars AND 20,000 concurrent pedestrians in Sim.LiveCity at once. No prior
+  scenario could: the demo net (LiveCityConfig.ForRepoRoot, extent 4,758 m, 3,240 lanes)
+  gridlocks the engine at ~3,084/5,000 cars (genuine saturation); the 11 km central-Geneva
+  road-net cut fills cars fine but has essentially no pedestrian infrastructure and plateaus
+  at ~40 concurrent peds. This net has BOTH road capacity and real sidewalk/crossing/
+  walkingarea infrastructure.
+
+net_command=netgenerate --grid --grid.number=15 --grid.length=500 -L 2 --sidewalks.guess --crossings.guess --walkingareas --tls.guess --no-turnarounds --seed 42 -o net.net.xml
+seed=42
+
+# No golden here -- this is NOT a SUMO-parity scenario (unlike city-3000/city-15000, which
+# ship a SUMO tripinfo/summary + aggregate-tolerance.json). Sim.LiveCity generates its own
+# procedural car+ped demand at runtime (LiveCityConfig.ForSumocfg); nothing here is compared
+# to a SUMO-produced trajectory. config.sumocfg intentionally has NO <route-files> --
+# LiveCitySim only scrapes a route file for a spawn-edge set when one is present, and the
+# net-derived fallback (every sidewalk/road edge) is a complete answer per LiveCityConfig.cs
+# ForSumocfg's own header comment.
+
+# Net-sizing exploration (why grid15/500m/-L2, not the task's suggested starting point of a
+# 40x40/200m grid):
+#   - First attempt: --grid.number=40 --grid.length=200 -L 2 (same flags otherwise) ->
+#     extent 7,816.8 m, 67,999 lanes (1,600 junctions; the 200 m block spacing plus guessed
+#     sidewalks/crossings/walkingareas at every junction multiplies element count heavily).
+#     Car capacity was fine (4,821-4,920/5,000 achieved, no gridlock, no lane-connection
+#     exception). BUT pedestrian spawning was the bottleneck: LiveCityConfig.ForSumocfg uses
+#     RouteGraph ped nav (SumoRouteGraphNav), and its per-spawn route search cost scales with
+#     ped-graph size -- profiled at ~390 ms/step for only ~12 ped spawns/step (--profile:
+#     ped.spawnDue = 93-99% of wall). At the ped_spawn_rate this net's population needs, that
+#     is far too slow to fill 20,000 peds in any practical number of steps/wall-clock time.
+#   - Root cause is JUNCTION COUNT (hence ped-graph size: every junction adds crossings +
+#     walkingareas + connections), not block length or total lane-km. Re-tested at
+#     --grid.number=15 --grid.length=500 (225 junctions vs 1,600, ~7x fewer) with the same
+#     -L2 + sidewalks/crossings/walkingareas: ped.spawnDue dropped roughly proportionally
+#     (~79 ms/step for the same ~12 spawns/step at grid15 vs ~390 ms/step at grid40), and at
+#     production scale reached the FULL 20,000 peds in just 39 fill-steps.
+#   - Car capacity was NOT sacrificed by shrinking junction count: grid15 (8,999 lanes,
+#     extent 7,016.8 m) still reached 4,872-4,920/5,000 cars with no gridlock (still growing
+#     at the fill-steps cutoff, not saturated) -- i.e. capacity tracks total lane-km/extent,
+#     not junction density, while ped-routing cost tracks junction/ped-graph density. This is
+#     why the shipped net favours FEWER, LONGER blocks (grid15/500m) over the task's literal
+#     40x40/200m suggestion.
+#   - -L2 (2 lanes/direction) was kept throughout: the PERF-HANDOVER.md Sec.5 / city-3000-
+#     provenance "No lane on edge ... has a <connection> to ..." NetworkModel.ResolveSequenceCore
+#     defect was NOT observed on this net across all measurement runs (up to ~4,920 concurrent
+#     cars over 1,000+ steps) -- reported per the task instructions even though it did not fire,
+#     so a future session does not have to re-derive that -L2 was tried and was fine here.
+
+net_grid_number=15 net_grid_length=500 net_lanes=8999 net_lanes_L2_40x40_rejected=67999
+net_extent_m=7016.8x7016.8
+engine_capability_note=NOT hit: the -L1-vs-L2 NetworkModel.ResolveSequenceCore "No lane on
+  edge ... has a <connection> to ..." defect described in docs/PERF-HANDOVER.md Sec.5 and
+  scenarios/_bench/city-3000/provenance.txt did not reproduce on this net at -L2 across every
+  verification run (up to ~4,920 concurrent cars). Reported per task instructions regardless
+  of outcome.
+
+# Verification (Sim.BenchLiveCity --sumocfg scenarios/_bench/livecity-mega/config.sumocfg,
+# --fill-steps 1500 --steps 40 --warmup 5, all LIVECITY_* gates set explicitly: COOP=1
+# PEDYIELD=1 YIELD=1 WRONGLANE=1 DRIVETHROUGH=1 HELDSWERVE=1), reproduced twice (identical
+# both times -- deterministic for a fixed net path):
+#   --cars 5000 --peds 0     -> achieved cars=4874 peds=0        (95.1% at fill cutoff, fill-rate-limited not gridlocked; still rising)
+#   --cars 0    --peds 20000 -> achieved cars=0    peds=20000    (100%, reached in 39/1500 fill-steps)
+#   --cars 5000 --peds 20000 -> achieved cars=4872 peds=20000    (97.4% cars / 100% peds; cars still rising, not gridlocked)
+# (An earlier probe against a byte-identical scratch copy of the same net under a different
+# filename/path reported cars=4920 instead of 4874 for the cars-only config -- reproducible
+# per-path but not identical cross-path. Not investigated further: out of scope for a
+# scenario-data task, and both numbers land in the same "~97%, still rising, not gridlocked"
+# verdict. Flagging it here so a future determinism audit isn't surprised by it.)
+# See docs/LIVE-CITY-PERF-SESSION-LOG.md A12 for the full narrative and prior proxies.
+
+# input file hashes (sha256):
+input=net.net.xml sha256=7b5a8b029b79cc3ea277dc2049a4838a20009aba5972ac9bfb98e9e58678b871
+input=config.sumocfg sha256=91dbece890f19eda7fd4fec9f1860fd97c3b8e5849e802154149479db6de1765
