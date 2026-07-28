@@ -1017,3 +1017,46 @@ Ranked. Full preconditions in `LIVE-CITY-PERF-TRACKER.md` Stage 2.
 **Do NOT re-attempt on the car path** (built, measured, reverted — `PERF-HANDOVER.md`): per-field SoA
 for foe reads, parallel `foeIndex` (twice, lock-overhead-bound), chunked range partitioner, Server GC
 (a wash), inline `Pos` in neighbour buckets, vType-resolve memoization, region-parallel emit.
+
+---
+
+## Appendix (2026-07-28, live-city-demo session) — A3's bit-identity confirmed END-TO-END in the demo
+
+`LiveCitySim.cs:307` and `LiveCityConfig.cs:270` both assert `PedParallelOrca` is "bit-identical to
+serial", citing `OrcaParallelStepTests`. That test proves it at **unit** level. It had never been
+checked through the **whole demo**, so this closes the gap.
+
+**Method.** `Sim.Viz --live-city-demo` at `LIVECITY_PEDS=3000 LIVECITY_CARS=300`, 220 steps (110 s),
+run twice with only `LIVECITY_PEDPARALLELORCA` differing (1 = parallel, 0 = serial), every other
+`LIVECITY_*` left at default in both arms. Compared the **whole output HTML** by SHA-256 — the replay
+embeds every car and ped pose for every frame, so any divergence anywhere shows up.
+
+**Result.** Both arms `88ad1cb1c9ed4c54eccddb5fd104850759fa443b047340e319a59e42c6fd163f`, both
+82 666 797 bytes, identical counters (`frames=1096 maxCars=293 maxPeds=3117 maxHighPower=256`,
+`near-collision=975 / pedOnCrossingSamples=115138`). **A3 is bit-identical in the demo, not just in
+the unit test.**
+
+**Two bounds on that claim, stated so nobody over-reads it.**
+- Peak high-power was **exactly 256**, which *is* `OrcaCrowd.ParallelStepThreshold`. So the parallel
+  path engaged only in the frames at/near peak, not for the whole run. It is still a real test: a
+  divergence in those frames propagates to every later frame and would change the file hash.
+- **Do not judge whether the parallel path engaged by the `maxHighPower` the viz prints.** The gate is
+  `_count >= ParallelStepThreshold` (`OrcaCrowd.cs:512`) and `_count` is a **slot high-water mark**
+  (`OrcaCrowd.cs:378` only ever increments; liveness is tracked separately in `_slotAlive[]`), so it is
+  ≥ the live count and never shrinks. This session first mis-concluded "the parallel path never fired"
+  at `maxHighPower=131` by comparing the threshold against the live count. Same trap as
+  §"`QueryNear` is a full scan", where slots scanned (67–275) ran well above promoted-live (7–123).
+
+**Unresolved, cheap to settle:** peak high-power landing *exactly* on 256 at 3000 peds looks like a
+cap, but there is no promotion budget in `PedLodManager` — promotion is purely "inside an
+`InterestSource` promote radius". 1000 peds gives 131, so sublinear zone saturation is the likely
+explanation. Run 6000 peds and see whether high-power exceeds 256 or pins there; if it pins, something
+does cap it and the demo can never exercise the parallel path beyond its edge.
+
+**Also measured (same session):** the 1k/300/300 s demo replay is byte-identical
+(`1454fb68e5e0818df8ace0fb005234aeb8f836496f3eb11ebbf477bc75d0eb27`) across `main@132effa`,
+`claude/handoff-docs-implementation-pmdu9z@9987aba`, and `main@0d385a8` — i.e. the whole perf branch
+plus the `Dictionary`→`ConcurrentDictionary` swap in `Sim.Viewer.Motion` moved nothing on that path at
+that density. Gates re-verified first-hand on `main@0d385a8`: parity **777/4** (not the 775/4 the iron
+law claimed — `d9dbf18`'s `EnvGateDocumentationTests` adds exactly 2), bench `BF3794A4704BCD79`
+par==single, LiveCity **90/90**, Pedestrians **324/324**.

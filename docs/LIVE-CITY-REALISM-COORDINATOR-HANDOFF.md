@@ -19,7 +19,7 @@ cars). Read `docs/TASKS-TODO.md` first every time — it is the live board; this
 5. Pick / coordinate the next realism item (§2); keep the trackers current.
 
 ## Gates / iron law (run after every change; realism changes are parity-inert but VERIFY)
-- `dotnet test tests/Sim.ParityTests -c Release` = **775/4**, all **661 goldens byte-identical**.
+- `dotnet test tests/Sim.ParityTests -c Release` = **777/4**, all **661 goldens byte-identical**.
 - `dotnet run --project src/Sim.Bench -c Release` → hash **`BF3794A4704BCD79`**, `par == single`.
   (Bench runs `_bench/highway-dense`, no SUMO ref — a re-pinned tripwire, not a verified-correct value; the
   parity statement is the goldens. It last moved with PR #13 when 7 junction gates defaulted ON.)
@@ -104,17 +104,20 @@ LIVECITY_PEDS=1000 LIVECITY_CARS=300 \
 ( cd "$(dirname <out>.html)" && zip -9 <out>.html.zip "$(basename <out>.html)" )
 # deliver <out>.html.zip via SendUserFile (display:attach).
 ```
-**Measured sizes** (both real runs, not extrapolations):
+**Measured sizes** (all real runs, not extrapolations):
 
-| peds (peak) / cars (peak) | duration | steps | html | zip |
-|---|---|---|---|---|
-| 1027 / 294 | 160 s | 320 | 47 MB | 9.7 MB |
-| 1212 / 294 | **300 s** | 600 | **100 MB** | **24.9 MB (23.7 MiB)** |
+| `LIVECITY_PEDS` | peds (peak) / cars (peak) | duration | steps | html | zip |
+|---|---|---|---|---|---|
+| 1000 | 1027 / 294 | 160 s | 320 | 47 MB | 9.7 MB |
+| 1000 | 1212 / 294 | **300 s** | 600 | **100 MB** | **24.9 MB (23.7 MiB)** |
+| 3000 | 3117 / 293 | 110 s | 220 | 83 MB | 21 MB (20 MiB) |
 
-Both at `LIVECITY_PEDS=1000 LIVECITY_CARS=300`; the peak ped count is higher in the longer run because the
-population is still filling at 160 s. **The compression ratio is ~4×, not the ~5× first measured**, so the
-earlier "320 s → ~20 MB zip" estimate was optimistic: **300 s is already 23.7 MiB and ~320 s is the practical
-ceiling** for this density under the 30 MiB cap. If a run would exceed ~28 MiB zipped,
+At a fixed `LIVECITY_PEDS` the peak ped count still rises with duration — the population is
+only ~85% filled at 160 s. **Budget by agents × frames, and assume ~4× compression, not the ~5×
+the first run suggested**: the earlier "320 s → ~20 MB zip" estimate was optimistic, since 300 s is
+already 23.7 MiB. Practical ceilings under the 30 MiB cap: **~320 s at 1k peds**, or **~110 s at 3k**.
+Trading duration for density is the usual move when you want the crowd to look dense. If a run
+would exceed ~28 MiB zipped,
 shrink via: fewer steps (duration), lower `LIVECITY_PEDS`/`LIVECITY_CARS`, or lower `RenderHz` in
 `VizReplayOptions` (default 10; the player Catmull-Rom-interpolates so 6 Hz still looks smooth).
 

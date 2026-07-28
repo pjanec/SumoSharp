@@ -4,8 +4,10 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **775/4** with all 661 goldens byte-identical
-(755/4 before the car-yields-ped branch, which adds exactly 20 tests and perturbs none);
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **777/4** with all 661 goldens byte-identical
+(755/4 before the car-yields-ped branch, which adds exactly 20 tests and perturbs none; 775/4 before
+`d9dbf18`, whose `EnvGateDocumentationTests` adds exactly 2 and touches no scenario — verified by running
+that filter alone);
 `Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
 (⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
 you will test stale code). `Sim.Pedestrians.Tests` = **324/324**. `demos/City3D/CityLib.Tests` (also not in
