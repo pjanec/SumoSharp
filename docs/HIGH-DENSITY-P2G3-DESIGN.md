@@ -1,5 +1,16 @@
 # HIGH-DENSITY-P2G3-DESIGN.md — scenario-46 speedGain residual: diagnosis + deferred deep fix
 
+> **CORRECTION (2026-07-28) — the "Reverted, not landed" below is NO LONGER TRUE.** Both parts of P2G-3
+> were later **re-applied and landed**, gated behind `Engine.CoordinatedLaneChange`. Verified in source:
+> `TryFindContinuationLeader` is defined at `src/Sim.Core/Engine.cs:12706` and called at `:12249` under
+> `if (CoordinatedLaneChange && leader is null && TryFindContinuationLeader(...))`, and the call site
+> carries the comment *"P2G-3 (§5.2 part 1), gated"*. The re-application is recorded in
+> `HIGH-DENSITY-P2G2-COOPERATIVE-LC-DESIGN.md` §3.5 — **read that for the current state.**
+>
+> Everything below is the original diagnosis, which remains accurate as a diagnosis; only its verdict on
+> whether the fix shipped is stale. It is left unedited rather than rewritten, because the reasoning that
+> led to the revert is the part worth keeping.
+
 **Status:** DIAGNOSIS COMPLETE — the originally-proposed fix (best-lanes continuation distance) was
 implemented and INSTRUMENTED to be necessary-but-INSUFFICIENT; the binding gap is deeper (cross-junction
 leader anticipation in the speedGain incentive). Reverted, not landed. Item **P2G-3** (from
