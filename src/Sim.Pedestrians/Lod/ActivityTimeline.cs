@@ -70,6 +70,16 @@ public sealed record WalkSegment(
     IReadOnlyList<double>? Elevations = null)
     : ActivitySegment(ActivitySegmentKind.Walk, ComputeDuration(Path, Speed))
 {
+    // PERF (docs/LIVE-CITY-PERF-SESSION-LOG.md TASK 1 / A4): cache the polyline length ONCE here so
+    // `ActivityTimeline.Evaluate`'s weave branch (`~:306`, called on every `PoseAt` while this ped is on
+    // this leg) never re-walks the polyline per call. NOT the same value as `Duration` above (Duration =
+    // length/Speed, a time; this is the raw length, independent of Speed) so it cannot reuse that call's
+    // result -- it is a second call to the SAME pure function (`PathArcMotion.PathLength`, no external
+    // state, no randomness) on the SAME `Path` reference, which is bit-for-bit identical to the call it
+    // replaces by construction. This duplicates the O(leg-vertices) walk once per segment at CONSTRUCTION
+    // time (cheap, one-off) to eliminate it from the per-step hot path.
+    public double RouteLength { get; } = PathArcMotion.PathLength(Path);
+
     private static double ComputeDuration(IReadOnlyList<Vec2> path, double speed) =>
         speed > 0.0 ? PathArcMotion.PathLength(path) / speed : 0.0;
 }
@@ -303,7 +313,7 @@ public sealed class ActivityTimeline
 
                 if (w.HalfWidths != null && Seed != 0 && hw > 0.0 && tangent.AbsSq > 0.0)
                 {
-                    var routeLen = PathArcMotion.PathLength(w.Path);
+                    var routeLen = w.RouteLength; // PERF (TASK 1): cached at construction, see WalkSegment.RouteLength above.
                     var sClamped = s > routeLen ? routeLen : s;
                     // Shared, slowly-moving interface between the two travel directions (W1: evaluated on the
                     // ped's own route arc; the true shared LANE frame + direction sign land in W2 -- see
