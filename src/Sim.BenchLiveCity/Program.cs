@@ -605,7 +605,7 @@ static void RunOne(
 
         if (profile)
         {
-            PrintPhaseBreakdown(sim, wallS, inv);
+            PrintPhaseBreakdown(sim, wallS, allocBytes, inv);
         }
 
         Console.WriteLine();
@@ -712,82 +712,125 @@ static double Mean(double[] values)
 }
 
 // docs/LIVE-CITY-PERF-DESIGN.md P1: print LiveCitySim's own top-level Step() phases, sorted descending
-// by ms, with an explicit "unaccounted" remainder (measured wall minus the sum of phases) so missing
-// instrumentation is visible rather than hidden. The wrapped Engine's own phases (LiveCitySim.
-// PhaseTicks merges them in, prefixed "engine.") are a SUB-DIVISION of the single "engineStep" entry
-// above (the one call into _engine.Step()), not siblings of it -- summing both would double-count
-// engineStep's wall time. They are printed separately, as a nested breakdown OF engineStep.
+// by BYTES (B3 -- the previously 95%-unexplained allocation residual is the more valuable axis; ms
+// stays alongside it), with an explicit "unaccounted" remainder (measured wall minus the sum of
+// phases; run-total allocation minus the sum of phases) so missing instrumentation is visible rather
+// than hidden. The wrapped Engine's own phases (LiveCitySim.PhaseTicks/PhaseBytes merge them in,
+// prefixed "engine.") are a SUB-DIVISION of the single "engineStep" entry above (the one call into
+// _engine.Step()), not siblings of it -- summing both would double-count engineStep's wall time/bytes.
+// They are printed separately, as a nested breakdown OF engineStep.
 //
-// B2 (LIVE-CITY-PERF-SESSION-LOG.md): same treatment for PedLodManager.Step's sub-phases, merged in
-// prefixed "ped." -- a breakdown OF the single "pedDemandStep" top-level entry, printed with its own
-// explicit remainder line (sum of ped.* vs pedDemandStep itself) so a gap in the ped-side
-// instrumentation is visible rather than silently absorbed into "unaccounted" above.
-static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, CultureInfo inv)
+// B2: same treatment for PedLodManager.Step's/PedDemand.Step's sub-phases, merged in prefixed "ped."
+// -- a breakdown OF the single "pedDemandStep" top-level entry, printed with its own explicit
+// remainder line (sum of ped.* vs pedDemandStep itself) so a gap in the ped-side instrumentation is
+// visible rather than silently absorbed into "unaccounted" above.
+//
+// B3: allocBytesTotal is the run's OWN GC.GetTotalAllocatedBytes(precise: true) delta (the number
+// already printed as "alloc_mib"/"alloc_bytes_per_step"), used as the allocation reconciliation
+// target -- independent of the per-phase profiler's own GC.GetTotalAllocatedBytes(precise: false)
+// deltas (Engine/LiveCitySim/PedLodManager/PedDemand's TotalAllocatedBytes), so the two can disagree
+// slightly (precise vs approximate, and any allocation on threads/paths outside the phase timers) --
+// that residual disagreement IS the allocation "unaccounted" line, exactly mirroring the wall-time one.
+static void PrintPhaseBreakdown(LiveCitySim sim, double wallS, long allocBytesTotal, CultureInfo inv)
 {
     var toMs = 1000.0 / Stopwatch.Frequency;
     var wallMs = wallS * 1000.0;
-    Console.WriteLine("  phase breakdown (--profile; measured loop only, warmup excluded):");
+    const double bytesToMib = 1.0 / (1024.0 * 1024.0);
+    var allocMibTotal = allocBytesTotal * bytesToMib;
+    Console.WriteLine("  phase breakdown (--profile; measured loop only, warmup excluded; sorted by allocated bytes):");
     if (sim.PhaseTicks.Count == 0)
     {
         Console.WriteLine("    (no phases recorded)");
         return;
     }
 
-    var own = new List<KeyValuePair<string, long>>();
-    var enginePhases = new List<KeyValuePair<string, long>>();
-    var pedPhases = new List<KeyValuePair<string, long>>();
+    var phaseBytes = sim.PhaseBytes;
+
+    var own = new List<(string Key, long Ticks, long Bytes)>();
+    var enginePhases = new List<(string Key, long Ticks, long Bytes)>();
+    var pedPhases = new List<(string Key, long Ticks, long Bytes)>();
     foreach (var kv in sim.PhaseTicks)
     {
-        if (kv.Key.StartsWith("engine.", StringComparison.Ordinal)) enginePhases.Add(kv);
-        else if (kv.Key.StartsWith("ped.", StringComparison.Ordinal)) pedPhases.Add(kv);
-        else own.Add(kv);
+        phaseBytes.TryGetValue(kv.Key, out var bytes);
+        var entry = (kv.Key, kv.Value, bytes);
+        if (kv.Key.StartsWith("engine.", StringComparison.Ordinal)) enginePhases.Add(entry);
+        else if (kv.Key.StartsWith("ped.", StringComparison.Ordinal)) pedPhases.Add(entry);
+        else own.Add(entry);
     }
+
+    static void PrintLine(string key, double ms, double pctWall, double mib, double pctAlloc, CultureInfo inv)
+        => Console.WriteLine(
+            $"    {key,-28} {ms.ToString("F1", inv),10} ms {pctWall.ToString("F1", inv),6}% wall   "
+            + $"{mib.ToString("F2", inv),10} MiB {pctAlloc.ToString("F1", inv),6}% alloc");
 
     var sumMs = 0.0;
+    var sumMib = 0.0;
     var pedDemandStepMs = 0.0;
-    foreach (var kv in own.OrderByDescending(kv => kv.Value))
+    foreach (var (key, ticks, bytes) in own.OrderByDescending(e => e.Bytes))
     {
-        var ms = kv.Value * toMs;
+        var ms = ticks * toMs;
+        var mib = bytes * bytesToMib;
         sumMs += ms;
-        if (kv.Key == "pedDemandStep") pedDemandStepMs = ms;
-        var pct = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
-        Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pct.ToString("F1", inv),6}% of wall");
+        sumMib += mib;
+        if (key == "pedDemandStep") pedDemandStepMs = ms;
+        var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
+        var pctAlloc = allocMibTotal > 0 ? 100.0 * mib / allocMibTotal : 0.0;
+        PrintLine(key, ms, pctWall, mib, pctAlloc, inv);
     }
 
-    var unaccounted = wallMs - sumMs;
-    var unaccountedPct = wallMs > 0 ? 100.0 * unaccounted / wallMs : 0.0;
+    var unaccountedMs = wallMs - sumMs;
+    var unaccountedMsPct = wallMs > 0 ? 100.0 * unaccountedMs / wallMs : 0.0;
+    var unaccountedMib = allocMibTotal - sumMib;
+    var unaccountedMibPct = allocMibTotal > 0 ? 100.0 * unaccountedMib / allocMibTotal : 0.0;
+    PrintLine("unaccounted", unaccountedMs, unaccountedMsPct, unaccountedMib, unaccountedMibPct, inv);
     Console.WriteLine(
-        $"    {"unaccounted",-28} {unaccounted.ToString("F1", inv),10} ms   {unaccountedPct.ToString("F1", inv),6}% of wall"
-        + "   (measured wall - sum of the TOP-LEVEL phases above)");
+        "      (unaccounted ms = measured wall - sum of TOP-LEVEL phase ms; "
+        + "unaccounted MiB = run's total precise alloc_mib - sum of TOP-LEVEL phase bytes)");
 
     if (enginePhases.Count > 0)
     {
-        Console.WriteLine("  engine sub-phases (breakdown OF engineStep above, not additional wall time):");
-        foreach (var kv in enginePhases.OrderByDescending(kv => kv.Value))
+        Console.WriteLine("  engine sub-phases (breakdown OF engineStep above, not additional wall time/bytes):");
+        foreach (var (key, ticks, bytes) in enginePhases.OrderByDescending(e => e.Bytes))
         {
-            var ms = kv.Value * toMs;
+            var ms = ticks * toMs;
+            var mib = bytes * bytesToMib;
             var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
-            Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pctWall.ToString("F1", inv),6}% of wall");
+            var pctAlloc = allocMibTotal > 0 ? 100.0 * mib / allocMibTotal : 0.0;
+            PrintLine(key, ms, pctWall, mib, pctAlloc, inv);
         }
     }
 
     if (pedPhases.Count > 0)
     {
-        Console.WriteLine("  ped sub-phases (breakdown OF pedDemandStep above, not additional wall time):");
+        Console.WriteLine("  ped sub-phases (breakdown OF pedDemandStep above, not additional wall time/bytes):");
         var pedSumMs = 0.0;
-        foreach (var kv in pedPhases.OrderByDescending(kv => kv.Value))
+        var pedSumMib = 0.0;
+        foreach (var (key, ticks, bytes) in pedPhases.OrderByDescending(e => e.Bytes))
         {
-            var ms = kv.Value * toMs;
+            var ms = ticks * toMs;
+            var mib = bytes * bytesToMib;
             pedSumMs += ms;
+            pedSumMib += mib;
             var pctWall = wallMs > 0 ? 100.0 * ms / wallMs : 0.0;
-            Console.WriteLine($"    {kv.Key,-28} {ms.ToString("F1", inv),10} ms   {pctWall.ToString("F1", inv),6}% of wall");
+            var pctAlloc = allocMibTotal > 0 ? 100.0 * mib / allocMibTotal : 0.0;
+            PrintLine(key, ms, pctWall, mib, pctAlloc, inv);
         }
 
-        var pedRemainder = pedDemandStepMs - pedSumMs;
-        var pedRemainderPct = wallMs > 0 ? 100.0 * pedRemainder / wallMs : 0.0;
+        var pedRemainderMs = pedDemandStepMs - pedSumMs;
+        var pedRemainderMsPct = wallMs > 0 ? 100.0 * pedRemainderMs / wallMs : 0.0;
+        // pedDemandStep's OWN bytes (the top-level entry, i.e. own.Bytes for "pedDemandStep") is the
+        // reconciliation target for ped.* bytes -- fetch it back out of `own`.
+        var pedDemandStepMib = 0.0;
+        foreach (var (key, _, bytes) in own)
+        {
+            if (key == "pedDemandStep") pedDemandStepMib = bytes * bytesToMib;
+        }
+
+        var pedRemainderMib = pedDemandStepMib - pedSumMib;
+        var pedRemainderMibPct = allocMibTotal > 0 ? 100.0 * pedRemainderMib / allocMibTotal : 0.0;
+        PrintLine("remainder", pedRemainderMs, pedRemainderMsPct, pedRemainderMib, pedRemainderMibPct, inv);
         Console.WriteLine(
-            $"    {"remainder",-28} {pedRemainder.ToString("F1", inv),10} ms   {pedRemainderPct.ToString("F1", inv),6}% of wall"
-            + "   (pedDemandStep - sum of the ped.* sub-phases above)");
+            "      (remainder ms/MiB = pedDemandStep's own ms/bytes - sum of the ped.* sub-phases above)");
     }
 }
 

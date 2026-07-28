@@ -844,6 +844,10 @@ public sealed class LiveCitySim : IDisposable
 
     private bool _profilePhases;
     private readonly Dictionary<string, long> _phaseTicks = new();
+    // B3 (docs/LIVE-CITY-PERF-SESSION-LOG.md): allocated-bytes counterpart to _phaseTicks, same merge
+    // shape (own + "engine." + "ped." prefixes). See Engine.cs's own PhaseBytes for the process-wide-
+    // vs-per-thread rationale (Parallel.For phases would be undercounted by a per-thread counter).
+    private readonly Dictionary<string, long> _phaseBytes = new();
 
     // This host's own phases, plus the wrapped Engine's (prefixed "engine.") merged in. When nothing
     // has been profiled (the common case, ProfilePhases off) `_engine.PhaseTicks` is empty and this
@@ -888,19 +892,80 @@ public sealed class LiveCitySim : IDisposable
         }
     }
 
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private long PhaseStart() => _profilePhases ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+    // B3: same merge as PhaseTicks above, for allocated bytes.
+    public IReadOnlyDictionary<string, long> PhaseBytes
+    {
+        get
+        {
+            var lodBytes = _manager?.PhaseBytes;
+            var demandBytes = _demand?.PhaseBytes;
+            var hasLod = lodBytes is { Count: > 0 };
+            var hasDemand = demandBytes is { Count: > 0 };
+            if (_engine.PhaseBytes.Count == 0 && !hasLod && !hasDemand)
+            {
+                return _phaseBytes;
+            }
 
-    private void PhaseEnd(string name, long start)
+            var merged = new Dictionary<string, long>(_phaseBytes);
+            foreach (var kv in _engine.PhaseBytes)
+            {
+                merged["engine." + kv.Key] = kv.Value;
+            }
+
+            if (hasLod)
+            {
+                foreach (var kv in lodBytes!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            if (hasDemand)
+            {
+                foreach (var kv in demandBytes!)
+                {
+                    merged["ped." + kv.Key] = kv.Value;
+                }
+            }
+
+            return merged;
+        }
+    }
+
+    // netstandard2.1 (Unity/Godot) has no GC.GetTotalAllocatedBytes -- degrades to "always 0 bytes"
+    // there, same rationale as Engine.cs's TotalAllocatedBytes.
+#if NET8_0_OR_GREATER
+    private static long TotalAllocatedBytes() => GC.GetTotalAllocatedBytes(precise: false);
+#else
+    private static long TotalAllocatedBytes() => 0L;
+#endif
+
+    private readonly struct PhaseSample
+    {
+        public readonly long Ticks;
+        public readonly long Bytes;
+        public PhaseSample(long ticks, long bytes) { Ticks = ticks; Bytes = bytes; }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private PhaseSample PhaseStart() => _profilePhases
+        ? new PhaseSample(System.Diagnostics.Stopwatch.GetTimestamp(), TotalAllocatedBytes())
+        : default;
+
+    private void PhaseEnd(string name, PhaseSample start)
     {
         if (!_profilePhases)
         {
             return;
         }
 
-        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start.Ticks;
         _phaseTicks.TryGetValue(name, out var acc);
         _phaseTicks[name] = acc + elapsed;
+
+        var elapsedBytes = TotalAllocatedBytes() - start.Bytes;
+        _phaseBytes.TryGetValue(name, out var accBytes);
+        _phaseBytes[name] = accBytes + elapsedBytes;
     }
 
     // Advances the coupled sim by one tick (Dt seconds, per LiveCityConfig.Dt), then publishes the
