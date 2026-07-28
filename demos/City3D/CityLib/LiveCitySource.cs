@@ -152,6 +152,24 @@ public sealed class LiveCitySource : IDisposable
     public void SetPedDensity(int populationCap, double spawnRatePerSecond)
         => _sim.SetPedDensity(populationCap, spawnRatePerSecond);
 
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b: the live tick-rate knob. Forwards straight
+    // through to LiveCitySim.Dt (itself a thin wrapper over the by-reference LiveCityConfig.Dt), so
+    // setting it here is felt on the very next Tick() -- no sim rebuild, mirroring SetCarTarget/
+    // SetPedDensity's own "poke the live cfg" idiom. `SimHz` is the Hz-flavored view a slider naturally
+    // wants (Hz = 1/Dt); `Dt` is exposed too since Tick()'s caller (Main.ProcessLiveCity) needs the raw
+    // seconds value for its own accumulator.
+    public double Dt
+    {
+        get => _sim.Dt;
+        set => _sim.Dt = value;
+    }
+
+    public double SimHz
+    {
+        get => Dt > 0.0 ? 1.0 / Dt : 0.0;
+        set { if (value > 0.0) Dt = 1.0 / value; }
+    }
+
     // The live values a slider should initialise itself from (rather than assuming the defaults).
     public int CarTarget => _cfg.CarTargetConcurrent;
     public int PedCap => _sim.PedDemand?.PopulationCap ?? 0;

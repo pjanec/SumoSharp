@@ -582,6 +582,46 @@ public partial class Main : Node3D
     private Label? _fillSpeedLabel;
     private double _fillSpeed = 1.0; // ramp-rate multiplier set by the "fill speed" slider
 
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b -- the live engine tick-rate dial, 1-20 Hz
+    // integer steps, built next to the density/fill-speed sliders above (same idiom). Drives BOTH
+    // `_liveCityDt` (the accumulator ProcessLiveCity loops on) and LiveCitySource.SimHz (=> the live
+    // sim's Dt, re-read by LiveCitySim.Step() every tick) from the SAME slider write, so sim time and
+    // wall time stay consistent. `_requestedSimHz` is what the slider asked for; `_achievedSimHz` (Stage
+    // 1a, below) is what the sim is ACTUALLY completing -- the label shows both.
+    private HSlider? _simHzSlider;
+    private Label? _simHzSliderLabel;
+    private double _requestedSimHz = 2.0;
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- the frame-time instrument: the Stage-2
+    // before/after baseline. A fixed-capacity rolling window of per-frame wall-clock durations (ms) --
+    // percentiles are computed by copying into the PREALLOCATED `_frameMsScratch` and sorting IN PLACE
+    // (no LINQ, no List growth, see ComputeFrameStats), so the rolling stats never allocate. The HUD text
+    // itself refreshes at most ~10x/second (FrameHudRefreshSeconds) so the instrument does not distort
+    // what it measures; the CSV (`--frame-log=<path>`) still gets one row EVERY frame.
+    private const int FrameStatsCapacity = 300; // ~5s of rolling history at 60fps
+    private readonly double[] _frameMsRing = new double[FrameStatsCapacity];
+    private readonly double[] _frameMsScratch = new double[FrameStatsCapacity];
+    private int _frameMsRingCount;
+    private int _frameMsRingHead;
+    private const double FrameHudRefreshSeconds = 0.1; // ~10x/second
+    private double _frameHudRefreshAccum;
+    private double _lastP50Ms;
+    private double _lastP95Ms;
+    private double _lastP99Ms;
+    private long _frameSpikeCount; // frames whose OWN ms exceeded 3x the p50 as of that instant -- the headline number
+    private long _frameLogIndex;
+    private double _hzWindowWallSeconds; // rolling ~1s achieved-Hz measurement window
+    private long _hzWindowTicks;
+    private double _achievedSimHz;
+    private int _simTicksThisFrame; // reset at the top of each Process* body, incremented once per Tick()
+
+    private CanvasLayer? _frameHudLayer;
+    private Label? _frameHudLabel;
+    private bool _frameHudVisible = true;
+
+    private string? _frameLogPath;
+    private StreamWriter? _frameLogWriter;
+
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §2.3/§4, -TASKS.md D3 -- the `--live-city --replay <file.simrec>`
     // REPLAY path: swaps LiveCitySource for a PlaybackClock-driven ReplicationFileSource (cars) +
     // PedFrameTrack (peds), both from the packaged SumoSharp.Replication (Sim.Replication.Recording).
@@ -633,6 +673,7 @@ public partial class Main : Node3D
         // mode); `_simHz` only has an effect inside the live-city path (ReadyLiveCityLive), so it is display-
         // only elsewhere.
         _simHz = ValidateSimHz(ParseSimHzArg());
+        _requestedSimHz = _simHz; // Stage 1b slider's initial value mirrors the CLI-resolved rate
         _renderHz = ValidateRenderHz(ParseRenderHzArg());
         // Smoothness fix (Windows GPU testing session): by DEFAULT leave the render FPS UNCAPPED
         // (Engine.MaxFps = 0, i.e. vsync-paced at the display's native refresh). The old fixed 60fps cap
@@ -654,6 +695,27 @@ public partial class Main : Node3D
         GD.Print(
             $"Main: auto-quit -- headless={_isHeadless} framesOverride={(_framesOverride?.ToString() ?? "none")} " +
             $"defaultCap={QuitAfterFrames} (armed only when headless or an override is set).");
+
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- `--frame-log=<path>`: opened once here
+        // (mode-independent) so RecordFrameInstrument can write to it from any live-city Process* body.
+        // AutoFlush is left off (per-frame Flush() would be a real disk sync every frame); DisposeSources
+        // flushes+closes it on every quit path, and RecordFrameInstrument also flushes every 30 rows as a
+        // belt-and-braces measure against an ungraceful exit.
+        _frameLogPath = ParseFrameLogArg();
+        if (_frameLogPath is not null)
+        {
+            try
+            {
+                _frameLogWriter = new StreamWriter(_frameLogPath, append: false) { AutoFlush = false };
+                _frameLogWriter.WriteLine("frame,frame_ms,sim_ticks,live_cars,live_peds,sim_time");
+                GD.Print($"Main: --frame-log writing to '{_frameLogPath}'.");
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"Main: failed to open --frame-log path '{_frameLogPath}': {ex.Message}");
+                _frameLogWriter = null;
+            }
+        }
 
         _transport = ParseTransportArg();
         _peds = ParsePedsArg();
@@ -1091,6 +1153,7 @@ public partial class Main : Node3D
         _pedMultiMesh = BuildPedMultiMesh();
         BuildSelectionUi();
         BuildRateControlUi();
+        BuildFrameHud();
 
         // Deliverable 2 (docs/LIVE-CITY-VIEWERS-DESIGN.md TL wiring) -- ReadyLocal/ReadyRemote already wire
         // this; `--live-city` (local live) never did, so TrafficLightPlacer/BuildTrafficLights/
@@ -1249,6 +1312,7 @@ public partial class Main : Node3D
         BuildSelectionUi();
         BuildPlaybackUi();
         BuildRateControlUi();
+        BuildFrameHud();
 
         // Deliverable 2 -- same TL wiring gap as ReadyLiveCityLive, replay flavor. `network` above is
         // parsed straight from the SAME net.xml the live path uses (this method's own "still parse the
@@ -1404,6 +1468,7 @@ public partial class Main : Node3D
         // call; the sim-hz label reads a bit generic here (no local LiveCitySim to report its own dt from),
         // but the render-hz and playout-delay sliders both apply exactly as they do locally.
         BuildRateControlUi();
+        BuildFrameHud();
 
         GD.Print(
             "Main: --live-city --transport=dds active; waiting for a Sim.Host.App --live-city publisher " +
@@ -1737,11 +1802,17 @@ public partial class Main : Node3D
         PushLcZone();
         UpdateLcZoneVisual();
 
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- reset THIS frame's tick counter; the
+        // instrument at the tail of this method reports it (and RecordFrameInstrument's rolling window
+        // turns the running total into an achieved-Hz figure for the Stage 1b slider's label).
+        _simTicksThisFrame = 0;
+
         _liveCityAccumulator += delta;
         while (_liveCityAccumulator >= _liveCityDt)
         {
             _liveCitySource.Tick();
             _liveCityAccumulator -= _liveCityDt;
+            _simTicksThisFrame++;
         }
 
         var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds);
@@ -1804,6 +1875,12 @@ public partial class Main : Node3D
         UpdatePedCrossingSignals();
 
         ApplyOrbitCamera();
+
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a/1b -- the frame-time instrument + achieved-Hz
+        // measurement. `delta * 1000.0` is Godot's own measured wall-clock interval since the last
+        // _Process call (i.e. THIS frame's real duration, hiccup included) -- not a self-timed Stopwatch,
+        // no extra timing mechanism needed.
+        RecordFrameInstrument(delta, delta * 1000.0, _simTicksThisFrame, _liveCitySource.CurrentCars, _liveCitySource.CurrentPeds, _liveCitySource.Time);
 
         GD.Print(
             $"Main: frame={_liveCityFrame} liveCityTime={_liveCitySource.Time:F2} " +
@@ -1909,6 +1986,10 @@ public partial class Main : Node3D
             $"Main: frame={_liveCityFrame} remote-live-city wireVehTime={wireVehTimeLabel} " +
             $"pedTime={_pedRemoteServerTime:F2} cars={vehicles.Count} peds={peds.Count} highPowerPeds={highPowerPeds}");
 
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- remote mode has no local sim tick (the
+        // producer steps it), so simTicksThisFrame is always 0 here; frame-time/FPS are still meaningful.
+        RecordFrameInstrument(delta, delta * 1000.0, 0, vehicles.Count, peds.Count, _pedRemoteServerTime);
+
         _liveCityFrame++;
 
         if (_shotPath is null && ShouldAutoQuit(_liveCityFrame))
@@ -1969,6 +2050,10 @@ public partial class Main : Node3D
         GD.Print(
             $"Main: replay frame={_liveCityFrame} t={_clock.Now:F2}/{_clock.Duration:F2} " +
             $"playing={_clock.Playing} speed={_clock.Speed:F1} cars={vehicles.Count} peds={peds.Count}");
+
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- replay reads a recording, it never steps a
+        // sim, so simTicksThisFrame is always 0 here; frame-time/FPS are still meaningful.
+        RecordFrameInstrument(delta, delta * 1000.0, 0, vehicles.Count, peds.Count, _clock.Now);
 
         _liveCityFrame++;
 
@@ -2067,6 +2152,12 @@ public partial class Main : Node3D
         _ddsParticipant?.Dispose();
         _ddsParticipant = null;
 #endif
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- flush+close the CSV on every quit path
+        // (DisposeSources is called right before every GetTree().Quit()), so the log is complete on disk
+        // even though AutoFlush is off.
+        _frameLogWriter?.Flush();
+        _frameLogWriter?.Dispose();
+        _frameLogWriter = null;
     }
 
     // Interactive camera controller (docs/LIVE-CITY-VIEWERS-DESIGN.md camera-controller deliverable) --
@@ -2212,6 +2303,19 @@ public partial class Main : Node3D
                 {
                     _zonesNode.Visible = !_zonesNode.Visible;
                     GD.Print($"Main: zones visible={_zonesNode.Visible} (Z toggle).");
+                }
+
+                GetViewport().SetInputAsHandled();
+                break;
+
+            // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a: frame-time HUD visibility toggle, mirrors
+            // the B/G/Z toggles immediately above.
+            case InputEventKey { Pressed: true } key when key.Keycode == Key.M:
+                if (_frameHudLayer is not null)
+                {
+                    _frameHudVisible = !_frameHudVisible;
+                    _frameHudLayer.Visible = _frameHudVisible;
+                    GD.Print($"Main: frame HUD visible={_frameHudVisible} (M toggle).");
                 }
 
                 GetViewport().SetInputAsHandled();
@@ -2364,13 +2468,21 @@ public partial class Main : Node3D
         panel.OffsetLeft = 16f;
         panel.OffsetTop = 16f;
         panel.OffsetRight = 316f;
-        panel.OffsetBottom = 282f; // + car/ped density + fill-speed rows beyond the original three
+        panel.OffsetBottom = 308f; // + car/ped density + fill-speed + sim-hz rows beyond the original three
         _rateUi.AddChild(panel);
 
         var vbox = new VBoxContainer();
         panel.AddChild(vbox);
 
-        _rateLabel = new Label { Text = $"sim: {_simHz} Hz (dt={_liveCityDt:F3}s) -- relaunch --sim-hz=N to change" };
+        // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b: now that a local live sim has a LIVE tick-
+        // rate slider (below), this generic label no longer claims "relaunch to change" there -- replay/
+        // remote still have no live knob (no LiveCitySim to push Dt into), so they keep the old wording.
+        _rateLabel = new Label
+        {
+            Text = _liveCitySource is not null
+                ? $"sim: dt={_liveCityDt:F3}s (see tick-rate slider below)"
+                : $"sim: {_simHz} Hz (dt={_liveCityDt:F3}s) -- relaunch --sim-hz=N to change",
+        };
         vbox.AddChild(_rateLabel);
 
         var renderRow = new HBoxContainer();
@@ -2476,6 +2588,30 @@ public partial class Main : Node3D
             };
             _fillSpeedSlider.ValueChanged += OnFillSpeedSliderChanged;
             fillRow.AddChild(_fillSpeedSlider);
+
+            // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b: the live engine tick-rate dial, 1-20 Hz
+            // integer steps, same row shape as the density/fill-speed rows above. Drives BOTH
+            // `_liveCityDt` and LiveCitySource.SimHz from one write (OnSimHzSliderChanged), so sim time and
+            // wall time stay consistent. The label shows requested vs. ACHIEVED Hz (Stage 1a's rolling
+            // measurement, refreshed by RecordFrameInstrument) -- never claims a rate that isn't being met.
+            var hzRow = new HBoxContainer();
+            vbox.AddChild(hzRow);
+            _simHzSliderLabel = new Label
+            {
+                Text = $"sim: req {_requestedSimHz:F0}Hz achieved {_achievedSimHz:F1}Hz",
+            };
+            hzRow.AddChild(_simHzSliderLabel);
+            _simHzSlider = new HSlider
+            {
+                MinValue = 1,
+                MaxValue = 20,
+                Step = 1,
+                Value = Math.Clamp(_requestedSimHz, 1, 20),
+                CustomMinimumSize = new Vector2(180f, 20f),
+                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            };
+            _simHzSlider.ValueChanged += OnSimHzSliderChanged;
+            hzRow.AddChild(_simHzSlider);
         }
 
         // #15 LC-realism zone mode selector -- local live-city path only (remote runs LiveCitySim in the
@@ -2500,6 +2636,35 @@ public partial class Main : Node3D
         GD.Print(
             "Main: rate control UI built (sim-hz display + render-hz slider + playout-delay slider, " +
             $"default={_playoutDelaySeconds:F2}s).");
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- the on-screen frame-time HUD, styled like
+    // BuildRateControlUi's own panel (PanelContainer + VBoxContainer + Label) but anchored top-RIGHT so it
+    // never overlaps the rate-control panel (top-left). Text is filled in by RecordFrameInstrument's
+    // throttled refresh; toggled with `M` (see _UnhandledInput), visible by default. Called from the same
+    // sites BuildRateControlUi is (every live-city mode: local live, replay, remote).
+    private void BuildFrameHud()
+    {
+        _frameHudLayer = new CanvasLayer { Name = "FrameHud" };
+        AddChild(_frameHudLayer);
+
+        var panel = new PanelContainer { Name = "FrameHudPanel" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        panel.OffsetLeft = -300f;
+        panel.OffsetTop = 16f;
+        panel.OffsetRight = -16f;
+        panel.OffsetBottom = 150f;
+        _frameHudLayer.AddChild(panel);
+
+        var vbox = new VBoxContainer();
+        panel.AddChild(vbox);
+
+        _frameHudLabel = new Label { Text = "fps: --" };
+        vbox.AddChild(_frameHudLabel);
+
+        _frameHudLayer.Visible = _frameHudVisible;
+
+        GD.Print("Main: frame-time HUD built (fps/frame-ms/p50-p95-p99/spike-count/sim-ticks/car+ped counts; M toggles visibility).");
     }
 
     // Menu path for the LC-realism zone mode (mirrors the `H` key). Selecting "Locked" freezes the current
@@ -2591,6 +2756,137 @@ public partial class Main : Node3D
         if (_fillSpeedLabel is not null)
         {
             _fillSpeedLabel.Text = $"fill: {_fillSpeed:F0}x";
+        }
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b -- runtime tick-rate change: pushes BOTH
+    // LiveCitySource.SimHz (=> the live sim's Dt, felt on the very next Tick(), no rebuild) and
+    // `_liveCityDt` (ProcessLiveCity's own accumulator step) from the ONE slider drag, so sim time and
+    // wall time stay consistent (design's explicit requirement) -- mirrors OnCarDensitySliderChanged's
+    // "poke the live cfg" idiom, one field over.
+    private void OnSimHzSliderChanged(double value)
+    {
+        if (_liveCitySource is null)
+        {
+            return;
+        }
+
+        _requestedSimHz = Math.Clamp((int)value, 1, 20);
+        _liveCitySource.SimHz = _requestedSimHz;
+        _liveCityDt = _liveCitySource.Dt;
+
+        if (_simHzSliderLabel is not null)
+        {
+            _simHzSliderLabel.Text = $"sim: req {_requestedSimHz:F0}Hz achieved {_achievedSimHz:F1}Hz";
+        }
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- push one more sample into the fixed-capacity
+    // rolling ring buffer. O(1), no allocation, called every frame.
+    private void PushFrameMs(double ms)
+    {
+        _frameMsRing[_frameMsRingHead] = ms;
+        _frameMsRingHead = (_frameMsRingHead + 1) % FrameStatsCapacity;
+        if (_frameMsRingCount < FrameStatsCapacity)
+        {
+            _frameMsRingCount++;
+        }
+    }
+
+    // Percentiles over the rolling window. Copies into the PREALLOCATED `_frameMsScratch` (Array.Copy) and
+    // sorts IN PLACE (Array.Sort) -- no LINQ, no List growth, no per-call allocation. Only called from the
+    // throttled HUD refresh (FrameHudRefreshSeconds), never once per frame -- per the design's "the
+    // instrument itself must not distort what it measures".
+    private void ComputeFrameStats(out double p50, out double p95, out double p99)
+    {
+        var n = _frameMsRingCount;
+        if (n == 0)
+        {
+            p50 = p95 = p99 = 0.0;
+            return;
+        }
+
+        Array.Copy(_frameMsRing, _frameMsScratch, n);
+        Array.Sort(_frameMsScratch, 0, n);
+        p50 = _frameMsScratch[(int)(0.50 * (n - 1))];
+        p95 = _frameMsScratch[(int)(0.95 * (n - 1))];
+        p99 = _frameMsScratch[(int)(0.99 * (n - 1))];
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a/1b -- called once per rendered frame from every
+    // live-city Process* body (Live/Replay/Remote) with THAT frame's own wall-clock ms, the sim ticks it
+    // executed, and the live car/ped/sim-time counts. Owns: the rolling ring buffer, the throttled HUD
+    // text refresh, the per-frame CSV row (when `--frame-log` is active), the "frames > 3x p50" spike
+    // tally (the owner's headline number -- the ~100-200ms/~2Hz hiccup this whole design exists to kill),
+    // and the rolling achieved-Hz measurement the tick-rate slider's label reads.
+    private void RecordFrameInstrument(double delta, double frameMs, int simTicksThisFrame, int liveCars, int livePeds, double simTime)
+    {
+        PushFrameMs(frameMs);
+
+        // Spike tally against p50 AS OF THE LAST REFRESH -- recomputing every frame would itself be the
+        // "instrument distorts the measurement" problem the design warns against.
+        if (_lastP50Ms > 0.0 && frameMs > 3.0 * _lastP50Ms)
+        {
+            _frameSpikeCount++;
+        }
+
+        // Achieved Hz: ticks completed per wall second, over a rolling ~1s window -- short enough to react
+        // to a slider change, long enough that one fast/slow frame doesn't dominate the figure.
+        _hzWindowWallSeconds += delta;
+        _hzWindowTicks += simTicksThisFrame;
+        if (_hzWindowWallSeconds >= 1.0)
+        {
+            _achievedSimHz = _hzWindowTicks / _hzWindowWallSeconds;
+            _hzWindowWallSeconds = 0.0;
+            _hzWindowTicks = 0;
+        }
+
+        if (_frameLogWriter is not null)
+        {
+            // Individual Write() calls, not an interpolated string -- avoids building a throwaway string
+            // per frame beyond the unavoidable numeric-to-text conversions. InvariantCulture is mandatory
+            // (this box is cs-CZ, comma decimal separator -- a documented past bug in this repo).
+            _frameLogWriter.Write(_frameLogIndex);
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(frameMs.ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(simTicksThisFrame);
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(liveCars);
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(livePeds);
+            _frameLogWriter.Write(',');
+            _frameLogWriter.Write(simTime.ToString("F3", CultureInfo.InvariantCulture));
+            _frameLogWriter.Write('\n');
+            if ((_frameLogIndex % 30) == 0)
+            {
+                _frameLogWriter.Flush();
+            }
+        }
+
+        _frameLogIndex++;
+
+        _frameHudRefreshAccum += delta;
+        if (_frameHudRefreshAccum >= FrameHudRefreshSeconds)
+        {
+            _frameHudRefreshAccum = 0.0;
+            ComputeFrameStats(out _lastP50Ms, out _lastP95Ms, out _lastP99Ms);
+
+            if (_frameHudLabel is not null)
+            {
+                var fps = frameMs > 0.0 ? 1000.0 / frameMs : 0.0;
+                _frameHudLabel.Text =
+                    $"fps: {fps:F0}  frame: {frameMs:F1}ms\n" +
+                    $"p50/p95/p99: {_lastP50Ms:F1}/{_lastP95Ms:F1}/{_lastP99Ms:F1}ms\n" +
+                    $"spikes(>3x p50): {_frameSpikeCount}\n" +
+                    $"sim ticks this frame: {simTicksThisFrame}  sim: req {_requestedSimHz:F0}Hz achieved {_achievedSimHz:F1}Hz\n" +
+                    $"cars: {liveCars}  peds: {livePeds}";
+            }
+
+            if (_simHzSliderLabel is not null)
+            {
+                _simHzSliderLabel.Text = $"sim: req {_requestedSimHz:F0}Hz achieved {_achievedSimHz:F1}Hz";
+            }
         }
     }
 
@@ -4261,7 +4557,7 @@ public partial class Main : Node3D
             $"Main: orbit camera ready on '{activeCamera.Name}' -- yaw={_orbitController.YawRad * 180f / Mathf.Pi:F1}deg " +
             $"pitch={_orbitController.PitchRad * 180f / Mathf.Pi:F1}deg dist={_orbitController.Distance:F1}m " +
             $"focus={_orbitController.Focus}. Controls (Unity-style): RMB look + WASD/QE fly (Shift=sprint), " +
-            "MMB pan, Alt+LMB orbit, wheel dolly, F/Home frame, G grid.");
+            "MMB pan, Alt+LMB orbit, wheel dolly, F/Home frame, G grid, M frame-time HUD.");
     }
 
     // Seeds an OrbitCameraController from the given (cameraPos, focus) -- normally exactly the pose
@@ -4925,6 +5221,25 @@ public partial class Main : Node3D
     private static string? ParseShotArg()
     {
         const string prefix = "--shot=";
+        foreach (var arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return ResolveAgainstLaunchCwd(arg[prefix.Length..]);
+            }
+        }
+
+        return null;
+    }
+
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1a -- `--frame-log=<path>` USER cmdline arg: one CSV
+    // row per rendered frame (frame index, frame ms, sim ticks that frame, live cars, live peds, sim
+    // time), written by RecordFrameInstrument. Viewer args use the `--foo=value` EQUALS form (the space
+    // form is silently ignored) -- same OS.GetCmdlineUserArgs() mechanism + ResolveAgainstLaunchCwd
+    // relative-path handling as --shot=/--replay=.
+    private static string? ParseFrameLogArg()
+    {
+        const string prefix = "--frame-log=";
         foreach (var arg in OS.GetCmdlineUserArgs())
         {
             if (arg.StartsWith(prefix, StringComparison.Ordinal))

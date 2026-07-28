@@ -652,6 +652,18 @@ public sealed class LiveCitySim : IDisposable
         _demand.SetSpawnRatePerSecond(_cfg.PedSpawnRatePerSecond);
     }
 
+    // docs/LIVE-CITY-THREADED-TICK-DESIGN.md §6 Stage 1b: a settable timestep, so a viewer slider can
+    // retune the tick rate at RUNTIME with no sim rebuild. `Step()` already reads `_cfg.Dt` fresh at the
+    // top of every call (see `var dt = _cfg.Dt;` there), so this property is a thin forwarding wrapper
+    // over the SAME by-reference `_cfg` the density knobs above use -- writing it here is felt on the very
+    // next `Step()`. Additive only: the default stays `LiveCityConfig.Dt`'s own default (0.5s = 2 Hz), so
+    // nothing changes unless a caller actually sets this.
+    public double Dt
+    {
+        get => _cfg.Dt;
+        set => _cfg.Dt = value;
+    }
+
     // The car-side twin of SetPedDensity, for symmetry at the call site. Cars needed no engine change:
     // `Step()` already reads `CarTargetConcurrent`/`CarSpawnPerStep` off the by-reference `_cfg` every
     // tick, so writing them here is felt on the next tick. This method exists so a viewer has ONE
