@@ -87,8 +87,30 @@ public sealed class Reconstructor
     // (`LatestVehicleSampleTime - delay` via `ResolveAt`, the same deterministic seam IgBridge uses), never the
     // Stopwatch. That makes the whole pass a pure function of (packet stream, dt schedule) -- the only way to
     // assert determinism (identical transforms across two runs) without a wall clock to diverge.
+    // `renderSimClock`: the CALLER's own continuously-advancing render clock, in sim-time seconds. Supply it
+    // when the host already owns a render clock -- the threaded live-city path does
+    // (docs/LIVE-CITY-THREADED-TICK-DESIGN.md §5 "Render clock": free-running by real `delta`, CLAMPED to the
+    // newest PUBLISHED sim time + one step). The query instant then becomes `renderSimClock - delaySeconds`,
+    // resolved via the same `ResolveAt` seam the deterministic path uses, so the vehicles ride the caller's
+    // clock instead of this class's private Stopwatch + rate fit.
+    //
+    // WHY this exists (measured on GPU, 2026-07-28): with the tick moved to a producer thread, cars kicked
+    // once per publish and then decelerated -- "caterpillar" motion, worse at higher density, while the frame
+    // loop itself was provably clean (16.7 ms p50, sim_ticks 0). Root cause: Stage 2 gave the PEDS the new
+    // clamped clock (`pedNow = _renderSimClock`) but left the CARS on `DrClock`, which fits its own wall<->sim
+    // rate from `LatestVehicleSampleTime`. Publishes now land at an arbitrary phase relative to frames, and at
+    // load the true sim rate drifts below real time, so that fit chases a moving target -- two clocks over two
+    // handoffs in one scene, which cannot stay in agreement. Sharing ONE clock is the fix.
+    //
+    // NOTE this is deliberately NOT `frameDtOverride`'s deterministic branch, which derives the instant as
+    // `LatestVehicleSampleTime - delay`: that only moves when a packet ARRIVES, so at 2 Hz it would freeze for
+    // ~0.5 s and then jump -- worse than the symptom it would be trying to cure.
     public IReadOnlyList<ReconstructedVehicle> Reconstruct(
-        IReplicationSource source, ILaneShapeSource lanes, double delaySeconds, float? frameDtOverride = null)
+        IReplicationSource source,
+        ILaneShapeSource lanes,
+        double delaySeconds,
+        float? frameDtOverride = null,
+        double? renderSimClock = null)
     {
         source.Pump();
 
@@ -104,11 +126,24 @@ public sealed class Reconstructor
         }
         else
         {
+            // Still pump the clock so its diagnostics (AvgSampleInterval, BackSteps, the rate fit) stay live
+            // and a later call without `renderSimClock` behaves exactly as before.
             _clock.Pump(source.LatestVehicleSampleTime);
             var nowWall = _wall.Elapsed.TotalSeconds;
             frameDt = _lastWallSec >= 0.0 ? (float)(nowWall - _lastWallSec) : 0f;
             _lastWallSec = nowWall;
-            LastQueryTime = _clock.RenderSim - delaySeconds;
+
+            if (renderSimClock is { } hostClock)
+            {
+                // Ride the caller's clock (see the header note). `frameDt` stays the measured wall delta --
+                // it drives the no-slip rear-axle drag, which wants real elapsed time, not sim time.
+                deterministicSampleT = hostClock - delaySeconds;
+                LastQueryTime = deterministicSampleT.Value;
+            }
+            else
+            {
+                LastQueryTime = _clock.RenderSim - delaySeconds;
+            }
         }
 
         _scratch.Clear();

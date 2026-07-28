@@ -1893,7 +1893,14 @@ public partial class Main : Node3D
             _renderSimClock = floor;
         }
 
-        var vehicles = _reconstructor.Reconstruct(_liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds);
+        // ONE clock for both populations. Stage 2 introduced `_renderSimClock` (clamped to published state)
+        // and wired it to the PEDS at `pedNow` below, but left the cars on Reconstructor's private DrClock --
+        // two clocks over two handoffs in one scene. Measured on GPU: cars kicked once per publish then
+        // decelerated ("caterpillar", worse with density) while the frame loop was clean. Passing the same
+        // clock the peds use makes car and ped playout share one timebase. See Reconstructor.Reconstruct's
+        // `renderSimClock` remarks for the full diagnosis.
+        var vehicles = _reconstructor.Reconstruct(
+            _liveCitySource.Source, _liveCitySource.LocalLanes, _playoutDelaySeconds, null, _renderSimClock);
         UpdateCars(vehicles);
 
         // docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md D4 -- the live Handle->Name table. This used to
