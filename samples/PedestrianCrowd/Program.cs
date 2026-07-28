@@ -141,6 +141,16 @@ internal static class Program
         //    one a 3-D net (e.g. scenarios/_ped/georef_min) would return real heights from.
         Console.WriteLine();
         Console.WriteLine("--- pose + elevation read-back (mandatory-z API) ---");
+        // Say this in the OUTPUT, not only in the README: a reader who just runs the sample sees a column
+        // of z=0.00 and has no way to tell "flat net, 0 is the right answer" from the separate OPEN bug
+        // where low-power peds report z=0 on a 3-D net (docs/TASKS-TODO.md, "Geneva low-power peds still
+        // report z = 0"). Those look identical on screen, so the distinction has to be printed.
+        Console.WriteLine(
+            "    NOTE: this fixture is a FLAT 2-D net, so 0.00 is the correct elevation, not a bug.");
+        Console.WriteLine(
+            "    For real relief see scenarios/_ped/georef_min (27.5 m), exercised by samples/LiveCity");
+        Console.WriteLine(
+            "    and asserted by tests/Sim.LiveCity.Tests PedElevation* / ExternalNetLoadingTests.");
         var route = nav.FindPath(WestNorthArm, EastNorthArm, out var vertexSurfaces);
         if (route is not null)
         {
