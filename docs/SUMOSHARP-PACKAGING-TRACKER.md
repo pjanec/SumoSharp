@@ -35,10 +35,21 @@ inert to it).
       because the guard refactor replaced 9 test cases with 5); determinism `single == parallel`
       unchanged.
 
-### Batch 2 — viewers as repo apps  ⏳ PENDING (Batch-2 scope Q open with user)
-- [ ] V2.1 — "build & watch" doc (2D + 3D) linked from README.
-- [ ] V2.2 — 2D viewer strong net/scenario CLI (exact scope: full `--sumocfg` demand vs built-in — TBC).
-- [ ] V2.3 — demo run-scripts for each viewer on committed demo scenarios.
+### Batch 2 — viewers as repo apps  ✅ COMPLETE (user chose Option A: full net+demand CLI)
+- [x] V2.1 — `docs/VIEWERS.md` ("build & watch", 2D + 3D, with the net/scenario CLI and run-scripts);
+      linked from the README "See it run" block (+ a 3D-viewer line added there).
+- [x] V2.2 — 2D viewer strong net/scenario CLI: `--scenario <dir>` / `--sumocfg <file>` load the
+      scenario's REAL demand (via `Engine.LoadScenario`, wired through `EngineHost.CreateCustom` /
+      the auto-detect ctor); `--net <net.xml|dir>` runs a bare network as a sandbox. Additive; the
+      positional path and every existing mode are unchanged. Verified headless: `--scenario` renders in
+      **SCENARIO mode with a real vehicle** (screenshot), behaving identically to the pre-existing
+      positional path (both hit the same teardown; the exit-139 under software-GL/xvfb is a pre-existing
+      environmental artifact, not a regression).
+- [x] V2.3 — `scripts/watch-2d.sh` (thin wrapper over the 2D viewer's CLI); the 3D viewer already ships
+      `demos/City3D/{build,run-local,run-remote}.sh`, documented in VIEWERS.md.
+
+**Stage V COMPLETE.** Shipped library surface = 2 packages (`SumoSharp`, `SumoSharp.Dds`); viewers are
+repo-built apps with build docs + run-scripts + a strong net/scenario CLI.
 
 ---
 

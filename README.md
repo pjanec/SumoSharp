@@ -193,13 +193,23 @@ scripts/gen-demos.sh            # builds Sim.Viz/Sim.Run/Sim.ExtDemo, writes sit
 #    Needs a desktop/GPU; it builds on first run (pulls the raylib native package). It is out of
 #    Traffic.sln, so run the project directly (this builds it):
 dotnet run -c Release --project src/Sim.Viewer -- --mode local --demo "Roundabout"
+#   ...or point it at ANY network / scenario with the strong net/scenario CLI:
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --scenario scenarios/11-priority-junction  # real demand
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --sumocfg path/to/your.sumocfg             # real demand
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --net path/to/your.net.xml                 # sandbox traffic
+#   or just: scripts/watch-2d.sh [scenarioDir]     (thin wrapper for the above)
 #   switch demos live from the in-window "Demos" panel · drag = pan · wheel = zoom · click a road = drop an obstacle
 
-# 3) The zero-install live browser viewer — streams a running engine over WebSocket:
+# 3) The 3-D Godot city viewer — a real package-consumer app (build a local feed, then run):
+demos/City3D/build.sh && demos/City3D/run-local.sh --scenario=_bench/city-mixed-1k
+
+# 4) The zero-install live browser viewer — streams a running engine over WebSocket:
 dotnet run -c Release --project src/Sim.LiveHost -- scenarios/_bench/city-organic-L2   # open the printed http URL
 ```
 
-More viewer modes (loopback / DDS publish+remote), controls, and a headless screenshot mode are in
+Full build-&-watch instructions for both desktop viewers (2D raylib + 3D Godot), including the
+net/scenario CLI and all the run-scripts, are in [**docs/VIEWERS.md**](docs/VIEWERS.md). More viewer
+modes (loopback / DDS publish+remote), controls, and the headless screenshot mode are in
 [**Live & native viewers**](#live--native-viewers) below.
 
 ---

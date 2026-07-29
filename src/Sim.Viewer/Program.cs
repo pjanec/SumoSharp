@@ -96,6 +96,17 @@ var delaySeconds = 1.0f; // default DR playout delay (s). The auto "always inter
 (double X, double Y)? dropObstacle = null;
 double? secondsCap = null;
 int? fleet = null;
+// Strong net/scenario selection for `--mode local` (parity with the demos/City3D 3D viewer's
+// --net/--sumocfg/--scenario). Precedence when more than one is given: --sumocfg > --scenario > --net.
+//   --sumocfg <cfg>   : a self-describing .sumocfg (its <input> names the net + route-files); loads the
+//                       scenario's REAL demand via Engine.LoadScenario(cfg).
+//   --scenario <dir>  : a committed scenario directory (one each of *.net.xml + *.rou.xml + *.sumocfg);
+//                       loads the REAL demand (EngineHost auto-detects the adjacent rou/cfg).
+//   --net <net.xml|dir>: a bare road network run as a random-traffic SANDBOX (use --scenario/--sumocfg
+//                       for real demand); honours --fleet for the sandbox size.
+string? netFlag = null;
+string? sumocfgFlag = null;
+string? scenarioFlag = null;
 var perf = false;
 double? simRate = null;
 double? stepLen = null;
@@ -206,6 +217,15 @@ for (var i = 0; i < args.Length; i++)
                 double.Parse(parts[0], CultureInfo.InvariantCulture),
                 double.Parse(parts[1], CultureInfo.InvariantCulture));
             break;
+        case "--net":
+            netFlag = args[++i];
+            break;
+        case "--sumocfg":
+            sumocfgFlag = args[++i];
+            break;
+        case "--scenario":
+            scenarioFlag = args[++i];
+            break;
         case "--demo":
             demoName = args[++i];
             break;
@@ -303,9 +323,27 @@ if (mode == "local" && demoName is not null)
     return RunLocal(null, demoName, screenshotPath, frames, dropObstacle, fleet, perf, secondsCap, simRate, stepLen, overlayTest);
 }
 
+// Strong net/scenario CLI for `--mode local` (parity with demos/City3D): --sumocfg / --scenario / --net
+// select the road net + demand explicitly, instead of relying on the positional path's auto-detection.
+// Resolve them to (netPathForGeometry, hostFactory); a null return means the resolver already reported
+// a specific error.
+if (mode == "local" && (sumocfgFlag is not null || scenarioFlag is not null || netFlag is not null))
+{
+    var source = ResolveLocalScenarioSource(sumocfgFlag, scenarioFlag, netFlag, stepLen ?? 1.0, fleet);
+    if (source is not { } src)
+    {
+        return 1;
+    }
+
+    return RunLocal(src.NetPath, demoName: null, screenshotPath, frames, dropObstacle, fleet, perf,
+        secondsCap, simRate, stepLen, overlayTest, hostFactory: src.Factory);
+}
+
 if (inputPath is null)
 {
-    Console.Error.WriteLine("Sim.Viewer: missing <scenarioDir|net.xml> argument.");
+    Console.Error.WriteLine(
+        "Sim.Viewer: missing input. Give a positional <scenarioDir|net.xml>, or use "
+        + "--scenario <dir> / --sumocfg <file> (real demand) or --net <net.xml> (sandbox).");
     return 1;
 }
 
@@ -338,6 +376,91 @@ static string ResolveNetPath(string path)
     }
 
     return path;
+}
+
+// Resolve the strong-CLI net/scenario flags (--sumocfg > --scenario > --net) into the net path used for
+// geometry/bounds and a factory that builds the matching EngineHost. Returns null (after printing a
+// specific error) when a flag points at something unusable, so the caller just exits 1.
+static (string NetPath, Func<EngineHost> Factory)? ResolveLocalScenarioSource(
+    string? sumocfgFlag, string? scenarioFlag, string? netFlag, double step, int? fleet)
+{
+    // --sumocfg: a self-describing config. Its <input net-file> gives the net (resolved against the cfg
+    // dir) for geometry; Engine.LoadScenario(cfg) then drives the scenario's OWN demand (it resolves the
+    // net + route-files + additional-files from the cfg's <input> itself).
+    if (sumocfgFlag is not null)
+    {
+        var cfg = Path.GetFullPath(sumocfgFlag);
+        if (!File.Exists(cfg))
+        {
+            Console.Error.WriteLine($"Sim.Viewer: --sumocfg file not found: {cfg}");
+            return null;
+        }
+
+        var scfg = ScenarioConfigParser.Parse(cfg);
+        if (scfg.NetFile is null)
+        {
+            Console.Error.WriteLine(
+                "Sim.Viewer: --sumocfg has no <input><net-file>; this cfg cannot be loaded stand-alone. "
+                + "Use --scenario <dir> for a committed net.net.xml + rou.rou.xml + .sumocfg directory.");
+            return null;
+        }
+
+        var net = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(cfg)!, scfg.NetFile));
+        if (!File.Exists(net))
+        {
+            Console.Error.WriteLine($"Sim.Viewer: --sumocfg <net-file> resolves to a missing file: {net}");
+            return null;
+        }
+
+        return (net, () => EngineHost.CreateCustom(
+            net,
+            () =>
+            {
+                var engine = new Engine();
+                engine.LoadScenario(cfg);
+                return (engine, (Action<Engine>?)null);
+            }));
+    }
+
+    // --scenario: a committed scenario directory. Require one each of *.net.xml / *.rou.xml / *.sumocfg;
+    // the plain EngineHost ctor then auto-detects the adjacent rou/cfg and drives the real demand.
+    if (scenarioFlag is not null)
+    {
+        var dir = Path.GetFullPath(scenarioFlag);
+        if (!Directory.Exists(dir))
+        {
+            Console.Error.WriteLine($"Sim.Viewer: --scenario directory not found: {dir}");
+            return null;
+        }
+
+        var net = Directory.EnumerateFiles(dir, "*.net.xml").FirstOrDefault();
+        var rou = Directory.EnumerateFiles(dir, "*.rou.xml").FirstOrDefault();
+        var cfg = Directory.EnumerateFiles(dir, "*.sumocfg").FirstOrDefault();
+        if (net is null || rou is null || cfg is null)
+        {
+            Console.Error.WriteLine(
+                $"Sim.Viewer: --scenario dir must contain *.net.xml (found={net is not null}), "
+                + $"*.rou.xml (found={rou is not null}) and *.sumocfg (found={cfg is not null}). "
+                + "For a bare network with sandbox traffic, use --net instead.");
+            return null;
+        }
+
+        return (net, () => new EngineHost(net, stepLength: step));
+    }
+
+    // --net: a bare road network, run as a random-traffic sandbox (real demand needs --scenario/--sumocfg).
+    var raw = netFlag!;
+    var resolvedNet = Directory.Exists(raw)
+        ? Directory.EnumerateFiles(raw, "*.net.xml").FirstOrDefault()
+        : Path.GetFullPath(raw);
+    if (resolvedNet is null || !File.Exists(resolvedNet))
+    {
+        Console.Error.WriteLine($"Sim.Viewer: --net network file not found: {raw}");
+        return null;
+    }
+
+    var cap = fleet ?? 80;
+    return (resolvedNet, () => new EngineHost(resolvedNet, spawnCap: cap, forceSandbox: true, stepLength: step));
 }
 
 // docs/LIVE-CITY-VISUALS-NOTES.md (tick-rate task): `--sim-hz` must be one of {1,2,5,10,20} -- these are
@@ -401,7 +524,7 @@ static int ValidateRenderHz(int? requested)
 // today" invariant §5 requires for `--mode local <path>` with no `--demo`.
 static int RunLocal(string? netPath, string? demoName, string? screenshotPath, int frames,
     (double X, double Y)? dropObstacle, int? fleet, bool perf, double? secondsCap, double? simRate, double? stepLen,
-    bool overlayTest = false)
+    bool overlayTest = false, Func<EngineHost>? hostFactory = null)
 {
     var step = stepLen ?? 1.0;
     var repoRoot = DemoCatalog.RepoRoot();
@@ -439,9 +562,13 @@ static int RunLocal(string? netPath, string? demoName, string? screenshotPath, i
     {
         initialEntry = null; // ad-hoc "(custom)" -- no catalog entry backs this host (§5)
         initialOverlay = null; // ad-hoc paths never carry a domain overlay
-        initialHost = fleet is { } fleetCap
-            ? new EngineHost(netPath!, spawnCap: fleetCap, forceSandbox: true, stepLength: step)
-            : new EngineHost(netPath!, stepLength: step);
+        // A --net/--scenario/--sumocfg resolver supplies a ready-made host factory (real demand or an
+        // explicit sandbox); otherwise fall back to the positional path's fleet/auto-detect construction.
+        initialHost = hostFactory is not null
+            ? hostFactory()
+            : fleet is { } fleetCap
+                ? new EngineHost(netPath!, spawnCap: fleetCap, forceSandbox: true, stepLength: step)
+                : new EngineHost(netPath!, stepLength: step);
     }
 
     using var session = new DemoSession(initialHost, initialOverlay, initialEntry, repoRoot);
