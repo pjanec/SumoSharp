@@ -3,10 +3,12 @@
   <!--
     docs/DEMO-CITY3D-DESIGN.md "Code structure" — the engine-agnostic, headless-testable half of the
     City3D demo. Plain net8.0 classlib; NO Godot type anywhere (that lives in demos/City3D/Viewer, a
-    later task). Consumes the SumoSharp.* packages from the LOCAL feed (demos/City3D/nuget.config pins
-    SumoSharp.* to ./local-nuget via packageSourceMapping — restore picks this up automatically because
-    the project lives under demos/City3D/). NOT added to Traffic.sln: it consumes packages, not project
-    refs, so it stays out of the parity solution (repo rule).
+    later task). Consumes the single `SumoSharp` engine package from the LOCAL feed
+    (demos/City3D/nuget.config pins SumoSharp* to ./local-nuget via packageSourceMapping — restore picks
+    this up automatically because the project lives under demos/City3D/). One package now carries the
+    whole portable engine (Core + Ingest + Replication + Viewer.Motion + Host + Pedestrians + LiveCity),
+    per docs/SUMOSHARP-PACKAGING-DESIGN.md §V2. NOT added to Traffic.sln: it consumes packages, not
+    project refs, so it stays out of the parity solution (repo rule).
   -->
 
   <PropertyGroup>
@@ -17,13 +19,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="SumoSharp.Core" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.Ingest" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.Replication" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.Viewer.Motion" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.Host" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.Pedestrians" Version="0.1.0" />
-    <PackageReference Include="SumoSharp.LiveCity" Version="0.1.0" />
+    <!-- The one portable engine package (§V2): Core + Ingest + Replication + Viewer.Motion + Host +
+         Pedestrians + LiveCity, all bundled. Replaces the seven individual SumoSharp.* references. -->
+    <PackageReference Include="SumoSharp" Version="0.1.0" />
   </ItemGroup>
 
 </Project>

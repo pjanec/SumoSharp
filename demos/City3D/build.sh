@@ -28,18 +28,14 @@ for arg in "$@"; do
   esac
 done
 
-# Pure-managed packages the LOCAL, in-process viewer consumes. No native deps here on purpose — the local
-# demo must read as the clean "any C# engine consumes SumoSharp" reference.
+# The one portable engine package the LOCAL, in-process viewer consumes (docs/SUMOSHARP-PACKAGING-DESIGN.md
+# §V2): the bundle project emits Core + Ingest + Replication + Viewer.Motion + Host + Pedestrians +
+# LiveCity into a single `SumoSharp` package. No native deps here on purpose — the local demo must read as
+# the clean "any C# engine consumes SumoSharp" reference.
 PACKAGES=(
-  "src/Sim.Core/Sim.Core.csproj"
-  "src/Sim.Ingest/Sim.Ingest.csproj"
-  "src/Sim.Replication/Sim.Replication.csproj"
-  "src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj"
-  "src/Sim.Host/Sim.Host.csproj"
-  "src/Sim.Pedestrians/Sim.Pedestrians.csproj"
-  "src/Sim.LiveCity/Sim.LiveCity.csproj"
+  "packaging/SumoSharp/SumoSharp.csproj"
 )
-# The remote/DDS path additionally needs the native transport binding.
+# The remote/DDS path additionally needs the native transport binding (packs as SumoSharp.Dds).
 if [[ "$REMOTE" == "1" ]]; then
   PACKAGES+=("src/Sim.Replication.Dds/Sim.Replication.Dds.csproj")
 fi

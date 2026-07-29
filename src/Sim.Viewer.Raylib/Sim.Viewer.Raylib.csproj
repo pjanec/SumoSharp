@@ -10,8 +10,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Viewer.Raylib</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>SumoSharp — generic raylib/ImGui desktop rendering for a SumoSharp traffic stream: Renderer + RoadLayerCache + camera + the DDS subscriber adapter + a render-overlay seam, turning an authoritative or dead-reckoned SUMO stream into an on-screen view. Native GPU (Raylib-cs/rlImgui). Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>

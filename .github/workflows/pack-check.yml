@@ -1,8 +1,10 @@
-# Pack-check: prove the CI can BUILD + PACK every shipped NuGet package, with NO publish.
-# Unlike publish.yml (tag-triggered, pushes to nuget.org), this never pushes anywhere — it packs all
-# packages and uploads them as a build artifact only. Use it to exercise packaging end-to-end
-# (including the native Sim.Replication.Dds / Sim.Viewer.Raylib packages, which restore CycloneDDS.NET
-# and Raylib-cs on the runner) before cutting a real release tag.
+# Pack-check: prove the CI can BUILD + PACK the shipped NuGet packages, with NO publish.
+# Unlike publish.yml (tag-triggered, pushes to nuget.org), this never pushes anywhere — it packs the
+# packages and uploads them as a build artifact only. The adoption-first design
+# (docs/SUMOSHARP-PACKAGING-DESIGN.md §V2) ships exactly TWO packages: the portable `SumoSharp` engine
+# bundle and the optional native `SumoSharp.Dds` transport (which restores CycloneDDS.NET on the
+# runner — the part that proves CI can build the native binding). The viewers are repo-built apps, not
+# packages, so they are not packed here.
 name: pack-check
 
 on:
@@ -39,38 +41,30 @@ jobs:
       - name: Test (offline parity gate)
         run: dotnet test Traffic.sln -c Release --no-build
 
-      - name: Pack all packages (NO publish)
+      - name: Pack the shipped packages (NO publish)
         run: |
           echo "packing at Directory.Build.props version (no tag override — this is a build check)"
-          # Portable + managed packages (all in Traffic.sln, already built above -> --no-build):
-          for proj in \
-            src/Sim.Core/Sim.Core.csproj \
-            src/Sim.Ingest/Sim.Ingest.csproj \
-            src/Sim.Replication/Sim.Replication.csproj \
-            src/Sim.Viewer.Motion/Sim.Viewer.Motion.csproj \
-            src/Sim.Harness/Sim.Harness.csproj \
-            src/Sim.Evac/Sim.Evac.csproj \
-            src/Sim.Host/Sim.Host.csproj \
-            packaging/SumoSharp.Meta/SumoSharp.Meta.csproj ; do
-            dotnet pack "$proj" -c Release --no-build -o ./nupkgs
-          done
-          # Native packages (NOT in Traffic.sln): build+pack standalone (restores CycloneDDS.NET /
-          # Raylib-cs / rlImgui-cs on the runner — this is the part that proves CI can build them).
+          # Neither the bundle nor the DDS binding is in Traffic.sln (the bundle references the portable
+          # engine projects; the DDS binding restores CycloneDDS.NET), so build+pack them standalone.
+          # The bundle emits the portable engine assemblies (Core..LiveCity) into ONE SumoSharp package;
+          # SumoSharp.Dds packs its own assembly and depends on the SumoSharp package.
+          dotnet pack packaging/SumoSharp/SumoSharp.csproj            -c Release -o ./nupkgs
           dotnet pack src/Sim.Replication.Dds/Sim.Replication.Dds.csproj -c Release -o ./nupkgs
-          dotnet pack src/Sim.Viewer.Raylib/Sim.Viewer.Raylib.csproj     -c Release -o ./nupkgs
           echo "=== packed ==="
           ls -l ./nupkgs
 
-      - name: Assert all 10 packages were produced
+      - name: Assert exactly the 2 shipped packages were produced
         run: |
           count="$(ls ./nupkgs/*.nupkg 2>/dev/null | wc -l)"
           echo "nupkg count: $count"
-          for id in SumoSharp SumoSharp.Core SumoSharp.Ingest SumoSharp.Replication \
-                    SumoSharp.Replication.Dds SumoSharp.Viewer.Motion SumoSharp.Viewer.Raylib \
-                    SumoSharp.Testing SumoSharp.Evac SumoSharp.Host ; do
+          for id in SumoSharp SumoSharp.Dds ; do
             ls ./nupkgs/${id}.*.nupkg >/dev/null 2>&1 || { echo "::error::missing package $id"; exit 1; }
           done
-          echo "all 10 shipped packages packed OK"
+          # Exactly two, no more: catches an internal engine project accidentally re-acquiring a PackageId.
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected exactly 2 nupkgs (SumoSharp, SumoSharp.Dds), got $count"; exit 1
+          fi
+          echo "both shipped packages packed OK"
 
       - name: Upload packages as build artifact (not published)
         uses: actions/upload-artifact@v4

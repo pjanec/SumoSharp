@@ -19,12 +19,20 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Replication.Dds</PackageId>
-    <Description>SumoSharp — CycloneDDS transport for SumoSharp dead-reckoning replication: DDS topic types (opaque blob state, structured chunk, keyed lifecycle, durable geometry) wrapping the SumoSharp.Replication packed frames. Optional; not needed unless you replicate over DDS. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+    <PackageId>SumoSharp.Dds</PackageId>
+    <Description>SumoSharp — CycloneDDS transport binding for SumoSharp dead-reckoning replication: DDS topic types (opaque blob state, structured chunk, keyed lifecycle, durable geometry) wrapping the SumoSharp replication packed frames. The optional native wire; depends on the portable SumoSharp engine package. Not needed unless you replicate over DDS. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
+    <!-- Compile (and local repo runtime) against the replication types directly. PrivateAssets="all"
+         keeps Sim.Replication.dll from being bundled into this package or leaking as a transitive
+         dependency — at consume time it arrives via the SumoSharp package dependency below, which ships
+         Sim.Replication.dll in its lib/. -->
+    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" PrivateAssets="all" />
+    <!-- The engine dependency (§V2 E1/V1.3): referencing the packable bundle project makes `dotnet pack`
+         emit a `SumoSharp` package dependency on this package (rather than bundling the engine DLLs,
+         which would duplicate them for a consumer who installs both SumoSharp and SumoSharp.Dds). -->
+    <ProjectReference Include="..\..\packaging\SumoSharp\SumoSharp.csproj" />
     <PackageReference Include="CycloneDDS.NET" Version="0.3.2" />
     <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
   </ItemGroup>

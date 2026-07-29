@@ -12,8 +12,6 @@
     <!-- NuGet: the parity test harness — FCD/TripInfo/Summary parsers, trajectory/aggregate
          comparators, and tolerance config for validating a simulation run against SUMO goldens.
          Depends on SumoSharp.Core. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Testing</PackageId>
     <Description>SumoSharp — FCD/TripInfo/Summary parsers and trajectory/aggregate comparators with tolerance configuration, for validating a SumoSharp simulation run against Eclipse SUMO reference output. Depends on SumoSharp.Core. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 

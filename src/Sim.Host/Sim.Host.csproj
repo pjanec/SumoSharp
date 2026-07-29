@@ -20,8 +20,6 @@
          SimulationSnapshot + NetworkModel, the same translation src/Sim.Viewer.Core/DdsPublisher.cs does
          today, minus the DDS write and the EngineHost coupling. IsPackable defaults to false repo-wide
          (Directory.Build.props); set true explicitly here, like Sim.Viewer.Motion does. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Host</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>SumoSharp — transport-neutral engine-to-wire publisher: ReplicationPublisher drives any IReplicationSink (SumoSharp.Replication) from a running engine's SimulationSnapshot + NetworkModel, with no DDS or transport dependency. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
