@@ -266,7 +266,7 @@ def d_hysteresis():
 def d_weave():
     b = defs([TEAL, RED, GREEN, SLATE_L])
     b += title("The deterministic weave",
-               "Dense low-power crowds keep to their own side of the pavement — at O(1), no neighbour queries.")
+               "Opposing flows are kept apart by construction — at O(1) per pedestrian, no neighbour queries.")
     for i, (y0, head, col, note) in enumerate([
             (150, "Without weave", RED, "Everyone on the centreline. Opposing flows interpenetrate."),
             (350, "With weave", GREEN, "Each ped offset onto its own half as a function of its own inputs.")]):
@@ -319,7 +319,19 @@ def d_weave():
              LIGHT, weight="bold")
     b += txt(94, 816, "No neighbour lookups, no iteration, no shared state — every observer derives the "
                       "identical offset independently.", 13, SLATE_L)
-    return svg(1280, 870, b)
+
+    # What the mechanism does and does not guarantee. Stating only the win here would be the exact
+    # overstatement the project's own design doc warns against.
+    b += txt(70, 872, "What it guarantees, and what it does not", 17, LIGHT, weight="bold")
+    b += card(70, 892, 555, 104, "#1e2a34", GREEN, 8, 1.2)
+    b += txt(94, 922, "Opposing flows: guaranteed, by construction", 14, GREEN, weight="bold")
+    b += txt(94, 946, "The keep-right offset puts east and west on provably", 12.5, LIGHT)
+    b += txt(94, 966, "different halves. They cannot cross into each other.", 12.5, LIGHT)
+    b += card(655, 892, 555, 104, "#2e2a22", AMBER, 8, 1.2)
+    b += txt(679, 922, "Same direction: they can still overlap", 14, AMBER, weight="bold")
+    b += txt(679, 946, "There is no minimum-separation enforcement, so one", 12.5, LIGHT)
+    b += txt(679, 966, "pedestrian overtaking another can pass through it.", 12.5, LIGHT)
+    return svg(1280, 1026, b)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -335,8 +347,8 @@ def d_coupling():
     b += txt(94, 222, "Rich, per-agent reactions.", 13, SLATE_L)
     b += card(70, 276, 330, 110, "#243040", TEAL, 10, 1.4)
     b += txt(94, 312, "Crossing occupancy", 15, TEAL, weight="bold")
-    b += txt(94, 336, "EVERY pedestrian, promoted or not.", 13, SLATE_L)
-    b += txt(94, 358, "Covers the whole map.", 13, SLATE_L)
+    b += txt(94, 336, "Low-power peds WALKING on a crossing,", 13, SLATE_L)
+    b += txt(94, 358, "anywhere on the map — promoted peds excluded.", 13, SLATE_L)
     b += arrow(400, 195, 470, 240, TEAL, 2.2)
     b += arrow(400, 331, 470, 286, TEAL, 2.2)
     b += card(475, 232, 250, 62, LIGHT, "none", 10)
@@ -357,9 +369,9 @@ def d_coupling():
     b += txt(94, 538, "through a pedestrian. This is the guarantee.", 13, LIGHT)
     b += card(655, 444, 555, 118, "#2e2a22", AMBER, 8, 1.2)
     b += txt(679, 474, "Outside: believable, not guaranteed", 14, AMBER, weight="bold")
-    b += txt(679, 498, "Pedestrians can still overlap one another, and a", 13, LIGHT)
-    b += txt(679, 518, "car can occasionally pass over one. Cheap and", 13, LIGHT)
-    b += txt(679, 538, "convincing at distance — deliberately, not by accident.", 12.5, LIGHT)
+    b += txt(679, 498, "Same-direction pedestrians can overlap, and a car", 13, LIGHT)
+    b += txt(679, 518, "can pass over a ped that is not on a crossing.", 13, LIGHT)
+    b += txt(679, 538, "Cheap and convincing at distance — by choice.", 12.5, LIGHT)
     return svg(1280, 600, b)
 
 
