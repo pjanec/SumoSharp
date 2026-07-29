@@ -195,14 +195,15 @@ def d_lod():
     b += txt(96, 192, "pose = f(route, seed, width, time)", 14, LIGHT, font=MONO)
     b += txt(96, 224, "O(1) per pedestrian. Zero neighbour queries.", 15, LIGHT)
     b += txt(96, 246, "Spreads and weaves — never a single file.", 15, TEAL, weight="bold")
-    b += txt(96, 278, "Closed form ⇒ any number of observers", 13, SLATE_L)
-    b += txt(96, 296, "reconstruct the identical pose independently.", 13, SLATE_L)
+    b += txt(96, 268, "Believable, not collision-free.", 14, AMBER)
+    b += txt(96, 296, "Closed form ⇒ any number of observers", 13, SLATE_L)
+    b += txt(96, 314, "reconstruct the identical pose independently.", 13, SLATE_L)
     for i in range(9):
         b += ped(120 + i * 52, 360, 7, TEAL, 0.85)
     b += txt(96, 404, "Thousands of them cost what tens would.", 14, GREEN)
     b += card(96, 428, 488, 76, "#1a222c", "none", 8)
-    b += txt(116, 456, "Believable by construction.", 13, LIGHT, weight="bold")
-    b += txt(116, 478, "Lateral spread is part of the pose, not a solver result.", 13, SLATE_L)
+    b += txt(116, 456, "The trade, on purpose", 13, LIGHT, weight="bold")
+    b += txt(116, 478, "Performance bought with believability, not with correctness.", 12.5, SLATE_L)
 
     b += card(670, 130, 540, 400, "#243040", PED_HI, 12, 1.4)
     b += txt(696, 168, "HIGH POWER", 18, PED_HI, weight="bold")
@@ -218,8 +219,8 @@ def d_lod():
               f'stroke="{PED_HI}" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"/>')
     b += txt(696, 404, "Promoted only where fidelity is observed.", 14, LIGHT)
     b += card(696, 428, 488, 76, "#1a222c", "none", 8)
-    b += txt(716, 456, "Correct by negotiation.", 13, LIGHT, weight="bold")
-    b += txt(716, 478, "Promote where avoidance must be guaranteed.", 13, SLATE_L)
+    b += txt(716, 456, "The guarantee", 13, LIGHT, weight="bold")
+    b += txt(716, 478, "Promote wherever avoidance must actually hold.", 12.5, SLATE_L)
     return svg(1280, 570, b)
 
 
@@ -348,16 +349,18 @@ def d_coupling():
     b += txt(829, 280, "simply stands in as the leader.", 13, SLATE_L)
     b += txt(829, 308, "What is new is WHAT it reacts to, not HOW.", 13, GREEN)
 
-    b += txt(70, 424, "The consequence worth knowing", 17, LIGHT, weight="bold")
-    b += card(70, 444, 555, 96, "#1e2a34", GREEN, 8, 1.2)
-    b += txt(94, 474, "A car stops for any ped on a crossing", 14, GREEN, weight="bold")
-    b += txt(94, 496, "even far from the camera, at the cheapest LOD —", 13, LIGHT)
-    b += txt(94, 516, "crossing occupancy covers everybody.", 13, LIGHT)
-    b += card(655, 444, 555, 96, "#2e2a22", AMBER, 8, 1.2)
-    b += txt(679, 474, "Off-crossing, only promoted peds are seen", 14, AMBER, weight="bold")
-    b += txt(679, 496, "Put an interest source where you need full", 13, LIGHT)
-    b += txt(679, 516, "reactions. Today that is a deliberate cost choice.", 13, LIGHT)
-    return svg(1280, 580, b)
+    b += txt(70, 424, "The fidelity trade, stated plainly", 17, LIGHT, weight="bold")
+    b += card(70, 444, 555, 118, "#1e2a34", GREEN, 8, 1.2)
+    b += txt(94, 474, "Inside the zone: assured", 14, GREEN, weight="bold")
+    b += txt(94, 498, "Pedestrians negotiate with each other and with", 13, LIGHT)
+    b += txt(94, 518, "cars. No interpenetration. A car will not pass", 13, LIGHT)
+    b += txt(94, 538, "through a pedestrian. This is the guarantee.", 13, LIGHT)
+    b += card(655, 444, 555, 118, "#2e2a22", AMBER, 8, 1.2)
+    b += txt(679, 474, "Outside: believable, not guaranteed", 14, AMBER, weight="bold")
+    b += txt(679, 498, "Pedestrians can still overlap one another, and a", 13, LIGHT)
+    b += txt(679, 518, "car can occasionally pass over one. Cheap and", 13, LIGHT)
+    b += txt(679, 538, "convincing at distance — deliberately, not by accident.", 12.5, LIGHT)
+    return svg(1280, 600, b)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -766,11 +769,98 @@ def d_dr():
     return svg(1280, 840, b)
 
 
+# ----------------------------------------------------------------------------------------------
+# 16. Liveliness is DATA, not a per-step behaviour loop
+# ----------------------------------------------------------------------------------------------
+def d_liveliness():
+    b = defs()
+    b += title("City life is authored data, not a behaviour loop",
+               "Four segment kinds compose into every beat below — and all of it stays low-power.")
+    b += txt(70, 148, "THE VOCABULARY", 14, LIGHT, weight="bold")
+    kinds = [("Walk", "follow the route"), ("Pause", "stop in place: phone, sip, look"),
+             ("Dwell", "stay put — optionally unseen"),
+             ("Interact", "a Dwell that names a partner")]
+    x = 70
+    for name, desc in kinds:
+        b += card(x, 162, 272, 82, "#1e2f2c", TEAL, 10, 1.3)
+        b += txt(x + 18, 192, name, 16, TEAL, weight="bold")
+        b += txt(x + 18, 216, desc, 11.5, SLATE_L)
+        x += 285
+    b += txt(70, 288, "THE BEATS THEY COMPOSE INTO", 14, LIGHT, weight="bold")
+    b += txt(346, 288, "each one a generator that emits an ordinary timeline — no new evaluator", 12.5, SLATE_L)
+    beats = [
+        ("Checking a phone", "Walk → Pause(\"phone\") → Walk", "A pause carries an animation tag and no\npose of its own, so the walk either side\nstays continuous."),
+        ("Meeting, then parting", "paired Interact in BOTH timelines", "Two pedestrians agree one meet point,\ntime and duration, stand ~1.2 m apart,\ntalk, then walk on."),
+        ("Serving outdoor tables", "loop: door → table → serve → inside", "Tables visited in a seed-varied order.\nThe dwell inside the building is a real\npose that is simply not drawn."),
+        ("Boarding a car", "Walking → Riding", "The person leaves the crowd entirely on\nboarding, and the car drives away with\nmutual avoidance in the lot."),
+    ]
+    x = 70
+    for i, (name, mech, desc) in enumerate(beats):
+        b += card(x, 302, 272, 148, "#243040", SLATE, 10, 1.3)
+        b += f'<circle cx="{x + 26}" cy="{332}" r="12" fill="{TEAL}"/>'
+        b += txt(x + 26, 337, str(i + 1), 12, INK, "middle", "bold")
+        b += txt(x + 48, 337, name, 14.5, LIGHT, weight="bold")
+        b += txt(x + 18, 366, mech, 11, AMBER if i == 3 else TEAL, font=MONO)
+        for j, line in enumerate(desc.split("\n")):
+            b += txt(x + 18, 392 + j * 19, line, 11.5, SLATE_L)
+        x += 285
+    b += card(70, 476, 555, 96, "#1e2a34", GREEN, 8, 1.2)
+    b += txt(94, 506, "None of this costs a per-step behaviour loop", 15, GREEN, weight="bold")
+    b += txt(94, 532, "Liveliness adds richer one-time DATA, not per-tick work — so a", 12.5, LIGHT)
+    b += txt(94, 552, "living city stays as cheap, and as reconstructable, as a walking one.", 12.5, LIGHT)
+    b += card(655, 476, 555, 96, "#2e2a22", AMBER, 8, 1.2)
+    b += txt(679, 506, "What is next: the director, not the behaviours", 15, AMBER, weight="bold")
+    b += txt(679, 532, "The beats exist and are deterministic. What is designed but not", 12.5, LIGHT)
+    b += txt(679, 552, "built is placing them automatically from venue records, city-wide.", 12.5, LIGHT)
+    return svg(1280, 600, b)
+
+
+# ----------------------------------------------------------------------------------------------
+# 17. Already optimised -- and the remaining levers are named, not mysterious
+# ----------------------------------------------------------------------------------------------
+def d_headroom():
+    b = defs()
+    b += title("Already fast — and the remaining headroom is already located",
+               "Nothing below is a mystery. Each lever is measured, attributed, and waiting its turn.")
+    b += txt(70, 150, "WHAT HAS ALREADY LANDED", 14, GREEN, weight="bold")
+    done = [("Allocation collapsed", "the hot path stopped allocating per car, per step"),
+            ("GC pressure removed", "pause time down to a small fraction of wall"),
+            ("Parallel by default at scale", "and byte-identical to the serial run, by test"),
+            ("Engine tick off the render thread", "frame hitches gone at full density"),
+            ("Faster per tick than SUMO", "single-threaded, before any parallelism")]
+    y = 168
+    for name, desc in done:
+        b += f'<circle cx="{84}" cy="{y + 8}" r="6" fill="{GREEN}"/>'
+        b += txt(102, y + 13, name, 14, LIGHT, weight="bold")
+        b += txt(102, y + 33, desc, 12, SLATE_L)
+        y += 56
+    b += txt(660, 150, "WHAT IS STILL ON THE TABLE", 14, AMBER, weight="bold")
+    todo = [("Neighbour cap in the crowd solver", "considers every agent in range where the reference\nimplementation caps at ten — the largest single lever"),
+            ("Pedestrian spawn cost", "scales with the walkable graph, not with the spawn"),
+            ("Route cache defeated by its own key", "so it never shares between vehicles, and never shrinks"),
+            ("Insertion cost under saturation", "quadratic exactly when a user cranks density past capacity"),
+            ("Cache layout of the crowd hot loop", "three arrays read together, not yet packed together")]
+    y = 168
+    for name, desc in todo:
+        b += f'<circle cx="{674}" cy="{y + 8}" r="6" fill="{AMBER}"/>'
+        b += txt(692, y + 13, name, 14, LIGHT, weight="bold")
+        for j, line in enumerate(desc.split("\n")):
+            b += txt(692, y + 33 + j * 17, line, 12, SLATE_L)
+        y += 56
+    b += card(70, 468, 1140, 96, "#243040", "none", 10)
+    b += txt(94, 498, "The reason the list is specific rather than aspirational", 15, LIGHT, weight="bold")
+    b += txt(94, 524, "Every entry was found by measuring, then attributed to a named cause, then left alone until its turn. "
+                      "The largest one changes", 12.5, SLATE_L)
+    b += txt(94, 544, "pedestrian trajectories, so it ships opt-in and off by default — a deliberate choice, not an "
+                      "oversight.", 12.5, SLATE_L)
+    return svg(1280, 600, b)
+
+
 DIAGRAMS = {
     "01-layering": d_layering, "02-seam": d_seam, "03-lod": d_lod, "04-hysteresis": d_hysteresis,
     "05-weave": d_weave, "06-coupling": d_coupling, "07-yield": d_yield, "08-lanechange": d_lanechange,
     "09-server-ig": d_serverig, "10-threaded": d_threaded, "11-terrain": d_terrain, "12-evac": d_evac,
-    "13-discipline": d_discipline, "14-attention": d_attention, "15-dr": d_dr,
+    "13-discipline": d_discipline, "14-attention": d_attention, "15-dr": d_dr, "16-liveliness": d_liveliness, "17-headroom": d_headroom,
 }
 
 if __name__ == "__main__":
