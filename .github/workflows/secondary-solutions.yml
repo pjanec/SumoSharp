@@ -16,9 +16,9 @@ on:
     paths:
       - "src/**"
       - "demos/City3D/**"
-      - "SumoSharp.Viz.sln"
-      - "SumoSharp.Experiments.sln"
-      - "SumoSharp.Viewer.Godot.sln"
+      - "solutions/SumoSharp.Viz.sln"
+      - "solutions/SumoSharp.Experiments.sln"
+      - "solutions/SumoSharp.Viewer.Godot.sln"
       - ".github/workflows/secondary-solutions.yml"
 
 jobs:
@@ -35,14 +35,14 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build the Viz solution (headless replay tooling)
-        run: dotnet build SumoSharp.Viz.sln -c Release
+        run: dotnet build solutions/SumoSharp.Viz.sln -c Release
 
       - name: Build the Experiments solution (incl. native DDS + IgBridge)
-        run: dotnet build SumoSharp.Experiments.sln -c Release
+        run: dotnet build solutions/SumoSharp.Experiments.sln -c Release
 
       # Only test projects run; the experiment exes (Sumo, benches, LiveHost, PedDdsLoopback...) just build.
       - name: Test the Experiments solution (managed — e.g. IgBridge.Tests)
-        run: dotnet test SumoSharp.Experiments.sln -c Release --no-build
+        run: dotnet test solutions/SumoSharp.Experiments.sln -c Release --no-build
 
       - name: Godot data-path (managed CityLib half — no editor)
         run: |

@@ -105,10 +105,10 @@ Each viewer builds from its own solution, so a fresh checkout opens exactly what
 | Solution | Builds | CI |
 |---|---|---|
 | `Traffic.sln` | the engine (packages) + all tests | `ci.yml` — parity + determinism gate |
-| `SumoSharp.Viewer.Raylib.sln` | the 2D raylib viewer + tests | `viewer-raylib.yml` — build + test + **uploads the viewer binary artifact** |
-| `SumoSharp.Viewer.Godot.sln` | the Godot demo (CityLib + tests + the Godot `Viewer`) | `secondary-solutions.yml` builds/tests the **managed** CityLib half (Godot data path) headlessly; the Godot `Viewer` builds locally |
-| `SumoSharp.Viz.sln` | Sim.Viz + Sim.Run + Sim.ExtDemo (headless replay) | `secondary-solutions.yml` (build) |
-| `SumoSharp.Experiments.sln` | Sim.Sumo, DensityDiff, EvacProfile, PedDdsLoopback, LiveHost (legacy), IgBridge, benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
+| `solutions/SumoSharp.Viewer.Raylib.sln` | the 2D raylib viewer + tests | `viewer-raylib.yml` — build + test + **uploads the viewer binary artifact** |
+| `solutions/SumoSharp.Viewer.Godot.sln` | the Godot demo (CityLib + tests + the Godot `Viewer`) | `secondary-solutions.yml` builds/tests the **managed** CityLib half (Godot data path) headlessly; the Godot `Viewer` builds locally |
+| `solutions/SumoSharp.Viz.sln` | Sim.Viz + Sim.Run + Sim.ExtDemo (headless replay) | `secondary-solutions.yml` (build) |
+| `solutions/SumoSharp.Experiments.sln` | Sim.Sumo, DensityDiff, EvacProfile, PedDdsLoopback, LiveHost (legacy), IgBridge, benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
 
 ---
 

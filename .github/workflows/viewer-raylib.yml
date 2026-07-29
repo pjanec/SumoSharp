@@ -1,6 +1,6 @@
 # Build, test, and ARTIFACT the 2D raylib desktop viewer (docs/VIEWERS.md).
 # The viewer is a repo-built app, not a NuGet package, so this workflow builds its own solution
-# (SumoSharp.Viewer.Raylib.sln — native Raylib-cs/rlImgui restore on the runner), runs its headless
+# (solutions/SumoSharp.Viewer.Raylib.sln — native Raylib-cs/rlImgui restore on the runner), runs its headless
 # tests, and publishes the viewer binary as a downloadable artifact so anyone can grab a build without
 # a local toolchain. Separate from the hermetic parity gate (ci.yml) on purpose.
 #
@@ -28,7 +28,7 @@ on:
       - "src/Sim.Evac/**"
       - "src/Sim.Host/**"
       - "tests/Sim.Viewer.Tests/**"
-      - "SumoSharp.Viewer.Raylib.sln"
+      - "solutions/SumoSharp.Viewer.Raylib.sln"
       - ".github/workflows/viewer-raylib.yml"
 
 jobs:
@@ -45,11 +45,11 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build (Release) — restores Raylib-cs / rlImgui-cs natives
-        run: dotnet build SumoSharp.Viewer.Raylib.sln -c Release
+        run: dotnet build solutions/SumoSharp.Viewer.Raylib.sln -c Release
 
       # Sim.Viewer.Tests are headless (verified — no GL/window), so no Xvfb needed here.
       - name: Test (headless)
-        run: dotnet test SumoSharp.Viewer.Raylib.sln -c Release --no-build
+        run: dotnet test solutions/SumoSharp.Viewer.Raylib.sln -c Release --no-build
 
       - name: Publish the 2D raylib viewer binary
         run: dotnet publish src/Sim.Viewer/Sim.Viewer.csproj -c Release -o ./viewer-bin

@@ -178,8 +178,8 @@ winget install Microsoft.DotNet.SDK.8
 Then build and run the offline parity suite (no SUMO, no network):
 ```bash
 git clone https://github.com/pjanec/SumoSharp && cd SumoSharp
-dotnet build -c Release
-dotnet test                     # 775 passed, 0 failed, 4 skipped  (offline; no SUMO, no network)
+dotnet build -c Release         # builds Traffic.sln (the engine + tests)
+dotnet test                     # 1214 passed, 0 failed, 4 skipped  (offline; no SUMO, no network)
 ```
 
 ### See it run (from a fresh checkout)
@@ -210,7 +210,7 @@ net/scenario CLI, the one-command Godot `setup.sh`, and all the run-scripts, are
 [**docs/VIEWERS.md**](docs/VIEWERS.md). More viewer modes (loopback / DDS publish+remote), controls,
 and the headless screenshot mode are in [**Live & native viewers**](#live--native-viewers) below.
 (The old `Sim.LiveHost` WebSocket browser demo is now a legacy experiment — superseded by the DDS
-streaming path — and lives in `SumoSharp.Experiments.sln`.)
+streaming path — and lives in `solutions/SumoSharp.Experiments.sln`.)
 
 ---
 

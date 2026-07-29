@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CityLib", "..\demos\City3D\CityLib\CityLib.csproj", "{540F1B6E-E634-46F4-A813-7C9DE3F3A486}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CityLib.Tests", "..\demos\City3D\CityLib.Tests\CityLib.Tests.csproj", "{DEC9344C-4C4B-4309-B637-9314B8300684}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Viewer", "..\demos\City3D\Viewer\Viewer.csproj", "{511419C7-BC62-4922-944B-0A8B2ECA6DBD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{540F1B6E-E634-46F4-A813-7C9DE3F3A486}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{540F1B6E-E634-46F4-A813-7C9DE3F3A486}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{540F1B6E-E634-46F4-A813-7C9DE3F3A486}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{540F1B6E-E634-46F4-A813-7C9DE3F3A486}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DEC9344C-4C4B-4309-B637-9314B8300684}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DEC9344C-4C4B-4309-B637-9314B8300684}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DEC9344C-4C4B-4309-B637-9314B8300684}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DEC9344C-4C4B-4309-B637-9314B8300684}.Release|Any CPU.Build.0 = Release|Any CPU
+		{511419C7-BC62-4922-944B-0A8B2ECA6DBD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{511419C7-BC62-4922-944B-0A8B2ECA6DBD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{511419C7-BC62-4922-944B-0A8B2ECA6DBD}.Release|Any CPU.ActiveCfg = Debug|Any CPU
+		{511419C7-BC62-4922-944B-0A8B2ECA6DBD}.Release|Any CPU.Build.0 = Debug|Any CPU
+	EndGlobalSection
+EndGlobal

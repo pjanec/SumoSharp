@@ -56,9 +56,11 @@ Design ref: `SUMOSHARP-PACKAGING-DESIGN.md §V2.7`.
 - [x] `Traffic.sln` slimmed to the product: package content (+ `Replication.Dds`, `Host.App`, `LiveCity`)
       + all tests (now incl. LiveCity 90 + Viewer.Motion 19) + Bench + samples. `dotnet test Traffic.sln`
       = **1214 passed / 0 failed / 4 skipped**; native Dds/Host.App build in-solution.
-- [x] Four family solutions created + all verified to build: `SumoSharp.Viewer.Raylib.sln` (native),
-      `SumoSharp.Viewer.Godot.sln` (compiles via Godot.NET.Sdk from nuget), `SumoSharp.Viz.sln`,
-      `SumoSharp.Experiments.sln` (13 projects). CityLib.Tests 186/4, IgBridge.Tests 11/0 verified.
+- [x] Four family solutions created under `solutions/` (root keeps ONLY `Traffic.sln`, so bare
+      `dotnet build`/`dotnet test` resolve to the product as documented) + all verified to build:
+      `solutions/SumoSharp.Viewer.Raylib.sln` (native), `solutions/SumoSharp.Viewer.Godot.sln` (compiles
+      via Godot.NET.Sdk from nuget), `solutions/SumoSharp.Viz.sln`, `solutions/SumoSharp.Experiments.sln`
+      (13 projects). CityLib.Tests 186/4, IgBridge.Tests 11/0 verified.
 - [x] CI: `viewer-raylib.yml` (build + headless test + **uploads the 2D viewer binary artifact**);
       `secondary-solutions.yml` (rot-check: builds Viz + Experiments + the managed Godot CityLib half,
       runs IgBridge.Tests + CityLib.Tests — the Godot data path, no editor). `pack-check`/`publish`

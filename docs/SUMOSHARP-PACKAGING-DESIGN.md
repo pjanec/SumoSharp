@@ -137,10 +137,10 @@ non-parity project — the trap that let a stale solution reference slip past th
 | Solution | Holds | CI |
 |---|---|---|
 | **`Traffic.sln`** (the product) | all package content — Core, Ingest, Replication, **Replication.Dds**, Viewer.Motion, Host, **Host.App** (headless network producer), Pedestrians, Nav.DotRecast, LiveCity, Evac — **+ all tests** + `Sim.Bench` (determinism) + the `samples/` (public-API compile examples). CycloneDDS is a normal managed NuGet, so building `Replication.Dds`/`Host.App` here is fine and there are no live-DDS tests to make the gate flaky. | `ci.yml` — build + `dotnet test` + determinism hash |
-| **`SumoSharp.Viewer.Raylib.sln`** | the native 2D raylib viewer (`Sim.Viewer.Core`/`.Raylib`/`Sim.Viewer`) + `Sim.Viewer.Tests` | `viewer-raylib.yml` — build + test + **viewer binary artifact** |
-| **`SumoSharp.Viewer.Godot.sln`** | the Godot demo — `CityLib` (Godot-free engine/DR/geometry) + `CityLib.Tests` + the Godot `Viewer` | `secondary-solutions.yml` builds+tests the managed `CityLib` half (Godot data path, no editor); the Godot `Viewer` builds locally via `demos/City3D/setup.sh` |
-| **`SumoSharp.Viz.sln`** | `Sim.Viz` + `Sim.Run` + `Sim.ExtDemo` (headless FCD/replay tooling) | `secondary-solutions.yml` (build) |
-| **`SumoSharp.Experiments.sln`** | `Sim.Sumo`, `Sim.DensityDiff`, `Sim.EvacProfile`, `Sim.PedDdsLoopback`, `Sim.LiveHost` (legacy), `Sim.IgBridge`(+Host+Tests), the perf benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
+| **`solutions/SumoSharp.Viewer.Raylib.sln`** | the native 2D raylib viewer (`Sim.Viewer.Core`/`.Raylib`/`Sim.Viewer`) + `Sim.Viewer.Tests` | `viewer-raylib.yml` — build + test + **viewer binary artifact** |
+| **`solutions/SumoSharp.Viewer.Godot.sln`** | the Godot demo — `CityLib` (Godot-free engine/DR/geometry) + `CityLib.Tests` + the Godot `Viewer` | `secondary-solutions.yml` builds+tests the managed `CityLib` half (Godot data path, no editor); the Godot `Viewer` builds locally via `demos/City3D/setup.sh` |
+| **`solutions/SumoSharp.Viz.sln`** | `Sim.Viz` + `Sim.Run` + `Sim.ExtDemo` (headless FCD/replay tooling) | `secondary-solutions.yml` (build) |
+| **`solutions/SumoSharp.Experiments.sln`** | `Sim.Sumo`, `Sim.DensityDiff`, `Sim.EvacProfile`, `Sim.PedDdsLoopback`, `Sim.LiveHost` (legacy), `Sim.IgBridge`(+Host+Tests), the perf benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
 
 `pack-check.yml` / `publish.yml` are unchanged — they pack the two packages (`SumoSharp`,
 `SumoSharp.Dds`) standalone regardless of solution membership.
