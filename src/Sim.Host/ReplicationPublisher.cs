@@ -35,6 +35,12 @@ public sealed class ReplicationPublisher
         MaxInterval = 3,
     });
 
+    // The publish policy this publisher decimates with. Exposed so a measurement harness can attribute the
+    // write rate per reason (see DrErrorPublishPolicy's counters). Read-only: the tolerances are set above
+    // and callers must not swap the policy out mid-run, which would invalidate the scheduler's last-sent
+    // state that the prediction errors are computed against.
+    public IPublishPolicy Policy => _scheduler.Policy;
+
     // Lifecycle bookkeeping: the dims we've already told the sink about, so a spawn is only announced
     // once and a despawn is announced exactly once when a previously-known handle drops off the snapshot.
     private readonly Dictionary<VehicleHandle, (float Length, float Width)> _knownVehicles = new();
