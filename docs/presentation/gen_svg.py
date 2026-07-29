@@ -305,26 +305,26 @@ def d_weave():
              "Each ped keeps its own half and scatters within it. Same O(1) cost.")]):
         b += txt(70, y0 + 6, head, 18, col, weight="bold")
         b += txt(70 + 340, y0 + 6, note, 14, SLATE_L)
-        b += f'<rect x="70" y="{y0 + 24}" width="1140" height="112" rx="6" fill="#1a222c"/>'
-        b += (f'<line x1="70" y1="{y0 + 80}" x2="1210" y2="{y0 + 80}" stroke="{SLATE}" '
+        b += f'<rect x="70" y="{y0 + 24}" width="1030" height="112" rx="6" fill="#1a222c"/>'
+        b += (f'<line x1="70" y1="{y0 + 80}" x2="1100" y2="{y0 + 80}" stroke="{SLATE}" '
               f'stroke-width="1" stroke-dasharray="6 8" opacity="0.7"/>')
-        b += txt(1196, y0 + 44, "pavement edge", 11, SLATE_L, "end")
-        b += txt(1196, y0 + 76, "centreline", 11, SLATE_L, "end")
+        b += txt(1112, y0 + 34, "pavement edge", 11, SLATE_L)
+        b += txt(1112, y0 + 84, "centreline", 11, SLATE_L)
         if i == 0:
             # Deliberately uniform: this row exists to show the artefact, so regularity is the point.
-            for k in range(16):
+            for k in range(14):
                 px = 108 + k * 70
                 b += ped(px, y0 + 80, 8, TEAL, 0.9)
                 b += ped(px + 26, y0 + 80, 8, "#7FD8CE", 0.9)
         else:
             # Real lateral variance on each side of the centreline -- never rows, never a stride.
-            b += ped_band(96, 1188, y0 + 80, 40, 7717, TEAL, 30, 8, side=-1)
-            b += ped_band(96, 1188, y0 + 80, 40, 3313, "#7FD8CE", 30, 8, side=+1)
+            b += ped_band(96, 1082, y0 + 80, 40, 7717, TEAL, 28, 8, side=-1)
+            b += ped_band(96, 1082, y0 + 80, 40, 3313, "#7FD8CE", 28, 8, side=+1)
         if i == 1:
             b += arrow(120, y0 + 34, 300, y0 + 34, TEAL, 2)
             b += txt(310, y0 + 39, "eastbound", 11, TEAL)
-            b += arrow(1160, y0 + 126, 980, y0 + 126, "#7FD8CE", 2)
-            b += txt(970, y0 + 131, "westbound", 11, "#7FD8CE", "end")
+            b += arrow(1060, y0 + 126, 880, y0 + 126, "#7FD8CE", 2)
+            b += txt(870, y0 + 131, "westbound", 11, "#7FD8CE", "end")
 
     # The same spreading applies where crowds BUNCH, not only where they flow: at a kerb on red, a
     # single waiting vertex would stack every pedestrian on one point. The owner called this out
