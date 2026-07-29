@@ -128,6 +128,23 @@ dependency-free.
 - **E5 — DotRecast nav provider stays opt-in source** (V2.5), keeping #1 third-party-dependency-free.
 - **E6 — the old `SumoSharp` meta-package is retired**; its id is reused for the real engine package #1.
 
+### V2.7 Repository solution layout (build organization)
+
+The two shipped packages are produced from projects organized into per-family solutions, so a fresh
+checkout builds exactly the area it needs (and so a break in one area can't silently ride in a
+non-parity project — the trap that let a stale solution reference slip past the gate once):
+
+| Solution | Holds | CI |
+|---|---|---|
+| **`Traffic.sln`** (the product) | all package content — Core, Ingest, Replication, **Replication.Dds**, Viewer.Motion, Host, **Host.App** (headless network producer), Pedestrians, Nav.DotRecast, LiveCity, Evac — **+ all tests** + `Sim.Bench` (determinism) + the `samples/` (public-API compile examples). CycloneDDS is a normal managed NuGet, so building `Replication.Dds`/`Host.App` here is fine and there are no live-DDS tests to make the gate flaky. | `ci.yml` — build + `dotnet test` + determinism hash |
+| **`SumoSharp.Viewer.Raylib.sln`** | the native 2D raylib viewer (`Sim.Viewer.Core`/`.Raylib`/`Sim.Viewer`) + `Sim.Viewer.Tests` | `viewer-raylib.yml` — build + test + **viewer binary artifact** |
+| **`SumoSharp.Viewer.Godot.sln`** | the Godot demo — `CityLib` (Godot-free engine/DR/geometry) + `CityLib.Tests` + the Godot `Viewer` | `secondary-solutions.yml` builds+tests the managed `CityLib` half (Godot data path, no editor); the Godot `Viewer` builds locally via `demos/City3D/setup.sh` |
+| **`SumoSharp.Viz.sln`** | `Sim.Viz` + `Sim.Run` + `Sim.ExtDemo` (headless FCD/replay tooling) | `secondary-solutions.yml` (build) |
+| **`SumoSharp.Experiments.sln`** | `Sim.Sumo`, `Sim.DensityDiff`, `Sim.EvacProfile`, `Sim.PedDdsLoopback`, `Sim.LiveHost` (legacy), `Sim.IgBridge`(+Host+Tests), the perf benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
+
+`pack-check.yml` / `publish.yml` are unchanged — they pack the two packages (`SumoSharp`,
+`SumoSharp.Dds`) standalone regardless of solution membership.
+
 ---
 
 <!-- =========================================================================================

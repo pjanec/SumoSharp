@@ -1,0 +1,53 @@
+# Rot-prevention for the non-product solutions that the hermetic parity gate (ci.yml, Traffic.sln) does
+# NOT build: the Viz tooling, the Experiments, and the Godot demo's managed half. This exists because a
+# project can break in one of these solutions without touching Traffic.sln (exactly how a stale solution
+# reference slipped past the parity gate once). Build-focused, not a release gate.
+#
+# Godot: only the MANAGED half (CityLib + CityLib.Tests) is built/tested here — it needs no Godot editor,
+# yet covers the entire Godot data path (engine -> DR reconstruction -> render-ready geometry). The Godot
+# `Viewer` project (which needs the ~100 MB editor to RUN) is intentionally NOT built in CI; build it
+# locally via demos/City3D/setup.sh + run-local.sh.
+name: secondary-solutions
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["**"]
+    paths:
+      - "src/**"
+      - "demos/City3D/**"
+      - "SumoSharp.Viz.sln"
+      - "SumoSharp.Experiments.sln"
+      - "SumoSharp.Viewer.Godot.sln"
+      - ".github/workflows/secondary-solutions.yml"
+
+jobs:
+  build-secondary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build the Viz solution (headless replay tooling)
+        run: dotnet build SumoSharp.Viz.sln -c Release
+
+      - name: Build the Experiments solution (incl. native DDS + IgBridge)
+        run: dotnet build SumoSharp.Experiments.sln -c Release
+
+      # Only test projects run; the experiment exes (Sumo, benches, LiveHost, PedDdsLoopback...) just build.
+      - name: Test the Experiments solution (managed — e.g. IgBridge.Tests)
+        run: dotnet test SumoSharp.Experiments.sln -c Release --no-build
+
+      - name: Godot data-path (managed CityLib half — no editor)
+        run: |
+          # Pack the SumoSharp package into the demo's local feed, then build + test the Godot-free
+          # CityLib and its tests (engine -> DR reconstruction -> geometry). No Godot editor involved.
+          bash demos/City3D/build.sh --pack-only
+          dotnet build demos/City3D/CityLib.Tests/CityLib.Tests.csproj -c Release
+          dotnet test  demos/City3D/CityLib.Tests/CityLib.Tests.csproj -c Release --no-build

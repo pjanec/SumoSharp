@@ -69,24 +69,46 @@ The 3D viewer consumes the `SumoSharp` package (and `SumoSharp.Dds` for the remo
 **local NuGet feed** that its `build.sh` populates by packing the engine — so it doubles as the
 end-to-end proof that the packages compose for a real consumer.
 
+### From a fresh checkout — one command to prepare
+
 ```bash
-# 1) Build the local package feed + the demo (one-time / after changing the engine packages):
-demos/City3D/build.sh                 # pack SumoSharp into demos/City3D/local-nuget, build the demo
-demos/City3D/build.sh --remote        # also pack SumoSharp.Dds for the remote/DDS path
+demos/City3D/setup.sh          # checks prerequisites, fetches the Godot .NET editor (~100 MB,
+                               # ephemeral), packs the local package feed, builds the viewer
+demos/City3D/setup.sh --remote # ...and also pack SumoSharp.Dds for the remote/DDS split
+```
 
-# 2) Fetch the Godot .NET editor if you don't have it (into demos/City3D):
-demos/City3D/fetch-godot.sh
+`setup.sh` verifies the prerequisites up front and prints the exact install line if any are missing:
+the **.NET 8 SDK**, `curl` + `unzip` (to fetch/extract the editor), and — only on a headless box —
+`xvfb` + a software-GL (mesa) stack. The Godot editor is downloaded outside the repo (never committed);
+override with `GODOT_HOME` / `GODOT_VERSION` on restricted networks.
 
-# 3) Watch it run:
+### Watch it run
+
+```bash
 demos/City3D/run-local.sh                                   # default scenario, interactive
 demos/City3D/run-local.sh --scenario=_bench/city-mixed-1k   # a bigger signalized city (~1k vehicles)
 demos/City3D/run-local.sh --sumocfg=/path/to/scenario.sumocfg   # an arbitrary net + demand
-demos/City3D/run-remote.sh                                  # remote viewer over DDS (needs --remote build)
+demos/City3D/run-remote.sh                                  # remote viewer over DDS (needs --remote)
 ```
 
-`run-local.sh` accepts `--scenario=<dir>`, `--sumocfg=<file>`, `--dataset <dir>`, `--camera=`, and a
-headless `--shot=<png>`; see [`demos/City3D/README.md`](../demos/City3D/README.md) for the full set and
-the remote/DDS topology.
+`run-local.sh` is itself self-bootstrapping (it re-packs the feed, builds, and fetches Godot if needed),
+so on most machines you can skip straight to it; `setup.sh` is the explicit "prepare everything, with a
+friendly prerequisite check" step. Both accept `--scenario=<dir>`, `--sumocfg=<file>`, `--dataset <dir>`,
+`--camera=`, and a headless `--shot=<png>`; see [`demos/City3D/README.md`](../demos/City3D/README.md) for
+the full flag set and the remote/DDS topology. On a headless box the run-scripts auto-wrap in
+`xvfb-run` + software GL so they still render (and can screenshot).
+
+## Solutions & CI
+
+Each viewer builds from its own solution, so a fresh checkout opens exactly what it needs:
+
+| Solution | Builds | CI |
+|---|---|---|
+| `Traffic.sln` | the engine (packages) + all tests | `ci.yml` — parity + determinism gate |
+| `SumoSharp.Viewer.Raylib.sln` | the 2D raylib viewer + tests | `viewer-raylib.yml` — build + test + **uploads the viewer binary artifact** |
+| `SumoSharp.Viewer.Godot.sln` | the Godot demo (CityLib + tests + the Godot `Viewer`) | `secondary-solutions.yml` builds/tests the **managed** CityLib half (Godot data path) headlessly; the Godot `Viewer` builds locally |
+| `SumoSharp.Viz.sln` | Sim.Viz + Sim.Run + Sim.ExtDemo (headless replay) | `secondary-solutions.yml` (build) |
+| `SumoSharp.Experiments.sln` | Sim.Sumo, DensityDiff, EvacProfile, PedDdsLoopback, LiveHost (legacy), IgBridge, benches | `secondary-solutions.yml` (build + IgBridge.Tests) |
 
 ---
 

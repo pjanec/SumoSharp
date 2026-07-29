@@ -200,17 +200,17 @@ dotnet run -c Release --project src/Sim.Viewer -- --mode local --net path/to/you
 #   or just: scripts/watch-2d.sh [scenarioDir]     (thin wrapper for the above)
 #   switch demos live from the in-window "Demos" panel · drag = pan · wheel = zoom · click a road = drop an obstacle
 
-# 3) The 3-D Godot city viewer — a real package-consumer app (build a local feed, then run):
-demos/City3D/build.sh && demos/City3D/run-local.sh --scenario=_bench/city-mixed-1k
-
-# 4) The zero-install live browser viewer — streams a running engine over WebSocket:
-dotnet run -c Release --project src/Sim.LiveHost -- scenarios/_bench/city-organic-L2   # open the printed http URL
+# 3) The 3-D Godot city viewer — a real package-consumer app. One-command prepare (fetches the
+#    Godot .NET editor, packs the local feed, builds), then run:
+demos/City3D/setup.sh && demos/City3D/run-local.sh --scenario=_bench/city-mixed-1k
 ```
 
 Full build-&-watch instructions for both desktop viewers (2D raylib + 3D Godot), including the
-net/scenario CLI and all the run-scripts, are in [**docs/VIEWERS.md**](docs/VIEWERS.md). More viewer
-modes (loopback / DDS publish+remote), controls, and the headless screenshot mode are in
-[**Live & native viewers**](#live--native-viewers) below.
+net/scenario CLI, the one-command Godot `setup.sh`, and all the run-scripts, are in
+[**docs/VIEWERS.md**](docs/VIEWERS.md). More viewer modes (loopback / DDS publish+remote), controls,
+and the headless screenshot mode are in [**Live & native viewers**](#live--native-viewers) below.
+(The old `Sim.LiveHost` WebSocket browser demo is now a legacy experiment — superseded by the DDS
+streaming path — and lives in `SumoSharp.Experiments.sln`.)
 
 ---
 
