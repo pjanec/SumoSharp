@@ -33,6 +33,10 @@ def svg(w, h, body, bg=INK):
 
 
 def txt(x, y, s, size=15, fill=LIGHT, anchor="start", weight="normal", font=None, style=""):
+    # Escape here, not at every call site. A single bare "&" in a label ("Car following & lane changing")
+    # makes the whole SVG un-parseable, and the failure surfaces as a column offset in an XML error rather
+    # than anything pointing at the label -- so the helper owns it and no future label can reintroduce it.
+    s = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (f'<text x="{x}" y="{y}" font-size="{size}" fill="{fill}" text-anchor="{anchor}" '
             f'font-weight="{weight}" font-family="{font or FONT}" {style}>{s}</text>')
 
@@ -868,11 +872,69 @@ def d_headroom():
     return svg(1280, 600, b)
 
 
+# ----------------------------------------------------------------------------------------------
+# 18. The close: this is a substrate, and the POC bar is a choice
+# ----------------------------------------------------------------------------------------------
+def d_substrate():
+    b = defs()
+    b += title("What you have seen is a substrate, not a finished product",
+               "Many mechanisms, all working, none polished — because which ones need polishing is your call.")
+
+    # Breadth at a uniform depth. The empty right-hand portion of each bar is the point of the slide:
+    # it is deliberate headroom, not an unfinished job.
+    areas = [("Car following & lane changing", 0.80, AMBER), ("Junctions & right of way", 0.62, AMBER),
+             ("Rail", 0.70, AMBER), ("External agents", 0.66, AMBER),
+             ("Pedestrian navigation & demand", 0.72, TEAL), ("Two-level LOD & liveliness", 0.68, TEAL),
+             ("Car ↔ pedestrian coupling", 0.55, TEAL), ("Panic evacuation", 0.50, TEAL),
+             ("Terrain & 3-D placement", 0.64, SLATE_L), ("Replication & dead reckoning", 0.74, SLATE_L),
+             ("Viewers & IG integration", 0.60, SLATE_L)]
+    y = 142
+    b += txt(70, y, "CAPABILITY", 11.5, SLATE_L, weight="bold")
+    b += txt(466, y, "PROOF-OF-CONCEPT BAR", 11.5, GREEN, weight="bold")
+    b += txt(1206, y, "PRODUCTION", 11.5, SLATE_L, "end", weight="bold")
+    y += 14
+    for name, frac, col in areas:
+        b += txt(70, y + 15, name, 13, LIGHT)
+        b += f'<rect x="440" y="{y + 2}" width="766" height="17" rx="4" fill="#1a222c"/>'
+        b += f'<rect x="440" y="{y + 2}" width="{766 * frac}" height="17" rx="4" fill="{col}" opacity="0.92"/>'
+        y += 27
+    # One honest marker: the bars stop in roughly the same band on purpose.
+    b += (f'<line x1="{440 + 766 * 0.66}" y1="152" x2="{440 + 766 * 0.66}" y2="{y + 2}" '
+          f'stroke="{GREEN}" stroke-width="1.6" stroke-dasharray="5 5" opacity="0.75"/>')
+
+    b += card(70, 482, 360, 168, "#243040", GREEN, 10, 1.3)
+    b += txt(94, 512, "Deliberately uniform", 15, GREEN, weight="bold")
+    b += txt(94, 538, "Every mechanism was taken to the", 12.5, SLATE_L)
+    b += txt(94, 557, "point where it is proven and honest,", 12.5, SLATE_L)
+    b += txt(94, 576, "then stopped. Polishing the wrong", 12.5, SLATE_L)
+    b += txt(94, 595, "one is the expensive mistake, and", 12.5, SLATE_L)
+    b += txt(94, 614, "we could not yet know which.", 12.5, SLATE_L)
+
+    b += card(450, 482, 360, 168, "#243040", AMBER, 10, 1.3)
+    b += txt(474, 512, "Why direction is cheap here", 15, AMBER, weight="bold")
+    for i, line in enumerate(["We own every line — no upstream",
+                              "fork to maintain.",
+                              "The parity gate makes change safe.",
+                              "The seams are already public.",
+                              "Everything is measured, so we know",
+                              "where we actually stand."]):
+        b += txt(474, 538 + i * 19, line, 12.5, SLATE_L)
+
+    b += card(830, 482, 380, 168, "#1e2a34", LIGHT, 10, 1.4)
+    b += txt(854, 512, "What the demo proved", 15, LIGHT, weight="bold")
+    b += txt(854, 538, "That the performance is there and the", 12.5, SLATE_L)
+    b += txt(854, 557, "mechanisms compose. Not that any", 12.5, SLATE_L)
+    b += txt(854, 576, "one of them is finished.", 12.5, SLATE_L)
+    b += txt(854, 608, "Point at any bar above and it", 13, LIGHT, weight="bold")
+    b += txt(854, 627, "becomes production work.", 13, LIGHT, weight="bold")
+    return svg(1280, 692, b)
+
+
 DIAGRAMS = {
     "01-layering": d_layering, "02-seam": d_seam, "03-lod": d_lod, "04-hysteresis": d_hysteresis,
     "05-weave": d_weave, "06-coupling": d_coupling, "07-yield": d_yield, "08-lanechange": d_lanechange,
     "09-server-ig": d_serverig, "10-threaded": d_threaded, "11-terrain": d_terrain, "12-evac": d_evac,
-    "13-discipline": d_discipline, "14-attention": d_attention, "15-dr": d_dr, "16-liveliness": d_liveliness, "17-headroom": d_headroom,
+    "13-discipline": d_discipline, "14-attention": d_attention, "15-dr": d_dr, "16-liveliness": d_liveliness, "17-headroom": d_headroom, "18-substrate": d_substrate,
 }
 
 if __name__ == "__main__":
