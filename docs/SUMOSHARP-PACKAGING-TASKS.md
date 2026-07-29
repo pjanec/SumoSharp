@@ -3,6 +3,66 @@
 Work breakdown for the packaging rethink. **Design reference:** `SUMOSHARP-PACKAGING-DESIGN.md`
 (sections/decisions cited per task — not restated here). **Tracker:** `SUMOSHARP-PACKAGING-TRACKER.md`.
 
+> **CURRENT PLAN = Stage V (below). Stages P0–P5 are the earlier à-la-carte plan (done, now
+> historical).** After the 544-commit main integration and the adoption-first rethink, the shipped
+> *library* surface collapses to **2 packages** (`SumoSharp` engine + `SumoSharp.Dds`) with the viewers
+> as repo-buildable apps. See `SUMOSHARP-PACKAGING-DESIGN.md §V2` (decisions E1–E6). Baseline at plan
+> time (post-integration, verified first-hand): **`dotnet test tests/Sim.ParityTests` = 777 passed / 0
+> failed / 4 skipped**; determinism hash to be re-confirmed unchanged after the change.
+
+---
+
+## Stage V — Collapse to the adoption-first set (CURRENT)
+
+**Design ref:** `SUMOSHARP-PACKAGING-DESIGN.md §V2` (E1–E6). **Invariants:** G1–G4 below still bind;
+note G1's parity gate is *structurally* unaffected because `dotnet test` builds from source via
+Traffic.sln project references, never from the nupkgs — the collapse cannot move a trajectory.
+
+### Batch 1 — the package collapse
+
+- **V1.1 — `SumoSharp` bundling package.** A packaging project emits the compiled portable-project
+  DLLs (Core, Ingest, Replication, Viewer.Motion, Host, Pedestrians, Evac, LiveCity) into one nupkg
+  (`PrivateAssets=all` refs + `TargetsForTfmSpecificBuildOutput`), multi-targeting `net8.0;netstandard2.1`.
+  **Success:** `dotnet pack` produces `SumoSharp.<v>.nupkg` whose `lib/net8.0` **and** `lib/netstandard2.1`
+  each contain all 8 DLLs; the ns2.1-only managed deps (`System.Memory`, `System.Text.Json`) appear as
+  package dependencies on the ns2.1 group only; no native asset and no CycloneDDS/raylib dependency
+  anywhere in the nuspec.
+- **V1.2 — Evac multi-targets.** Bump `Sim.Evac` to `net8.0;netstandard2.1` (pure managed over Core
+  seams). **Success:** it builds both TFMs; `dotnet test` unchanged.
+- **V1.3 — `SumoSharp.Dds` rename.** `Sim.Replication.Dds` PackageId → `SumoSharp.Dds`; its dependency
+  on the engine becomes a dependency on the `SumoSharp` package. **Success:** packs as `SumoSharp.Dds`,
+  nuspec depends on `SumoSharp`, restores CycloneDDS.
+- **V1.4 — Retire the individual PackageIds + meta.** Core/Ingest/Replication/Viewer.Motion/Host/
+  Pedestrians/LiveCity/Evac + the old `SumoSharp.Meta` and `SumoSharp.Viewer.Raylib` are no longer
+  published as their own ids (set `IsPackable=false`, or remove the meta project). **Success:**
+  `PackagingLayoutTests` asserts exactly `SumoSharp` + `SumoSharp.Dds` are packable.
+- **V1.5 — CI.** `pack-check.yml` packs the 2 and asserts a count of **2**; `publish.yml` packs the 2 on
+  a `v*` tag. **Success:** pack-check green; the assert lists exactly the 2 ids.
+- **V1.6 — Guard test rewrite.** `PackagingLayoutTests.cs`: `SumoSharp` multi-targets + is packable +
+  has no native/transport dependency in its csproj; `SumoSharp.Dds` is native net8-only + depends on
+  `SumoSharp`; no other project is packable. **Success:** hermetic, green.
+- **V1.7 — Re-point `demos/City3D`.** Its `<PackageReference>`s to the 6 old ids become `SumoSharp`
+  (+ `SumoSharp.Dds`) from the local feed. **Success:** `build.sh` restores from the local feed and the
+  demo builds (real-consumer validation of V1.1).
+- **V1.8 — Docs.** Rewrite `docs/PACKAGES.md` + the README install block to the 2-package/one-install
+  story; update `SUMOSHARP-API.md §1`. **Success:** no doc lists the retired ids as installable.
+
+### Batch 2 — viewers as repo apps (build docs + demo scripts + strong CLI)
+
+- **V2.1 — "Build & watch" doc.** One short doc: build the 2D viewer (`dotnet run --project
+  src/Sim.Viewer -- …`) and the 3D Godot viewer (`demos/City3D` build.sh + run-local.sh), each on a demo
+  scenario, linked from the README. **Success:** a fresh-checkout user can follow it to a running window.
+- **V2.2 — 2D viewer strong net/scenario CLI.** Bring `src/Sim.Viewer`'s scenario selection up to the
+  3D viewer's level (load an arbitrary net + demand: `--net`/`--sumocfg`/`--scenario`, not only the
+  built-in `--demo`/sandbox). **Success + exact scope TBC with user** (full `--sumocfg` demand vs
+  net + built-in demand). Additive flags; existing invocations unchanged.
+- **V2.3 — demo run-scripts.** A few thin scripts launching each viewer on committed demo scenarios.
+  **Success:** each script runs headless-smoke in CI-like fashion or opens the window locally.
+
+---
+
+## (HISTORICAL) à-la-carte staged plan P0–P5
+
 **Global invariants (every task must hold these):**
 - **G1 — Parity iron law.** `dotnet test` stays green and native-free (baseline, post-main-rebase:
   **451 passed, 0 failed, 3 skipped**; `Sim.Bench` determinism anchor unchanged). No simulation

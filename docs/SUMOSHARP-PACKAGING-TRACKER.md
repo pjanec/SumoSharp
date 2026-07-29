@@ -4,6 +4,77 @@ Checklist for the packaging rethink. Task IDs → `SUMOSHARP-PACKAGING-TASKS.md`
 `SUMOSHARP-PACKAGING-DESIGN.md`. A box is ticked only when the task's success conditions are
 verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md accept gate.
 
+## Stage V — collapse to the adoption-first 2-package set (CURRENT; supersedes P0–P5 on count)
+
+Baseline at plan time (post 544-commit main integration, verified first-hand): `dotnet test
+tests/Sim.ParityTests` = **777 passed / 0 failed / 4 skipped**; `Sim.Bench` determinism
+`single == parallel` (hash `BF3794A4704BCD79`, new-main value — engine changed over main; packaging is
+inert to it).
+
+### Batch 1 — the package collapse  ✅ COMPLETE (verified first-hand)
+- [x] V1.1 — `SumoSharp` bundle package: one nupkg, `lib/net8.0` + `lib/netstandard2.1` each carry all
+      8 engine DLLs; ns2.1-only deps (`System.Memory`, `System.Text.Json`) as package deps; no native
+      leak. Contents inspected.
+- [x] V1.2 — `Sim.Evac` multi-targets `net8.0;netstandard2.1` (one ns2.1 fix: `Enum.GetValues<T>()` →
+      `Enum.GetValues(typeof)`); builds both TFMs.
+- [x] V1.3 — `SumoSharp.Replication.Dds` → **`SumoSharp.Dds`**; nuspec depends on `SumoSharp` +
+      `CycloneDDS.NET`, packs only its own DLL (no engine duplication). Inspected.
+- [x] V1.4 — the 8 engine projects + raylib viewer + harness no longer packable; `SumoSharp.Meta`
+      removed, id reused for the bundle.
+- [x] V1.5 — `pack-check.yml` / `publish.yml` pack the 2 packages, assert count == 2.
+- [x] V1.6 — `PackagingLayoutTests` rewritten (5 hermetic guards): exactly `{SumoSharp, SumoSharp.Dds}`
+      packable; bundle portable + native-free + lists the 8 engine projects; DDS native/net8-only +
+      depends on the bundle; contract-in-Replication; every engine project multi-targets + native-free.
+- [x] V1.7 — `demos/City3D` re-pointed to `SumoSharp` (+ `SumoSharp.Dds` remote); `nuget.config`
+      pattern `SumoSharp*`; `build.sh` packs the bundle. **CityLib builds against the bundle** (real
+      consumer).
+- [x] V1.8 — docs to the one-install story: `PACKAGES.md` (2-node graph + "what's inside" + install),
+      `README`, `SUMOSHARP-API.md §1`, `demos/City3D/README.md`. Retired-id grep over the consumer docs
+      returns empty (verified).
+- [x] Iron law after Batch 1: `dotnet test` **773 passed / 0 failed / 4 skipped** (total 781→777 only
+      because the guard refactor replaced 9 test cases with 5); determinism `single == parallel`
+      unchanged.
+
+### Batch 2 — viewers as repo apps  ✅ COMPLETE (user chose Option A: full net+demand CLI)
+- [x] V2.1 — `docs/VIEWERS.md` ("build & watch", 2D + 3D, with the net/scenario CLI and run-scripts);
+      linked from the README "See it run" block (+ a 3D-viewer line added there).
+- [x] V2.2 — 2D viewer strong net/scenario CLI: `--scenario <dir>` / `--sumocfg <file>` load the
+      scenario's REAL demand (via `Engine.LoadScenario`, wired through `EngineHost.CreateCustom` /
+      the auto-detect ctor); `--net <net.xml|dir>` runs a bare network as a sandbox. Additive; the
+      positional path and every existing mode are unchanged. Verified headless: `--scenario` renders in
+      **SCENARIO mode with a real vehicle** (screenshot), behaving identically to the pre-existing
+      positional path (both hit the same teardown; the exit-139 under software-GL/xvfb is a pre-existing
+      environmental artifact, not a regression).
+- [x] V2.3 — `scripts/watch-2d.sh` (thin wrapper over the 2D viewer's CLI); the 3D viewer already ships
+      `demos/City3D/{build,run-local,run-remote}.sh`, documented in VIEWERS.md.
+
+**Stage V COMPLETE.** Shipped library surface = 2 packages (`SumoSharp`, `SumoSharp.Dds`); viewers are
+repo-built apps with build docs + run-scripts + a strong net/scenario CLI.
+
+### Batch 3 — solution-per-family reorg + per-viewer CI  ✅ COMPLETE (verified first-hand)
+Design ref: `SUMOSHARP-PACKAGING-DESIGN.md §V2.7`.
+- [x] `Traffic.sln` slimmed to the product: package content (+ `Replication.Dds`, `Host.App`, `LiveCity`)
+      + all tests (now incl. LiveCity 90 + Viewer.Motion 19) + Bench + samples. `dotnet test Traffic.sln`
+      = **1214 passed / 0 failed / 4 skipped**; native Dds/Host.App build in-solution.
+- [x] Four family solutions created under `solutions/` (root keeps ONLY `Traffic.sln`, so bare
+      `dotnet build`/`dotnet test` resolve to the product as documented) + all verified to build:
+      `solutions/SumoSharp.Viewer.Raylib.sln` (native), `solutions/SumoSharp.Viewer.Godot.sln` (compiles
+      via Godot.NET.Sdk from nuget), `solutions/SumoSharp.Viz.sln`, `solutions/SumoSharp.Experiments.sln`
+      (13 projects). CityLib.Tests 186/4, IgBridge.Tests 11/0 verified.
+- [x] CI: `viewer-raylib.yml` (build + headless test + **uploads the 2D viewer binary artifact**);
+      `secondary-solutions.yml` (rot-check: builds Viz + Experiments + the managed Godot CityLib half,
+      runs IgBridge.Tests + CityLib.Tests — the Godot data path, no editor). `pack-check`/`publish`
+      unchanged. Added `Traffic.sln` to pack-check's trigger paths.
+- [x] Godot fresh-checkout ergonomics: `demos/City3D/setup.sh` — one command that checks prerequisites
+      (prints the apt line if missing), fetches the Godot .NET editor, packs the local feed, builds the
+      viewer; `run-local.sh` remains self-bootstrapping. Documented in `docs/VIEWERS.md` + README.
+- [x] `Sim.LiveHost` de-featured (legacy, superseded by DDS) — moved to Experiments, dropped from the
+      README headline viewer list.
+
+---
+
+## (HISTORICAL) à-la-carte 10-package plan — baseline & stages P0–P5
+
 ## Baseline (integrated this session)
 - [x] Fast-forwarded the Windows-GPU viewer branch, then rebased onto updated `main` repeatedly as it
       advanced (DR-error publishing, lane-change smoothing as-built, the viewer demo tool, and the

@@ -15,8 +15,6 @@
          GPU/UI toolkit, no wire transport, no dependency on the desktop viewer's headless brain: a game/3D
          engine with its own renderer takes this package alone to turn sparse authoritative/DDS samples into
          smooth per-frame poses. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Viewer.Motion</PackageId>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>SumoSharp — portable render-side dead-reckoning &amp; motion reconstruction for the SumoSharp traffic engine: DrClock (render clock + interpolate/extrapolate resolve) and KinematicReconstructor (straddle-aware front resolve + spatial look-ahead + no-slip rear-axle KinematicHeading) turn sparse authoritative/DDS samples into smooth per-frame vehicle poses. No renderer, no transport. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>

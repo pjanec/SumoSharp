@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The single portable "engine" package (docs/SUMOSHARP-PACKAGING-DESIGN.md §V2, decisions E1/E2).
+    This project has NO source of its own; it exists only to BUNDLE the compiled portable-engine
+    assemblies into ONE NuGet package, so a consumer runs `dotnet add package SumoSharp` and gets the
+    whole engine (cars + crowds + replication + render-side motion reconstruction) with zero native
+    dependencies. The internal Sim.* projects stay separate on disk (and in the hermetic parity build);
+    only the SHIPPED artifact is collapsed. E2: bundle, don't merge — no source/namespace refactor.
+
+    Mechanism: reference the portable projects with PrivateAssets="all" (so their DLLs copy into this
+    project's output but never leak as transitive package deps), then a TargetsForTfmSpecificBuildOutput
+    target adds those project DLLs to the package lib/<tfm>/ folder. Runs once per TFM, so lib/net8.0
+    gets the net8.0 assemblies and lib/netstandard2.1 gets the netstandard2.1 assemblies.
+  -->
+
+  <PropertyGroup>
+    <!-- net8.0 (parity/perf target) + netstandard2.1 (Unity Mono/IL2CPP, Godot). -->
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <IsPackable>true</IsPackable>
+    <PackageId>SumoSharp</PackageId>
+    <Description>SumoSharp — a C#/.NET reimplementation of Eclipse SUMO's microscopic traffic simulation, packaged as one portable engine: load a SUMO network, spawn/route vehicles and an ORCA pedestrian crowd, step deterministically, stream state over a transport-neutral dead-reckoning wire model, and reconstruct smooth per-frame poses on the render side. Multi-targets net8.0 and netstandard2.1 for Unity/Godot/.NET hosts; carries no native dependency (DDS transport is the separate SumoSharp.Dds package). Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+
+    <!-- No public compile surface of our own; keep the (near-empty) marker assembly but skip its docs. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- The portable engine assemblies, bundled into this one package. PrivateAssets="all" keeps them
+       out of the consumer's transitive dependency graph (they are shipped as our lib/ DLLs, not as
+       package references). Referencing the top projects would pull the rest transitively, but list all
+       eight explicitly so the bundled set is unambiguous and a dropped edge fails loudly. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Sim.Core\Sim.Core.csproj"                 PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Ingest\Sim.Ingest.csproj"             PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Replication\Sim.Replication.csproj"   PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Viewer.Motion\Sim.Viewer.Motion.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Host\Sim.Host.csproj"                 PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Pedestrians\Sim.Pedestrians.csproj"   PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.LiveCity\Sim.LiveCity.csproj"         PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Evac\Sim.Evac.csproj"                 PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- netstandard2.1-only managed dependencies that the bundled Pedestrians/LiveCity/Evac assemblies
+       need at runtime (net8.0 has both in-box). Because the project references above are
+       PrivateAssets="all", these would NOT flow to the consumer automatically, so declare them here as
+       real package dependencies of SumoSharp on the netstandard2.1 group. We ship OUR DLLs in lib/, but
+       these third-party ones stay ordinary NuGet dependencies (not bundled). -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <!-- Emit the referenced project DLLs into the package lib/<tfm>/ (the "multiple assemblies, one
+       package" pack). ReferenceCopyLocalPaths carries every copy-local reference; filter to the ones
+       whose source is a ProjectReference so only the Sim.* engine DLLs are bundled — third-party
+       package DLLs (e.g. System.Text.Json on ns2.1) are excluded and instead declared as dependencies
+       above. -->
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);_BundlePortableEngineDlls</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <Target Name="_BundlePortableEngineDlls">
+    <ItemGroup>
+      <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths)"
+                            Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' And '%(Extension)' == '.dll'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

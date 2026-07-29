@@ -76,9 +76,17 @@ doesn't have. Highlights below; precise scope after that.
   **pedestrian crowds & the deterministic weave**, city-scale, …). One click each; regenerated
   automatically by CI. Index + local-run script
   (`scripts/gen-demos.sh`): [`docs/DEMOS.md`](docs/DEMOS.md).
-- **📦 The NuGet packages & how they fit together:** [`docs/PACKAGES.md`](docs/PACKAGES.md) — the
-  à-la-carte package map, "which packages do I install?", and composition diagrams. Runnable
-  consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
+- **📦 Use it as a library — one `dotnet add package SumoSharp`:** the whole portable engine ships as a
+  single NuGet package (`SumoSharp`, TFMs `net8.0;netstandard2.1`, zero native deps) — simulation core,
+  parsers, replication, render-side motion reconstruction, the snapshot→wire host, pedestrians, the
+  coupled live-city host, and panic-evacuation. The only optional second package is `SumoSharp.Dds`, the
+  native CycloneDDS transport binding, which a game engine that brings its own networking never needs:
+  ```bash
+  dotnet add package SumoSharp        # the whole engine
+  dotnet add package SumoSharp.Dds    # optional: native DDS wire transport
+  ```
+  How the two fit together, "who installs what," and composition diagrams: [`docs/PACKAGES.md`](docs/PACKAGES.md).
+  Runnable consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
   `MotionReconstruction`, `EvacDemo`, `GameHostSample`).
 - **📘 Tutorials — drive the engine from your own code:** a three-step ladder, each backed by a runnable
   sample that `Traffic.sln` compiles (so the snippets cannot rot):
@@ -170,8 +178,8 @@ winget install Microsoft.DotNet.SDK.8
 Then build and run the offline parity suite (no SUMO, no network):
 ```bash
 git clone https://github.com/pjanec/SumoSharp && cd SumoSharp
-dotnet build -c Release
-dotnet test                     # 775 passed, 0 failed, 4 skipped  (offline; no SUMO, no network)
+dotnet build -c Release         # builds Traffic.sln (the engine + tests)
+dotnet test                     # 1214 passed, 0 failed, 4 skipped  (offline; no SUMO, no network)
 ```
 
 ### See it run (from a fresh checkout)
@@ -185,14 +193,24 @@ scripts/gen-demos.sh            # builds Sim.Viz/Sim.Run/Sim.ExtDemo, writes sit
 #    Needs a desktop/GPU; it builds on first run (pulls the raylib native package). It is out of
 #    Traffic.sln, so run the project directly (this builds it):
 dotnet run -c Release --project src/Sim.Viewer -- --mode local --demo "Roundabout"
+#   ...or point it at ANY network / scenario with the strong net/scenario CLI:
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --scenario scenarios/11-priority-junction  # real demand
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --sumocfg path/to/your.sumocfg             # real demand
+dotnet run -c Release --project src/Sim.Viewer -- --mode local --net path/to/your.net.xml                 # sandbox traffic
+#   or just: scripts/watch-2d.sh [scenarioDir]     (thin wrapper for the above)
 #   switch demos live from the in-window "Demos" panel · drag = pan · wheel = zoom · click a road = drop an obstacle
 
-# 3) The zero-install live browser viewer — streams a running engine over WebSocket:
-dotnet run -c Release --project src/Sim.LiveHost -- scenarios/_bench/city-organic-L2   # open the printed http URL
+# 3) The 3-D Godot city viewer — a real package-consumer app. One-command prepare (fetches the
+#    Godot .NET editor, packs the local feed, builds), then run:
+demos/City3D/setup.sh && demos/City3D/run-local.sh --scenario=_bench/city-mixed-1k
 ```
 
-More viewer modes (loopback / DDS publish+remote), controls, and a headless screenshot mode are in
-[**Live & native viewers**](#live--native-viewers) below.
+Full build-&-watch instructions for both desktop viewers (2D raylib + 3D Godot), including the
+net/scenario CLI, the one-command Godot `setup.sh`, and all the run-scripts, are in
+[**docs/VIEWERS.md**](docs/VIEWERS.md). More viewer modes (loopback / DDS publish+remote), controls,
+and the headless screenshot mode are in [**Live & native viewers**](#live--native-viewers) below.
+(The old `Sim.LiveHost` WebSocket browser demo is now a legacy experiment — superseded by the DDS
+streaming path — and lives in `solutions/SumoSharp.Experiments.sln`.)
 
 ---
 

@@ -16,8 +16,6 @@
     <LangVersion>12</LangVersion>
 
     <!-- NuGet: the SUMO net/rou/sumocfg parsers + network model. A dependency of SumoSharp.Core. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Ingest</PackageId>
     <Description>SumoSharp — parsers and data model for Eclipse SUMO network (.net.xml), demand (.rou.xml), and config (.sumocfg) files. The ingestion layer of the SumoSharp microsimulation engine. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 

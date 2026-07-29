@@ -15,8 +15,6 @@
     <LangVersion>12</LangVersion>
 
     <!-- NuGet: the shared coupled-sim (cars + pedestrians + crossing-yield) real-time host. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.LiveCity</PackageId>
     <Description>SumoSharp — the shared "live city" coupled-sim host: cars (Engine + Krauss) and a pedestrian crowd (SumoSharp.Pedestrians) sharing one net, with cars yielding to crossing pedestrians via a composite crowd-footprint source. Extracted from the Sim.Viz live-city recipe into a real-time, steppable, publish-ready library every interactive viewer consumes. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 

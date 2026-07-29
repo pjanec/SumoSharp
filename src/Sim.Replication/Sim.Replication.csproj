@@ -12,8 +12,6 @@
          SumoSharp.Core (for DrModel/PoseResolver). No transport dependency: the SAME blob feeds TCP/UDP and
          rides DDS as an opaque payload; concrete DDS types live in the separate SumoSharp.Replication.Dds
          package (which is NOT in Traffic.sln, so the hermetic offline gate never needs CycloneDDS.NET). -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Replication</PackageId>
     <Description>SumoSharp — transport-agnostic dead-reckoning replication for the SumoSharp traffic engine: compact handle-based vehicle/crowd records, a canonical packed blob codec (DDS-blob / TCP / UDP), and a pluggable adaptive publish policy. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 
