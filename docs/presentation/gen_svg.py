@@ -6,6 +6,7 @@ Semantic palette -- colour carries meaning across every diagram, so a reader lea
   LIGHT = the untouched SUMO parity core  SLATE = structure, plumbing, our additions
   RED   = a problem, a limit, a refuted thing
 """
+import math
 import pathlib
 
 OUT = pathlib.Path(__file__).parent / "svg"
@@ -101,6 +102,29 @@ def stats(x, y, items, size=15, gap=None, label_col=None, val_col=None):
     return o
 
 
+def ped_band(x0, x1, ymid, half, seed, color=TEAL, n=26, r=7, side=None):
+    """Scatter peds across a band with real lateral variance.
+
+    The point of low power is ANTI-UNIFORMITY: SUMO's person model reads as rails, and rows of evenly
+    spaced dots would depict exactly the thing this mechanism exists to avoid. `side` = +1 / -1 keeps a
+    stream on its own half (that part IS structural) while still scattering inside it.
+    """
+    s = seed
+    o = ""
+    for i in range(n):
+        s = (1103515245 * s + 12345) & 0x7FFFFFFF
+        fx = ((s >> 8) % 10000) / 10000.0
+        s = (1103515245 * s + 12345) & 0x7FFFFFFF
+        fy = ((s >> 8) % 10000) / 10000.0
+        px = x0 + fx * (x1 - x0)
+        if side is None:
+            py = ymid + (fy - 0.5) * 2 * half
+        else:
+            py = ymid + side * (0.16 + 0.78 * fy) * half
+        o += ped(px, py, r, color, 0.93)
+    return o
+
+
 def title(s, sub=None, w=1280):
     o = txt(56, 62, s, 30, LIGHT, weight="bold")
     if sub:
@@ -191,41 +215,44 @@ def d_seam():
 # 3. Two-level LOD
 # ----------------------------------------------------------------------------------------------
 def d_lod():
-    b = defs([TEAL, AMBER, SLATE_L])
+    b = defs()
     b += title("Two-level pedestrian LOD",
-               "Cost follows attention. The cheap level is a closed-form pose, not a simplified solver.")
-    b += card(70, 130, 540, 400, "#243040", TEAL, 12, 1.4)
+               "The cheap level exists to look ORGANIC, not merely to be cheap — uniform, rail-like crowds "
+               "are the thing it removes.")
+    b += card(70, 130, 540, 430, "#243040", TEAL, 12, 1.4)
     b += txt(96, 168, "LOW POWER", 18, TEAL, weight="bold")
     b += txt(96, 192, "pose = f(route, seed, width, time)", 14, LIGHT, font=MONO)
-    b += txt(96, 224, "O(1) per pedestrian. Zero neighbour queries.", 15, LIGHT)
-    b += txt(96, 246, "Spreads and weaves — never a single file.", 15, TEAL, weight="bold")
-    b += txt(96, 268, "Believable, not collision-free.", 14, AMBER)
-    b += txt(96, 296, "Closed form ⇒ any number of observers", 13, SLATE_L)
-    b += txt(96, 314, "reconstruct the identical pose independently.", 13, SLATE_L)
-    for i in range(9):
-        b += ped(120 + i * 52, 360, 7, TEAL, 0.85)
-    b += txt(96, 404, "Thousands of them cost what tens would.", 14, GREEN)
-    b += card(96, 428, 488, 76, "#1a222c", "none", 8)
-    b += txt(116, 456, "The trade, on purpose", 13, LIGHT, weight="bold")
-    b += txt(116, 478, "Performance bought with believability, not with correctness.", 12.5, SLATE_L)
+    b += txt(96, 224, "Weaves and spreads across the walkable width.", 15, LIGHT)
+    b += txt(96, 246, "Keeps its own side, scatters within it.", 15, TEAL, weight="bold")
+    b += txt(96, 274, "O(1) per pedestrian, zero neighbour queries.", 13, SLATE_L)
+    b += f'<rect x="96" y="300" width="488" height="118" rx="6" fill="#1a222c"/>'
+    b += (f'<line x1="96" y1="359" x2="584" y2="359" stroke="{SLATE}" stroke-width="1" '
+          f'stroke-dasharray="6 8" opacity="0.5"/>')
+    b += ped_band(112, 570, 359, 46, 4242, TEAL, 20, 7, side=-1)
+    b += ped_band(112, 570, 359, 46, 9191, "#7FD8CE", 20, 7, side=+1)
+    b += txt(96, 440, "No grid. No rails. No convoy.", 14, TEAL, weight="bold")
+    b += card(96, 458, 488, 86, "#2e2a22", AMBER, 8, 1.2)
+    b += txt(116, 486, "Honest bound", 13, AMBER, weight="bold")
+    b += txt(116, 508, "At high density roughly 15% can still overlap —", 12.5, LIGHT)
+    b += txt(116, 528, "believable, not collision-free. That is the trade.", 12.5, LIGHT)
 
-    b += card(670, 130, 540, 400, "#243040", PED_HI, 12, 1.4)
+    b += card(670, 130, 540, 430, "#243040", PED_HI, 12, 1.4)
     b += txt(696, 168, "HIGH POWER", 18, PED_HI, weight="bold")
     b += txt(696, 192, "full ORCA reciprocal avoidance", 14, LIGHT, font=MONO)
     b += txt(696, 224, "A real agent in a persistent crowd solver.", 15, LIGHT)
-    b += txt(696, 246, "ASSURED avoidance — negotiated, not styled.", 15, PED_HI, weight="bold")
-    b += txt(696, 278, "This is the level cars can see and yield to.", 13, SLATE_L)
-    pts = [(760, 350), (800, 372), (845, 344), (890, 366), (935, 340), (975, 368), (1020, 348)]
-    for (px, py) in pts:
-        b += ped_hi(px, py, 9)
-    for i in range(len(pts) - 1):
-        b += (f'<line x1="{pts[i][0]}" y1="{pts[i][1]}" x2="{pts[i+1][0]}" y2="{pts[i+1][1]}" '
-              f'stroke="{PED_HI}" stroke-width="1" stroke-dasharray="3 3" opacity="0.5"/>')
-    b += txt(696, 404, "Promoted only where fidelity is observed.", 14, LIGHT)
-    b += card(696, 428, 488, 76, "#1a222c", "none", 8)
-    b += txt(716, 456, "The guarantee", 13, LIGHT, weight="bold")
-    b += txt(716, 478, "Promote wherever avoidance must actually hold.", 12.5, SLATE_L)
-    return svg(1280, 570, b)
+    b += txt(696, 246, "Never overlaps. Avoidance is assured.", 15, PED_HI, weight="bold")
+    b += txt(696, 274, "The level cars can see and yield to.", 13, SLATE_L)
+    b += f'<rect x="696" y="300" width="488" height="118" rx="6" fill="#1a222c"/>'
+    for i in range(16):
+        rr = 44 * math.sqrt((i + 0.4) / 16)
+        th = i * 2.39996323
+        b += ped_hi(940 + rr * math.cos(th) * 4.6, 359 + rr * math.sin(th), 7)
+    b += txt(696, 440, "Negotiated every step, so nobody interpenetrates.", 14, PED_HI, weight="bold")
+    b += card(696, 458, 488, 86, "#1e2a34", GREEN, 8, 1.2)
+    b += txt(716, 486, "The guarantee", 13, GREEN, weight="bold")
+    b += txt(716, 508, "Promote wherever avoidance must actually hold —", 12.5, LIGHT)
+    b += txt(716, 528, "the camera zone, an incident, anywhere you choose.", 12.5, LIGHT)
+    return svg(1280, 600, b)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -659,7 +686,6 @@ def d_attention():
     for gx in range(6):
         for gy in range(4):
             b += f'<rect x="{104 + gx * 112}" y="{174 + gy * 92}" width="86" height="66" rx="3" fill="{SLATE}" opacity="0.18"/>'
-    import math as _m
     # A small fixed LCG. Modular strides -- even two of them -- still lay down visible rows or columns;
     # only a proper generator looks like a scattered crowd. Seeded, so the diagram is reproducible.
     _s = 20260729
@@ -668,13 +694,12 @@ def d_attention():
         px = 92 + (_s >> 7) % 664
         _s = (1103515245 * _s + 12345) & 0x7FFFFFFF
         py = 168 + (_s >> 7) % 356
-        if _m.hypot(px - 440, py - 330) > 146:
+        if math.hypot(px - 440, py - 330) > 146:
             b += ped(px, py, 4.5, TEAL, 0.62)
     b += f'<circle cx="440" cy="330" r="132" fill="{ZONE}" opacity="0.12"/>'
     b += f'<circle cx="440" cy="330" r="132" fill="none" stroke="{ZONE}" stroke-width="2"/>'
     # Golden-angle placement: deterministic and evenly spread inside the disc. An arithmetic
     # sequence mod N walks a diagonal instead, which rendered as clumped caterpillars.
-    import math
     for i in range(18):
         rr = 112 * math.sqrt((i + 0.5) / 18)
         th = i * 2.39996323
