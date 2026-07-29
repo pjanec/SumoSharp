@@ -299,23 +299,27 @@ def d_weave():
     b += title("The deterministic weave",
                "Opposing flows are kept apart by construction — at O(1) per pedestrian, no neighbour queries.")
     for i, (y0, head, col, note) in enumerate([
-            (150, "Without weave", RED, "Everyone on the centreline. Opposing flows interpenetrate."),
-            (350, "With weave", GREEN, "Each ped offset onto its own half as a function of its own inputs.")]):
+            (150, "Uniform — the artefact", RED,
+             "Evenly spaced, all on the centreline. This is what reads as rails."),
+            (350, "Weave — what we do instead", GREEN,
+             "Each ped keeps its own half and scatters within it. Same O(1) cost.")]):
         b += txt(70, y0 + 6, head, 18, col, weight="bold")
-        b += txt(70 + 200, y0 + 6, note, 14, SLATE_L)
+        b += txt(70 + 340, y0 + 6, note, 14, SLATE_L)
         b += f'<rect x="70" y="{y0 + 24}" width="1140" height="112" rx="6" fill="#1a222c"/>'
         b += (f'<line x1="70" y1="{y0 + 80}" x2="1210" y2="{y0 + 80}" stroke="{SLATE}" '
               f'stroke-width="1" stroke-dasharray="6 8" opacity="0.7"/>')
         b += txt(1196, y0 + 44, "pavement edge", 11, SLATE_L, "end")
         b += txt(1196, y0 + 76, "centreline", 11, SLATE_L, "end")
-        for k in range(16):
-            px = 108 + k * 70
-            if i == 0:
+        if i == 0:
+            # Deliberately uniform: this row exists to show the artefact, so regularity is the point.
+            for k in range(16):
+                px = 108 + k * 70
                 b += ped(px, y0 + 80, 8, TEAL, 0.9)
                 b += ped(px + 26, y0 + 80, 8, "#7FD8CE", 0.9)
-            else:
-                b += ped(px, y0 + 56, 8, TEAL, 0.95)
-                b += ped(px + 32, y0 + 104, 8, "#7FD8CE", 0.95)
+        else:
+            # Real lateral variance on each side of the centreline -- never rows, never a stride.
+            b += ped_band(96, 1188, y0 + 80, 40, 7717, TEAL, 30, 8, side=-1)
+            b += ped_band(96, 1188, y0 + 80, 40, 3313, "#7FD8CE", 30, 8, side=+1)
         if i == 1:
             b += arrow(120, y0 + 34, 300, y0 + 34, TEAL, 2)
             b += txt(310, y0 + 39, "eastbound", 11, TEAL)
@@ -369,41 +373,54 @@ def d_weave():
 # 6. The coupling seam + visibility asymmetry
 # ----------------------------------------------------------------------------------------------
 def d_coupling():
-    b = defs([AMBER, TEAL, SLATE_L, GREEN])
-    b += title("One seam couples the two worlds",
-               "Cars see pedestrians through a single composite source — and what it contains defines the envelope.")
-    b += card(70, 140, 330, 110, "#243040", TEAL, 10, 1.4)
-    b += txt(94, 176, "Promoted ped footprints", 15, TEAL, weight="bold")
-    b += txt(94, 200, "High-power ORCA agents only.", 13, SLATE_L)
-    b += txt(94, 222, "Rich, per-agent reactions.", 13, SLATE_L)
-    b += card(70, 276, 330, 110, "#243040", TEAL, 10, 1.4)
-    b += txt(94, 312, "Crossing occupancy", 15, TEAL, weight="bold")
-    b += txt(94, 336, "Low-power peds WALKING on a crossing,", 13, SLATE_L)
-    b += txt(94, 358, "anywhere on the map — promoted peds excluded.", 13, SLATE_L)
-    b += arrow(400, 195, 470, 240, TEAL, 2.2)
-    b += arrow(400, 331, 470, 286, TEAL, 2.2)
-    b += card(475, 232, 250, 62, LIGHT, "none", 10)
-    b += txt(600, 258, "Engine.CrowdSource", 15, INK, "middle", "bold", font=MONO)
-    b += txt(600, 280, "composite", 12, SLATE, "middle")
-    b += arrow(725, 263, 800, 263, AMBER, 2.6)
-    b += card(805, 200, 405, 128, "#243040", AMBER, 10, 1.4)
-    b += txt(829, 236, "Krauss car-following", 15, AMBER, weight="bold")
-    b += txt(829, 260, "The model is unchanged. A pedestrian disc", 13, SLATE_L)
-    b += txt(829, 280, "simply stands in as the leader.", 13, SLATE_L)
-    b += txt(829, 308, "What is new is WHAT it reacts to, not HOW.", 13, GREEN)
+    b = defs()
+    b += title("What a car can and cannot see",
+               "Coupling is a level-of-detail decision, not a feature list. This is the envelope.")
 
-    b += txt(70, 424, "The fidelity trade, stated plainly", 17, LIGHT, weight="bold")
-    b += card(70, 444, 555, 118, "#1e2a34", GREEN, 8, 1.2)
-    b += txt(94, 474, "Inside the zone: assured", 14, GREEN, weight="bold")
-    b += txt(94, 498, "Pedestrians negotiate with each other and with", 13, LIGHT)
-    b += txt(94, 518, "cars. No interpenetration. A car will not pass", 13, LIGHT)
-    b += txt(94, 538, "through a pedestrian. This is the guarantee.", 13, LIGHT)
-    b += card(655, 444, 555, 118, "#2e2a22", AMBER, 8, 1.2)
-    b += txt(679, 474, "Outside: believable, not guaranteed", 14, AMBER, weight="bold")
-    b += txt(679, 498, "Same-direction pedestrians can overlap, and a car", 13, LIGHT)
-    b += txt(679, 518, "can pass over a ped that is not on a crossing.", 13, LIGHT)
-    b += txt(679, 538, "Cheap and convincing at distance — by choice.", 12.5, LIGHT)
-    return svg(1280, 600, b)
+    # The trade IS the message, so it gets the top half and the full width.
+    b += card(70, 130, 555, 258, "#1e2a34", GREEN, 12, 1.5)
+    b += txt(96, 170, "INSIDE A REALISM ZONE", 15, GREEN, weight="bold")
+    b += txt(96, 200, "Assured", 30, LIGHT, weight="bold")
+    b += txt(96, 236, "Pedestrians are promoted to full ORCA.", 14.5, LIGHT)
+    b += txt(96, 260, "They negotiate with each other, and cars yield.", 14.5, LIGHT)
+    for k, line in enumerate(["No pedestrian interpenetrates another.",
+                              "No car passes through a pedestrian.",
+                              "Holds anywhere you place a zone."]):
+        b += f'<circle cx="104" cy="{292 + k * 26}" r="3.5" fill="{GREEN}"/>'
+        b += txt(118, 297 + k * 26, line, 13, LIGHT)
+
+    b += card(655, 130, 555, 258, "#2e2a22", AMBER, 12, 1.5)
+    b += txt(681, 170, "OUTSIDE IT", 15, AMBER, weight="bold")
+    b += txt(681, 200, "Believable", 30, LIGHT, weight="bold")
+    b += txt(681, 236, "Cheap and convincing at distance — by choice.", 14.5, LIGHT)
+    b += txt(681, 260, "Performance bought with believability, not correctness.", 14.5, LIGHT)
+    for k, line in enumerate(["Same-direction pedestrians can overlap.",
+                              "A car can pass over a ped off a crossing.",
+                              "On a crossing a car DOES stop."]):
+        col = GREEN if line.startswith("On a crossing") else AMBER
+        b += f'<circle cx="689" cy="{292 + k * 26}" r="3.5" fill="{col}"/>'
+        b += txt(703, 297 + k * 26, line, 13, LIGHT)
+
+    b += card(70, 404, 1140, 52, "#243040", "none", 8)
+    b += txt(94, 436, "Stated up front it reads as engineering. Discovered under questioning it reads as a "
+                      "defect — so state it up front.", 14.5, LIGHT, weight="bold")
+
+    # The plumbing is demoted to one compact row: unremarkable in the best way.
+    b += txt(70, 506, "How it is wired — deliberately unremarkable", 16, SLATE_L, weight="bold")
+    for k, (x0, w, head, l1, l2, col) in enumerate([
+            (70, 340, "Promoted ped footprints", "High-power ORCA agents only.",
+             "Rich, per-agent reactions.", TEAL),
+            (440, 340, "Crossing occupancy", "Low-power peds WALKING on a crossing.",
+             "Promoted and paused peds excluded.", TEAL),
+            (810, 400, "Krauss car-following — unchanged", "A pedestrian disc stands in as the leader.",
+             "What is new is WHAT it reacts to, not HOW.", AMBER)]):
+        b += card(x0, 524, w, 96, "#243040", col, 8, 1.2)
+        b += txt(x0 + 20, 552, head, 14, col, weight="bold")
+        b += txt(x0 + 20, 576, l1, 12.5, LIGHT)
+        b += txt(x0 + 20, 596, l2, 12.5, SLATE_L)
+    b += arrow(410, 572, 436, 572, TEAL, 2)
+    b += arrow(780, 572, 806, 572, AMBER, 2.4)
+    return svg(1280, 656, b)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -521,81 +538,129 @@ def d_serverig():
 # 10. Threaded tick
 # ----------------------------------------------------------------------------------------------
 def d_threaded():
-    b = defs([AMBER, GREEN, RED, SLATE_L])
-    b += title("The engine tick left the render thread",
-               "A frame that crosses a tick boundary used to block for an entire engine step.")
-    for i, (y0, head, col) in enumerate([(150, "Before", RED), (350, "After", GREEN)]):
-        b += txt(70, y0 + 6, head, 18, col, weight="bold")
-        b += f'<rect x="150" y="{y0 + 24}" width="1060" height="118" rx="6" fill="#1a222c"/>'
-        b += txt(140, y0 + 60, "render", 12, SLATE_L, "end")
-        b += txt(140, y0 + 116, "engine", 12, SLATE_L, "end")
-        if i == 0:
-            x = 170
-            while x < 1180:
-                w = 118 if (x - 170) % 354 == 0 else 22
-                fill = RED if w > 100 else SLATE
-                b += f'<rect x="{x}" y="{y0 + 44}" width="{w}" height="26" rx="3" fill="{fill}"/>'
-                if w > 100:
-                    b += txt(x + w / 2, y0 + 62, "BLOCKED", 10, LIGHT, "middle", "bold")
-                    b += f'<rect x="{x}" y="{y0 + 100}" width="{w}" height="26" rx="3" fill="{AMBER}"/>'
-                x += w + 8
-            b += txt(1196, y0 + 156, "100–200 ms hiccup, ~110× a minute", 13, RED, "end")
-        else:
-            x = 170
-            while x < 1180:
-                b += f'<rect x="{x}" y="{y0 + 44}" width="22" height="26" rx="3" fill="{SLATE}"/>'
-                x += 30
-            x = 170
-            while x < 1180:
-                b += f'<rect x="{x}" y="{y0 + 100}" width="112" height="26" rx="3" fill="{AMBER}" opacity="0.85"/>'
-                x += 122
-            b += txt(1196, y0 + 156, "frames never wait · producer thread owns the step", 13, GREEN, "end")
-    b += card(70, 530, 1140, 84, "#1e2a34", GREEN, 8, 1.2)
-    b += txt(94, 560, "Measured on a real city cut at 3 858 cars + 20 726 pedestrians", 15, GREEN, weight="bold")
-    b += stats(94, 582, [("frames over 3× median", "0 of 2000"),
-                         ("p99 vs p50", "1.20×"),
+    b = defs()
+    b += title("The tick runs on its own thread",
+               "A frame never waits for an engine step. The renderer only ever reads a published snapshot.")
+
+    y0 = 148
+    b += f'<rect x="150" y="{y0}" width="1060" height="118" rx="6" fill="#1a222c"/>'
+    b += txt(140, y0 + 36, "render", 12, SLATE_L, "end")
+    b += txt(140, y0 + 92, "engine", 12, SLATE_L, "end")
+    x = 170
+    while x < 1180:
+        b += f'<rect x="{x}" y="{y0 + 20}" width="22" height="26" rx="3" fill="{SLATE}"/>'
+        x += 30
+    x = 170
+    while x < 1180:
+        b += f'<rect x="{x}" y="{y0 + 76}" width="112" height="26" rx="3" fill="{AMBER}" opacity="0.85"/>'
+        x += 122
+    b += txt(1196, y0 + 132, "every frame lands · the producer thread owns the step", 13, GREEN, "end")
+
+    b += card(70, 316, 555, 138, "#243040", TEAL, 10, 1.3)
+    b += txt(94, 348, "The handoff", 15, TEAL, weight="bold")
+    b += txt(94, 374, "The engine publishes a snapshot; the renderer reads it.", 13, LIGHT)
+    b += txt(94, 396, "Neither ever blocks on the other.", 13, LIGHT)
+    b += txt(94, 424, "Engine parallelism is capped so the producer", 12.5, SLATE_L)
+    b += txt(94, 442, "cannot starve the renderer.", 12.5, SLATE_L)
+
+    b += card(655, 316, 555, 138, "#1e2a34", GREEN, 10, 1.3)
+    b += txt(679, 348, "Capping was proven inert, not assumed", 15, GREEN, weight="bold")
+    b += txt(679, 374, "11 889 car and pedestrian samples bitwise", 13, LIGHT)
+    b += txt(679, 396, "identical, capped versus uncapped.", 13, LIGHT)
+    b += txt(679, 424, "Smoothness did not cost a trajectory.", 12.5, SLATE_L)
+
+    b += card(70, 478, 1140, 84, "#1e2a34", GREEN, 8, 1.2)
+    b += txt(94, 508, "Measured on a real city cut at 3 858 cars + 20 726 pedestrians", 15, GREEN, weight="bold")
+    b += stats(94, 530, [("frames over 3x median", "0 of 2000"),
+                         ("p99 vs p50", "1.20x"),
                          ("sustained in real time", "2 Hz")], gap=360)
-    return svg(1280, 650, b)
+
+    b += card(70, 586, 1140, 74, "#2a2438", ZONE, 8, 1.2)
+    b += txt(94, 616, "Next", 14, ZONE, weight="bold")
+    b += txt(94, 642, "Extending the same handoff discipline to more consumers, and to the sim-rate and zone "
+                      "controls under load. Reach, not repair.", 13, LIGHT)
+    return svg(1280, 696, b)
 
 
 # ----------------------------------------------------------------------------------------------
-# 11. Terrain + stacked surfaces
 # ----------------------------------------------------------------------------------------------
-def d_terrain():
-    b = defs([TEAL, AMBER, GREEN, RED, SLATE_L])
-    b += title("Real ground, and pedestrians that know which surface they are on",
-               "Terrain is baked from the network's own lane elevations — no external heightmap.")
-    b += txt(70, 152, "Flat datum", 16, RED, weight="bold")
-    b += f'<rect x="70" y="168" width="530" height="150" rx="6" fill="#1a222c"/>'
-    b += f'<line x1="90" y1="270" x2="580" y2="270" stroke="{RED}" stroke-width="2"/>'
-    b += f'<path d="M 90 296 Q 220 210 335 250 T 580 214" fill="none" stroke="{SLATE_L}" stroke-width="2" stroke-dasharray="5 4"/>'
-    b += txt(90, 196, "up to ~14 m of error", 13, RED)
-    b += txt(586, 306, "true ground", 11, SLATE_L, "end")
+# 11. Spatial decomposition -- how the work is actually spread across cores
+# ----------------------------------------------------------------------------------------------
+def d_spatial():
+    b = defs()
+    b += title("How the work is spread across cores",
+               "Two mechanisms. Both byte-identical to a serial run — parallelism is never allowed to "
+               "cost an answer.")
 
-    b += txt(680, 152, "Baked terrain field", 16, GREEN, weight="bold")
-    b += f'<rect x="680" y="168" width="530" height="150" rx="6" fill="#1a222c"/>'
-    b += f'<path d="M 700 296 Q 830 210 945 250 T 1190 214" fill="none" stroke="{GREEN}" stroke-width="2.4"/>'
-    for px, py in [(700, 296), (790, 235), (880, 232), (945, 250), (1050, 228), (1190, 214)]:
-        b += f'<circle cx="{px}" cy="{py}" r="3.5" fill="{AMBER}"/>'
-    b += txt(700, 196, "0.326 m worst error", 13, GREEN)
-    b += txt(1196, 306, "lane vertices", 11, AMBER, "end")
+    # Left: the grid. Each region owns a DISJOINT set of lanes, which is the whole trick.
+    b += card(70, 132, 470, 340, "#243040", AMBER, 12, 1.4)
+    b += txt(94, 168, "SPATIAL DECOMPOSITION", 14, AMBER, weight="bold")
+    b += txt(94, 192, "opt-in  ·  --region --region-grid G", 12.5, SLATE_L, font=MONO)
+    gx, gy, cell = 122, 212, 56
+    tone = ["#2f3a46", "#38424e", "#2a3440", "#414c58",
+            "#38424e", "#4a5663", "#2f3a46", "#38424e",
+            "#2a3440", "#2f3a46", "#38424e", "#2a3440",
+            "#38424e", "#2a3440", "#2f3a46", "#38424e"]
+    for r in range(4):
+        for c in range(4):
+            b += (f'<rect x="{gx + c * cell}" y="{gy + r * cell}" width="{cell - 4}" height="{cell - 4}" '
+                  f'rx="3" fill="{tone[r * 4 + c]}" stroke="{SLATE}" stroke-width="0.8"/>')
+    # a busy region: dynamic scheduling means whichever thread is free simply picks it up
+    b += (f'<rect x="{gx + cell}" y="{gy + cell}" width="{cell - 4}" height="{cell - 4}" rx="3" '
+          f'fill="none" stroke="{AMBER}" stroke-width="2.5"/>')
+    b += txt(gx + cell * 4 + 20, gy + cell + 26, "congestion", 12, AMBER)
+    b += txt(gx + cell * 4 + 20, gy + cell + 44, "concentrates here", 12, AMBER)
+    b += txt(94, 456, "Each region owns a DISJOINT set of lanes.", 13.5, LIGHT, weight="bold")
 
-    b += txt(70, 372, "Stacked surfaces: the same plan-view point, two heights", 17, LIGHT, weight="bold")
-    b += f'<rect x="70" y="392" width="1140" height="176" rx="8" fill="#1a222c"/>'
-    b += f'<rect x="240" y="432" width="800" height="12" rx="3" fill="{SLATE}"/>'
-    b += txt(250, 424, "footbridge", 12, SLATE_L)
-    b += f'<rect x="240" y="524" width="800" height="12" rx="3" fill="{SLATE}"/>'
-    b += txt(250, 516, "path beneath", 12, SLATE_L)
-    b += ped(640, 424, 9, TEAL)
-    b += ped(640, 516, 9, "#7FD8CE")
-    b += (f'<line x1="640" y1="400" x2="640" y2="548" stroke="{AMBER}" stroke-width="1.4" '
-          f'stroke-dasharray="4 4" opacity="0.8"/>')
-    b += txt(672, 428, "412.5 m", 15, TEAL, weight="bold")
-    b += txt(672, 520, "400.0 m", 15, "#7FD8CE", weight="bold")
-    b += txt(1020, 470, "identical (x, y)", 13, AMBER, "end")
-    b += txt(94, 592, "Per-vertex surface provenance travels with the route, so height is resolved along the path "
-                      "the pedestrian actually walks — never by a nearest-surface guess.", 13, SLATE_L)
-    return svg(1280, 620, b)
+    # Right: the three properties that make it practical.
+    for k, (head, l1, l2) in enumerate([
+            ("Lock-free by construction, not by care",
+             "Disjoint lane ownership means region tasks need no locks",
+             "at all. There is no critical section to get wrong."),
+            ("Boundary handoff is free",
+             "A vehicle crossing out is simply grouped in the next",
+             "region next step. No state transfer, no migration."),
+            ("It balances itself",
+             "Dynamic scheduling over regions: as load concentrates,",
+             "a busy region is picked up by whichever thread is free.")]):
+        y = 132 + k * 118
+        b += card(570, y, 640, 104, "#1e2a34", GREEN, 10, 1.3)
+        b += txt(594, y + 30, head, 14.5, GREEN, weight="bold")
+        b += txt(594, y + 56, l1, 13, LIGHT)
+        b += txt(594, y + 78, l2, 13, LIGHT)
+
+    # The other mechanism -- the one that is actually on by default.
+    b += card(70, 502, 555, 132, "#243040", AMBER, 10, 1.3)
+    b += txt(94, 532, "Per-vehicle phase parallelism", 14.5, AMBER, weight="bold")
+    b += txt(94, 556, "on by default above a few hundred vehicles", 12.5, GREEN)
+    b += txt(94, 582, "Plan, export and post-move read only frozen", 13, LIGHT)
+    b += txt(94, 602, "start-of-step state and write only their own vehicle.", 13, LIGHT)
+    b += txt(94, 622, "Structural change is deferred to a command buffer.", 13, LIGHT)
+
+    # The thread sweep: its SHAPE is the argument, so draw it rather than tabulate it.
+    b += card(655, 502, 555, 132, "#243040", "none", 10)
+    b += txt(679, 530, "More threads is not automatically better", 14.5, LIGHT, weight="bold")
+    bx, by, bw, bh = 700, 546, 74, 62
+    for k, (lab, v) in enumerate([("1", 11.48), ("2", 7.90), ("4", 6.34),
+                                  ("8", 5.68), ("16", 5.67), ("24", 6.13)]):
+        h = bh * (v / 11.48)
+        col = GREEN if lab == "8" else (RED if lab == "24" else SLATE)
+        b += (f'<rect x="{bx + k * bw}" y="{by + (bh - h) + 14}" width="30" height="{h}" rx="2" '
+              f'fill="{col}" opacity="0.9"/>')
+        b += txt(bx + k * bw + 15, by + bh + 32, lab, 11, SLATE_L, "middle")
+        b += txt(bx + k * bw + 15, by + (bh - h) + 8, f"{v:.1f}", 10, col, "middle")
+    b += txt(bx + 6 * bw - 2, by + bh + 32, "threads", 11, SLATE_L)
+    b += (f'<line x1="{bx - 6}" y1="{by + bh + 16}" x2="{bx + 6 * bw + 6}" y2="{by + bh + 16}" stroke="{SLATE}" stroke-width="1" opacity="0.6"/>')
+    b += txt(1186, by + 6, "8 beats 24. The knee is at 4.", 12.5, GREEN, "end")
+
+    # The honest reading, in the project's own voice.
+    b += card(70, 650, 1140, 88, "#2e2a22", AMBER, 8, 1.2)
+    b += txt(94, 680, "The honest reading", 14, AMBER, weight="bold")
+    b += txt(94, 706, "Today's region win is modest: the dominant phases are bound by MEMORY BANDWIDTH on "
+                      "random neighbour access, not by CPU.", 13, LIGHT)
+    b += txt(94, 728, "The hard part — disjoint ownership, free handoff, safety by construction — is done. "
+                      "A segmented store is what turns it into a large win.", 13, LIGHT)
+    return svg(1280, 774, b)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -636,47 +701,8 @@ def d_evac():
 
 
 # ----------------------------------------------------------------------------------------------
-# 13. The discipline loop
 # ----------------------------------------------------------------------------------------------
-def d_discipline():
-    b = defs([AMBER, GREEN, RED, SLATE_L, TEAL])
-    b += title("Why these numbers can be trusted",
-               "The rules below were each bought with a wrong answer that shipped and had to be retracted.")
-    items = [
-        ("Both surfaces must accept a change", GREEN,
-         "Goldens are small and cannot contain a saturated junction; the\n"
-         "demo saturates but has no SUMO reference. One change kept all\n"
-         "goldens byte-identical and made the demo worse. Another\n"
-         "transformed the demo and broke 14 goldens. So: run both."),
-        ("Trace, do not reason", AMBER,
-         "Seven interventions reasoned from the SUMO source were refuted\n"
-         "against one per-vehicle trace that found the real cause in\n"
-         "minutes. Reading tells you what a mechanism is; only a trace\n"
-         "tells you what is actually happening."),
-        ("Commit the instrument", TEAL,
-         "A probe run once and reverted makes its own number\n"
-         "unfalsifiable and poisons every later comparison. Every\n"
-         "measurement in this deck has a committed tool behind it that\n"
-         "anyone can re-run."),
-        ("Compare against honest SUMO", RED,
-         "SUMO's shipped defaults teleport stuck vehicles and do not even\n"
-         "DETECT junction interpenetration. Beating those defaults is not\n"
-         "an achievement, so the comparison runs with the cheats off."),
-    ]
-    x, y = 70, 138
-    for i, (head, col, body) in enumerate(items):
-        cx = x + (i % 2) * 585
-        cy = y + (i // 2) * 218
-        b += card(cx, cy, 555, 196, "#243040", col, 10, 1.4)
-        b += f'<circle cx="{cx + 28}" cy="{cy + 32}" r="12" fill="{col}"/>'
-        b += txt(cx + 52, cy + 37, head, 16, LIGHT, weight="bold")
-        for j, line in enumerate(body.split("\n")):
-            b += txt(cx + 24, cy + 74 + j * 21, line, 12.5, SLATE_L)
-    return svg(1280, 596, b)
-
-
-# ----------------------------------------------------------------------------------------------
-# 14. Scale: cost follows attention
+# 13. Scale: cost follows attention
 # ----------------------------------------------------------------------------------------------
 def d_attention():
     b = defs([AMBER, TEAL, SLATE_L, GREEN])
@@ -730,7 +756,7 @@ def d_attention():
 
 
 # ----------------------------------------------------------------------------------------------
-# 15. Dead reckoning: what is sent up front, what is sent per agent, and why that is so little
+# 14. Dead reckoning: what is sent up front, what is sent per agent, and why that is so little
 # ----------------------------------------------------------------------------------------------
 def d_dr():
     b = defs()
@@ -811,7 +837,7 @@ def d_dr():
 
 
 # ----------------------------------------------------------------------------------------------
-# 16. Liveliness is DATA, not a per-step behaviour loop
+# 15. Liveliness is DATA, not a per-step behaviour loop
 # ----------------------------------------------------------------------------------------------
 def d_liveliness():
     b = defs()
@@ -857,7 +883,7 @@ def d_liveliness():
 
 
 # ----------------------------------------------------------------------------------------------
-# 17. Already optimised -- and the remaining levers are named, not mysterious
+# 16. Already optimised -- and the remaining levers are named, not mysterious
 # ----------------------------------------------------------------------------------------------
 def d_headroom():
     b = defs()
@@ -898,7 +924,7 @@ def d_headroom():
 
 
 # ----------------------------------------------------------------------------------------------
-# 18. The close: this is a substrate, and the POC bar is a choice
+# 17. The close: this is a substrate, and the POC bar is a choice
 # ----------------------------------------------------------------------------------------------
 def d_substrate():
     b = defs()
@@ -958,8 +984,9 @@ def d_substrate():
 DIAGRAMS = {
     "01-layering": d_layering, "02-seam": d_seam, "03-lod": d_lod, "04-hysteresis": d_hysteresis,
     "05-weave": d_weave, "06-coupling": d_coupling, "07-yield": d_yield, "08-lanechange": d_lanechange,
-    "09-server-ig": d_serverig, "10-threaded": d_threaded, "11-terrain": d_terrain, "12-evac": d_evac,
-    "13-discipline": d_discipline, "14-attention": d_attention, "15-dr": d_dr, "16-liveliness": d_liveliness, "17-headroom": d_headroom, "18-substrate": d_substrate,
+    "09-server-ig": d_serverig, "10-threaded": d_threaded, "11-spatial": d_spatial, "12-evac": d_evac,
+    "13-attention": d_attention, "14-dr": d_dr, "15-liveliness": d_liveliness,
+    "16-headroom": d_headroom, "17-substrate": d_substrate,
 }
 
 if __name__ == "__main__":

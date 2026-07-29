@@ -75,7 +75,7 @@ This single seam is what everything in §3 and §4 hangs off.
 
 ## 3. Pedestrians — a crowd layer, not a port
 
-*Diagrams 03, 05, 16.*
+*Diagrams 03, 05, 15.*
 
 This is **not** a port of SUMO's person model, and that is the point rather than a caveat. There is no
 golden pedestrian trajectory to match; the layer is validated by behavioural and property tests instead.
@@ -129,7 +129,7 @@ per-pedestrian seeded waiting spread turns that stack into a natural blob.
 
 ### 3.4 City life is authored data, not a behaviour loop
 
-*Diagram 16.* Four segment kinds — **Walk, Pause, Dwell, Interact** — compose into every beat:
+*Diagram 15.* Four segment kinds — **Walk, Pause, Dwell, Interact** — compose into every beat:
 
 - **Checking a phone** — a `Pause` carrying an animation tag, with no pose of its own, so the walk either
   side stays continuous.
@@ -186,7 +186,7 @@ cannot see a conflict that has not happened yet (*diagram 07*).
 
 ## 5. Cost follows attention, not city size
 
-*Diagram 14.*
+*Diagram 13.*
 
 The realism zone tracks the camera. Inside it, pedestrians promote to full ORCA and cars use cooperative
 lane changing. Outside, pedestrians stay closed-form and cars still stop at crossings.
@@ -203,6 +203,8 @@ Multiple and overlapping camera zones are designed and not yet built — a clean
 ---
 
 ## 6. How the work is spread across cores
+
+*Diagram 11.*
 
 Two independent mechanisms, both byte-identical to a serial run.
 
@@ -278,7 +280,7 @@ consumers, and to the sim-rate and zone controls under load.
 
 ## 9. Dead reckoning: 48 bytes buys a trajectory
 
-*Diagram 15.*
+*Diagram 14.*
 
 The receiver is never told where a car *is*. It is told enough to work out where it *will be*.
 
@@ -357,7 +359,7 @@ image generator that does no prediction of its own: the smoothing is baked in be
 
 ## 12. Already fast, and the headroom is already located
 
-*Diagram 17.* The emphasis is deliberately on the shape of the situation rather than on a wall of figures.
+*Diagram 16.* The emphasis is deliberately on the shape of the situation rather than on a wall of figures.
 
 **What has landed:** allocation on the hot path collapsed; GC pressure down to a small fraction of wall
 time; parallel by default at scale and byte-identical by test; the engine tick off the render thread; and
@@ -382,7 +384,7 @@ point: **there is a lot of headroom and we know where it is.**
 
 ## 13. Current state: a substrate, not a finished product
 
-*Diagram 18.*
+*Diagram 17.*
 
 Everything above is a proof of concept. Many mechanisms, all working, **none perfected** — and that is the
 correct state rather than a shortfall.
