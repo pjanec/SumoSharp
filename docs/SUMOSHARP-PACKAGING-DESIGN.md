@@ -1,14 +1,145 @@
-# SUMOSHARP-PACKAGING-DESIGN.md — à-la-carte NuGet packaging (the rethink)
+# SUMOSHARP-PACKAGING-DESIGN.md — NuGet packaging
 
-**Status:** design of record for how this repo is sliced into NuGet packages.
-**Supersedes** the package table in `SUMOSHARP-API.md §1`, which predates Replication, the
-native viewer, `PoseResolver`/`DrClock`, and the evacuation subsystem. `SUMOSHARP-API.md` still
-owns the *public-API surface* design (handles, read API, execution model); this doc owns *how the
-assemblies are grouped, targeted, and shipped*. **Companion docs:** `SUMOSHARP-API.md` (API),
-`SUMOSHARP-VIEWER-DR-SMOOTHING.md` (the render-side motion reconstruction that the viewer/motion
-package documents and ships), `DESIGN.md` (simulation architecture).
+**Status:** design of record for how this repo is sliced into NuGet packages. The **current**
+design is **§V2 immediately below** — a deliberately small, adoption-first set (one portable engine
+package + one optional native transport + one optional viewer tool). Everything from `## 0` onward is
+the **earlier à-la-carte design (HISTORICAL TRAIL)**: it drove the 10-package split that actually
+shipped, and §V2 supersedes its *package count/granularity* while **keeping its engineering rails**
+(native-at-the-leaves, data-model-is-the-API, parity-inert, legally-honest — see §V2.3). Read §V2 for
+the shape we build to; read the historical section only for the rationale behind the individual
+seams, which still exist as internal projects.
 
-**WHAT this is for:** the goal the user set — turn this repo into NuGet package(s) so the SUMO
+`SUMOSHARP-API.md` still owns the *public-API surface* design (handles, read API, execution model);
+this doc owns *how the assemblies are grouped, targeted, and shipped*. **Companion docs:**
+`SUMOSHARP-API.md` (API), `SUMOSHARP-VIEWER-DR-SMOOTHING.md` (render-side motion reconstruction),
+`DESIGN.md` (simulation architecture).
+
+---
+
+## V2. Collapsed, adoption-first package set (CURRENT design of record)
+
+**Why this supersedes the à-la-carte split.** The 10-package layout below optimized for *granularity*
+— "take only the assembly you need." In practice that is the wrong thing to optimize: a game-engine
+developer evaluating SumoSharp does not want to reason about ten packages and their dependency arrows;
+they want **one `dotnet add package` and go**. Granularity is no longer a goal. **Usability inside a
+game engine is the goal.** So the shipped *library* surface collapses to the smallest set that a hard
+technical constraint actually forces.
+
+### V2.1 The only thing that forces a split: native binaries
+
+Every engine-side assembly in this repo is **pure-managed C#, has zero third-party NuGet
+dependencies, and already multi-targets `net8.0;netstandard2.1`** (verified: Core, Ingest,
+Replication, Viewer.Motion, Host, Pedestrians, LiveCity all multi-target; Evac is the lone
+`net8.0`-only project and is trivially bumped — it is pure managed over Core seams). There is **no
+technical reason** any of them are separate packages.
+
+The **only** hard boundary is native binaries: `CycloneDDS.NET` (in `Sim.Replication.Dds`) and
+`Raylib-cs`/`rlImgui-cs` (in `Sim.Viewer.Raylib`) carry per-RID native `.so`/`.dll` assets. If those
+fold into the portable package, **every** consumer — including a Unity/Godot game that has its own
+renderer and its own networking — drags native binaries it will never load, which in IL2CPP/Mono is
+the single biggest integration failure mode. So native stays out of the portable package. That is the
+one split, and it is exactly the split that protects game-engine adoption.
+
+### V2.2 The shipped surface — 2 library packages (the viewers are repo apps, not packages)
+
+Only **two things are published to NuGet**:
+
+| # | Ships as | Id | TFMs | Native? | Contents | Who needs it |
+|---|----------|----|------|---------|----------|-------------|
+| **1** | library package | **`SumoSharp`** | `net8.0;netstandard2.1` | no | the whole portable engine: **Core + Ingest + Replication** (data model + contract + codec + in-memory transport + `.simrec` recording) **+ Viewer.Motion** (render-side smooth-pose reconstruction) **+ Host** (snapshot→wire publisher) **+ Pedestrians** (ORCA crowd) **+ Evac + LiveCity** | **everyone** — Unity, Godot, .NET server/console. The one package. |
+| **2** | library package | **`SumoSharp.Dds`** | `net8.0` | yes (CycloneDDS) | the CycloneDDS binding of the Replication transport contract | only consumers who want DDS as their wire; game engines usually bring their own transport and skip it |
+
+A game engine installs **`SumoSharp`** (plus `SumoSharp.Dds` only if it wants the DDS wire) and renders
+with its own engine, consuming the render-side motion reconstruction that lives *inside* package #1.
+
+**The viewers are first-class *tools*, but they are not NuGet packages — they build from the repo.**
+Both the 2D and the 3D viewer are meant to let a user *watch the engine run* with minimal ceremony, so
+what they need is **simple build instructions + a few demo run-scripts + a strong `--net`/`--scenario`
+CLI**, not a package. Nobody references a viewer as a library, so packaging it adds ceremony for no
+gain, and the 3D viewer in particular (a Godot project with native GPU + editor tooling) does not fit a
+NuGet at all.
+
+- **The 3-D Godot viewer** (`demos/City3D`) — a genuine standalone viewer, not a throwaway example.
+  Goal: a user clones the repo, follows a short build/run doc (build the local package feed, open/run
+  the Godot project), and watches the engine live in 3D. It consumes package #1 (+ `SumoSharp.Dds` for
+  the remote/DDS path) from a **local NuGet feed**. Needs a clear net/scenario selection path.
+- **The 2-D raylib viewer** (`src/Sim.Viewer`) — the same story in 2D: `dotnet run --project
+  src/Sim.Viewer -- <strong CLI>` against a demo scenario, with a demo script wrapping the common
+  invocations. Buildable from repo, never a package.
+- **Render-side motion reconstruction** (`DrClock`/`KinematicReconstructor`) — the portable piece both
+  viewers (and a game engine's own renderer) use to turn sparse wire samples into smooth per-frame
+  poses. It is **inside package #1**; that is the only "viewer" code a game-engine integrator consumes.
+
+**The strong-CLI requirement (both viewers).** The viewer entry points must take the road network and
+scenario/demand explicitly on the command line — at minimum a way to point at a `.net.xml` + a
+`.rou.xml`/`.sumocfg` (or a named built-in demo scenario), plus the live-vs-replay/DDS mode. A user
+should be able to run **any** net+scenario, not just the hard-coded demo. The demo scripts are thin
+wrappers that pass the demo scenarios' paths to that CLI.
+
+### V2.3 Rails kept from the historical design (still binding)
+
+The granularity is gone; the engineering rails are not:
+- **Native/heavy dependencies quarantined at the leaves** (V2.1) — unchanged, now the *sole* reason for
+  a package boundary.
+- **The replication data model *is* the API; transports are bindings** (old D4/D8/D9). The
+  `IReplicationSink`/`IReplicationSource` contract + records + codec live in the portable package;
+  `SumoSharp.Dds` is one binding. A consumer programs against the data model, never against DDS.
+- **Additive and parity-inert** (old D-principle 5). Packaging touches only project metadata and *pack*
+  wiring; the offline parity gate stays byte-identical and a guard test pins the invariants. Iron law.
+- **Self-describing and legally honest** (old principle 6) — dual-license + "unofficial reimplementation
+  of Eclipse SUMO" disclaimer in the package README.
+
+### V2.4 How package #1 is built — bundle, don't merge
+
+The internal `Sim.*` projects (and their per-project parity/test structure) **stay exactly as they
+are** — moving source or renaming namespaces would risk the parity trajectory, which is forbidden.
+Package #1 is produced by a thin **packaging project** that bundles the compiled portable-project DLLs
+into a single `.nupkg` (the standard "multiple assemblies, one package" pack: reference the portable
+projects with `PrivateAssets="all"` and emit their build outputs into the package `lib/<tfm>/` via
+`TargetsForTfmSpecificBuildOutput`). The consumer sees **one package** containing several DLLs; the repo
+keeps its internal modularity and its hermetic `dotnet test`. Low-risk and reversible.
+
+Open item to validate during implementation (packaging-mechanics, not design):
+- transitive managed deps that a couple of projects need on `netstandard2.1` only (`System.Memory`,
+  `System.Text.Json`) must be surfaced as **package dependencies** of `SumoSharp` on that TFM.
+
+### V2.5 What is explicitly NOT a package (repo samples / tools)
+
+`Sim.Harness` (parity test harness), `Sim.Sumo` (the `sumosharp` SUMO-drop-in CLI), all benches
+(`Sim.Bench*`, `Sim.DensityDiff`, `Sim.PedDdsLoopback`), `Sim.LiveHost` (ASP.NET browser demo),
+`Sim.IgBridge` + `Sim.IgBridge.Host` (prototype/headless IG-bridge sample), and `demos/City3D` (the
+Godot demo). The DotRecast navmesh navigation provider (`Sim.Pedestrians.Nav.DotRecast`) stays **opt-in
+source, not in package #1**, because it is the one piece with a real third-party managed dependency
+(DotRecast); package #1's built-in SUMO-geometry navigation ships in-box and keeps the engine package
+dependency-free.
+
+### V2.6 Decisions (V2)
+
+- **E1 — one portable engine package.** Everything managed (Core…LiveCity) ships as `SumoSharp`.
+  Supersedes old D1/D2/D3/D5/D7 *package-count* decisions; the *seams* they created remain as internal
+  projects.
+- **E2 — bundle, don't merge** (V2.4). No source/namespace refactor.
+- **E3 — the viewers are repo-buildable apps, never packages** (V2.2). Both the 2D raylib viewer and
+  the 3D Godot viewer ship as source with **build instructions + demo run-scripts + a strong
+  `--net`/`--scenario` CLI**. No global tool, no library package.
+- **E4 — Godot/Unity consume package #1 only** (+ `SumoSharp.Dds` optionally). The 3D Godot viewer is a
+  genuine standalone viewer built from the repo against a local package feed — a worked, runnable app,
+  not a throwaway example.
+- **E5 — DotRecast nav provider stays opt-in source** (V2.5), keeping #1 third-party-dependency-free.
+- **E6 — the old `SumoSharp` meta-package is retired**; its id is reused for the real engine package #1.
+
+---
+
+<!-- =========================================================================================
+     HISTORICAL TRAIL below — the à-la-carte 10-package design. Superseded by §V2 above on the
+     package COUNT/granularity; its engineering rails survive (see §V2.3) and its per-seam rationale
+     is still accurate for the internal Sim.* projects. Do not build the shipped surface from this
+     section — build it from §V2.
+     ========================================================================================= -->
+
+# (HISTORICAL) à-la-carte NuGet packaging (the rethink)
+
+**WHAT this was for:** the goal the user set — turn this repo into NuGet package(s) so the SUMO
 port drops cleanly into a **simulation or game engine**, letting an integrator take **only what
 they need** (engine only; engine + streaming; engine + streaming + render-side motion; the full
 desktop viewer; dev-time tooling). Pay-for-what-you-use, native/heavy dependencies quarantined at
