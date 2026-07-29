@@ -29,7 +29,7 @@ is byte-identical where the new paths are unused):
   `Resume`/`SpeedMultiplier`, or manual `Tick()`);
 - **string obstacle API removed** (D4): the obstacle API is now handle-only (`GetLane` + `ObstacleHandle`);
   every caller (the B1/B5/B6 tests, `Sim.ExtDemo`) migrated, string→handle caching is the host's concern;
-- **NuGet packaging** (§1, Phase 0): `SumoSharp.Core` (+ `SumoSharp.Ingest`) with metadata, README,
+- **NuGet packaging** (§1, Phase 0): `SumoSharp` with metadata, README,
   SourceLink, and symbol packages — `dotnet pack` verified;
 - the **browser-live WebSocket demo** (§11, Phase 2): `Sim.LiveHost`, verified end-to-end.
 
@@ -62,24 +62,19 @@ obstacle-store ownership split, the lateral-state API requirements folded in, an
 
 ## 1. Package layout & naming
 
-> **The package layout is now owned by `SUMOSHARP-PACKAGING-DESIGN.md`** (the à-la-carte rethink —
-> it covers Replication, the render-side motion package, the raylib viewer package, and the evac /
-> testing / meta packages that landed after this table was written). The table below is kept for the
-> original *intent* and the license/framework notes that follow; two corrections to reconcile it with
-> the shipped reality:
-> - **Core and Ingest ship as two separate packages** (`SumoSharp.Core`, `SumoSharp.Ingest`), not one
->   bundled `SumoSharp.Core`. `Core` package-references `Ingest`, so installing `Core` still pulls it.
-> - **`SumoSharp.Runtime` is retired** — the async `SimulationRunner` lives in `Sim.Core` and carries
->   no extra dependency, so there is nothing to split. A stepped-only build simply never calls it.
+> **The package layout is now owned by [`SUMOSHARP-PACKAGING-DESIGN.md` §V2](SUMOSHARP-PACKAGING-DESIGN.md)**
+> (decisions E1–E6), which collapsed the earlier à-la-carte set into **two shipped packages** —
+> adoption-first: one `dotnet add package SumoSharp` gets the whole portable engine, and only the native
+> DDS transport is split off. This section keeps the naming / license / framework notes that follow; for
+> the authoritative package set, that design is the reference.
+
+The shipped NuGet surface is exactly two packages:
 
 | Package | Contents | Ships? |
 |---|---|---|
-| **`SumoSharp.Core`** | `Sim.Core` (engine + runtime + `SimulationRunner` + `PoseResolver`); package-refs `SumoSharp.Ingest` | ✅ the package most users install |
-| **`SumoSharp.Ingest`** | `Sim.Ingest` (net/rou/sumocfg parsers + model) | ✅ shipped separately (pulled in transitively by Core) |
-| ~~`SumoSharp.Runtime`~~ | ~~async `SimulationRunner` split~~ | ⛔ **retired** — `SimulationRunner` is in Core |
-| **`SumoSharp.Tools`** | SUMO-binary fetch + `netconvert`/`duarouter` wrappers (§2) | ✅ optional, dev-time only (still design-only) |
-| `Sim.Harness` | FCD parsing + tolerance comparison | → **`SumoSharp.Testing`** (opt-in dev-time package; see packaging design) |
-| `Sim.Run`, `Sim.Viz`, `Sim.ExtDemo`, benches | CLIs / demos | ❌ shipped as **samples**, not packages |
+| **`SumoSharp`** | The whole portable engine in one package — `Sim.Core` (engine + `SimulationRunner` + `PoseResolver`), the parsers/data-model, the replication layer, render-side motion reconstruction, the snapshot→wire host, pedestrians, the coupled live-city host, and evac. TFMs `net8.0;netstandard2.1`, zero native deps. | ✅ the package a consumer installs |
+| **`SumoSharp.Dds`** | The **optional** native CycloneDDS transport binding; depends on `SumoSharp`. | ✅ optional (native, `net8.0`) |
+| `Sim.Run`, `Sim.Viz`, `Sim.ExtDemo`, `Sim.Viewer`, benches | CLIs / demos / viewers | ❌ built from the repo, not packaged |
 
 **Name:** `SumoSharp` (verified clear at time of writing). "SUMO" is an Eclipse trademark, so the
 package README must carry: *"Unofficial, independent C# reimplementation of Eclipse SUMO's
@@ -91,7 +86,7 @@ microscopic simulation core. Not affiliated with or endorsed by the Eclipse SUMO
 `Microsoft.SourceLink.GitHub`, symbol package (`.snupkg`).
 
 **STATUS: release/publish CI landed.** `.github/workflows/publish.yml` triggers on a `v*` tag: it runs the
-offline parity gate, packs `SumoSharp.Core` + `SumoSharp.Ingest` at the **tag's version** (`v0.1.0` → `0.1.0`,
+offline parity gate, packs `SumoSharp` (+ the native `SumoSharp.Dds`) at the **tag's version** (`v0.1.0` → `0.1.0`,
 overriding `Directory.Build.props`), uploads the packages as a build artifact, and pushes the `.nupkg` +
 `.snupkg` to nuget.org (`--skip-duplicate`; push skipped, not failed, when the `NUGET_API_KEY` secret is
 absent, so forks can dry-run the pack). `actions/checkout` uses `fetch-depth: 0` so SourceLink pins the
@@ -138,7 +133,7 @@ optional package.
 ## 3. Framework targeting — net8.0 first, netstandard2.1 phased
 
 - **First releases: `net8.0`.**
-- **Then add `netstandard2.1`** to `SumoSharp.Core` to unlock **Unity** (Mono / .NET Standard 2.1)
+- **Then add `netstandard2.1`** to `SumoSharp` to unlock **Unity** (Mono / .NET Standard 2.1)
   and Godot. Expect to guard a handful of net8-only APIs behind `#if NET8_0_OR_GREATER`
   (some `System.Text.Json`, `Half`, certain `Span`/generic-math paths, `[SkipLocalsInit]`).
 - **The performance-critical surface needs no net8-only feature.** `Span<T>`/`ReadOnlySpan<T>`/
@@ -667,7 +662,7 @@ this as its "scalable int-indexed footprint-agent store." Its **lateral columns 
   `avoidanceClass`).
 - `DefineVType` defaults `maxSpeedLat = 1.0`, `latAlignment = "center"`, `minGapLat = 0.6`, all
   runtime-settable (folded into §9).
-- `ToleranceConfig.PosLat` lives in **`Sim.Harness` (test-only)**, not `SumoSharp.Core` — so of the 8
+- `ToleranceConfig.PosLat` lives in **`Sim.Harness` (test-only)**, not the shipped `SumoSharp` package — so of the 8
   shared files below, `ToleranceConfig.cs` is *not* in the shipped package.
 - The RVO layer has **no dependency** on the vehicle read API, the handle types, the spatial hash, or
   the spawn surface. The entire coordination reduces to one seam: **`RvoNeighbor` is the contract** —

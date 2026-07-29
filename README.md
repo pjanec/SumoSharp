@@ -76,9 +76,17 @@ doesn't have. Highlights below; precise scope after that.
   **pedestrian crowds & the deterministic weave**, city-scale, …). One click each; regenerated
   automatically by CI. Index + local-run script
   (`scripts/gen-demos.sh`): [`docs/DEMOS.md`](docs/DEMOS.md).
-- **📦 The NuGet packages & how they fit together:** [`docs/PACKAGES.md`](docs/PACKAGES.md) — the
-  à-la-carte package map, "which packages do I install?", and composition diagrams. Runnable
-  consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
+- **📦 Use it as a library — one `dotnet add package SumoSharp`:** the whole portable engine ships as a
+  single NuGet package (`SumoSharp`, TFMs `net8.0;netstandard2.1`, zero native deps) — simulation core,
+  parsers, replication, render-side motion reconstruction, the snapshot→wire host, pedestrians, the
+  coupled live-city host, and panic-evacuation. The only optional second package is `SumoSharp.Dds`, the
+  native CycloneDDS transport binding, which a game engine that brings its own networking never needs:
+  ```bash
+  dotnet add package SumoSharp        # the whole engine
+  dotnet add package SumoSharp.Dds    # optional: native DDS wire transport
+  ```
+  How the two fit together, "who installs what," and composition diagrams: [`docs/PACKAGES.md`](docs/PACKAGES.md).
+  Runnable consumption examples: [`samples/`](samples/) (`HelloTraffic`, `StreamingLoopback`,
   `MotionReconstruction`, `EvacDemo`, `GameHostSample`).
 - **📘 Tutorials — drive the engine from your own code:** a three-step ladder, each backed by a runnable
   sample that `Traffic.sln` compiles (so the snippets cannot rot):

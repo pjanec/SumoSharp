@@ -4,6 +4,46 @@ Checklist for the packaging rethink. Task IDs → `SUMOSHARP-PACKAGING-TASKS.md`
 `SUMOSHARP-PACKAGING-DESIGN.md`. A box is ticked only when the task's success conditions are
 verified first-hand (build / `dotnet pack` / `dotnet test`), per the CLAUDE.md accept gate.
 
+## Stage V — collapse to the adoption-first 2-package set (CURRENT; supersedes P0–P5 on count)
+
+Baseline at plan time (post 544-commit main integration, verified first-hand): `dotnet test
+tests/Sim.ParityTests` = **777 passed / 0 failed / 4 skipped**; `Sim.Bench` determinism
+`single == parallel` (hash `BF3794A4704BCD79`, new-main value — engine changed over main; packaging is
+inert to it).
+
+### Batch 1 — the package collapse  ✅ COMPLETE (verified first-hand)
+- [x] V1.1 — `SumoSharp` bundle package: one nupkg, `lib/net8.0` + `lib/netstandard2.1` each carry all
+      8 engine DLLs; ns2.1-only deps (`System.Memory`, `System.Text.Json`) as package deps; no native
+      leak. Contents inspected.
+- [x] V1.2 — `Sim.Evac` multi-targets `net8.0;netstandard2.1` (one ns2.1 fix: `Enum.GetValues<T>()` →
+      `Enum.GetValues(typeof)`); builds both TFMs.
+- [x] V1.3 — `SumoSharp.Replication.Dds` → **`SumoSharp.Dds`**; nuspec depends on `SumoSharp` +
+      `CycloneDDS.NET`, packs only its own DLL (no engine duplication). Inspected.
+- [x] V1.4 — the 8 engine projects + raylib viewer + harness no longer packable; `SumoSharp.Meta`
+      removed, id reused for the bundle.
+- [x] V1.5 — `pack-check.yml` / `publish.yml` pack the 2 packages, assert count == 2.
+- [x] V1.6 — `PackagingLayoutTests` rewritten (5 hermetic guards): exactly `{SumoSharp, SumoSharp.Dds}`
+      packable; bundle portable + native-free + lists the 8 engine projects; DDS native/net8-only +
+      depends on the bundle; contract-in-Replication; every engine project multi-targets + native-free.
+- [x] V1.7 — `demos/City3D` re-pointed to `SumoSharp` (+ `SumoSharp.Dds` remote); `nuget.config`
+      pattern `SumoSharp*`; `build.sh` packs the bundle. **CityLib builds against the bundle** (real
+      consumer).
+- [x] V1.8 — docs to the one-install story: `PACKAGES.md` (2-node graph + "what's inside" + install),
+      `README`, `SUMOSHARP-API.md §1`, `demos/City3D/README.md`. Retired-id grep over the consumer docs
+      returns empty (verified).
+- [x] Iron law after Batch 1: `dotnet test` **773 passed / 0 failed / 4 skipped** (total 781→777 only
+      because the guard refactor replaced 9 test cases with 5); determinism `single == parallel`
+      unchanged.
+
+### Batch 2 — viewers as repo apps  ⏳ PENDING (Batch-2 scope Q open with user)
+- [ ] V2.1 — "build & watch" doc (2D + 3D) linked from README.
+- [ ] V2.2 — 2D viewer strong net/scenario CLI (exact scope: full `--sumocfg` demand vs built-in — TBC).
+- [ ] V2.3 — demo run-scripts for each viewer on committed demo scenarios.
+
+---
+
+## (HISTORICAL) à-la-carte 10-package plan — baseline & stages P0–P5
+
 ## Baseline (integrated this session)
 - [x] Fast-forwarded the Windows-GPU viewer branch, then rebased onto updated `main` repeatedly as it
       advanced (DR-error publishing, lane-change smoothing as-built, the viewer demo tool, and the

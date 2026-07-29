@@ -2,7 +2,7 @@
 
 A Godot 4 (.NET / C#) demo that renders a running SumoSharp simulation in 3D — a procedural box-city
 generated from the network geometry, width-accurate roads, simplified traffic lights, and true-size cars
-moving *smoothly* between sparse sim updates via `SumoSharp.Viewer.Motion` — **local** (engine co-hosted
+moving *smoothly* between sparse sim updates via the `SumoSharp` package's render-side motion reconstruction — **local** (engine co-hosted
 in-process) and **remote** (a decoupled headless host streaming over DDS to a separate viewer process).
 
 **Why it exists.** Unlike the projects under `samples/` (which `<ProjectReference>` into `src/`), this
@@ -26,8 +26,8 @@ integration handoff: `docs/DEMO-CITY3D-{DESIGN,TASKS,TRACKER,HANDOFF}.md`.
 | `Viewer/` | The Godot 4 app: thin glue that turns `CityLib`'s plain arrays into `ArrayMesh`/`MultiMeshInstance3D`/cameras. Local by default; `-p:City3DRemote=true` adds the DDS subscriber. |
 | `build.sh` `fetch-godot.sh` `run-local.sh` `run-remote.sh` `run-smoke.sh` `screenshot.sh` `perf-ladder.sh` `nuget.config` | the local-feed + run/verify tooling (below). |
 
-The reusable engine→wire publisher (`SumoSharp.Host`) and the generic headless DDS host
-(`src/Sim.Host.App`) live in `src/` (product), not here — this demo *consumes* them.
+The reusable engine→wire publisher (the Host, part of the `SumoSharp` package) and the generic headless
+DDS host (`src/Sim.Host.App`) live in `src/` (product), not here — this demo *consumes* them.
 
 ## Requirements
 .NET 8 SDK. Network access to nuget.org (Godot SDK, BCL, CycloneDDS) and to `downloads.godotengine.org`
@@ -55,7 +55,7 @@ reconstructs smooth per-frame poses with `Viewer.Motion` — a genuine DR viewer
 
 ## Live city — the demo, or an arbitrary georeferenced net
 
-`--live-city` runs the coupled cars + pedestrians + crossing-yield scene (`SumoSharp.LiveCity`) live,
+`--live-city` runs the coupled cars + pedestrians + crossing-yield scene (the LiveCity host in the `SumoSharp` package) live,
 ticking the sim every frame rather than replaying a recording.
 
 ```bash
@@ -109,7 +109,7 @@ dotnet build demos/City3D/Viewer -c Debug -p:City3DRemote=true
 # then run the Viewer with --transport=dds (run-remote.sh wires this under Xvfb)
 ```
 
-Only the remote build pulls the native `SumoSharp.Replication.Dds`. The renderer talks to
+Only the remote build pulls the native `SumoSharp.Dds` package. The renderer talks to
 `IReplicationSource` either way, so local↔remote is a **source swap with the reconstruction/render code
 unchanged** — one shared `RenderFrame()`. DDS discovery is zero-config on a LAN/loopback (cross-subnet
 needs a Cyclone peer config).
