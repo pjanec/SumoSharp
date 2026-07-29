@@ -16,6 +16,7 @@ on:
       - "packaging/**"
       - "tests/**"
       - "Directory.Build.props"
+      - "Traffic.sln" # a solution change can break the restore/build gate (see the V2-collapse fix)
       - ".github/workflows/pack-check.yml"
 
 jobs:
