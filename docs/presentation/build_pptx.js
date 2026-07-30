@@ -425,6 +425,8 @@ DIAGRAM_SLIDES.forEach((d) => {
             "Outside a realism zone, cars do not see pedestrians that are off a crossing.",
             "Junction discharge trails SUMO's: the halting fraction matches almost exactly and the routes "
             + "are identical, but our cars roll slower. Localised, and being chased with a per-vehicle trace.",
+            "A long-standing car-to-car overlap of about 3 m on internal junction lanes — present "
+            + "before this work and not a regression.",
             "The full lateral / sublane model is deferred: lane-change timing is landed and parity-exact, "
             + "the lateral position model is not."] });
   s.addNotes("Do not apologise for this slide -- it is the strongest slide in the deck if delivered as a "

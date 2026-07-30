@@ -7,14 +7,23 @@ reading afterwards. Diagrams referenced by number live in [`svg/`](svg/).
 **Posture:** everything here is a proof of concept. Many mechanisms, all working, none polished — and
 §13 explains why that is the correct state rather than an apology.
 
+**How this maps to the slide deck.** The deck (`build_deck.sh` → `SumoSharp-features.pptx`) carries
+the same argument in the same order, with one diagram per slide and the takeaway below it. Two
+differences are deliberate:
+
+- The deck groups pedestrian material by theme, so §3.4 (city life) and §3.5 (the wire) appear as
+  their own slides late in the deck rather than nested under pedestrians as they are here.
+- §7 (real city) and §11 (rail and integration) have no diagram and therefore no slide. They are
+  spoken to, not shown. This document is where they are written down.
+
 **A note on numbers.** Three different classes of evidence appear below and they are deliberately worded
 differently, because conflating them is the fastest way to lose a technical audience:
 
-| Class | Example | How to read it |
+| Class | The figure | How to read it |
 | --- | --- | --- |
-| **Owner-verified routine operation** | 10 000 vehicles + 30 000 pedestrians in the 3-D viewer | Repeated first-hand use. The strongest evidence that it *works*. |
-| **Instrumented and reproducible** | the replication write rate; the coupled-load bench | Has a committed tool and a session log. Re-runnable. |
-| **Captured single run** | the GPU smoothness capture | One measurement with a CSV behind it. |
+| **Owner-verified routine operation** | **10 000 vehicles + 30 000 pedestrians** in the 3-D viewer | Repeated first-hand use, not a captured run. The strongest evidence that it *works*, and the headline scale claim here. |
+| **Instrumented and reproducible** | **0.64 replication updates per car per second** | Has a committed tool and a session log. Anyone can re-run it and get this number. |
+| **Captured single run** | **0 of 2000 frames** over 3× the median | One measurement with a CSV behind it. True, and true only about that run. |
 
 ---
 
@@ -46,6 +55,8 @@ to "did the cars change?"
 > vehicles each. The city-scale performance runs are validated against SUMO to a *statistical* aggregate
 > tolerance, not byte-for-byte. Both are real; they are different claims and should not be blurred.
 
+**Takeaway.** 661 committed goldens matched every step, and every extension is inert when switched off. That is what makes the rest of this document safe to add.
+
 ---
 
 ## 2. The seam SUMO does not have
@@ -70,6 +81,8 @@ Two design details matter more than the feature list:
   or remove on a stale one is an inert no-op rather than a crash or, worse, a write to a recycled slot.
 
 This single seam is what everything in §3 and §4 hangs off.
+
+**Takeaway.** Obstacles are frozen once per step, so the outcome never depends on insertion order — which is what lets the whole thing survive parallel execution.
 
 ---
 
@@ -155,11 +168,13 @@ byte loopback and over real DDS.
 
 The consequence: **crowd size is decoupled from bandwidth entirely.**
 
+**Takeaway.** The point of the cheap level is anti-uniformity. Pedestrians should never read as a grid or as rails; each keeps its own half of the walkable width and scatters within it, from its own seed, with no neighbour queries at all.
+
 ---
 
-## 4. Coupling cars and pedestrians — and the fidelity trade
+## 4. What a car can and cannot see
 
-*Diagram 06.* **This section's message is the trade, not the plumbing.**
+*Diagram 06.* Coupling is a level-of-detail decision, not a feature list. **This section's message is the trade, not the plumbing.**
 
 Cars see pedestrians through one composite source. What it contains defines exactly what the simulation
 can and cannot promise, so it is worth being blunt:
@@ -182,6 +197,8 @@ pedestrian disc standing in as the leader. What is new is *what* it reacts to, n
 looks at where the pedestrian **will be** rather than only where it is, because a current-overlap test
 cannot see a conflict that has not happened yet (*diagram 07*).
 
+**Takeaway.** Inside a realism zone: assured, no interpenetration. Outside it: believable, not guaranteed. Performance bought with believability, never with correctness.
+
 ---
 
 ## 5. Cost follows attention, not city size
@@ -199,6 +216,8 @@ where someone is looking.
 on the pedestrian side.
 
 Multiple and overlapping camera zones are designed and not yet built — a clean next increment.
+
+**Takeaway.** A city does not get more expensive because it is large. It gets more expensive where someone is looking.
 
 ---
 
@@ -235,6 +254,8 @@ segmented store that keeps each region's neighbours contiguous, which is designe
 **8 threads beating 24**, with the efficiency knee around 4. In the viewer this matters twice over: an
 engine that saturates every core starves the renderer, so the tick deliberately leaves cores free.
 
+**Takeaway.** Each region owns a disjoint set of lanes, so region tasks are lock-free by construction rather than by care — and a vehicle crossing a boundary needs no state transfer at all.
+
 ---
 
 ## 7. Running on a real city
@@ -259,6 +280,8 @@ same plan-view point.
 **Density is live.** Car and pedestrian counts change without rebuilding the simulation, which is what the
 viewer's sliders drive.
 
+**Takeaway.** The ground is derived from the network you already loaded. No external heightmap, no second asset pipeline, and pedestrians know which surface they are standing on.
+
 ---
 
 ## 8. Smooth motion at a low update rate
@@ -275,6 +298,8 @@ median, p99 was **1.20×** p50, and 2 Hz was sustained in real time.
 
 The remaining work here is about *reach* rather than repair — extending the same handoff discipline to more
 consumers, and to the sim-rate and zone controls under load.
+
+**Takeaway.** Capping engine parallelism to protect the renderer was proven trajectory-inert — 11 889 samples bitwise identical, capped versus uncapped. Smoothness cost nothing.
 
 ---
 
@@ -314,6 +339,8 @@ Bandwidth is simply not the constraint, and should be dropped from the argument.
 > the wire is measured *along a specific lane*, so a new lane must be published. It is a property of the
 > network's granularity, not of the traffic, and no publish threshold reaches it.
 
+**Takeaway.** 0.64 updates per car per second, about 94× fewer messages than the render rate, with motion still reconstructing smoothly at 60 fps. Ambient pedestrians send nothing at all.
+
 ---
 
 ## 10. Beyond traffic: evacuation
@@ -333,6 +360,8 @@ Two properties are worth naming:
   city-scale run pays for the affected neighbourhood while the rest keeps flowing normally.
 - **The core never learns about any of it.** The evacuation layer drives the engine through the same public
   seams any integrator would use. With panic off, the determinism hash does not move.
+
+**Takeaway.** This is the proof that the layering works: a whole behavioural model driving the engine through the same public seams any integrator would use, and with panic off the determinism hash does not move.
 
 ---
 
@@ -354,6 +383,8 @@ solution, so the hermetic test gate never touches them.
 no-slip rear-axle model so the body pivots like a real car, with look-ahead through junctions. Both the
 native and Godot viewers use it, so a fix lands in both at once. There is also a producer-side feed for an
 image generator that does no prediction of its own: the smoothing is baked in before the wire.
+
+**Takeaway.** Rail is held to the same exact parity bar as the road model, and one shared motion reconstructor means a fix lands in every viewer at once.
 
 ---
 
@@ -379,6 +410,8 @@ turn:
 
 The list is specific rather than aspirational because every entry came out of a measurement. That is the
 point: **there is a lot of headroom and we know where it is.**
+
+**Takeaway.** There is a lot of headroom and we know exactly where it is. Nothing on that list is a mystery — each entry is measured and attributed to a named cause.
 
 ---
 
@@ -412,6 +445,8 @@ public. And everything is measured, so we know where we actually stand.
 
 **Point at any of it and it becomes production work.**
 
+**Takeaway.** Point at any of it and it becomes production work.
+
 ---
 
 ## 14. The demonstrations
@@ -428,6 +463,8 @@ grid.
 **Performance — the Godot 3-D viewer on the same city**, at full scale. This is where the 10 000 vehicles
 and 30 000 pedestrians are real rather than quoted, and where §5's claim becomes visible: the camera zone
 moves, fidelity follows it, and the frame rate does not care how large the city is.
+
+**Takeaway.** Both demos run the same engine. The difference is only where fidelity is being spent.
 
 ---
 
