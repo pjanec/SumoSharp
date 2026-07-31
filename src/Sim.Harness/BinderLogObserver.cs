@@ -86,11 +86,12 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
     {
         public readonly double Time; public readonly string VehicleId; public readonly string Lane;
         public readonly double Pos; public readonly double Speed; public readonly byte Binder;
+        public readonly byte JyArm;
         public readonly int BlockerEntityIndex;
 
-        public Row(double time, string vehicleId, string lane, double pos, double speed, byte binder, int blockerEntityIndex)
+        public Row(double time, string vehicleId, string lane, double pos, double speed, byte binder, byte jyArm, int blockerEntityIndex)
         {
-            Time = time; VehicleId = vehicleId; Lane = lane; Pos = pos; Speed = speed; Binder = binder;
+            Time = time; VehicleId = vehicleId; Lane = lane; Pos = pos; Speed = speed; Binder = binder; JyArm = jyArm;
             BlockerEntityIndex = blockerEntityIndex;
         }
     }
@@ -98,7 +99,7 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
     public BinderLogObserver(string path)
     {
         _writer = new StreamWriter(path);
-        _writer.WriteLine("t,veh,lane,pos,speed,binder,binderName,blocker");
+        _writer.WriteLine("t,veh,lane,pos,speed,binder,binderName,jyArm,jyGreen,blocker");
     }
 
     public void OnFrameBegin(double time)
@@ -115,7 +116,7 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
         // EntityIndex is the ECS entity index. The guard below caught it instead of silently logging
         // garbage -- keep it.
         _idByEntityIndex[s.EntityIndex] = s.VehicleId;
-        _rows.Add(new Row(s.Time, s.VehicleId, s.Lane, s.Pos, s.Speed, s.BindingConstraint, s.BlockerEntityIndex));
+        _rows.Add(new Row(s.Time, s.VehicleId, s.Lane, s.Pos, s.Speed, s.BindingConstraint, s.JunctionYieldArm, s.BlockerEntityIndex));
     }
 
     public void OnFrameEnd(double time)
@@ -152,6 +153,15 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
             _writer.Write(row.Binder.ToString(CultureInfo.InvariantCulture));
             _writer.Write(',');
             _writer.Write(name);
+            // jyArm is meaningful ONLY when the binder is 10 (junctionYield); emitted as -1 otherwise so
+            // a reader cannot mistake a stale byte for an arm. Bit 0x80 is protected-green priority and
+            // is split into its own column rather than left packed into the number.
+            _writer.Write(',');
+            _writer.Write(row.Binder == 10
+                ? (row.JyArm & 0x0F).ToString(CultureInfo.InvariantCulture)
+                : "-1");
+            _writer.Write(',');
+            _writer.Write(row.Binder == 10 && (row.JyArm & 0x80) != 0 ? "1" : "0");
             _writer.Write(',');
             _writer.WriteLine(blocker);
         }

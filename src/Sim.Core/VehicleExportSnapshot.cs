@@ -100,6 +100,19 @@ public readonly struct VehicleExportSnapshot
     public readonly byte BindingConstraint;
 
     /// <summary>
+    /// DIAGNOSTIC ONLY: which ARM of `JunctionYieldConstraint` bound (low nibble), plus 0x80 when ego
+    /// had protected-green priority. Meaningful only where <see cref="BindingConstraint"/> == 10.
+    /// </summary>
+    /// <remarks>
+    /// Exported for the same reason as <see cref="BindingConstraint"/>: several of that constraint's
+    /// arms (cycleHold / cautiousApproach / sameTargetMerge / externalAgent) have **no single
+    /// identifiable foe**, so a blocker id is blank for them and the arm number is the only thing that
+    /// says which one is holding a vehicle. On junction-realism-L1, four vehicles sit wedged inside
+    /// junctions under tag 10 with a blank blocker for &gt;1200 steps — unattributable without this.
+    /// </remarks>
+    public readonly byte JunctionYieldArm;
+
+    /// <summary>
     /// DIAGNOSTIC ONLY: the <see cref="EntityIndex"/> of the foe/leader vehicle that
     /// <see cref="BindingConstraint"/>'s winning arm selected, for the constraints that identify a
     /// single blocking vehicle (crossJxnLeader=2, junctionYield=10, internalJunctionAdmission=14/17).
@@ -127,7 +140,8 @@ public readonly struct VehicleExportSnapshot
         double edgeSpeedLimit = 0.0,
         bool isStoppedAtStop = false,
         byte bindingConstraint = 0,
-        int blockerEntityIndex = -1)
+        int blockerEntityIndex = -1,
+        byte junctionYieldArm = 0)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -147,6 +161,7 @@ public readonly struct VehicleExportSnapshot
         EdgeSpeedLimit = edgeSpeedLimit;
         IsStoppedAtStop = isStoppedAtStop;
         BindingConstraint = bindingConstraint;
+        JunctionYieldArm = junctionYieldArm;
         BlockerEntityIndex = blockerEntityIndex;
     }
 }

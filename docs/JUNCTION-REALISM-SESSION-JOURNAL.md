@@ -813,3 +813,61 @@ drives into it?
 **Note for whoever picks this up:** the gate is default ON and the suite is RED by exactly this one
 test. Everything else — 661 goldens, the L2 gridlock fix, the junction overlap fix — is green and
 verified. Do not let the red test be "fixed" by relaxing its threshold; it is measuring a real overlap.
+
+---
+
+## Entry 13 — AFTER — evac parked; L1's wedge is `junctionYield` arm 0 with NO foe, and arm 0 is unclassified
+
+**Evac defect parked visibly.** `ActivePushers_NeverInterpenetrate` is `[Fact(Skip=...)]` with its
+threshold **unchanged**, the reason string naming the defect and the doc, and full characterisation in
+`docs/NEED-evac-pusher-orca-pairwise-overlap.md`. Gate green again: **776 passed / 5 skipped / 0 failed**.
+Owner priority: gridlock, normal-traffic junction overlaps and lateral lane-changes in high-realism
+zones rank above it.
+
+**L1 with the bay-exit gate ON: still 229 stopped, 17 wedged inside junctions.** Binder split:
+`leaderFollow` 201 (queue shadow), `crossJxnLeader` 16, `junctionYield` 10,
+`internalJunctionAdmission` 2.
+
+**The new signal: 5 of the 17 wedged vehicles are held by `junctionYield` with a BLANK blocker** — for
+1215–1418 consecutive samples each (`f_cyc_cw2.30` on `:J01_10_0`, `f_fill_N11.39` on `:J11_1_0`,
+`f_cyc_cw2.23` on `:J11_9_0`, and two others). A vehicle stopped *inside* a junction, yielding, with no
+identifiable foe, for the entire run.
+
+**Extended the binder log with `jyArm` + `jyGreen`** (`VehicleExportSnapshot.JunctionYieldArm` →
+`BinderLogObserver`), since `JunctionYieldConstraint`'s cycleHold / cautiousApproach / sameTargetMerge /
+externalAgent arms have no single foe by design and the arm number is then the only attribution
+available. Two instrument bugs were hit and fixed getting there: a header/writer column misalignment
+(the subagent had restructured the writer into a buffered per-frame flush, so my naive edit put
+`blocker` values under the `jyArm` header), and a constructor-parameter insertion at the wrong position.
+
+**Result: `jyArm` is 0 for 100% of 15 739 `junctionYield` samples, `jyGreen` 0 throughout.**
+
+⚠ **I first read that as a broken diagnostic and was wrong.** `v.JunctionYieldArm` is assigned at
+`Engine.cs:7637`, immediately before the constraint's only binding return; the early returns at 6911 /
+6925 / 6944 are all `+infinity`, i.e. non-binding, so a binder of 10 always implies the assignment ran.
+**Arm 0 is genuinely recorded.** What it means is the weaker statement: `jyArm` is set to a nonzero
+value only inside specific classified branches, so **0 = "bound via a path that never classified
+itself"** — which is exactly consistent with the blank blocker.
+
+**So the honest state: 5 vehicles are wedged inside junctions under an UNCLASSIFIED junction-yield
+path, and neither existing diagnostic (blocker id, arm number) can say which.** That is the next
+concrete task, and it is instrumentation before hypothesis.
+
+---
+
+## Entry 14 — BEFORE — next: classify the unclassified junction-yield path
+
+**Step.** Read `JunctionYieldConstraint` (`Engine.cs:~6884-7639`) and find every path that can return a
+*binding* speed without assigning a nonzero `jyArm`. Give each one a distinct arm id. This is bounded
+and mechanical — good delegation — and it is a **diagnostic-only** change, so its gate is FCD
+byte-identity plus 776/5.
+
+Then re-run L1 and read which newly-named arm holds those 5 vehicles.
+
+**No prediction recorded.** Eight wrong hypotheses this session, four instrument defects found (two in
+the binder log, one in the evac diag's verdict label, one in the regression battery's dwell metric).
+
+**Also still open:** normal-traffic junction overlaps outside the repro (the `city-*` nets still show
+1–10 overlap pairs); the lateral-lane-change-at-red repro (`SUMOSHARP-ISSUE-stopped-lane-change-overlap.md`
+§5 specifies what to build) plus the measured **61 vs 17** stopped sideways lane changes against SUMO;
+the pedestrian amplifier.
