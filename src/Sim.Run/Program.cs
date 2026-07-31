@@ -138,6 +138,13 @@ internal static class Program
         // The BOX-BLOCK half (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 6/7): don't release a
         // vehicle from a cont bay when its own exit lane cannot accept it. Same EnvGate semantics.
         engine.BayExitLaneKeepClear = EnvGate("SUMOSHARP_BAYEXITKEEPCLEAR", engine.BayExitLaneKeepClear);
+        // Sweepable threshold for the gate above (metres of exit-lane room beyond ego's own length;
+        // unset/-1 => ego's MinGap). Numeric, so it is parsed rather than EnvGate'd.
+        if (double.TryParse(Environment.GetEnvironmentVariable("SUMOSHARP_BAYEXITEXTRA"),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out var bayExitExtra))
+        {
+            engine.BayExitLaneKeepClearExtra = bayExitExtra;
+        }
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

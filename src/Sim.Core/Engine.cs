@@ -8139,7 +8139,8 @@ public sealed partial class Engine : IEngine
                 // the front-bumper arc position (SUMO's getPositionOnLane convention) -- using `Pos`
                 // directly here would overstate the free space by a whole vehicle length, which is the
                 // exact error docs/SUMOSHARP-ISSUE-stopped-lane-change-overlap.md §2 warns about.
-                var required = v.VType.Length + v.VType.MinGap;
+                var required = v.VType.Length
+                    + (BayExitLaneKeepClearExtra < 0.0 ? v.VType.MinGap : BayExitLaneKeepClearExtra);
                 var onExit = _neighborQuery!.OnLane(exitLaneHandle);
                 var rearMostBack = double.PositiveInfinity;
                 for (var i = 0; i < onExit.Count; i++)
@@ -13387,10 +13388,29 @@ public sealed partial class Engine : IEngine
     // vehicle stranded 0.5 m short of clearing junction J10 closes a 14-vehicle circular wait that holds
     // all 226 vehicles of the L1 gridlock (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 6).
     //
-    // DEFAULT OFF until measured. Unlike the approach arm this is NOT expected to be golden-inert -- it
-    // changes when vehicles enter junctions -- so the deciding measurement is the repro A/B plus the
-    // cross-net battery plus a SUMO diff for any golden that shifts.
-    public bool BayExitLaneKeepClear { get; set; }
+    // DEFAULT ON -- an explicit owner decision, taken on the measured trade rather than inferred:
+    // "permanent gridlocks with no automatic resolution are a show stopper", accepting ~1% throughput
+    // on two organic city nets to eliminate a total deadlock. Measured: junction-realism-L2 goes
+    // 320 arrived / 130 permanently stopped -> 450 / 0, matching honest SUMO exactly, with all 661
+    // goldens byte-identical. L1 improves 63 -> 112 and still deadlocks, so it carries a further
+    // mechanism (untraced).
+    //
+    // ⚠ ONE KNOWN, UNFIXED REGRESSION SHIPS WITH THIS: EvacPhase3Tests.ActivePushers_NeverInterpenetrate
+    // fails, minimum pusher separation 4.073 m -> 0.463 m. That is a GROSS car-car overlap, not a
+    // marginal threshold miss, and it is the exact class of defect this workstream exists to remove.
+    // It is undiagnosed. Do not read the default-ON as "this is clean" -- read it as "gridlock outranks
+    // it, and the overlap is owed a fix". docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 9.
+    public bool BayExitLaneKeepClear { get; set; } = true;
+
+    // How much exit-lane room BayExitLaneKeepClear demands, as metres ADDED to ego's own length.
+    // -1 (the default) means "use ego's MinGap", i.e. the physically-motivated `Length + MinGap`.
+    //
+    // Tunable because the gate's cost and its benefit come from the SAME conservatism: it eliminates the
+    // L2 gridlock by holding vehicles out of junctions they cannot clear, and costs ~1% arrivals on two
+    // organic city nets for exactly that reason. A smaller requirement may keep the deadlock fix at a
+    // lower price -- that is an empirical question, so it gets a knob and a sweep rather than an
+    // argument. Sweep results live in docs/JUNCTION-REALISM-SESSION-JOURNAL.md.
+    public double BayExitLaneKeepClearExtra { get; set; } = -1.0;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

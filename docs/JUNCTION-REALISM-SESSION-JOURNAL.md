@@ -598,3 +598,64 @@ decided.** The measured facts:
 **threshold sweep** — the current rule demands `Length + MinGap` of exit-lane room, and a smaller
 requirement may keep the gridlock fix while returning the throughput and possibly the evac separation.
 That is a clear, bounded next step and it does not need a design doc.
+
+---
+
+## Entry 9 — AFTER — threshold sweep REFUTED; default flipped ON by owner decision; suite is RED by one
+
+### Threshold sweep — the hypothesis was wrong
+
+Exit-lane room required = `Length + extra`:
+
+| extra | L1 | L2 |
+|---|---|---|
+| −1 (= MinGap, 2.5) | 112 / 229 GRIDLOCK | **450 / 0 DRAINED** |
+| 2.5 | 112 / 229 | **450 / 0 DRAINED** |
+| 1.0 | 112 / 229 | **450 / 0 DRAINED** |
+| 0.5 | 112 / 229 | **450 / 0 DRAINED** |
+| 0.0 | 112 / 229 | 320 / 130 GRIDLOCK |
+
+The gridlock fix survives down to **0.5 m** and dies at **0.0** — so the effective threshold is far
+below the default. **But the hypothesis that a smaller threshold would recover the city-net throughput
+is REFUTED:** at extra=0.5 `city-mixed-1k` is *worse*, arrived **985** against **1001** at the default.
+The cost is not threshold-sensitive in the helpful direction. Default kept at MinGap.
+
+### Default flipped ON — owner decision, on the measured trade
+
+*"I accept ~1% throughput and the proximity violation to eliminate gridlock. Permanent gridlocks with
+no automatic resolution are a show stopper."* Also, correctly: *"gridlocks are bad anywhere"* — the
+zone-scoped option I floated was wrong and is withdrawn. Gridlock is a correctness failure, not a
+visual one; I had said so myself earlier and then contradicted it.
+
+### ⚠ THE SUITE IS RED BY ONE TEST, AND THE SEVERITY WAS UNDERSTATED WHEN THE DECISION WAS TAKEN
+
+`dotnet test tests/Sim.ParityTests` → **775 passed / 4 skipped / 1 FAILED**.
+
+`EvacPhase3Tests.ActivePushers_NeverInterpenetrate`: minimum pusher separation
+**4.073 m → 0.463 m**. I characterised this as "one car–car proximity violation (< 1.0 m)" when the
+owner accepted it. **It is roughly ten times worse than that description** — 0.463 m between ~5 m
+vehicles is a gross overlap, not a marginal threshold miss. The decision was taken on an understated
+number and that is recorded here rather than left implicit.
+
+**It is undiagnosed.** One lead worth checking first: evac "pushers" come from `VehicleMover`, not from
+the Engine's car-following, so this may be a pusher *placement/activation* effect (the gate changed
+which engine vehicles are where, and two pushers activate on top of each other) rather than a
+car-following failure inside the junction logic. That distinction decides whether the fix belongs in
+`Sim.Evac` or in this gate. **Do not assume — instrument it.**
+
+**Standing recommendation:** all 661 goldens are byte-identical and the gridlock is gone on L2, but a
+green gate is this repo's iron law and it is currently broken. The overlap is owed a fix before this
+branch merges, and the default-ON should not be read as "clean".
+
+---
+
+## Entry 10 — BEFORE — next: diagnose the evac pusher overlap
+
+**Step.** Reproduce the 0.463 m pair with identities: extend the test's loop (or a scratch probe) to
+report WHICH two pusher handles converge, at which step, on which lanes, and whether they are
+Engine-moved or `VehicleMover`-moved at that moment. Then decide `Sim.Evac` vs gate.
+
+**Expectation: none recorded.** Six predictions this session, six wrong. The instrument decides.
+
+**Also still open:** L1 gridlocks at 112/229 with every threshold — a second, untraced mechanism;
+the stopped-lane-change minimal repro; the pedestrian amplifier.
