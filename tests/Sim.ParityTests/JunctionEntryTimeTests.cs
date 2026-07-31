@@ -134,18 +134,25 @@ public class JunctionEntryTimeTests
         Assert.Equal(long.MaxValue, samples[normalIndex].Cet);
     }
 
-    // Success condition 2: a vehicle taking CONT link 18 (veh 95, design doc §0/§2b's worked example:
+    // Success condition 2: a vehicle taking CONT link 18 (design doc §0/§2b's worked example:
     // "2417 -> :2336_18_0: entry link, Cont=1 => ET = ETN = t_enter, and CET stays MAX ... Then
     // :2336_18_0 -> :2336_42_0: internal->internal => CET = t_stage2, and ET is restored to ETN".
     //
-    // THE LOAD-BEARING ASSERTION is `CET == long.MaxValue` while veh 95 sits on the STAGE-1 bay lane
-    // `:2336_18_0` -- it is what distinguishes a correct cont port (conflict-entry does NOT fire on a
-    // cont link, MSLink.cpp:1292-1296's `!myAmCont` guard) from a plausible WRONG port that stamps
-    // CET at ordinary junction entry regardless of cont-ness.
+    // WITNESS: originally veh 95 (design doc §0); re-anchored to veh 89 after the Entry 34
+    // follower-LC fix (the new speedGain-RIGHT arm changes approach-lane sorting on this net, so
+    // veh 95 no longer reaches the cont-18 bay inside the step budget). Anchor found by the same
+    // scratch anchor-finder as Entry 31's re-anchor: veh 89 occupies `:2336_18_0` steps 318-324
+    // and `:2336_42_0` steps 325-328 -- the invariant under test (cont-link entry-time stamping)
+    // is vehicle-agnostic; only the witness moved.
+    //
+    // THE LOAD-BEARING ASSERTION is `CET == long.MaxValue` while the witness sits on the STAGE-1
+    // bay lane `:2336_18_0` -- it is what distinguishes a correct cont port (conflict-entry does
+    // NOT fire on a cont link, MSLink.cpp:1292-1296's `!myAmCont` guard) from a plausible WRONG
+    // port that stamps CET at ordinary junction entry regardless of cont-ness.
     [Fact]
     public void ContLink18_StageOneNeverSetsConflictEntry_StageTwoSetsItAndRenewsEntryTime()
     {
-        const string vehicleId = "95";
+        const string vehicleId = "89";
         const string stage1Lane = ":2336_18_0";
         const string stage2Lane = ":2336_42_0";
 
@@ -183,8 +190,8 @@ public class JunctionEntryTimeTests
         }
 
         // After exit: MSLink::isExitLink resets all three. But the sample immediately after stage 2
-        // is NOT necessarily on a normal lane -- measured here, veh 95 leaves `:2336_42_0` and enters
-        // junction 444's internal lane `:444_0_0` in the SAME step, so that sample legitimately shows
+        // is NOT necessarily on a normal lane -- measured on the original veh-95 witness, the vehicle
+        // left `:2336_42_0` and entered junction 444's internal lane `:444_0_0` in the SAME step, so that sample legitimately shows
         // a fresh entry stamp (ET == ETN == CET == that step) rather than MaxValue. Asserting
         // MaxValue there would be asserting that a vehicle cannot cross two junction boundaries in one
         // step, which is not a property of the engine and has nothing to do with this port.
@@ -219,7 +226,7 @@ public class JunctionEntryTimeTests
     [Fact]
     public void Dump_RawTraceForBothVehicles()
     {
-        foreach (var vehicleId in new[] { "95", "102" })
+        foreach (var vehicleId in new[] { "89", "102" })
         {
             var samples = Trace(vehicleId, 700);
             _out.WriteLine($"--- vehicle {vehicleId} ({samples.Count} samples) ---");

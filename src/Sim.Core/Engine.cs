@@ -10258,9 +10258,19 @@ public sealed partial class Engine : IEngine
     // ending on this edge, or a drop lane with no connection to the next route edge (the boundary
     // reroutes or clamps there and DeadLaneMergeBrakeConstraint owns the braking).
     private int BuildActualDownstreamSpan(VehicleRuntime ego, Span<int> buf)
+        => BuildDownstreamSpanFrom(ego, _network!.LanesByHandle[ego.LaneHandle], buf);
+
+    // Entry 34 generalization: same walk, parameterized on the SOURCE lane so the right-direction
+    // lane-change block can ask "what does my RIGHT NEIGHBOUR's lane connect onto toward my next
+    // route edge?" (SUMO's getRealRightLeader looks past the neighbour lane's end,
+    // MSLaneChanger::getRealLeader -> getLeaderOnConsecutive). `fromLane` must be on the same edge
+    // the pool says ego is on (for the T2.6 caller it IS ego's actual lane; for the keep-right
+    // caller it is the right neighbour of ego's actual lane, same edge by construction) -- the
+    // `firstEdge != fromLane.EdgeId` guard below enforces this identically for both, so the T2.6
+    // path is byte-identical to the pre-refactor form.
+    private int BuildDownstreamSpanFrom(VehicleRuntime ego, Lane fromLane, Span<int> buf)
     {
-        var currentLane = _network!.LanesByHandle[ego.LaneHandle];
-        if (currentLane.EdgeId.Length > 0 && currentLane.EdgeId[0] == ':')
+        if (fromLane.EdgeId.Length > 0 && fromLane.EdgeId[0] == ':')
         {
             return 0;
         }
@@ -10271,7 +10281,7 @@ public sealed partial class Engine : IEngine
         string? nextEdgeId = null;
         for (var k = ego.LaneSeqIndex; k < ego.LaneSeqLen; k++)
         {
-            var lane = _network.LanesByHandle[_laneSeqPool[ego.LaneSeqStart + k]];
+            var lane = _network!.LanesByHandle[_laneSeqPool[ego.LaneSeqStart + k]];
             if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
             {
                 continue;
@@ -10288,13 +10298,13 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        if (nextEdgeId is null || firstEdge != currentLane.EdgeId)
+        if (nextEdgeId is null || firstEdge != fromLane.EdgeId)
         {
             return 0;
         }
 
-        if (!_network.ConnectionsByFromLaneTo.TryGetValue(
-                (currentLane.EdgeId, currentLane.Index, nextEdgeId), out var connection))
+        if (!_network!.ConnectionsByFromLaneTo.TryGetValue(
+                (fromLane.EdgeId, fromLane.Index, nextEdgeId), out var connection))
         {
             return 0;
         }
@@ -13073,16 +13083,18 @@ public sealed partial class Engine : IEngine
         }
     }
 
-    // MSLCM_LC2013's keep-right sub-block ONLY (see CLAUDE.md briefing's scope note): strategic/
-    // cooperative LC blocks all pass through as non-binding and only the keep-right accumulator
-    // drives the decision. NOT built (scoped out): strategic/cooperative blocks, general
-    // best-lanes (neighDist here is simply the right lane's own length, not a computed
-    // continuation distance), continuous lateral (SL2015), lanechange.duration>0, and multi-edge
-    // route lane continuity. (P2-G: the target-lane safety/blocker veto against neighbors IS now
-    // ported at the fire site below -- see that comment.) `checkOverTakeRight`
-    // (:1750-1758) stays unported: it requires lcOvertakeRight=true (non-default, off here) AND
-    // ego's OWN-lane leader to be slow, which is never the case in any scenario reachable by this
-    // engine today.
+    // MSLCM_LC2013's RIGHT-direction incentive block (Entry 34 -- formerly the keep-right
+    // sub-block only): the keep-right accumulator, AND the right half of the shared signed
+    // speed-gain accumulator (negative = right wish) with its LCA_SPEEDGAIN fire (:1698-1817) --
+    // the arm whose absence Entry 32 measured as the follower lane-change deferral. `currentDist`/
+    // `neighDist` are the raw best-lanes continuation lengths (SUMO's curr/neigh LaneQ.length,
+    // memoized via the KeepRightStrategicStay cache), and the right-lane leader lookup includes
+    // the continuation past the lane end (T2.6's walk). NOT built (scoped out): cooperative
+    // blocks, continuous lateral (SL2015), lanechange.duration>0. (P2-G: the target-lane safety/
+    // blocker veto against neighbors IS ported at both fire sites below -- see those comments.)
+    // `checkOverTakeRight` (:1750-1758) stays unported: it requires lcOvertakeRight=true
+    // (non-default, off here) AND ego's OWN-lane leader to be structurally slower (its lane vMax),
+    // which is never the case in any scenario reachable by this engine today.
     //
     // Called from DecideSpeedGainChanges's post-move phase (see that method's CORRECTED-ORDERING
     // comment for why this is no longer a pre-move Plan/MoveIntent decision) -- reads/writes
@@ -13153,9 +13165,10 @@ public sealed partial class Engine : IEngine
         {
             v.KeepRightStayCacheLane = v.LaneHandle;
             v.KeepRightStaySuppress = KeepRightStrategicStay(
-                v, lane, rightLane.Index, out var rule2Eligible, out var rightContLength);
+                v, lane, rightLane.Index, out var rule2Eligible, out var rightContLength, out var currContLength);
             v.KeepRightStayRule2Eligible = rule2Eligible;
             v.KeepRightStayRightContLength = rightContLength;
+            v.KeepRightStayCurrContLength = currContLength;
         }
         if (v.KeepRightStaySuppress)
         {
@@ -13211,8 +13224,98 @@ public sealed partial class Engine : IEngine
         const double keepRightTime = 5.0; // MSLCM_LC2013.cpp:67 KEEP_RIGHT_TIME
         const double changeProbThresholdRight = 2.0; // ctor: (0.2/mySpeedGainRight)/mySpeedGainParam, defaults 0.1/1
         const double keepRightParam = 1.0; // ctor default (LCA_KEEPRIGHT_PARAM)
+        const double relGainNormalizationMinSpeed = 10.0; // MSLCM_LC2013.cpp RELGAIN_NORMALIZATION_MIN_SPEED
 
         var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
+        var neighVMax = KraussModel.LaneVehicleMaxSpeed(rightLane.Speed, v.SpeedFactor, v.VType);
+
+        // Entry 34 (a): the RAW best-lanes continuation lengths (SUMO's curr.length / neigh.length,
+        // MSLCM_LC2013.cpp:1135-1136 -- lane-START-relative, proven by rule 2's `neighDist -
+        // posOnLane`, and passed RAW into both anticipateFollowSpeed (:1548-1549) and the keep-right
+        // deltaProb formula). Cached by the KeepRightStrategicStay memo above; 0 means "no
+        // continuation entry / single-edge route", where SUMO's LaneQ.length IS the lane length --
+        // so the fallback is exact there, not an approximation. This is the term Entry 32 proved
+        // was the entire keep-right rolling-rate gap (0.0508 vs SUMO's 0.0804 per step).
+        var currentDist = v.KeepRightStayCurrContLength > 0.0 ? v.KeepRightStayCurrContLength : lane.Length;
+        var neighDist = v.KeepRightStayRightContLength > 0.0 ? v.KeepRightStayRightContLength : rightLane.Length;
+
+        // Entry 34 (b): right-lane leader INCLUDING the continuation past the lane end (SUMO's
+        // getRealRightLeader -> getLeaderOnConsecutive; Entry 21 measured the same-lane-only lookup
+        // inverting the neighLead cut exactly where the L2 artefact fires -- ego at the very end of
+        // its lane finds NO leader here while SUMO always finds one just past the boundary). The
+        // walk reuses T2.6's downstream-span machinery from the RIGHT lane and the same frozen
+        // NeighborRearmost source the left path's TryFindContinuationLeader reads. A continuation
+        // leader's gap is the walk's accumulated cross-boundary gap -- cross-lane position
+        // arithmetic is meaningless for it, so the (leader, gap) PAIR feeds the cut, the vsafe, and
+        // the commit safety below. Lookahead is TryFindCrossJunctionLeader's Speed2Dist + brakeGap
+        // (shorter than SUMO's consecutive scan -- documented; the binding L2 case, a leader just
+        // past the boundary, sits well inside it).
+        var neighLead = neighbors.GetNeighborLeader(v, rightLane.Handle);
+        var neighLeadIsCont = false;
+        double neighLeadGap;
+        if (neighLead is not null)
+        {
+            neighLeadGap = (neighLead.Kinematics.Pos - neighLead.VType.Length) - v.VType.MinGap - v.Kinematics.Pos;
+        }
+        else if (TryFindNeighborContinuationLeader(v, rightLane, neighbors, dt, out var contLead, out var contGap))
+        {
+            neighLead = contLead;
+            neighLeadGap = contGap;
+            neighLeadIsCont = true;
+        }
+        else
+        {
+            neighLeadGap = double.PositiveInfinity;
+        }
+
+        // A CONTINUATION leader must not reach IsTargetLaneSafe / RecordLaneChangeCommit (their
+        // internal gap formulas assume same-lane positions); its secure-gap check runs on the walk
+        // gap instead. Same-lane leaders keep the exact pre-Entry-34 path.
+        var neighLeadSameLane = neighLeadIsCont ? null : neighLead;
+        var contLeadSafe = !neighLeadIsCont
+            || neighLeadGap >= SecureGap(v.Kinematics.Speed, v.VType, neighLead!.Kinematics.Speed, neighLead.VType.Decel, dt);
+
+        // Entry 34 (c): the vsafe pair (MSLCM_LC2013.cpp:1546-1549) and relativeGain (:1682), then
+        // SUMO's right-direction structure (:1698-1817): the >5 km/h gate decays the shared signed
+        // speed-gain accumulator (negative = right wish) and SKIPS keep-right accumulation entirely;
+        // otherwise the accumulator grows by relativeGain and the keep-right body runs. The
+        // acceleratingLeader anticipation branch stays unmodeled (AnticipateFollowSpeed's own
+        // documented scope) -- the artefact window is the braking approach, where it is inert.
+        var leader = neighbors.GetLeader(v);
+        var thisLaneVSafe = Math.Min(vMax, AnticipateFollowSpeed(v, leader, currentDist, dt));
+        var neighLaneVSafe = Math.Min(neighVMax, AnticipateFollowSpeedWithGap(v, neighLead, neighLeadGap, neighDist, dt));
+        var relativeGain = (neighLaneVSafe - thisLaneVSafe) / Math.Max(neighLaneVSafe, relGainNormalizationMinSpeed);
+
+        var speedGainProbability = v.SpeedGainProbability;
+        var currentMuchFasterThanRight = thisLaneVSafe - (5.0 / 3.6) > neighLaneVSafe;
+        if (currentMuchFasterThanRight)
+        {
+            // :1700-1705: the current lane is (much) faster than the right one -> decay a pending
+            // right wish toward 0; no keep-right obligation accumulates this step.
+            if (speedGainProbability < 0)
+            {
+                speedGainProbability *= Math.Pow(0.5, actionStepLengthSecs);
+            }
+        }
+        else
+        {
+            // :1717-1719 -- the gate (`sgp < 0 || relativeGain > 0`) is SUMO's own guard against
+            // promoting a LEFT wish (positive sgp) via a negative relativeGain here.
+            if (speedGainProbability < 0 || relativeGain > 0)
+            {
+                speedGainProbability -= actionStepLengthSecs * relativeGain;
+            }
+        }
+
+        // MSLCM_LC2013.cpp:1020 numerical-stability truncation -- same placement rationale (and the
+        // same documented <=1e-5 ordering tolerance vs SUMO's once-per-step prepareStep call) as the
+        // left block's copy. Idempotent on an unmutated, already-truncated stored value, so this is
+        // byte-identical whenever the arm above didn't move the accumulator.
+        speedGainProbability = Math.Ceiling(speedGainProbability * 100000.0) * 0.00001;
+        v.SpeedGainProbability = speedGainProbability;
+
+        if (!currentMuchFasterThanRight)
+        {
         var roadSpeedFactor = vMax / lane.Speed; // getSpeedLimit() of ego's OWN (current) lane
 
         // Legacy behavior (myKeepRightAcceptanceTime == -1, SUMO's default): acceptanceTime scales
@@ -13220,10 +13323,6 @@ public sealed partial class Engine : IEngine
         // full precision per the rung-8b briefing; identical value whether read pre- or post-move
         // since ExecuteMoves already set v.Kinematics.Speed = this step's finalized CF speed.
         var acceptanceTime = 7.0 * roadSpeedFactor * Math.Max(1.0, v.Kinematics.Speed);
-
-        // Scope note: general best-lanes continuation distance is deferred -- on this single-
-        // edge dead-end route, the right lane's own length IS its full best-lanes continuation.
-        var neighDist = rightLane.Length;
 
         var fullSpeedGap = Math.Max(0.0, neighDist - KraussModel.BrakeGap(vMax, v.VType.Decel, v.VType.Tau, dt));
         var fullSpeedDrivingSeconds = Math.Min(acceptanceTime, fullSpeedGap / vMax);
@@ -13233,12 +13332,9 @@ public sealed partial class Engine : IEngine
         // the SAME frozen post-move `neighbors` snapshot this whole phase reads (see this method's
         // header comment for why post-move, not pre-move). Non-binding (as in every prior single-
         // lane/empty-right-lane rung) whenever the right lane has no leader ahead of ego, or that
-        // leader is not slower than vMax.
-        var neighLead = neighbors.GetNeighborLeader(v, rightLane.Handle);
+        // leader is not slower than vMax. The gap is the (possibly cross-boundary) pair gap above.
         if (neighLead is not null && neighLead.Kinematics.Speed < vMax)
         {
-            var neighLeadBackPos = neighLead.Kinematics.Pos - neighLead.VType.Length;
-            var neighLeadGap = neighLeadBackPos - v.VType.MinGap - v.Kinematics.Pos;
             var secureGap = SecureGap(vMax, v.VType, neighLead.Kinematics.Speed, neighLead.VType.Decel, dt);
 
             fullSpeedGap = Math.Max(0.0, Math.Min(fullSpeedGap, neighLeadGap - secureGap));
@@ -13249,12 +13345,12 @@ public sealed partial class Engine : IEngine
         var deltaProb = changeProbThresholdRight * (fullSpeedDrivingSeconds / acceptanceTime) / keepRightTime;
         var keepRightProbability = v.KeepRightProbability - (actionStepLengthSecs * deltaProb);
 
-        // DIAGNOSTIC (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 21): the full accumulator state for
-        // one vehicle. `saturated` is the load-bearing field -- it says fullSpeedDrivingSeconds has hit
-        // the acceptanceTime cap, which is when deltaProb reaches its maximum 0.4/step. Committed rather
-        // than scratch because the comparison it feeds -- against SUMO's own
-        // `laneChangeModel.keepRightProbability`, read live over TraCI -- is the only thing that has
-        // produced a true statement about this artefact so far.
+        // DIAGNOSTIC (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 21; deduped + extended Entry 34):
+        // the full accumulator state for one vehicle. `saturated` is the load-bearing field -- it says
+        // fullSpeedDrivingSeconds has hit the acceptanceTime cap, which is when deltaProb reaches its
+        // maximum 0.4/step. Committed rather than scratch because the comparison it feeds -- against
+        // SUMO's own `laneChangeModel.keepRightProbability`, read live over TraCI -- is the only thing
+        // that has produced a true statement about this artefact so far.
         if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
         {
             Console.Error.WriteLine(
@@ -13263,26 +13359,7 @@ public sealed partial class Engine : IEngine
                 + $"fullSpeedGap={fullSpeedGap:F2} fsds={fullSpeedDrivingSeconds:F2} "
                 + $"acceptanceTime={acceptanceTime:F2} "
                 + $"saturated={(fullSpeedDrivingSeconds >= acceptanceTime - 1e-9 ? "YES" : "no")} "
-                + $"neighLead={(neighLead is null ? "none" : neighLead.Def.Id)} "
-                + $"deltaProb={deltaProb:F4} keepRightProb={keepRightProbability:F3} "
-                + $"fires={(keepRightProbability * keepRightParam < -changeProbThresholdRight ? "YES" : "no")}");
-        }
-
-        // DIAGNOSTIC (journal Entry 21/22): the full keep-right accumulator state for ONE vehicle.
-        // `saturated` is the load-bearing field -- it says fullSpeedDrivingSeconds has hit the
-        // acceptanceTime cap, which is when deltaProb reaches its maximum of 0.4/step. Committed rather
-        // than scratch because the comparison it feeds -- against SUMO's own
-        // `laneChangeModel.keepRightProbability` read live over TraCI -- is the only thing that has
-        // produced a true statement about this artefact so far.
-        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
-        {
-            Console.Error.WriteLine(
-                $"[keepright] t={CurrentTime:F1} veh={v.Def.Id} lane={v.LaneId}@{v.Kinematics.Pos:F2} "
-                + $"spd={v.Kinematics.Speed:F2} vMax={vMax:F2} neighDist={neighDist:F2} "
-                + $"fullSpeedGap={fullSpeedGap:F2} fsds={fullSpeedDrivingSeconds:F2} "
-                + $"acceptanceTime={acceptanceTime:F2} "
-                + $"saturated={(fullSpeedDrivingSeconds >= acceptanceTime - 1e-9 ? "YES" : "no")} "
-                + $"neighLead={(neighLead is null ? "none" : neighLead.Def.Id)} "
+                + $"neighLead={(neighLead is null ? "none" : neighLead.Def.Id)}{(neighLeadIsCont ? "(cont)" : "")} "
                 + $"deltaProb={deltaProb:F4} keepRightProb={keepRightProbability:F3} "
                 + $"fires={(keepRightProbability * keepRightParam < -changeProbThresholdRight ? "YES" : "no")}");
         }
@@ -13334,7 +13411,8 @@ public sealed partial class Engine : IEngine
             // inert). Inert on every golden regardless (CooperativeInformFollower AND LaneChangeMinSpeed
             // both off there) -> byte-identical.
             if ((!CooperativeLcFor(v) || LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
-                && IsTargetLaneSafe(v, neighLead, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
+                && contLeadSafe
+                && IsTargetLaneSafe(v, neighLeadSameLane, neighFollowKr, dt) && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
                 && !LaneChangeSlotContested(v, rightLane.Handle, neighbors)
                 // #15 into-occupied: keep-right is discretionary -- don't return to the right lane by cutting
                 // in tight ahead of a STOPPED follower there; ego stays put and keeps flowing. Inert on goldens.
@@ -13355,7 +13433,7 @@ public sealed partial class Engine : IEngine
                 // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
                 // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
                 // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
-                RecordLaneChangeCommit(3, v, neighLead, neighFollowKr, bypassesMinSpeed: true); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
+                RecordLaneChangeCommit(3, v, neighLeadSameLane, neighFollowKr, bypassesMinSpeed: true); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
                 v.LaneId = rightLane.Id;
                 // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
                 v.LaneHandle = rightLane.Handle;
@@ -13372,6 +13450,59 @@ public sealed partial class Engine : IEngine
         }
 
         v.KeepRightProbability = keepRightProbability;
+        } // !currentMuchFasterThanRight -- SUMO's :1706-1794 else-scope around the keep-right body
+
+        // Entry 34 (c): the speedGain-RIGHT fire (MSLCM_LC2013.cpp:1811-1816) -- sits at the
+        // `if (right)` level, AFTER the keep-right block, so it runs whichever arm of the 5 km/h
+        // gate was taken. NO `relativeGain > eps` condition, unlike the left fire (:1857-1859) --
+        // faithful to the source. This is the arm whose ABSENCE Entry 32 measured: SUMO fires
+        // followers out of a braking approach at speed (f.3: t=22 @ 3.7 m/s, trail
+        // -0.23/-0.72/-1.05/-1.46) while our engine could only ever change right via keep-right.
+        // DIAGNOSTIC trace: committed (Measurement discipline #8) -- the resume doc's oracle trail
+        // comparison reads exactly these fields.
+        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+        {
+            Console.Error.WriteLine(
+                $"[sgright] t={CurrentTime:F1} veh={v.Def.Id} lane={v.LaneId}@{v.Kinematics.Pos:F2} "
+                + $"spd={v.Kinematics.Speed:F2} thisVSafe={thisLaneVSafe:F2} neighVSafe={neighLaneVSafe:F2} "
+                + $"relGain={relativeGain:F4} muchFaster={(currentMuchFasterThanRight ? "YES" : "no")} "
+                + $"neighLead={(neighLead is null ? "none" : neighLead.Def.Id)}{(neighLeadIsCont ? "(cont)" : "")} "
+                + $"neighDist={neighDist:F2} sgProb={speedGainProbability:F3} "
+                + $"fires={(speedGainProbability < -changeProbThresholdRight && neighDist / Math.Max(0.1, v.Kinematics.Speed) > 20.0 ? "YES" : "no")}");
+        }
+
+        if (speedGainProbability < -changeProbThresholdRight
+            && neighDist / Math.Max(0.1, v.Kinematics.Speed) > 20.0)
+        {
+            // Same target-lane safety block as every other change path (checkChange's role), plus
+            // CommitLaneChange's plain LaneChangeMinSpeed gate -- the LEFT speedGain twin's
+            // convention (this is the same SUMO mechanism, LCA_SPEEDGAIN, so the realism knob's
+            // semantics match the twin, NOT keep-right's coop-conditioned #15 form). The swap
+            // itself is INLINE like the sibling keep-right commit above and for the same reason:
+            // the caller re-reads v.LaneHandle immediately after this method returns, so a
+            // command-buffer deferral would run this SAME vehicle's strategic/left decisions
+            // against the stale lane. Same-vehicle-only write against the frozen snapshot --
+            // determinism argument identical to the keep-right swap's.
+            var neighFollowSg = neighbors.GetNeighborFollower(v, rightLane.Handle);
+            if ((LaneChangeMinSpeed <= 0.0 || v.Kinematics.Speed >= LaneChangeMinSpeed)
+                && contLeadSafe
+                && IsTargetLaneSafe(v, neighLeadSameLane, neighFollowSg, dt)
+                && !IsTargetLaneOverlapped(v, rightLane.Handle, neighbors, dt)
+                && !LaneChangeSlotContested(v, rightLane.Handle, neighbors)
+                && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollowSg, dt)))
+            {
+                RecordLaneChangeCommit(1, v, neighLeadSameLane, neighFollowSg, bypassesMinSpeed: false); // #15 float analysis (speed-gain RIGHT)
+                v.LaneId = rightLane.Id;
+                v.LaneHandle = rightLane.Handle;
+                // :1063/1080 resetState() on a COMMITTED change -- own accumulator only; the
+                // both-accumulators resetState question stays deferred (Entry 34 / resume doc §3).
+                v.SpeedGainProbability = 0.0;
+                return;
+            }
+
+            // BLOCKED: no reset (SUMO resets only on a committed change) -- the stored accumulator
+            // keeps building and the change retries the moment the target-lane block clears.
+        }
     }
 
     // C4-vii-b: SUMO's stayOnBest keep-right suppressor (MSLCM_LC2013.cpp:1421-1440, VARIANT_21).
@@ -13467,15 +13598,45 @@ public sealed partial class Engine : IEngine
             downstream, new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
     }
 
+    // Entry 34 (b): nearest leader on a NEIGHBOUR lane's continuation past that lane's end (SUMO's
+    // getRealRightLeader semantics -- MSLaneChanger::getRealLeader falls through to
+    // getLeaderOnConsecutive when the neighbour lane itself has no vehicle ahead of ego's
+    // position). The downstream span is T2.6's walk, parameterized on the neighbour lane: the
+    // neighbour's connection toward EGO's next route edge, its via chain, and the arrival lane.
+    // Returns false (caller treats the neighbour lane as leaderless, the exact pre-Entry-34
+    // behavior) when the neighbour lane has no connection toward ego's next route edge -- e.g. a
+    // turn/exit lane -- or ego's pool bookkeeping doesn't support the next-edge derivation. Gap is
+    // the walk's accumulated cross-boundary gap measured from ego's pos on its OWN lane (the
+    // neighbour lane shares the edge, so positions on it are commensurable), front-to-back minus
+    // minGap -- the same convention as the same-lane GetNeighborLeader gap formula. Reads only the
+    // frozen `neighbors` snapshot (NeighborRearmost), so it is parallel-plan-safe.
+    private bool TryFindNeighborContinuationLeader(VehicleRuntime ego, Lane neighborLane, LaneNeighborQuery neighbors, double dt, out VehicleRuntime leader, out double gap)
+    {
+        leader = null!;
+        gap = double.PositiveInfinity;
+
+        Span<int> buf = stackalloc int[12];
+        var n = BuildDownstreamSpanFrom(ego, neighborLane, buf);
+        if (n == 0)
+        {
+            return false;
+        }
+
+        return TryFindCrossJunctionLeader(
+            ego.Kinematics.Speed, ego.VType, ego, neighborLane.Handle, ego.Kinematics.Pos,
+            buf.Slice(0, n), new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
+    }
+
     // Turn-lane segregation fix: `rule2Eligible` (currContinues && rightLeavesRoute) and
     // `rightContLength` (the right lane's best-lanes continuation length) are the position-INDEPENDENT
     // inputs ApplyKeepRightDecision needs to also evaluate SUMO's stayOnBest rule 2 -- computed here in
     // the SAME allocating pass so the memo covers both rules. Return value = VARIANT_21 (rule 3),
     // unchanged.
-    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool rule2Eligible, out double rightContLength)
+    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool rule2Eligible, out double rightContLength, out double currContLength)
     {
         rule2Eligible = false;
         rightContLength = 0.0;
+        currContLength = 0.0;
 
         var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
         var route = _routesById[routeId];
@@ -13494,6 +13655,9 @@ public sealed partial class Engine : IEngine
             {
                 // SUMO's `bestLaneOffset == 0`: ego's own lane is on the best (route) path.
                 currContinues = continuation.BestLaneOffset == 0;
+                // Entry 34: ego's own continuation length (SUMO's curr.length) rides along in the
+                // same memoized pass -- feeds thisLaneVSafe in the right-direction LC block.
+                currContLength = continuation.Length;
             }
             else if (continuation.LaneIndex == rightLaneIndex)
             {
@@ -14637,6 +14801,36 @@ public sealed partial class Engine : IEngine
         // onInsertion=true) -- onInsertion=true skips the emergency-decel correction block
         // (KraussModel.MaximumSafeFollowSpeed's own `!onInsertion` guard), unlike followSpeed's
         // plan-phase car-following call (onInsertion=false).
+        return KraussModel.MaximumSafeFollowSpeed(
+            gap,
+            ego.Kinematics.Speed,
+            leader.Kinematics.Speed,
+            leader.VType.Decel,
+            ego.VType,
+            dt,
+            onInsertion: true);
+    }
+
+    // Entry 34: same anticipation, but with the gap supplied by the CALLER -- SUMO's
+    // anticipateFollowSpeed takes (leader, gap) as a pair (leaderDist.second IS the gap), which
+    // matters when the leader sits past the lane end on a continuation lane: its gap is the
+    // downstream walk's accumulated cross-boundary distance, and the same-lane position formula
+    // above would be meaningless. Identical to AnticipateFollowSpeed for a same-lane leader whose
+    // gap the caller computed with the same front-to-back-minus-minGap convention.
+    private static double AnticipateFollowSpeedWithGap(VehicleRuntime ego, VehicleRuntime? leader, double gap, double dist, double dt)
+    {
+        if (leader is null)
+        {
+            return KraussModel.MaximumSafeStopSpeed(
+                dist,
+                ego.VType.Decel,
+                ego.VType.EmergencyDecel,
+                ego.Kinematics.Speed,
+                ego.VType.Tau,
+                dt,
+                relaxEmergency: true);
+        }
+
         return KraussModel.MaximumSafeFollowSpeed(
             gap,
             ego.Kinematics.Speed,

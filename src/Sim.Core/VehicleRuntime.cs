@@ -181,6 +181,14 @@ internal sealed class VehicleRuntime
     public bool KeepRightStayRule2Eligible;
     public double KeepRightStayRightContLength;
 
+    // Entry 34 (docs/JUNCTION-REALISM-SESSION-JOURNAL.md): EGO's OWN lane's best-lanes continuation
+    // length (SUMO's curr.length, MSLCM_LC2013.cpp:1135), cached in the SAME memoized pass as the
+    // two fields above (same LaneHandle key, same reroute invalidation). Feeds thisLaneVSafe's
+    // anticipateFollowSpeed distance in the right-direction lane-change block. 0 = no continuation
+    // entry / single-edge route -> the reader falls back to the lane's own length, which is exactly
+    // SUMO's LaneQ.length for a route that ends on this edge.
+    public double KeepRightStayCurrContLength;
+
     // Rung A2: SUMO's MSLCM_LC2013::mySpeedGainProbability -- a stateful per-vehicle accumulator
     // for the speed-gain (overtaking) lane-change incentive. Starts at 0 (SUMO's ctor default);
     // unlike KeepRightProbability (plan-phase, pre-move), this is decided/written by the new
