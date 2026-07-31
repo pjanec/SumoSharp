@@ -2394,3 +2394,70 @@ a route-leaving right lane within 200 m can never receive a speedGain-right fire
   snapshot or ego-own; BestLanesCached is a ConcurrentDictionary).
 - **P6 demo**: overlaps 0 at checkpoints; dead-stop share at or BELOW ≈12% (the new right fires
   respect LaneChangeMinSpeed, so high-realism zones convert stopped sorts into at-speed sorts).
+
+## Entry 34 AFTER + 34b — the port worked, its first L2 number didn't, and the missing throttle was the stay complex
+
+### AFTER against the Entry 34 predictions
+
+- **P1 keepright-standing: CONFIRMED with one identity shuffle.** Rolling keepRight deltaProb
+  reads **0.0804** exactly (was 0.0508); f.0's prompt stopped change lands at t=17, the same
+  step as SUMO's; two followers change in the approach window (none waits for the t=83
+  discharge). Ours moves **f.1** (t=17, 6.57 m/s) where SUMO moves f.3 (t=21, 5.52 m/s): SUMO's
+  sequential front-to-back changer lets f.1 see f.0's same-step change live (neighVSafe
+  collapses, no fire), while our frozen post-move snapshot doesn't — f.1 fires the same step and
+  lands legally at exactly minGap behind f.0; f.3 then correctly freezes because *f.1* becomes
+  its right-lane leader. Same follower count, legal landings, ±0 overlap — accepted as the
+  frozen-snapshot structural deviation (CLAUDE.md rule 4), recorded here.
+- **P2 goldens: CONFIRMED** — all 661 byte-identical, suite 779/5/0. One behavioural WITNESS
+  moved: JunctionEntryTimeTests' cont-18 anchor (veh 95 no longer reaches the `:2336_18_0` bay
+  inside 700 steps on synthetic-junction2) — re-anchored to veh 89 (steps 318–328) by the same
+  scratch anchor-finder as Entry 31's re-anchor. Invariant untouched.
+- **P3 L2 rate: WRONG at first, then landed in the predicted band.** The bare port read
+  **1.624** (worse than baseline 1.155; same driver+instrument verified by a worktree baseline
+  rerun reproducing 1.155 exactly). After 34b (below): **0.861**, inside the predicted 0.4–0.9.
+- **P5 determinism: CONFIRMED** — 4 parallel + 1 serial L2 runs, 5/5 byte-identical hashes.
+
+### 34b — what the 1.624 was, found by instruments (reasoned candidates: 0-for-2 again)
+
+Per-event attribution (`[lccommit]`, new committed trace) plus two TraCI samples on honest-SUMO
+L2 gave the mechanism in three steps:
+
+1. SUMO's stopped non-rightmost vehicles hold `speedGainProbabilityRight == 0` in **22 827 of
+   22 832** samples — the throttle is on the ACCUMULATION side, near-total.
+2. Their `getLaneChangeState(right)` reads **STAY|STRATEGIC in 8 811 of ~11 165** samples — a
+   strategic stay rule returns from `_wantsChange` (:1462) before the incentive section runs.
+3. Our engine's new right fire also produced a **same-step `sgRight`+`strategic` commit pair**
+   (t=41, `in_W00_1`) — the inline right swap was immediately reverted by the strategic layer:
+   a ping-pong SUMO structurally cannot produce because its stays run FIRST.
+
+The stay complex ported (both directions — the left mirror was the largest residual contributor
+once the right side was fixed: 70 of 174 strict-stopped commits, 41 on `h1_0` alone):
+
+- **The :1131-1150 effective-offset override**: when ego's lane AND the neighbour lane both have
+  bestLaneOffset 0, SUMO sets the effective offset to the change direction — "changing sideways
+  IS changing toward best" — and skips every stay rule. This is the piece that makes the rest
+  safe: the oracle's followers (both lanes continue) and golden 44/45's arrival-edge keep-rights
+  all flow through it untouched.
+- **Rule :1398** (`neighLeftPlace / (|offset|+2) < laDist` → STAY) — kills the ping-pong.
+- **Rule :1411** (rule 2) with the **:1290/:1297 jam-occupation term**: `neighLeftPlace =
+  max(0, neighDist − pos − maxJam)`, `maxJam = max(curr.occupation, neigh.occupation)` where
+  occupation = lengthWithGap of vehicles AHEAD of ego on that lane (MSLaneChanger's `dens`)
+  plus the continuation lanes' brutto sums (`AheadJamOccupation`). Deep-in-queue ⇒
+  neighLeftPlace ≈ 0 ⇒ STAY; queue head ⇒ jam ≈ 0 ⇒ may fire — SUMO's own head-vs-queue split,
+  which is why the oracle's f.0/f.5 stopped changes (SUMO-real) survive.
+
+Documented deviations: the left mirror READS LookAheadSpeed without updating it (a second
+per-step decay would move golden 18's strategic fire timing); the :1298-1300 neighLead cap is
+unported (SUMO `isStopped()` = SCHEDULED stop only); jam continuation depth is one route edge
+(SUMO: the whole bestContinuations look-ahead) — an under-stay for multi-edge queues.
+
+### The scorecard
+
+| gate | requirement | result |
+|---|---|---|
+| 1 oracle | followers at speed, f.0 preserved, deltaProb 0.0804 | ✓ (identity shuffle documented) |
+| 2 goldens | 661 byte-identical, suite green | ✓ 779/5/0 (witness re-anchor, Entry 31 method) |
+| 3 L2 rate | materially below 1.155 toward 0.410, denominator reported | ✓ **0.861** (denom 69 720; stopped changes 79→60; landed overlaps 0) |
+| 4 battery | vs net-regression-urgentfollow-on.txt, no stuckDwell regression | pending (running) |
+| 5 determinism | ≥4 repeat + serial hashes identical | ✓ 5/5 |
+| 6 demo smoke | overlaps 0, dead-stop ≈12% | pending |
