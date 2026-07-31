@@ -1080,3 +1080,59 @@ links, so expect golden movement and plan the SUMO diff up front.
 **Fixing an existing broken guard is strongly preferable to adding a second one** — two overlapping
 box-block checks would make future attribution ambiguous, which this session has already paid for
 twice (binder tag 14 covering two halves; `maxDwell` conflating waiting with wedged).
+
+---
+
+## Entry 17 — BEFORE: `LaneSpaceTillLastStanding` walks the exit-lane queue from the WRONG END
+
+Entry 16 left two candidates for why `KeepClearConstraint` never binds. Reading the vendored source
+against our port names the second one, and it is an **iteration-direction** mismatch.
+
+**SUMO** (`MSLane.cpp:4522` `getSpaceTillLastStanding`) iterates `myVehicles` in its natural order.
+`MSLane.h:1439` documents that order explicitly: *"The entering vehicles are inserted at the FRONT of
+this container and the leaving ones leave from the back … the vehicle in front of the junction is
+`myVehicles.back()`"*. So `myVehicles` is **rear-most first** (pos-ascending), and the loop returns the
+**REAR-MOST standing vehicle's** back position + brakeGap — the tail of the queue, i.e. the vehicle
+nearest the junction ego is trying to enter. `lengths` then discounts the *moving* vehicles behind it.
+
+**Ours** (`Engine.cs:8258`) walks `_neighborQuery.OnLane(...)` — which `LaneNeighborQuery.cs:86/117`
+sorts **Pos-ascending**, "the rearmost is index 0" (its own comment at :152) — **in reverse**, i.e.
+front-most first. Both the method header ("Walk the lane's vehicles front-first (largest pos first)")
+and the later perf note assert front-first is correct. **It is not.** The pre-perf collect-and-sort
+version had the same direction, so this is original, not a refactor regression.
+
+**Consequence, and it is exactly the L1 symptom.** Where a queue has ≥2 stopped vehicles, front-first
+returns the *head* of the queue's back position — a large number, near the far end of the exit lane —
+instead of the *tail*'s. On `h1_0` at t=407 the tail sits at pos 4.21 while the head sits far downstream,
+so the walk reports many tens of metres of room where there are 4.21 m. `seenSpace - 7.5 >= 0` holds,
+the early-out returns `+infinity`, and ego enters a box it cannot clear. Candidate 1 (`foundStopped`
+never set) is **refuted in advance**: with 9 stopped vehicles the front-first walk sets it on its first
+iteration. The defect is candidate 2, and specifically "measured from the wrong end of the exit lane".
+
+**The fix is one loop direction** — walk index 0 upward, matching `myVehicles`. `LaneBruttoVehLenSum` is
+an order-independent sum and is unaffected.
+
+### Predictions, recorded before measuring
+
+1. The trace at t=407 will show `foundStopped=true` and `seenSpace` **≫ 7.5** (tens of metres), not a
+   `foundStopped=false` early-out.
+2. After the direction fix, that step gives `seenSpace ≈ 4.21 − length ≈ −0.8`, `keepClear` binds, and
+   `f_cyc_cw2.30` is held on `in_W01_0` instead of entering `:J01_10_0`.
+3. **L1 `arrived` moves materially above 112** (SUMO: 450). This is the success condition, unchanged
+   from Entry 16.
+4. **Goldens WILL move.** `KeepClearConstraint` is default-on, unconditional and parity-relevant, and
+   `IsKeepClearHeld` (`Engine.cs:8222`) reuses it, so scenario 34-keepclear and the junction family are
+   all in the blast radius. Every shift needs a SUMO diff — the direction change makes us *more* like
+   SUMO, so a golden that moves should move TOWARD the SUMO reference, and any that does not is a
+   counter-example that stops the change.
+5. Throughput on the `city-*` nets may fall further (more vehicles held at entries). Entry 15's lateral
+   lane-change count may rise again for the same reason.
+
+### Immediate next steps
+
+1. Add a committed, env-gated walk trace (`SUMOSHARP_KEEPCLEARTRACE=<vehId>`) — dumps per-lane
+   contribution, `seenSpace`, `foundStopped` at each `KeepClearConstraint` call for one vehicle. Confirm
+   prediction 1 **before** touching the loop.
+2. Flip the direction; re-run the same trace; confirm prediction 2.
+3. `run-net-regression.py` vs `docs/reports/net-regression-bay-exit-keepclear.txt`; goldens; SUMO diff
+   on anything that moves.
