@@ -85,6 +85,28 @@ taken after.
 
 ## 5. Remaining backlog, in owner priority order
 
+0. **⚠ OWNER-REPORTED (July 31, Geneva-terrain 3D viewer, pre-Entry-34 engine build) — NEXT
+   HIGH PRIORITY, verbatim from the owner's session:** the good news first — *"no total
+   gridlock and no purely lateral lane changes seen"* (the shipped fixes carry over to the
+   coupled demo terrain). Two defects observed, both to be reproduced and traced (instruments
+   first, no reasoned fixes — the score in this workstream is now ~0-for-18 on reasoning):
+   - **(a) Queue-tail arrival overlap / stacking**: *"few cases when cars arriving to a traffic
+     jam overlapped with the last one in the queue, stacking many cars on a single place."*
+     Likely family: the queue-TAIL is invisible to an arriving car (back-protrusion invisibility,
+     Entry 27a/28, is one known member; insertion-time and cross-edge-follow gaps are others).
+     Start by reproducing on a saturated net and clustering overlap onsets by (arriving-car,
+     queue-tail) pairs — the Entry 27 episode method.
+   - **(b) Straight-through cars drive THROUGH a car blocked mid-junction turning left**: *"very
+     often, if car blocked in the middle, turning left, cars going straight passing through him
+     freely — many cases in different situations and different junctions."* This is the
+     through-driving defect class again but with a BLOCKED (stationary) left-turner as the
+     ghost: suspect the straight movement's foe set does not contain a stalled turner OCCUPYING
+     the crossing internal lane (cf. `collision.check-junctions` honesty note, and T2.6 which
+     fixed the same-lane entry case — this is the CROSS-lane case). Repro shape: L2-style
+     4-way, left-turner held mid-junction by its exit queue, straight stream on the
+     conflicting movement; witness = OBB overlap pairs on internal lanes with one member
+     speed ≈ 0 and the other > 5.
+
 1. **In-junction wedges that survive the Entry 17/18 fixes.** Two named, with exact repros, on
    `scenarios/_repro/synthetic-junction2` (dense cfg, gates pinned): `internalJunctionAdmission`
    (binder 14) on `:2810_8_0`, and `crossJxnLeader` on `:2450_0_1`. Separately, vehicles **122 and 256**
@@ -102,15 +124,16 @@ taken after.
 3. **Lateral lane change while stopped — strategic path SHIPPED default-ON (Entry 31; tracker all
    green).** The scoped informLeader/informFollower pair (binders 18/19) is
    `UrgentStrategicLeaderFollow = true`; `UrgentStrategicFollowBehaviourTests` pins the behaviour;
-   `SUMOSHARP_URGENTFOLLOW=0` is the A/B/bisect switch. **Remaining halves: keepRight and
-   speedGain — now DECOMPOSED on a lockstep oracle net (Entry 32, `scenarios/_diag/
-   keepright-standing`): head-car stopped keepRight is correct SUMO behaviour; the artefact is
-   followers, which SUMO fires AT SPEED via speedGain-right on the approach while we defer both
-   paths to standstill. Entry 32 has the term-checked arithmetic (our keepRight rolling rate is
-   63% of SUMO's — `neighDist` missing the best-lanes continuation), why Entries 21/22 rejected
-   the right ingredients (coupled pair tried one half at a time, racy-era numbers), the exact fix
-   shape (both halves in ONE design-first change), and the acceptance gates. **The operational
-   hand-off page for this fix is `docs/FOLLOWER-LC-DEFERRAL-RESUME.md` — START THERE.**
+   `SUMOSHARP_URGENTFOLLOW=0` is the A/B/bisect switch. **The keepRight/speedGain halves are now
+   ALSO FIXED (Entries 34/34b): the missing speedGain-RIGHT arm ported (shared signed
+   accumulator, 5 km/h gate, :1811 fire), continuation `neighDist` (rolling deltaProb now
+   0.0804 = SUMO's exact value), the past-lane-end right leader, AND SUMO's strategic stay
+   complex in BOTH directions (the :1131-1150 effective-offset override + rules :1398/:1411
+   with the jam-occupation term) — L2 stopped-LC rate 1.155 → 0.861 (SUMO 0.410), oracle
+   followers change at speed, goldens byte-identical, deterministic.** Remaining known gaps in
+   this family (documented deviations, journal Entry 34 AFTER): the frozen-snapshot same-step
+   identity shuffle, the left mirror's read-only LookAheadSpeed, one-edge jam depth, and the
+   still-unported `resetState()` both-accumulator zeroing (Entry 22's table — revisit next).
    Background (Entry 24):
    On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
    **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
