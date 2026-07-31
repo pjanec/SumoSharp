@@ -258,3 +258,59 @@ outside the junction, or a cycle longer than 2.
 
 **Do NOT design a fix before this is answered** — a mutual pair needs a tie-break, a chain needs a
 different intervention entirely.
+
+---
+
+## Entry 4 — AFTER — not mutual pairs, not chains: a HETEROGENEOUS multi-party cycle per junction
+
+**Prediction (Entry 4 BEFORE): mutual `crossJxnLeader` pairs, per `NEED-arm5`. Refuted — third
+prediction this session, third refutation.** The named alternatives (chain, longer cycle) are also not
+right as stated. The actual structure is a **cycle of 3–4 vehicles per junction held by DIFFERENT
+constraints**:
+
+| junction | wedged | structure |
+|---|---|---|
+| **J00** | 4 | `:J00_10_0` **junctionYield** · `:J00_11_0` **internalJunctionAdmission** · `:J00_7_0` **crossJxnLeader** + one leaderFollow behind it |
+| **J01** | 3 | `:J01_10_0` **crossJxnLeader** + leaderFollow behind · `:J01_6_0` **crossJxnLeader** |
+| **J10** | 5 | `:J10_11_0`, `:J10_15_0`, `:J10_7_0` all **crossJxnLeader** (three distinct lanes) · `:J10_4_0` **junctionYield** · one leaderFollow |
+| **J11** | 4 | `:J11_1_0` **crossJxnLeader** + leaderFollow · `:J11_5_0` **internalJunctionAdmission** · `:J11_9_0` **crossJxnLeader** |
+
+**The load-bearing observation: NO SINGLE CONSTRAINT OWNS THE DEADLOCK.** At J00 three vehicles are
+held by three *different* mechanisms. J10 has three `crossJxnLeader` heads on three distinct internal
+lanes — not a pair. So the family of fix that would work for `NEED-arm5`'s two-car mutual case (give
+that one constraint a tie-break) **cannot break this**: whichever constraint you fix, the cycle is
+still closed by the others.
+
+This reframes task 2 substantially. What is needed is a mechanism that arbitrates a **cycle spanning
+heterogeneous constraints** — which is what SUMO's entry-time ordering does globally, rather than
+per-constraint. Note the standing warning that fits exactly: *"a symmetric predicate cannot arbitrate a
+cycle — check for a tie-break, and copy SUMO's"* (`F3-SESSION-LOG.md` §7.11). Here there are three
+symmetric predicates interlocking.
+
+⚠ **Honest note on my own change.** `internalJunctionAdmission` (binder 14) is a *participant* in the
+cycle at J00 and J11. Binder 14 covers BOTH halves of that constraint — the pre-existing lane-foe loop
+and the approach arm I added — and **T5 (make the diagnostic distinguish them) was never done**, so I
+cannot currently say which half is holding those two vehicles. The arm is net strongly positive
+(L2 arrivals +130%, overlap events −97.5%) and this run has it ON, but "the arm is one of the parties
+in the residual wedge" is a live possibility that the instrument, as built, cannot rule out. **T5 is
+now a prerequisite for the next step, not an optional nicety.**
+
+---
+
+## Entry 5 — BEFORE — next: T5 first, then cycle arbitration
+
+**Step 1 (prerequisite): T5 — split binder 14.** Give the approach arm its own tag (17) so the
+histogram can say which half holds a wedged vehicle. Without it the previous entry's ⚠ cannot be
+resolved and any fix attributed to binder 14 is unattributable. Small, mechanical — good delegation.
+
+**Step 2: identify the actual cycle edges.** For each wedged vehicle, record WHO it is waiting for
+(the leader/foe id its binding constraint selected), then verify the wait-for graph really is cyclic
+rather than terminating outside the junction. Needs the constraints to expose their chosen foe — an
+extension of the binder log, still an instrument.
+
+**Expectation, recorded:** a closed cycle per junction. **Given three consecutive wrong predictions,
+weight this low** — the alternative worth taking seriously is that the "cycle" terminates on something
+outside the junction (a full exit link), which would make it a *capacity* problem wearing a
+deadlock's clothes, and would point back at the exit-link occupancy seen in §7.
+
+**Do NOT design a fix until step 2 answers this.**
