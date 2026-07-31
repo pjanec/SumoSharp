@@ -31,6 +31,8 @@ differently, because conflating them is the fastest way to lose a technical audi
 
 *Diagram 01.*
 
+[![Diagram 01 — Every extension is a ring outside an untouched parity core.](svg/01-layering.svg)](svg/01-layering.svg)
+
 SumoSharp reproduces SUMO's microscopic algorithms in C#/.NET on a data-oriented ECS. The algorithms are
 copied faithfully; what is rebuilt is the *memory layout* and the *timing of structural mutations*.
 
@@ -63,6 +65,8 @@ to "did the cars change?"
 
 *Diagram 02.*
 
+[![Diagram 02 — SUMO has no concept of an agent it does not control; this does.](svg/02-seam.svg)](svg/02-seam.svg)
+
 SUMO has no concept of an agent it does not control. Everything in a SUMO run is something SUMO spawned.
 
 SumoSharp adds **external agents**: obstacles and movers injected lane-relative, which the cars then
@@ -89,6 +93,10 @@ This single seam is what everything in §3 and §4 hangs off.
 ## 3. Pedestrians — a crowd layer, not a port
 
 *Diagrams 03, 05, 15.*
+
+[![Diagram 03 — Two-level pedestrian LOD — the cheap level exists to look organic, with its overlap bound stated.](svg/03-lod.svg)](svg/03-lod.svg)
+[![Diagram 05 — Uniform against organic, and the same mechanism where crowds stand still.](svg/05-weave.svg)](svg/05-weave.svg)
+[![Diagram 15 — City life is authored data, not another behaviour loop.](svg/15-liveliness.svg)](svg/15-liveliness.svg)
 
 This is **not** a port of SUMO's person model, and that is the point rather than a caveat. There is no
 golden pedestrian trajectory to match; the layer is validated by behavioural and property tests instead.
@@ -122,6 +130,8 @@ Pedestrians move between levels through an **interest field**. Promotion and dem
 radii plus a dwell time** — spatial *and* temporal hysteresis. That is not fussiness: with one shared
 radius, a pedestrian standing on the boundary flips level every single step and visibly pops between
 motion models.
+
+[![Diagram 04 — Why promotion needs two radii and a dwell.](svg/04-hysteresis.svg)](svg/04-hysteresis.svg)
 
 ### 3.3 What the weave guarantees, and what it does not
 
@@ -162,6 +172,8 @@ city from venue records. The vocabulary exists; the authoring at scale is the ne
 ### 3.5 The crowd is nearly free on the wire
 
 *Diagram 09.* Because a low-power pose is a pure function of its inputs, the simulation server and every
+
+[![Diagram 09 — Server and image generator agree bit-for-bit, so ambient crowd costs nothing on the wire.](svg/09-server-ig.svg)](svg/09-server-ig.svg)
 remote image generator evaluate the *same* function and get **bit-identical** results. A route or timeline
 is broadcast **once**; ambient pedestrians then emit **zero per-step bytes**. Proven over an in-process
 byte loopback and over real DDS.
@@ -175,6 +187,8 @@ The consequence: **crowd size is decoupled from bandwidth entirely.**
 ## 4. What a car can and cannot see
 
 *Diagram 06.* Coupling is a level-of-detail decision, not a feature list. **This section's message is the trade, not the plumbing.**
+
+[![Diagram 06 — What a car can and cannot see: assured inside a realism zone, believable outside it.](svg/06-coupling.svg)](svg/06-coupling.svg)
 
 Cars see pedestrians through one composite source. What it contains defines exactly what the simulation
 can and cannot promise, so it is worth being blunt:
@@ -197,6 +211,8 @@ pedestrian disc standing in as the leader. What is new is *what* it reacts to, n
 looks at where the pedestrian **will be** rather than only where it is, because a current-overlap test
 cannot see a conflict that has not happened yet (*diagram 07*).
 
+[![Diagram 07 — A current-overlap test cannot see a conflict that has not happened yet.](svg/07-yield.svg)](svg/07-yield.svg)
+
 **Takeaway.** Inside a realism zone: assured, no interpenetration. Outside it: believable, not guaranteed. Performance bought with believability, never with correctness.
 
 ---
@@ -204,6 +220,8 @@ cannot see a conflict that has not happened yet (*diagram 07*).
 ## 5. Cost follows attention, not city size
 
 *Diagram 13.*
+
+[![Diagram 13 — Cost follows attention, not city size.](svg/13-attention.svg)](svg/13-attention.svg)
 
 The realism zone tracks the camera. Inside it, pedestrians promote to full ORCA and cars use cooperative
 lane changing. Outside, pedestrians stay closed-form and cars still stop at crossings.
@@ -224,6 +242,8 @@ Multiple and overlapping camera zones are designed and not yet built — a clean
 ## 6. How the work is spread across cores
 
 *Diagram 11.*
+
+[![Diagram 11 — Disjoint lane ownership, free boundary handoff — and why 8 threads beat 24.](svg/11-spatial.svg)](svg/11-spatial.svg)
 
 Two independent mechanisms, both byte-identical to a serial run.
 
@@ -288,6 +308,8 @@ viewer's sliders drive.
 
 *Diagram 10.*
 
+[![Diagram 10 — The tick runs on its own thread; a frame never waits for an engine step.](svg/10-threaded.svg)](svg/10-threaded.svg)
+
 The simulation runs on its **own thread**; the render thread only ever reads a published snapshot, so a
 frame never waits for an engine step. Engine parallelism is capped so the producer cannot starve the
 renderer — and capping it was proven trajectory-inert, not assumed: **11 889 car and pedestrian samples
@@ -306,6 +328,8 @@ consumers, and to the sim-rate and zone controls under load.
 ## 9. Dead reckoning: 48 bytes buys a trajectory
 
 *Diagram 14.*
+
+[![Diagram 14 — What is sent up front, what per agent, and why 48 bytes buys a trajectory.](svg/14-dr.svg)](svg/14-dr.svg)
 
 The receiver is never told where a car *is*. It is told enough to work out where it *will be*.
 
@@ -339,6 +363,8 @@ Bandwidth is simply not the constraint, and should be dropped from the argument.
 > the wire is measured *along a specific lane*, so a new lane must be published. It is a property of the
 > network's granularity, not of the traffic, and no publish threshold reaches it.
 
+[![Diagram 08 — Half the network traffic is cars driving straight on.](svg/08-lanechange.svg)](svg/08-lanechange.svg)
+
 **Takeaway.** 0.64 updates per car per second, about 94× fewer messages than the render rate, with motion still reconstructing smoothly at 60 fps. Ambient pedestrians send nothing at all.
 
 ---
@@ -346,6 +372,8 @@ Bandwidth is simply not the constraint, and should be dropped from the argument.
 ## 10. Beyond traffic: evacuation
 
 *Diagram 12.* The proof that the layering works — a complete behavioural model on a **completely
+
+[![Diagram 12 — A whole behavioural model on a completely unmodified driving core.](svg/12-evac.svg)](svg/12-evac.svg)
 unmodified** driving core.
 
 On a localised incident, fear spreads as **local information**: occlusion-gated line of sight, contagion
@@ -392,6 +420,8 @@ image generator that does no prediction of its own: the smoothing is baked in be
 
 *Diagram 16.* The emphasis is deliberately on the shape of the situation rather than on a wall of figures.
 
+[![Diagram 16 — Already fast — and the remaining headroom is already located.](svg/16-headroom.svg)](svg/16-headroom.svg)
+
 **What has landed:** allocation on the hot path collapsed; GC pressure down to a small fraction of wall
 time; parallel by default at scale and byte-identical by test; the engine tick off the render thread; and
 faster per tick than SUMO even single-threaded.
@@ -418,6 +448,8 @@ point: **there is a lot of headroom and we know where it is.**
 ## 13. Current state: a substrate, not a finished product
 
 *Diagram 17.*
+
+[![Diagram 17 — A substrate, not a finished product.](svg/17-substrate.svg)](svg/17-substrate.svg)
 
 Everything above is a proof of concept. Many mechanisms, all working, **none perfected** — and that is the
 correct state rather than a shortfall.
