@@ -557,3 +557,44 @@ to fix a different one would be self-defeating.
 drains and the goldens are clean". One committed test says it introduces a car–car proximity violation.
 That is the same trade this workstream already refused once (the occupancy gate: overlaps halved,
 throughput ruined) and it should be refused again until the regression is understood.
+
+---
+
+## Entry 8 — AFTER — the battery says this is a genuine TRADE, not a free win
+
+Cross-net battery with the gate ON, against the committed approach-arm baseline, same instrument both
+arms (`docs/reports/net-regression-bay-exit-keepclear.txt`):
+
+| net | change | |
+|---|---|---|
+| `city-mixed-1k` | arrived **1014 → 1001** (−13), running 222 → 235, overlaps 8 → 10 | REGRESSED |
+| `city-organic` | arrived **509 → 499** (−10), running 6 → 16 | REGRESSED |
+| `city-3000` | `stuckDwell` 2 → 13 | REGRESSED |
+| `junction-realism-L1` | running 226 → 229 | REGRESSED (still gridlocked either way) |
+| `junction-realism-L2` | overlaps 7 → 8 | REGRESSED |
+| everything else (21 nets) | unchanged | — |
+
+⚠ **Read `junction-realism-L2`'s row carefully:** the battery caps at 1200 steps while that scenario's
+own horizon is 1800, so it shows 421 arrived / 29 running — *still draining*, not failing. The full-
+horizon A/B in Entry 7 is the valid number: **450 / 0, fully drained.** A capped row is not a result.
+
+**The shape of the trade, stated plainly.** The gate is a *more conservative admission rule*: it holds
+vehicles out of junctions they cannot clear. That is exactly why it eliminates the L2 gridlock, and
+exactly why it costs ~1% throughput on two organic city nets — the same mechanism produces both. This
+is the identical shape as the refuted `KeepClearHeldPropagation` ("makes admission more conservative,
+the opposite of widening a drain", trips 2938 → 2762) — **with one decisive difference: that change
+bought nothing, this one eliminates a total deadlock.**
+
+**Verdict: this is an owner decision, not a technical one, and it is being surfaced rather than
+decided.** The measured facts:
+
+* eliminates a **total gridlock** on the repro (320 → 450 arrived, 130 → 0 stuck, matching SUMO exactly);
+* **all 661 goldens byte-identical**;
+* costs **~1%** arrivals on two committed city nets (−13 of 1014, −10 of 509);
+* introduces **one car–car proximity violation** (`ActivePushers_NeverInterpenetrate`, < 1.0 m), which
+  is undiagnosed and is the strongest argument against shipping it on.
+
+**Default remains OFF.** The three options are in the chat summary; the cheapest next experiment is a
+**threshold sweep** — the current rule demands `Length + MinGap` of exit-lane room, and a smaller
+requirement may keep the gridlock fix while returning the throughput and possibly the evac separation.
+That is a clear, bounded next step and it does not need a design doc.
