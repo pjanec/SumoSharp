@@ -10228,6 +10228,13 @@ public sealed partial class Engine : IEngine
             }
 
             var cand = rearmostOnLane.Rearmost(laneHandle);
+            if (egoSelf is not null && DiagTraceVehicleId is not null && DiagTraceVehicleId == egoSelf.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[cjl] t={CurrentTime:F1} veh={egoSelf.Def.Id} walkLane={_network.LanesByHandle[laneHandle].Id} "
+                    + $"seen={seen:F2} rearmost={(cand is null ? "none" : cand.Def.Id + "@" + cand.Kinematics.Pos.ToString("F2"))}");
+            }
+
             if (cand is not null && (egoSelf is null || !ReferenceEquals(cand, egoSelf)))
             {
                 gap = seen + (cand.Kinematics.Pos - cand.VType.Length) - egoVType.MinGap;

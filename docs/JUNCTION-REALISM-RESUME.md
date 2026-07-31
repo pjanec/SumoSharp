@@ -86,8 +86,7 @@ taken after.
 2. **Normal-traffic junction overlaps — ⭐ MECHANISM NAMED AND TRACED (Entry 27).** A multi-vehicle
    pileup on a single internal lane: (a) **back-protrusion invisibility** — a car whose front crossed
    the boundary vanishes from the lane its back still occupies (SUMO: `myPartialVehicles`; we have no
-   partial occupancy), and (b) the **cross-junction leader arm follows a FAR leader instead of the
-   rearmost occupant** (`blocker=f_cyc_ccw.34` with three halted cars in between). Repro:
+   partial occupancy), and (b) **the planning walks follow the POOL lane while a wrong-lane vehicle physically crosses onto its ACTUAL lane's connection** (Entry 28 corrects Entry 27: `walkLane=:J00_13_1` while the body enters `:J00_13_0`) — fix shape: resolve the downstream span from the actual lane when off-pool, the planning-time mirror of `TryReResolveFromActualLane`. Repro:
    `junction-realism-L2`, `:J00_13_0`, t=680–690, six cars halted at pos 0.39–3.99. Present in BOTH
    arms of the urgent-follow A/B — this blocks that flag's default flip (its overlap gate is entangled
    with this defect). Also the likely `city-*` overlap cause. `city-mixed-1k` still shows 10 peak

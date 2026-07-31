@@ -2043,3 +2043,39 @@ and re-writing a gate to pass a change is exactly what this journal exists to pr
 re-measure the coupling against the gates on a net that no longer manufactures overlap episodes. The
 coupling stays default OFF until then — not because it is suspect, but because its acceptance gate is
 entangled with a defect it did not cause.
+
+---
+
+## Entry 28 — CORRECTION to Entry 27(b): not a "far leader" — the WRONG LANE'S leader
+
+The `[cjl]` walk trace for `f_cyc_ccw.40` at the decision step:
+
+```
+[cjl] t=681 veh=f_cyc_ccw.40 walkLane=:J00_13_1 seen=1.40 rearmost=f_cyc_ccw.34@11.49
+```
+
+The cross-junction leader walk examines **`:J00_13_1`** — the POOL lane, fed from approach lane 1 —
+because that is what the vehicle's resolved lane sequence contains. But `f_cyc_ccw.40` is on approach
+**lane 0** (the strategic change to lane 1 never happened — the very artefact this workstream is about),
+and at the boundary it crosses via **its own lane's connection onto `:J00_13_0`**, where the queue
+stands. So Entry 27's "(b) follows a far leader" was imprecise: **the walk follows the RIGHT rearmost of
+the WRONG lane.** Every planning constraint reads the pool path while the vehicle physically traverses
+the actual path (`TryReResolveFromActualLane` semantics exist only at the boundary EXECUTION, not in the
+planning walks). Each wrong-lane vehicle therefore enters `:J00_13_0` blind, on top of the previous one:
+six cars halted within four metres.
+
+Entry 27's "(a) back-protrusion invisibility" stands, but it is the second-order half: with (b) fixed,
+ego brakes on the queue via the walk (`gap = seen + (rearmost.back)` goes negative) before protrusion
+matters.
+
+**The full causal chain of the junction-overlap defect class, now traced end to end:**
+missed strategic change (Entry 24's mechanism) → wrong approach lane → planning walks follow the pool
+lane while the body follows the actual lane → blind entry into an occupied internal lane → pileup →
+the overlap episodes on this net and (plausibly, untraced) the `city-*` nets.
+
+**T2.6's fix shape:** in the cross-junction walk (and any planning constraint that consumes the
+downstream span), when ego's current lane is not the pool lane for this edge, resolve the span from
+ego's ACTUAL lane's connection — the planning-time mirror of `TryReResolveFromActualLane`. Parity
+blast radius: every golden vehicle is always on its pool lane (the same argument that held for binder
+18, twice verified), so the widened resolution should be golden-inert — verify, don't assume. The
+`[cjl]` trace is committed for the next session.
