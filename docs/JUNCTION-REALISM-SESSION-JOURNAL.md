@@ -1920,3 +1920,68 @@ Design-first trio committed: `URGENT-STRATEGIC-FOLLOW-{DESIGN,TASKS,TRACKER}.md`
 in advance (headline: L2 must be **no worse than today on any column** — gridlock outranks this
 artefact). **Awaiting owner sign-off before Stage 1.** Committed state ships the flag OFF: suite
 778/5/0, battery untouched.
+
+---
+
+## Entry 26 — Stage 1 verdict, the follower half, and the SCOPED pair: one gate still red
+
+### T1.1/T1.2 — the verdict, measured not argued
+
+The attribution instrument (`VehicleRuntime.LcStrategicOutcome`, written at every exit of
+`TryStrategicLaneChange`, crossed with binder 18 at the call site, printed by `Sim.Run` under
+`SUMOSHARP_LCLOG`): with only the ego-side informLeader brake on, **99.0% of coupling-braked
+vehicle-steps still failed to change** (52 of 5020 committed), refused by the SAFETY gaps themselves —
+unsafeBoth 35.7%, overlapped 35.7%, unsafeLead 17.5%, unsafeFollow 8.0%. The non-SUMO vetoes
+(slot-contested, cut-in defer) did not appear at all — **H-A in its specific form was wrong**. Ego falls
+back, the follower closes up, ego slides backwards along a solid queue braking forever.
+
+SUMO pairs informLeader with **informFollower** — the target-lane follower brakes
+(`HELP_DECEL_FACTOR × maxDecel`) to open the gap. Our parity path had **no follower cooperation at all**
+(the P2G-2 informFollower port is a non-parity realism mode; in SUMO this is core LC2013).
+
+### The follower half, ported — and it did NOT fix the collapse
+
+`UrgentFollowerYieldConstraint` (binder 19): pull-based, deterministic — the follower scans its
+neighbour lanes for the nearest urgent changer whose blocking follower it is, recomputing the identical
+quantities from the same frozen snapshot (`TryGetUrgentStrategicState`, ONE definition of "urgent" for
+both halves). Faithful euler arms; simplifications in its header.
+
+Measured, both halves on, saturated L2: arrived 230, overlaps **77**, stuckDwell 829 — **still
+collapsed**. Commits rose only 52 → 82 of ~5000. At saturation the target lane is a solid queue;
+no cooperation conjures 10 m of space.
+
+### The actual collapse mechanism — OUR engine's second exit
+
+SUMO's `plannedSpeed = stopSpeed(myLeftSpace)` pins an unmerged urgent changer at its lane end. In SUMO
+that is the only option. **In this engine a wrong-lane vehicle has a second exit — the dead-lane reroute
+family — and the faithful stop-pin DEFEATS it**: vehicles stood at their lane ends forever instead of
+rerouting. stuckDwell ~825 and the overlap explosion follow from that standing wedge. This is the
+"structurally forced divergence" class CLAUDE.md's prime directive 4 anticipates.
+
+### The SCOPED pair (committed): moving-merge regime only
+
+The constraint now keeps ONLY what has no equivalent elsewhere in the engine — the **moving-leader
+follow coupling** (and its follower-yield mirror): inert unless the target-lane leader is moving; no
+stop-pin; a halted queue keeps today's behaviour (roll to the light, reroute if stranded).
+
+| | flag OFF | SCOPED pair ON | SUMO |
+|---|---|---|---|
+| L2-light left-turner | t=45 @ 1.00 m/s | **t=3 @ 30.94 / 11.95 — SUMO's move to two decimals** | t=3 |
+| L2 arrived | 433 | **441** | 450 |
+| L2 running at end | 17 | **9** | 0 |
+| L2 stuckDwell | 0 | **0** | 0 |
+| stopped-LC rate (/1000 stopped-veh-steps) | 1.396 | **1.157** | 0.410 |
+| L2 peak overlapping pairs | 9 | **21** ⚠ | 0 |
+| binder-18 population | — | 5020 → **303**, commits 1.0% → **11.2%** | — |
+
+### The one red gate, stated plainly
+
+**Peak overlaps 21 against the acceptance gate ≤ 9.** Arrivals up, deadlock zero, rate −17%, the
+artefact's showcase case exactly SUMO — but the overlap column moved the wrong way, and overlaps are in
+the owner's highest defect class. Plausible reading: more early merges ⇒ denser platoons at junctions ⇒
+the PRE-EXISTING junction overlap weakness (backlog #2, `city-*` nets) amplified by throughput — the
+same pattern as Entry 23's insertion fixes (3 → 9 for the same reason). **Unattributed = unproven.**
+
+**Default therefore stays OFF.** Next step (T2 continuation): attribute the 21 — junction-interior pairs
+of crossing streams would confirm the pre-existing class; lane pairs adjacent to a commit would implicate
+the coupling itself. Then either fix the junction weakness first or gate the flip on it.

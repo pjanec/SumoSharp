@@ -140,6 +140,12 @@ internal sealed class VehicleRuntime
     // plan pass (see Engine.ComputeMoveIntent's argmin fold). Never read by sim logic -> parity-neutral.
     public byte BindingConstraint;
 
+    // DIAGNOSTIC ONLY (URGENT-STRATEGIC-FOLLOW T1.1): the outcome of this step's
+    // TryStrategicLaneChange, written at every exit of that method. Codes in
+    // Engine.StrategicOutcomeNames. Never read by sim logic -> parity-neutral, the same
+    // guarantee BindingConstraint above carries. 0 == not evaluated this step.
+    public byte LcStrategicOutcome;
+
     // DIAGNOSTIC ONLY: the EntityIndex of the foe/leader that BindingConstraint's winning arm selected,
     // for the three constraints that identify a single blocking vehicle (crossJxnLeader=2,
     // junctionYield=10, internalJunctionAdmission=14/17) -- see the capture sites at the

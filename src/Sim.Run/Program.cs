@@ -243,6 +243,29 @@ internal static class Program
 
                 Console.WriteLine($"  {paths[p],-10} {row} targetCarNear&Stopped={nearStopped[p]}");
             }
+
+            // T1.1 (URGENT-STRATEGIC-FOLLOW-TASKS.md): outcomes of TryStrategicLaneChange over the
+            // vehicle-steps where binder 18 (urgentStrategicFollow) was the binding constraint.
+            // All zeros unless SUMOSHARP_URGENTFOLLOW is also on.
+            var ufNames = Engine.StrategicOutcomeNames;
+            var uf = engine.Uf18StrategicOutcomes;
+            var ufTotal = 0L;
+            for (var i = 0; i < uf.Length; i++)
+            {
+                ufTotal += uf[i];
+            }
+
+            if (ufTotal > 0)
+            {
+                Console.WriteLine($"-- binder-18 (urgentStrategicFollow) vehicle-steps by strategic outcome (n={ufTotal}) --");
+                for (var i = 0; i < uf.Length; i++)
+                {
+                    if (uf[i] > 0)
+                    {
+                        Console.WriteLine($"  {ufNames[i],-22} {uf[i],7}  ({100.0 * uf[i] / ufTotal:F1}%)");
+                    }
+                }
+            }
         }
 
         return 0;
