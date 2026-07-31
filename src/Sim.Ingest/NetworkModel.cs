@@ -331,7 +331,32 @@ public sealed record NetworkModel(
     //
     // Defaulted so existing construction sites keep compiling; null degrades to "no foes known" --
     // T3.2 (not this task) is the first and only reader.
-    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLaneFoes = null)
+    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLaneFoes = null,
+    // JUNCTION-APPROACH-ARM T1 (docs/JUNCTION-APPROACH-ARM-DESIGN.md §2, §5; MSInternalJunction.cpp:
+    // 96-110): the internal junction's SECOND foe set, `myInternalLinkFoes` -- a SIBLING of
+    // `InternalLaneFoes` above, built in the same parse pass, but from a different walk: it iterates
+    // the internal junction's OWN `IncLanes` starting at index 1 (index 0 is the checker/bay lane,
+    // already the link `thisLink` itself -- MSInternalJunction.cpp:97's `myIncomingLanes.begin() +
+    // 1`), and for each of THAT lane's outgoing links keeps the ones whose corresponding entry
+    // link's index is set in the parent junction's `Requests[ownLinkIndex]` response row -- plus,
+    // when the kept link's via lane itself leads into another internal-junction link (a cont chain),
+    // that follow-on link too (MSInternalJunction.cpp:104-108).
+    //
+    // Stored as VIA-LANE HANDLES, not links (a deliberate divergence from SUMO -- design doc §4
+    // deviation 1): the only planned consumer keys its approach registry by internal lane, exactly
+    // as SUMO's own `myApproachingVehicles` is registered on the link the via lane belongs to. This
+    // makes the map TOTAL only because every kept entry in every committed net resolves a non-null
+    // via lane (guarded and swept by InternalLinkFoeTests' corpus test) -- a link with no via lane
+    // would have no key and would silently vanish from this arm, which is exactly the failure this
+    // task's success conditions guard against.
+    //
+    // `indirectBicycleTurn` (MSInternalJunction.cpp:76's `||` alternative) is a GUARDED OMISSION, same
+    // as for `InternalLaneFoes` above: no committed net has an indirect connection.
+    //
+    // Defaulted so existing construction sites keep compiling; null degrades to "no link foes known"
+    // -- T4 (not this task) is the first and only reader. This member is parse-time-only and
+    // provably parity-inert: nothing in Sim.Core reads it yet.
+    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLinkFoes = null)
 {
     // F3/cont-turn: SUMO's `myLane->isInternal() && myLane->getEdge().getToJunction() == junction`
     // (the guard opening MSVehicle::isLeader, sumo/src/microsim/MSVehicle.cpp:7348). True when

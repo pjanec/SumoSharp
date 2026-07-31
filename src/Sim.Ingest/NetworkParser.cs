@@ -333,6 +333,10 @@ public static class NetworkParser
         var internalJunctions = new List<InternalJunction>();
         var internalJunctionByBayLane = new Dictionary<string, InternalJunction>(StringComparer.Ordinal);
         var internalLaneFoes = new Dictionary<string, IReadOnlyList<int>>(StringComparer.Ordinal);
+        // JUNCTION-APPROACH-ARM T1: `InternalLinkFoes`, a SIBLING of `internalLaneFoes` above, built
+        // in the same pass over `<junction type="internal">` -- see NetworkModel.InternalLinkFoes's
+        // doc comment for the construction rule and MSInternalJunction.cpp:96-110 for the source.
+        var internalLinkFoes = new Dictionary<string, IReadOnlyList<int>>(StringComparer.Ordinal);
 
         foreach (var junctionEl in root.Elements("junction"))
         {
@@ -466,6 +470,103 @@ public static class NetworkParser
             }
 
             internalLaneFoes[internalId] = foeHandles;
+
+            // JUNCTION-APPROACH-ARM T1 (design §2, §5; MSInternalJunction.cpp:96-110): the SECOND
+            // foe set `postloadInit` builds. Unlike `myInternalLaneFoes` above (which walks this
+            // internal junction's OWN candidate `IntLanes`), this one walks the internal junction's
+            // `IncLanes` starting at index 1 -- index 0 is the checker/bay lane (`incLanes[0]`,
+            // already resolved above as `own`/`ownLinkIndex`/`thisLink`'s own lane), and re-including
+            // it here would test its single link's own index against `ownRequest`, which is never
+            // set (a link never yields to itself) -- but is EXCLUDED here regardless of whether that
+            // matters for any given fixture, exactly as SUMO's `myIncomingLanes.begin() + 1` excludes
+            // it unconditionally (InternalLinkFoeTests pins this exclusion on a synthetic fixture
+            // where skipping it changes the result, so the skip is exercised, not incidental).
+            var linkFoeLaneIdsOrdered = new List<string>();
+            var linkFoeLaneIdSeen = new HashSet<string>(StringComparer.Ordinal);
+
+            void AddLinkFoeIfAbsent(string viaLaneId)
+            {
+                if (linkFoeLaneIdSeen.Add(viaLaneId))
+                {
+                    linkFoeLaneIdsOrdered.Add(viaLaneId);
+                }
+            }
+
+            for (var incIndex = 1; incIndex < incLanes.Count; incIndex++)
+            {
+                if (!lanesById.TryGetValue(incLanes[incIndex], out var incLane)
+                    || !connectionsByFromEdgeLane.TryGetValue((incLane.EdgeId, incLane.Index), out var outgoingLinks))
+                {
+                    continue;
+                }
+
+                foreach (var link in outgoingLinks)
+                {
+                    // MSLink::getCorrespondingEntryLink()->getIndex() (MSLink.cpp:1331-1339): walks
+                    // back while the lane before the link is internal. `LinkIndexByInternalLane`
+                    // already performs exactly this walk (T2.1, above) keyed on a link's VIA lane,
+                    // for both a plain link (the walk is a no-op -- `incLane` isn't internal) and a
+                    // cont chain (every stage already resolves to the SAME final link index) --
+                    // reused here, not re-derived, per the task brief.
+                    //
+                    // "links that target a shared walkingarea always have index -1"
+                    // (MSInternalJunction.cpp:101) and a link with no `via` at all (never observed on
+                    // a committed net -- InternalLinkFoeTests' corpus sweep) both fall through this
+                    // same TryGetValue miss and are skipped, matching SUMO's `linkIndex != -1` guard.
+                    // The `ReferenceEquals` guard additionally rejects a lookup that resolved to some
+                    // OTHER junction's response bitset (`entry.LinkIndex` is only meaningful against
+                    // `ownRequest`, which belongs to `parentJunction` specifically).
+                    if (link.Via is not { } viaLaneId
+                        || !linkIndexByInternalLane.TryGetValue(viaLaneId, out var entry)
+                        || !ReferenceEquals(entry.Junction, parentJunction))
+                    {
+                        continue;
+                    }
+
+                    if (!ownRequest.RespondsTo(entry.LinkIndex))
+                    {
+                        continue;
+                    }
+
+                    AddLinkFoeIfAbsent(viaLaneId);
+
+                    // MSInternalJunction.cpp:104-108: "we added the entry link, also use the
+                    // internalJunctionLink that follows" -- when the just-kept link's via lane's own
+                    // FIRST outgoing link itself has a via lane (i.e. this via lane is itself a cont
+                    // chain's stage-1 bay), add that follow-on link's via lane too, unconditionally
+                    // (no second response test).
+                    if (lanesById.TryGetValue(viaLaneId, out var via)
+                        && connectionsByFromEdgeLane.TryGetValue((via.EdgeId, via.Index), out var viaOutgoingLinks)
+                        && viaOutgoingLinks.Count > 0
+                        && viaOutgoingLinks[0].Via is { } followOnViaLaneId)
+                    {
+                        AddLinkFoeIfAbsent(followOnViaLaneId);
+                    }
+                }
+            }
+
+            var linkFoeHandles = new List<int>(linkFoeLaneIdsOrdered.Count);
+            foreach (var viaLaneId in linkFoeLaneIdsOrdered)
+            {
+                if (laneHandleById.TryGetValue(viaLaneId, out var handle))
+                {
+                    linkFoeHandles.Add(handle);
+                }
+                else
+                {
+                    // Design §4.1 / T1 success condition 3: a link foe that fails to resolve a real
+                    // lane handle here would otherwise be silently dropped -- the task brief is
+                    // explicit that this must STOP and report, not vanish quietly. No committed net
+                    // has ever hit this (InternalLinkFoeTests' corpus sweep asserts it directly), so
+                    // this is a loud failure, never a guessed fallback.
+                    throw new InvalidDataException(
+                        $"internal junction '{internalId}': link foe via-lane '{viaLaneId}' does not "
+                        + "resolve to a known lane handle (NetworkModel.InternalLinkFoes requires a "
+                        + "non-null via lane for every entry -- design doc §4.1).");
+                }
+            }
+
+            internalLinkFoes[internalId] = linkFoeHandles;
         }
 
         return new NetworkModel(
@@ -486,7 +587,8 @@ public static class NetworkParser
             entryConnectionByLink,
             internalJunctions,
             internalJunctionByBayLane,
-            internalLaneFoes);
+            internalLaneFoes,
+            internalLinkFoes);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert
