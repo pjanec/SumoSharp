@@ -69,7 +69,7 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
         "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane", "deadLaneMerge",
         "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield", "keepClear",
         "obstacle", "crowd", "internalJunctionAdmission", "colocationSymmetryBreak", "crowdYield",
-        "internalJunctionApproachArm",
+        "internalJunctionApproachArm", "urgentStrategicFollow",
     };
 
     private readonly StreamWriter _writer;

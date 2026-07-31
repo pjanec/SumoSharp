@@ -85,8 +85,12 @@ taken after.
    and never covered by that test's old 290-arrivals figure despite the test being named for it.
 2. **Normal-traffic junction overlaps on the real nets.** `city-mixed-1k` still shows 10 peak
    overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
-3. **Lateral lane change while stopped — ⭐ MECHANISM NAMED for the strategic path (Entry 24); the
-   next task is a DESIGN, not an edit.**
+3. **Lateral lane change while stopped — strategic-path mechanism CONFIRMED (Entry 25): the
+   informLeader port reproduces SUMO's move to two decimals, and the naive global default COLLAPSES a
+   saturated net (L2 arrived 433 → 223, stuckDwell 0 → 824). Design-first trio committed
+   (`URGENT-STRATEGIC-FOLLOW-{DESIGN,TASKS,TRACKER}.md`), probe constraint committed default-OFF
+   behind `SUMOSHARP_URGENTFOLLOW` (binder 18). AWAITING OWNER SIGN-OFF; Stage 1 (diagnose the
+   collapse — H-A/H-B/H-C in the design §3) is the next work.** Background (Entry 24):
    On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
    **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
    **we change at t=45 / pos 189.60 / 1.00 m/s** (at the lane end, stopped). The traced veto is

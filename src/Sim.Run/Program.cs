@@ -156,6 +156,9 @@ internal static class Program
         // outside LiveCitySim could read it, which is why the stopped-lane-change artefact had been
         // characterised only by counting FCD lane transitions. Unset => the engine default (off).
         engine.DiagLaneChangeLog = EnvGate("SUMOSHARP_LCLOG", engine.DiagLaneChangeLog);
+        // Entry 24/25 probe gate: the informLeader urgent-strategic leader-follow coupling. Same
+        // EnvGate semantics as every gate above (unset => engine default, currently OFF).
+        engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

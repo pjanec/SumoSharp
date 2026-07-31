@@ -5344,6 +5344,12 @@ public sealed partial class Engine : IEngine
         // +infinity (inert) for every vehicle on an on-route lane -- see the method's own header.
         dc = DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 5; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
+        // Entry 24/25 (docs/JUNCTION-REALISM-SESSION-JOURNAL.md): the OTHER half of
+        // MSLCM_LC2013::informLeader -- an URGENT strategic changer blocked by the TARGET-LANE leader
+        // brakes to slot in behind it, instead of cruising beside it waiting for a gap that two
+        // equal-speed vehicles can never open. +infinity (inert) unless UrgentStrategicLeaderFollow.
+        dc = UrgentStrategicLeaderFollowConstraint(v, lane, neighbors, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 18; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
+
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
@@ -6627,6 +6633,170 @@ public sealed partial class Engine : IEngine
             ? IdmModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt)
             : KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
         return Math.Max(stopSpeed, vMinComfortable);
+    }
+
+    // Entry 24 (docs/JUNCTION-REALISM-SESSION-JOURNAL.md): the missing half of
+    // MSLCM_LC2013::informLeader (:464-560), the URGENT-strategic-changer speed coupling.
+    //
+    // THE MEASURED GAP THIS CLOSES. A left-turner that departs on the wrong lane and is blocked by a
+    // TARGET-LANE leader at the same cruise speed can never merge: the gap between two equal-speed
+    // vehicles is constant, so IsTargetLaneSafe vetoes forever and the change finally happens at the
+    // stop line, at ~1 m/s, when a red light reshuffles the queue -- the "lateral lane change while
+    // standing" artefact in its strategic form. Traced on junction-realism-L2-light `f_left_W00.0`:
+    // SUMO changes at t=3 / pos 30.94 / 11.95 m/s (having decelerated to fit); we changed at t=45 /
+    // pos 189.60 / 1.00 m/s. SUMO's mechanism is informLeader's cannot-overtake branch: ego adopts
+    // followSpeed BEHIND the neighbour-lane leader, spread over remainingSeconds -- it *creates* the
+    // gap it needs. `DeadLaneMergeBrakeConstraint` above is the stopSpeed(myLeftSpace) half of the
+    // same SUMO function, restricted to dead lanes; this is the leader-follow half, for ANY urgent
+    // strategic change (SUMO applies both to every LCA_URGENT changer).
+    //
+    // FAITHFUL PIECES (MSLCM_LC2013.cpp line refs):
+    //   plannedSpeed = MIN(speed, stopSpeed(usableDist))            :471-472 (myLeadingBlockerLength=0)
+    //   urgency == the laDist gate                                  :1425 currentDistDisallows == the
+    //     same `usableDist/|bestLaneOffset| < laDist` TryStrategicLaneChange gates on
+    //   remainingSeconds = MAX(dt, usableDist/MAX(lookAhead,eps)/|off|/URGENCY), URGENCY=2   :1501
+    //   neighNextSpeed = nvSpeed - dt*MAX(1, -nvAccel)              :493
+    //   neighNextGap   = gap + dt*(neighNextSpeed - plannedSpeed)   :496 (euler arm)
+    //   cannot-overtake => targetSpeed = MAX(minNextSpeed, followSpeed(neighNextGap, neighNextSpeed))
+    //     decel = MIN(maxDecel, MAX(MIN_FALLBEHIND=7/3.6, (speed-targetSpeed)/remainingSeconds)) :550-560
+    //
+    // DOCUMENTED SIMPLIFICATIONS (each a deliberate scope cut, not an oversight):
+    //   - the overtake-decision arm ports the euler branch only (space test uses brakeGap(speed));
+    //   - `informNeighLeader` messaging (asking the LEADER to hold speed / not accelerate) is NOT
+    //     ported -- a plan-phase constraint cannot write another vehicle's state (parallel plan over a
+    //     frozen snapshot; CLAUDE.md determinism rule). Ego-side braking alone reproduces the traced
+    //     SUMO behaviour on the repro;
+    //   - SUMO skips the follow branch for an isStopped() (SCHEDULED-stop) leader; we approximate
+    //     that as IsParked -- no committed scenario has a scheduled stop on a merge target lane;
+    //   - myLeadingBlockerLength (counter-lane-change reservation) = 0, as in the dead-lane port.
+    //
+    // ORDER-INDEPENDENT: reads the frozen start-of-step snapshot (foe pos/speed/accel), ego's own
+    // last-step LookAheadSpeed (single-writer: TryStrategicLaneChange), and writes nothing.
+    //
+    // Gated OFF by default pending the design sign-off (docs/URGENT-STRATEGIC-FOLLOW-DESIGN.md):
+    // +infinity unconditionally when off, so every golden is byte-identical BY CONSTRUCTION.
+    private double UrgentStrategicLeaderFollowConstraint(
+        VehicleRuntime v, Lane lane, LaneNeighborQuery neighbors, double dt, double time,
+        double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    {
+        if (!UrgentStrategicLeaderFollow || v.IsParked || v.LcTargetHandle >= 0 || v.LaneSeqIndex >= v.LaneSeqLen)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+        {
+            return double.PositiveInfinity;
+        }
+
+        var routeId = EffectiveRouteId(v);
+        var route = _routesById[routeId];
+        if (route.Edges.Count <= 1)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // Same bestLanes read TryStrategicLaneChange/KeepRightStrategicStay use (memoized per
+        // (route, edge)); BestLaneOffset != 0 == "a strategic change is required from this lane".
+        var bestLanes = BestLanesCached(routeId, route.Edges, lane.EdgeId);
+        LaneContinuation? curr = null;
+        foreach (var c in bestLanes)
+        {
+            if (c.LaneIndex == lane.Index)
+            {
+                curr = c;
+                break;
+            }
+        }
+
+        if (curr is null || curr.BestLaneOffset == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var bestLaneOffset = curr.BestLaneOffset;
+        var usableDist = curr.Length - v.Kinematics.Pos;
+        if (usableDist <= 0.0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // URGENT iff the laDist gate admits -- the identical formula TryStrategicLaneChange applies
+        // (LOOK_FORWARD=10, myStrategicParam=1, myLookaheadLeft=2). LookAheadSpeed is read, never
+        // written here (single-writer discipline).
+        var lengthWithGap = v.VType.Length + v.VType.MinGap;
+        var laDist = (v.LookAheadSpeed * 10.0 * (bestLaneOffset < 0 ? 1.0 : 2.0)) + (2.0 * lengthWithGap);
+        if (usableDist / Math.Abs(bestLaneOffset) >= laDist)
+        {
+            return double.PositiveInfinity;
+        }
+
+        // informLeader:471-472 -- plannedSpeed = MIN(speed, stopSpeed(myLeftSpace)).
+        var stopSp = StopSpeedFor(v.VType, v.Kinematics.Speed, usableDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+        var vMinComfortable = v.VType.CarFollowModel is "IDM" or "IDMM"
+            ? IdmModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt)
+            : KraussModel.MinNextSpeed(v.Kinematics.Speed, v.VType, dt);
+        var plannedSpeed = Math.Max(Math.Min(v.Kinematics.Speed, stopSp), vMinComfortable);
+
+        var neighborHandle = bestLaneOffset > 0 ? lane.LeftNeighbor : lane.RightNeighbor;
+        if (neighborHandle < 0)
+        {
+            return plannedSpeed;
+        }
+
+        var nv = neighbors.GetNeighborLeader(v, neighborHandle);
+        if (nv is null || nv.IsParked)
+        {
+            // informLeader:488-490 "not overtaking" / the isStopped() overtake exception.
+            return plannedSpeed;
+        }
+
+        if (IsTargetLaneSafe(v, nv, null, dt))
+        {
+            // Not blocked by this leader -- the change itself will go through; no coupling needed.
+            return plannedSpeed;
+        }
+
+        var nvSpeed = nv.Kinematics.Speed;
+        var gap = (nv.Kinematics.Pos - nv.VType.Length) - v.Kinematics.Pos - v.VType.MinGap;
+        var remainingSeconds = Math.Max(
+            dt, usableDist / Math.Max(v.LookAheadSpeed, KraussModel.NumericalEps) / Math.Abs(bestLaneOffset) / 2.0);
+
+        // Overtake decision (:511-546, euler arm; myOvertakeDeltaSpeedFactor keeps its ctor default 0).
+        var dv = plannedSpeed - nvSpeed;
+        var overtakeDist = Math.Max(0.0,
+            gap + nv.VType.Length + nv.VType.MinGap + v.VType.Length
+            + SecureGap(nvSpeed, nv.VType, plannedSpeed, v.VType.Decel, dt));
+        var overtakeTime = dv > 0.0 ? overtakeDist / dv : remainingSeconds + 1.0;
+        var egoBrakeGap = KraussModel.BrakeGap(v.Kinematics.Speed, v.VType.Decel, headwayTime: 0.0, dt);
+        var cannotOvertake = dv < 0.0
+            || usableDist - egoBrakeGap < overtakeDist
+            || remainingSeconds < overtakeTime;
+        if (!cannotOvertake)
+        {
+            // Wants to overtake: SUMO returns -1 (no ego speed advice) and messages the leader.
+            return plannedSpeed;
+        }
+
+        // Cannot overtake -> slow down smoothly to become the leader's follower (:548-566).
+        var neighNextSpeed = nvSpeed - (dt * Math.Max(1.0, -nv.Acceleration));
+        var neighNextGap = gap + (dt * (neighNextSpeed - plannedSpeed));
+        var followSp = FollowSpeedFor(
+            v.VType, v.Kinematics.Speed, neighNextGap, neighNextSpeed, nv.VType.Decel,
+            laneVehicleMaxSpeed, dt, time: time,
+            accControlMode: ref v.AccControlMode, accLastUpdateTime: ref v.AccLastUpdateTime,
+            caccControlMode: ref v.CaccControlMode, egoAcceleration: v.Acceleration,
+            hasPred: true, predIsCacc: nv.VType.CarFollowModel == "CACC", levelOfService: v.LevelOfService,
+            ballistic: _config!.Ballistic);
+        var targetSpeed = Math.Max(vMinComfortable, followSp);
+        if (targetSpeed >= v.Kinematics.Speed)
+        {
+            return plannedSpeed;   // leader is fast enough anyway (:568-585)
+        }
+
+        const double minFallBehind = 7.0 / 3.6; // MSLCM_LC2013.cpp:61 MIN_FALLBEHIND
+        var decel = Math.Min(v.VType.Decel, Math.Max(minFallBehind, (v.Kinematics.Speed - targetSpeed) / remainingSeconds));
+        return Math.Min(plannedSpeed, Math.Max(0.0, v.Kinematics.Speed - (decel * dt)));
     }
 
     // MSVehicle.cpp's planMoveInternal "process stops" block (~2467-2540), non-waypoint
@@ -13563,6 +13733,14 @@ public sealed partial class Engine : IEngine
     // lower price -- that is an empirical question, so it gets a knob and a sweep rather than an
     // argument. Sweep results live in docs/JUNCTION-REALISM-SESSION-JOURNAL.md.
     public double BayExitLaneKeepClearExtra { get; set; } = -1.0;
+
+    // Entry 24/25: the informLeader urgent-strategic leader-follow coupling
+    // (UrgentStrategicLeaderFollowConstraint -- see its header). DEFAULT OFF pending the
+    // design-first sign-off in docs/URGENT-STRATEGIC-FOLLOW-DESIGN.md: with the flag off the
+    // constraint is an unconditional +infinity Min term, so every golden is byte-identical BY
+    // CONSTRUCTION. Probe measurements (goldens / L2 rate / battery, all with the flag ON) are
+    // recorded in the journal before any default flip.
+    public bool UrgentStrategicLeaderFollow { get; set; }
 
     // DIAGNOSTIC, not behavioural: when set to a SUMO vehicle id, the constraints that opt in write
     // their internal decision to stderr for that ONE vehicle. Today: KeepClearConstraint's downstream

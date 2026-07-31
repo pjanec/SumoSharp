@@ -1872,3 +1872,51 @@ goldens still. CLAUDE.md's design-first rule applies. The specific questions a d
 `[strategic]` (the `laDist` gate's inputs) and `[strategic-veto]` (which of the four vetoes fired, and
 the leader/follower involved), both behind `SUMOSHARP_TRACEVEH`. Together they take "why did this vehicle
 not change lanes?" from an argument to a one-run answer.
+
+---
+
+## Entry 25 — the informLeader probe: SUMO's move reproduced to TWO DECIMALS, and a collapse that stops the default flip
+
+Ran the probe Entry 24 called for. `UrgentStrategicLeaderFollowConstraint` — the faithful port of
+`MSLCM_LC2013::informLeader`'s cannot-overtake branch (formulas and simplifications in its header) —
+committed default-OFF behind `SUMOSHARP_URGENTFOLLOW`, binder tag **18**.
+
+### Probe result 1 — the mechanism is EXACTLY right
+
+Flag on, `junction-realism-L2-light`: `f_left_W00.0` changes lanes at **t=3, pos 30.94, 11.95 m/s** —
+**identical to SUMO's oracle to two decimals** (Entry 24's table: SUMO t=3 / 30.94 / 11.95). The car
+then clears the junction at t=48–50 instead of wedging at the stop line until t=45+.
+
+### Probe result 2 — goldens are inert in BOTH flag states
+
+Full parity suite with the default temporarily ON: **all 661 goldens byte-identical**; only the four
+synthetic-junction2 behavioural tests fail (see result 3). Entry 24's blast-radius prediction — golden
+vehicles are never urgent-and-blocked — held. The parity cost of this mechanism is zero.
+
+### Probe result 3 — the naive global default COLLAPSES the saturated net
+
+| junction-realism-L2 | flag OFF | flag ON | SUMO |
+|---|---|---|---|
+| arrived | 433 | **223** | 450 |
+| running at end | 17 | **226** | 0 |
+| peak overlapping pairs | 9 | **42** | 0 |
+| stuckDwell | 0 | **824** | 0 |
+
+⚠ **The stopped-LC "rate" under the flag reads 0.450 — near SUMO's 0.410 — and it is a DENOMINATOR
+ARTEFACT**: stopped vehicle-steps ballooned 73k → 176k because half the net is jammed. Recorded so the
+number is never quoted as a win. (The instrument's "compare the rate" advice assumes comparable
+throughput; a collapsed run breaks that assumption.)
+
+SUMO runs this same mechanism on this same net and drains 450/450 with 0 overlaps — so the defect is in
+**our port's interaction with the rest of our engine**, not the mechanism. Three candidate explanations
+(H-A: ego brakes but non-SUMO vetoes still refuse the swap, leaving it permanently braking; H-B: our
+"blocked" predicate over-fires vs SUMO's checkChange; H-C: one-step lag) are in the design doc, and the
+diagnostic stage that separates them is Stage 1 of the task doc. The scoreboard is 0-for-16 on reasoned
+hypotheses; none of the three gets edited before T1.1 measures.
+
+### Where this leaves it
+
+Design-first trio committed: `URGENT-STRATEGIC-FOLLOW-{DESIGN,TASKS,TRACKER}.md`, acceptance gates fixed
+in advance (headline: L2 must be **no worse than today on any column** — gridlock outranks this
+artefact). **Awaiting owner sign-off before Stage 1.** Committed state ships the flag OFF: suite
+778/5/0, battery untouched.
