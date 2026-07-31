@@ -401,3 +401,31 @@ the step it entered — the same technique that found the §4 admission defect i
 
 **Do not** attempt a global cycle-breaking tie-break first: it is a large behavioural change aimed at a
 symptom, and the single-vehicle trace is cheap and has a working precedent in this very document.
+
+---
+
+## Entry 6 — BEFORE — why does `f_cyc_ccw.6` never escape `:J10_15_0`?
+
+**The question.** This one vehicle closes the 14-vehicle cycle that holds the whole 226-vehicle jam.
+It sits on `:J10_15_0` at pos 7.22, speed 0.000, binder `crossJxnLeader`, blocked by `f_cyc_ccw2.5`,
+for 1653 samples. SUMO strands 44 vehicles on identical input and resolves **every one within 29
+steps**. Why does ours never resolve?
+
+**Expectation — deliberately held loose. Five predictions this session, five wrong**, and the last one
+was wrong because the *instrument* hid the answer rather than because the reasoning was bad. So the
+candidates are listed without a favourite:
+(a) its blocker `f_cyc_ccw2.5` is itself stranded and the pair is a mutual `crossJxnLeader` lock
+    (`NEED-arm5`'s two-car case, which is claimed fixed by `JunctionIsLeaderGate`, default ON);
+(b) it entered when it could not clear, and SUMO's equivalent never entered (an admission difference —
+    check what SUMO's `f_cyc_ccw.6` does at the same step);
+(c) it could physically proceed but `crossJxnLeader` keeps braking it — a predicate that never releases.
+
+**Immediate next step.** Two traces side by side around its entry to `:J10_15_0`: ours from the binder
+log (lane, pos, speed, binder, blocker) and SUMO's from `sumo-L1.fcd.xml` for the same vehicle id.
+Find the first step where the two diverge, exactly as §4 did for the admission defect.
+
+⚠ **Caveat to state up front:** the two runs have already diverged globally by then (first
+interpenetration at t=50), so SUMO's `f_cyc_ccw.6` is not in the same traffic state as ours. The
+comparison is therefore **suggestive, not an oracle diff** — it can show what SUMO *does* in a similar
+situation but cannot prove what it would do in ours. Any conclusion drawn from it must carry that
+caveat, and if the answer is (a) or (c) the decisive evidence is our own trace, not the comparison.
