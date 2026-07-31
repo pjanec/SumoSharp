@@ -1028,3 +1028,52 @@ lateral-lane-change frequency (Entry 15) may rise again for the same reason.
 **Success condition, stated in advance:** L1 `arrived` moves materially above 112 (SUMO: 450). If it
 does not, the mechanism is named correctly but is not the binding one — publish that null like the
 others.
+
+---
+
+## Entry 16 — L1 ROOT CAUSE: `KeepClearConstraint` is applicable, the box IS blocked, and it never binds
+
+I was about to build a second box-block check for the non-cont entry. **That would have been wrong** —
+`KeepClearConstraint` already implements exactly this, including the downstream available-space walk
+(`LaneBruttoVehLenSum` / `LaneSpaceTillLastStanding`, brake to the entry stop line if ego does not fit).
+Checked before building, and the check changed the task.
+
+**It applies to all three wedged links.** Its only scope gate is `request.Foes.Contains('1')`
+("keepClear only applies at a link with crossing foes"), and: J11 link 1 `foes=111100110000`,
+J11 link 9 `foes=000000100010`, J01 link 10 `foes=000111100110` — **all have crossing foes**.
+
+**And the box was demonstrably blocked at the decision step.** `f_cyc_cw2.30` entering `:J01_10_0`:
+
+| t | exit lane `h1_0` | ego |
+|---|---|---|
+| 405 | **9 vehicles, all stopped, nearest pos 4.21** | `in_W01_0` pos 184.30, `leaderFollow` |
+| 406 | 9 stopped, nearest 4.21 | `in_W01_0` pos 186.90, `freeFlow` |
+| 407 | 9 stopped, nearest 4.21 | `in_W01_0` pos 192.10, `crossJxnLeader` |
+| **408** | 9 stopped, nearest 4.21 | **`:J01_10_0` — entered** |
+| 409 | 9 stopped, nearest 4.21 | stopped at pos 3.61, forever |
+
+Ego needs `Length + MinGap` = **7.5 m**; the available space ahead was **4.21 m**, unchanged for at
+least four steps before entry. **`keepClear` bound ZERO times for this vehicle over its whole life.**
+
+**So this is not a missing guard — it is a guard that does not fire when its own condition holds.**
+The defect is inside the walk. Two candidates, both directly testable:
+1. `LaneSpaceTillLastStanding` never sets `foundStopped` — the `!foundStopped` early-out then returns
+   `+infinity` regardless of how little space there is;
+2. `seenSpace` comes out too large — e.g. the exit lane's space is measured from the wrong end, or the
+   internal lanes' `LaneBruttoVehLenSum` is not subtracted as intended.
+
+**Repro is exact and cheap:** `scenarios/_diag/junction-realism-L1`, vehicle `f_cyc_cw2.30`, step
+**407**, entry link J01 index 10, exit lane `h1_0`. Instrument the walk's intermediate values at that
+one step — `seenSpace`, `foundStopped`, and each lane's contribution — and the answer falls out.
+
+### Why this matters beyond L1
+
+`KeepClearConstraint` is **default-on, unconditional, parity-relevant** engine code — not behind any
+gate. If it is failing to bind here, it is plausibly under-firing everywhere, which would make it a
+contributor to the junction wedges on the `city-*` nets too. That makes it a bigger prize than the
+L1 gridlock alone, and also a bigger parity risk: fixing it WILL change junction entry on ordinary
+links, so expect golden movement and plan the SUMO diff up front.
+
+**Fixing an existing broken guard is strongly preferable to adding a second one** — two overlapping
+box-block checks would make future attribution ambiguous, which this session has already paid for
+twice (binder tag 14 covering two halves; `maxDwell` conflating waiting with wedged).
