@@ -1554,20 +1554,19 @@ a lead to instrument, **not** a finding — this workstream's reasoned-from-sour
 in the SUMO package on this box) makes it readable step by step, so **the two engines' accumulators can
 be compared directly instead of inferred**.
 
-**SUMO, junction-realism-L2, ~68 000 samples over 700 s:**
+> ### ⚠ THE FIRST VERSION OF THIS SECTION WAS WRONG — see Entry 22 for the corrected numbers.
+> I published *"SUMO's value never goes negative at all"*. **It does.** The TraCI getter
+> **NEGATES** (`MSLCM_LC2013.cpp:2120` returns `toString(-myKeepRightProbability)`), and I took a
+> `min()` over the negated value, so I measured the wrong sign of the wrong quantity and reported the
+> strongest possible version of the conclusion I wanted. Corrected numbers in Entry 22. The
+> qualitative gap is real but much smaller than that claim.
+
+**SUMO, junction-realism-L2, ~68 000 samples over 700 s (uncorrected sign — see the box above):**
 
 | | |
 |---|---|
-| samples with `keepRightProbability == -0.0` | **64 612** |
-| stopped samples with it exactly 0 | **50 086** of 50 789 (98.6%) |
-| most negative value **ever reached**, per vehicle | **0.0 — it never goes negative at all** |
-
-The fire condition is `probability < -2.0`. **SUMO's value never becomes negative on this net**, so the
-negative-accumulation route to a keepRight change essentially never runs. Ours reaches **−2.615** and
-fires. That is the artefact stated as a fact rather than a theory.
-
-Per-vehicle detail for `f_cyc_cw2.2`, standing 11+ consecutive steps at a stop line on a lane with a
-right neighbour: SUMO prints `keepRightProb=-0.00` on every single step.
+| samples with the accumulator at 0 | **64 612** |
+| stopped samples at 0 | **50 086** of 50 789 (98.6%) |
 
 ### Ours, same situation, traced
 
@@ -1618,3 +1617,81 @@ exactly the place the artefact occurs.
 **That is the next thing to test, and it is a hypothesis, not a finding** (this workstream is now
 0-for-14). The engine already has cross-junction leader logic (binder 2 `crossJxnLeader`), so the
 machinery to try it exists.
+
+---
+
+## Entry 22 — CORRECTION to Entry 21, and a second fix tried and reverted
+
+### The correction: my own instrument was wrong, and it flattered the conclusion
+
+Entry 21 reported *"SUMO's keepRightProbability never goes negative at all"*. **That is false.**
+`MSLCM_LC2013.cpp:2120` returns `toString(-myKeepRightProbability)` — the TraCI getter **negates** — and
+I then took a `min()` over the negated value. So the "most negative ever reached = 0.0" was measuring the
+least accumulation of a sign-flipped quantity. Two errors compounding, both in the direction of the
+answer I was hoping for.
+
+**Corrected, with the sign fixed:**
+
+| | |
+|---|---|
+| SUMO's most negative internal value, worst vehicle | **−2.35** |
+| SUMO vehicles that EVER cross the fire threshold (< −2.0) | **1 of 450** |
+| worst value while stopped | **−2.35** |
+| samples at exactly 0 | 64 612 of ~68 000 |
+
+So SUMO **does** accumulate, and one vehicle does fire. The real statement is quantitative, not
+categorical: **1 of 450 SUMO vehicles ever crosses the threshold; we produce 255 stopped keepRight
+commits.** That is still a large gap — it is simply not the absolute one I published.
+
+⚠ **A second methodological error, stated because it invalidates a comparison I made.** The two engines'
+trajectories diverge, so `f_cyc_cw2.2` in SUMO is in a completely different place at t=57 than ours is.
+Entry 21's per-vehicle side-by-side is therefore **not a controlled comparison**. Only the aggregate
+(1-of-450 vs 255 commits) is valid. Per-vehicle traces are still useful for reading OUR mechanism; they
+cannot establish what SUMO would do in the same spot.
+
+### Fix #2, tried and REVERTED: `resetState()` zeroes BOTH accumulators
+
+A genuine, provable porting omission. SUMO's `changed()`/`resetState()` (:1057-1064, :1075-1081) zeroes
+**both** `mySpeedGainProbability` and `myKeepRightProbability` on **every** committed change. Our four
+commit paths each zero **at most one** — and each cites `:1063/1080`, the very function that zeroes both:
+
+| path | zeroes SpeedGain | zeroes KeepRight |
+|---|---|---|
+| 0 overtake / EV vacate | ✗ | ✗ |
+| 1 speedGain | ✓ | **✗** |
+| 2 strategic | ✓ | **✗** |
+| 3 keepRight | **✗** | ✓ |
+
+So a speed-gain or strategic change left keep-right pressure intact to keep grinding down and fire later
+— and on L2 there are 664 such changes.
+
+**Measured: no benefit, real cost.** Stopped-LC rate **1.560 → 1.552** (noise), while the battery
+regressed four nets: `city-mixed-1k` **1012 → 1002**, `city-organic-L2` 619 → 618,
+`junction-realism-L2` 431 → 428, `willpass-saturation` overlaps 3 → 4. Goldens stayed byte-identical and
+the gate stayed green, but a faithfulness fix with no measured benefit and a −10 arrivals cost does not
+earn its place. **Reverted**, exactly like the `neighDist` attempt.
+
+**It remains a real omission and is worth revisiting** *after* the actual driver is found — at which
+point its cost may reverse. Do not re-derive it: the table above is the finding.
+
+### Where this leaves the artefact
+
+Still unexplained, and the scoreboard is now **0-for-16**. What is established and should not be
+re-measured:
+
+- The rate is **1.560 vs SUMO's 0.410 per 1000 stopped-vehicle-steps** (3.8×), and the normalisation
+  *strengthens* rather than explains the gap.
+- It is spread over **all three** commit paths (keepRight 23×, strategic 16×, speedGain 4.6× by stopped
+  count), so no single threshold explains it.
+- **81%** of our stopped changes go toward the lower lane index; SUMO's are near-balanced.
+- Our keep-right accumulator **accelerates 11× when a car stops**, because `acceptanceTime` collapses
+  with speed while `fullSpeedDrivingSeconds` does not. This is a property of SUMO's own formula, so it
+  is *not itself* the bug — SUMO has the same formula and does not produce the artefact.
+- Ruled out by measurement: `LaneChangeMinSpeed` (inert on the parity path), `neighDist` (Entry 21),
+  `resetState` (above), and a blanket ban on stopped changes (SUMO makes 65).
+
+**The most valuable next instrument** is not another hypothesis: it is a *controlled* comparison. Ours
+and SUMO's trajectories diverge immediately, so the only sound way to ask "what would SUMO do HERE" is
+to drive SUMO through TraCI to the same state (`moveToXY`/`setSpeed`) or to find a scenario where the
+two stay in lockstep long enough. Every per-vehicle cross-engine claim in Entries 21-22 that lacks that
+is a lead, not evidence.
