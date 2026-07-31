@@ -270,6 +270,13 @@ public static class SumoShim
         // SUMOSHARP_CONTTURNFIX/SUMOSHARP_ISLEADERFIX immediately above) it is deliberately NOT a
         // `--flag` in the parsed-args table. Unset => the ENGINE DEFAULT (see EnvGate below).
         engine.InternalJunctionAdmissionGate = EnvGate("SUMOSHARP_INTERNALJUNCTIONFIX", engine.InternalJunctionAdmissionGate);
+        // URGENT-STRATEGIC-FOLLOW T3.2 (docs/URGENT-STRATEGIC-FOLLOW-DESIGN.md; journal Entry 30):
+        // env-var A/B gate for Engine.UrgentStrategicLeaderFollow, default ON since the SS5
+        // acceptance gates went green -- NOT a SUMO option, so (mirroring the three gates above) it
+        // is deliberately NOT a `--flag` in the parsed-args table. Read here as well as in Sim.Run
+        // because the behavioural regression test drives THIS path, and its forced-OFF arm must be
+        // the same engine configuration as its shipped-default arm. Unset => the ENGINE DEFAULT.
+        engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
         // DIAGNOSTIC, not behavioural (see Engine.DiagTraceVehicleId): dumps KeepClearConstraint's
         // downstream available-space walk to stderr for ONE vehicle id. Read here as well as in
         // Sim.Run because the two load-bearing gridlock diagnostics (LowDensityTeleportTests,

@@ -13965,13 +13965,16 @@ public sealed partial class Engine : IEngine
     // argument. Sweep results live in docs/JUNCTION-REALISM-SESSION-JOURNAL.md.
     public double BayExitLaneKeepClearExtra { get; set; } = -1.0;
 
-    // Entry 24/25: the informLeader urgent-strategic leader-follow coupling
-    // (UrgentStrategicLeaderFollowConstraint -- see its header). DEFAULT OFF pending the
-    // design-first sign-off in docs/URGENT-STRATEGIC-FOLLOW-DESIGN.md: with the flag off the
-    // constraint is an unconditional +infinity Min term, so every golden is byte-identical BY
-    // CONSTRUCTION. Probe measurements (goldens / L2 rate / battery, all with the flag ON) are
-    // recorded in the journal before any default flip.
-    public bool UrgentStrategicLeaderFollow { get; set; }
+    // Entries 24-31: the informLeader urgent-strategic leader-follow coupling
+    // (UrgentStrategicLeaderFollowConstraint -- see its header). DEFAULT ON since Entry 31: every
+    // docs/URGENT-STRATEGIC-FOLLOW-DESIGN.md SS5 acceptance gate measured green on DETERMINISTIC
+    // code (Entry 30's race guard) once T2.6 fixed the internal-lane pileup the overlap gate was
+    // entangled with -- goldens byte-identical in both flag states (no golden vehicle is ever
+    // urgent-and-blocked), L2 arrived 440 >= 433 / overlaps 3 <= 9 / stuckDwell 0, stopped-LC rate
+    // 1.155 < 1.396, 26-net battery clean. The flag stays (SUMOSHARP_URGENTFOLLOW, safe EnvGate
+    // form in Sim.Run AND the shim) so the A/B stays runnable and a regression can be bisected;
+    // UrgentStrategicFollowBehaviourTests pins the shipped behaviour.
+    public bool UrgentStrategicLeaderFollow { get; set; } = true;
 
     // DIAGNOSTIC, not behavioural: when set to a SUMO vehicle id, the constraints that opt in write
     // their internal decision to stderr for that ONE vehicle. Today: KeepClearConstraint's downstream

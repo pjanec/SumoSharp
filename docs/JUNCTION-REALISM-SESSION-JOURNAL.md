@@ -2194,3 +2194,36 @@ for months of green suites until an unrelated trajectory change lines two thread
 transition step.* Any change that shifts saturated-net trajectories should re-run the cheap
 repeat-hash check (`N identical runs, compare FCD hashes`) before its numbers are trusted; Entry
 29's gate table was measured on racy code and superseded by the re-measurement below.
+
+## Entry 31 — the default flip: UrgentStrategicLeaderFollow ships ON
+
+Every `URGENT-STRATEGIC-FOLLOW-DESIGN.md` §5 acceptance gate, re-measured on the DETERMINISTIC
+engine (Entry 30's guard), coupling ON vs the same build coupling OFF:
+
+| gate | requirement | measured | verdict |
+|---|---|---|---|
+| goldens | 661 byte-identical | suite 778 / 5 / 0 in both flag states | ✓ |
+| L2-light | left-turner changes at speed ≈ t=3 | t=2, pos 30.94, 11.95 m/s — SUMO's move | ✓ |
+| L2 arrived | ≥ 433 | **440** (OFF: 436; SUMO: 450) | ✓ |
+| L2 peak overlaps | ≤ 9 | **3** (OFF: 1; pre-T2.6: 21/9) | ✓ |
+| L2 stuckDwell | 0 | **0** | ✓ |
+| stopped-LC rate | < 1.396, denominator reported | **1.155** /1000 (denom 68 390; OFF 1.466 / 68 897) | ✓ |
+| 26-net battery | no stuckDwell regression; arrivals within noise | ON-vs-OFF: only L2 overlaps 1→3; nothing else moved | ✓ |
+| behavioural tests | 4× synthetic-junction2 green | green in the flip suite run | ✓ |
+
+Shipped in this commit: `Engine.UrgentStrategicLeaderFollow = true`; `SUMOSHARP_URGENTFOLLOW` read
+by BOTH `Sim.Run` and the `sumosharp` drop-in in the safe `EnvGate` form (and added to
+`EnvGateDocumentationTests.MustUseSafeForm` — its engine default is now true, so the two-state form
+would be the Entry 19 bug all over again); `UrgentStrategicFollowBehaviourTests` (T3.3) pins the
+L2-light at-speed change with a forced-OFF vacuity guard; battery reports committed as
+`docs/reports/net-regression-urgentfollow-{on,off}.txt` — the ON report is the current battery
+reference (the keepclear-direction baseline carries 4 rows of pre-insertion-fix rot, attributed in
+Entry 29). One trajectory-anchored witness moved with the flip:
+`InternalJunctionAdmissionTests`' vacuity guard fired (its whole purpose) and the witness pair was
+re-anchored a third time, back to veh 89/102 (steps [321, 326], 6 steps, 0 violations). Final suite
+at the shipped default: **779 passed / 5 skipped / 0 failed**.
+
+**The owner's four defects now stand: through-driving FIXED · in-junction overlap FIXED (pileup
+mechanism T2.6) · gridlock FIXED · stopped-lane-change: strategic path FIXED (this flip) — keepRight
+and speedGain halves remain (Entries 21-22), plus the city-* overlap re-check and the pedestrian
+amplifier (backlog).**

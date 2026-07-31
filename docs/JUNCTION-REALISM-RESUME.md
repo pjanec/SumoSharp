@@ -2,9 +2,16 @@
 
 **Read this first, cold.** It is self-contained: you can pick the work up from this page alone.
 Branch: **`claude/sumosharp-traffic-bugs-g1y9hl`**. Gate state at handoff:
-**`dotnet test tests/Sim.ParityTests -c Release` = 778 passed / 5 skipped / 0 failed**, all 661 goldens
-byte-identical. (Unchanged across Entries 17–18 — the goldens cannot cover the queue geometry those
-fixes touch, so their silence was never evidence either way.)
+**`dotnet test tests/Sim.ParityTests -c Release` = 779 passed / 5 skipped / 0 failed** (the +1 is
+`UrgentStrategicFollowBehaviourTests`), all 661 goldens byte-identical — at the NEW shipped default
+`UrgentStrategicLeaderFollow = true` (Entry 31). The battery reference is now
+`docs/reports/net-regression-urgentfollow-on.txt` (the keepclear-direction baseline carries 4 rows of
+pre-insertion-fix rot — Entry 29 attribution). ⚠ Two build traps: `src/Sim.Run` and `src/Sim.Sumo`
+are **NOT in `Traffic.sln`** — build those csproj files explicitly or you will measure stale code
+(Entry 30 lost a full measurement round to this). ⚠ Determinism is workload-relative: after any
+change that shifts saturated-net trajectories, re-run the repeat-hash check (N identical runs,
+compare FCD hashes; parallel vs `--max-parallelism 1` too) before trusting its numbers — Entry 30
+found a latent parallel-plan race this way.
 
 ---
 
@@ -29,7 +36,7 @@ global, not zone-scoped** — an earlier suggestion to zone-scope it was wrong a
 | Cars driving **through** each other at a junction | **FIXED, shipping default-ON.** Root cause: the omitted `myInternalLinkFoes` half of `MSLink::setRequestInformation`. Our trajectory is now byte-identical to SUMO across the traced hold-and-release. Overlap **events** on the repro: 12 751 → 313 (−97.5%) |
 | Two cars **overlapping stopped** in a junction | **FIXED** — same mechanism |
 | **Gridlock** | **FIXED on L2 and L1.** L2 drains identically to honest SUMO; L1 went **112 → 386 arrived** of 450 with `stuckDwell` **1062 → 0**. `stuckDwell` is now 0 on every net in the 26-net battery except `city-3000` (13, unchanged). Two root causes, both in Entry 17/18 |
-| **Lateral lane change while stopped at red** | **CHARACTERISED, not fixed.** Per opportunity we do it **3.8×** as often as SUMO (1.560 vs 0.410 per 1000 stopped-vehicle-steps); four candidate causes are dead by measurement — see §5.3. The *overlap* half does not reproduce on this net at all — 0 in both engines |
+| **Lateral lane change while stopped at red** | **Strategic path FIXED, shipping default-ON (Entries 24–31):** the `informLeader`/`informFollower` pair (binders 18/19, `UrgentStrategicLeaderFollow`), scoped to the moving-merge regime — the L2-light left-turner now changes at t=2 / 11.95 m/s, SUMO's move; L2 rate **1.466 → 1.155** per 1000 stopped-vehicle-steps (SUMO 0.410). keepRight & speedGain halves remain (Entries 21–22). The *overlap* half does not reproduce on this net at all — 0 in both engines |
 
 ## 3. What shipped (engine changes, all on this branch)
 
@@ -83,20 +90,20 @@ taken after.
    (binder 14) on `:2810_8_0`, and `crossJxnLeader` on `:2450_0_1`. Separately, vehicles **122 and 256**
    are stranded on the dead lane `30_1` at pos 24.12 / 16.62 — **pre-existing, identical in both arms**,
    and never covered by that test's old 290-arrivals figure despite the test being named for it.
-2. **Normal-traffic junction overlaps — ⭐ MECHANISM NAMED AND TRACED (Entry 27).** A multi-vehicle
-   pileup on a single internal lane: (a) **back-protrusion invisibility** — a car whose front crossed
-   the boundary vanishes from the lane its back still occupies (SUMO: `myPartialVehicles`; we have no
-   partial occupancy), and (b) **the planning walks follow the POOL lane while a wrong-lane vehicle physically crosses onto its ACTUAL lane's connection** (Entry 28 corrects Entry 27: `walkLane=:J00_13_1` while the body enters `:J00_13_0`) — fix shape: resolve the downstream span from the actual lane when off-pool, the planning-time mirror of `TryReResolveFromActualLane`. Repro:
-   `junction-realism-L2`, `:J00_13_0`, t=680–690, six cars halted at pos 0.39–3.99. Present in BOTH
-   arms of the urgent-follow A/B — this blocks that flag's default flip (its overlap gate is entangled
-   with this defect). Also the likely `city-*` overlap cause. `city-mixed-1k` still shows 10 peak
-   overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
-3. **Lateral lane change while stopped — strategic-path mechanism CONFIRMED (Entry 25): the
-   informLeader port reproduces SUMO's move to two decimals, and the naive global default COLLAPSES a
-   saturated net (L2 arrived 433 → 223, stuckDwell 0 → 824). Design-first trio committed
-   (`URGENT-STRATEGIC-FOLLOW-{DESIGN,TASKS,TRACKER}.md`), probe constraint committed default-OFF
-   behind `SUMOSHARP_URGENTFOLLOW` (binder 18). AWAITING OWNER SIGN-OFF; Stage 1 (diagnose the
-   collapse — H-A/H-B/H-C in the design §3) is the next work.** Background (Entry 24):
+2. **Normal-traffic junction overlaps — pileup mechanism FIXED (T2.6, Entry 29): the cross-junction
+   walk now also follows the ACTUAL lane's connection path when ego is off-pool
+   (`BuildActualDownstreamSpan`, the planning-time mirror of `TryReResolveFromActualLane`). L2 peak
+   overlaps 9 → 1 (OFF) / 21 → 3 (ON), deterministic.** Remaining in this family: (a)
+   **back-protrusion invisibility** — a car whose front crossed the boundary vanishes from the lane
+   its back still occupies (SUMO: `myPartialVehicles`; we have no partial occupancy) — second-order
+   per Entry 28, untested since T2.6; (b) the `city-*` overlaps (`city-mixed-1k` 9 peak pairs,
+   `city-3000` 6, `city-organic` 2 in the Entry 31 battery) — plausibly the same cause, now worth
+   re-tracing on the fixed engine.
+3. **Lateral lane change while stopped — strategic path SHIPPED default-ON (Entry 31; tracker all
+   green).** The scoped informLeader/informFollower pair (binders 18/19) is
+   `UrgentStrategicLeaderFollow = true`; `UrgentStrategicFollowBehaviourTests` pins the behaviour;
+   `SUMOSHARP_URGENTFOLLOW=0` is the A/B/bisect switch. **Remaining halves: keepRight (23× by
+   stopped count) and speedGain (4.6×) — untraced, separate mechanisms.** Background (Entry 24):
    On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
    **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
    **we change at t=45 / pos 189.60 / 1.00 m/s** (at the lane end, stopped). The traced veto is

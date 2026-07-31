@@ -87,9 +87,10 @@ public class EnvGateDocumentationTests
     // forces false whenever the variable is absent -- is a BUG rather than a style preference.
     private static readonly string[] MustUseSafeForm =
     {
-        "SUMOSHARP_CONTTURNFIX",         // Engine.ContTurnInsideJunctionGate    = true
-        "SUMOSHARP_ISLEADERFIX",         // Engine.JunctionIsLeaderGate          = true
-        "SUMOSHARP_INTERNALJUNCTIONFIX", // Engine.InternalJunctionAdmissionGate = true
+        "SUMOSHARP_CONTTURNFIX",         // Engine.ContTurnInsideJunctionGate      = true
+        "SUMOSHARP_ISLEADERFIX",         // Engine.JunctionIsLeaderGate            = true
+        "SUMOSHARP_INTERNALJUNCTIONFIX", // Engine.InternalJunctionAdmissionGate   = true
+        "SUMOSHARP_URGENTFOLLOW",        // Engine.UrgentStrategicLeaderFollow     = true (Entry 30)
     };
 
     [Fact]
