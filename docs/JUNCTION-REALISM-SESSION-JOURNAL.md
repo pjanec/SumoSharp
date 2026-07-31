@@ -2227,3 +2227,60 @@ at the shipped default: **779 passed / 5 skipped / 0 failed**.
 mechanism T2.6) · gridlock FIXED · stopped-lane-change: strategic path FIXED (this flip) — keepRight
 and speedGain halves remain (Entries 21-22), plus the city-* overlap re-check and the pedestrian
 amplifier (backlog).**
+
+## Entry 32 — the stopped-LC residual DECOMPOSED on a lockstep oracle: keepRight's missing continuation + speedGain's missing rolling fire
+
+**The instrument Entry 22 asked for now exists:** `scenarios/_diag/keepright-standing` — 2-lane
+edge (200 m) into a red light (80 s) with a 100 m exit edge, six cars departing on lane 1, right
+lane empty. Both engines stay in **byte-lockstep until the artefact itself** (first divergence
+t=17, and it IS a lane-change difference), so per-vehicle cross-engine comparison is valid here —
+the thing Entries 21–22 never had. SUMO side read live over TraCI (getter negates; both
+accumulators probed: `keepRightProbability`, `speedGainProbabilityRight`).
+
+**What SUMO actually does on this net (per-vehicle, decomposed):**
+- `f.0` (head): **keepRight**, fires ONE step after halting — rolling accumulation 0.080/step
+  (16 s of approach ≈ −1.3), then the stopped boost 0.4/step (`acceptanceTime = 7·max(1, v)`
+  floors at 7 s) crosses −2.0 immediately. **A prompt stopped keepRight change at the head of a
+  queue with a free right lane is CORRECT SUMO behaviour** — the artefact was never "stopped
+  changes exist", it is their 3× rate.
+- `f.3`, `f.5` (followers): **speedGain-right, fired at speed on the approach** (f.3 at 5.5→3.7
+  m/s). Their keepRight FREEZES at −0.81 when the changed f.0 becomes the right-lane leader (the
+  neighbour-leader secure-gap cut — working exactly as designed), and the speedGain accumulator
+  then ramps −0.23 → −1.46 in four steps as their lane slows against the free right lane.
+- Ours on the same net: f.0 one step late (fine); **the followers never change on the approach**
+  — f.5 changes STOPPED at t=83 (queue discharge), f.4 at discharge. The deferred-to-standstill
+  signature, now reproduced in 6 cars on a lockstep net.
+
+**The keepRight arithmetic, term-checked against the oracle:** our `acceptanceTime` (97.23) and
+Euler `brakeGap` (28.56) match SUMO exactly; our `neighDist = rightLane.Length` (200) vs SUMO's
+best-lanes continuation (300 = right lane + exit edge) is the whole rolling-rate gap:
+0.4·(171.44/13.89)/97.23 = **0.0508**/step vs 0.4·(271.44/13.89)/97.23 = **0.0804**/step — we
+accumulate at 63% of SUMO's rate and reach the queue below threshold.
+
+**Why Entries 21–22 rejected the right ingredients:** each was HALF of a coupled pair, tried
+alone, and judged on (a) an aggregate rate from the racy era (pre-Entry-30 determinism, pre-flip)
+and (b) a per-vehicle cross-engine comparison Entry 22 itself later ruled invalid. The
+continuation `neighDist` (Entry 21, "saturated at 0.4/step") saturates ONLY without its partner —
+the **continuation-aware neighbour leader** (`getRealRightLeader` looks past the lane end; Entry
+21 §"where the evidence points" named this and it was never tested). SUMO runs both: continuation
+neighDist sets the rolling rate, the past-lane-end leader cut clamps it in traffic (measured: f.3
+frozen at −0.81 the step f.0 appears ahead). T2.6's `BuildActualDownstreamSpan` +
+`TryFindCrossJunctionLeader` are exactly the machinery the leader half needs.
+
+**Fix shape for the next session (design-first, both halves in ONE change):**
+1. `neighDist` ← the right lane's best-lanes continuation length (already cached as
+   `KeepRightStayRightContLength`);
+2. `neighLead` ← right-lane leader INCLUDING the continuation past the lane end (generalize
+   `BuildActualDownstreamSpan` to an arbitrary source lane + `TryFindCrossJunctionLeader`);
+3. re-audit the speedGain-right path against this net's oracle trace (why does our f.3 not fire
+   while rolling? — its relativeGain accumulation vs SUMO's is the open question; SUMO data above
+   gives the exact per-step target −0.23/−0.72/−1.05/−1.46);
+4. acceptance gates: this net (followers change AT SPEED like SUMO's f.3/f.5), goldens
+   byte-identical, L2 rate toward 0.410 with denominator, 26-net battery, and the repeat-hash
+   determinism check (Entry 30's standing lesson).
+Also revisit Entry 22's `resetState()` omission after 1–3 land (its cost may reverse).
+
+⚠ The old aggregate "23× keepRight / 4.6× speedGain by stopped count" split predates the
+strategic fix and the determinism guard — re-measure the split (`SUMOSHARP_LCLOG=1`) before
+quoting it; the post-flip histogram on L2 reads keepRight 200 / strategic 165 / speedGain 172
+stopped commits.

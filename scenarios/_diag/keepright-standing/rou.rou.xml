@@ -1,0 +1,5 @@
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5" minGap="2.5" maxSpeed="13.89" speedDev="0"/>
+    <route id="r" edges="in out"/>
+    <flow id="f" route="r" type="car" begin="0" end="12" period="2" departLane="1" departSpeed="max" departPos="base"/>
+</routes>

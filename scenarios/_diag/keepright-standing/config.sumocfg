@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="200"/>
+        <step-length value="1.0"/>
+    </time>
+    <processing>
+        <time-to-teleport value="-1"/>
+        <collision.action value="warn"/>
+        <collision.check-junctions value="true"/>
+        <step-method.ballistic value="false"/>
+        <default.action-step-length value="1.0"/>
+        <lateral-resolution value="-1"/>
+    </processing>
+    <report>
+        <no-step-log value="true"/>
+    </report>
+</configuration>
