@@ -125,8 +125,8 @@ the load-bearing one for this defect.**
    settled by an experiment, not by argument**: implement the approach arm, re-run §2 and §3, and see
    whether `arrived` moves. If overlaps go to 0 and the network still gridlocks, the two defects are
    independent and the gridlock needs its own trace.
-2. **That J10 fits the same story.** It wedges *before* it overlaps. Either a second mechanism is at
-   work there, or the 20-step wedge threshold is mis-tuned for it. Untraced.
+2. ~~**That J10 fits the same story.**~~ **TRACED — it is CASCADE PROPAGATION, not a second root
+   cause.** See §7.
 3. **Anything about the other two reported defects.** The lane-change-at-red-into-occupied defect
    (`SUMOSHARP-ISSUE-stopped-lane-change-overlap.md`) has not been looked for on this net yet; nor has
    the pedestrian-held-in-junction amplifier the owner described, which cannot be tested through
@@ -143,3 +143,57 @@ the load-bearing one for this defect.**
 
 Any A/B on a junction fix must be measured with these, on both arms, per CLAUDE.md #8/#13 —
 cross-instrument comparisons are invalid.
+
+---
+
+## 7. J10 resolved — cascade propagation, plus one NEW open question
+
+§5.2 flagged J10 as the junction that does not fit: it wedges (t=94) *before* it overlaps (t=106).
+Traced `f_cyc_ccw2.3`, the vehicle whose stall defines that wedge, in both engines.
+
+**The two engines are bit-identical up to t=91** — same wait on `in_S10_0` at pos 191.80 through t=89,
+same entry onto `:J10_7_0` at t=90 (pos 1.60, spd 2.60), same t=91 (pos 6.80, spd 5.20). They diverge
+at the junction **exit**:
+
+| t | ours | SUMO |
+|---|---|---|
+| 91 | `:J10_7_0` pos 6.80 spd 5.20 | `:J10_7_0` pos 6.80 spd 5.20 |
+| 92 | `:J10_7_0` pos 11.95 spd 5.15 (decelerating) | **`v1_0` pos 0.20 spd 7.80** (accelerating, clear of the junction) |
+| 93 | `:J10_7_0` pos 12.61 spd 0.65 | `v1_0` pos 8.40 spd 8.20 |
+| 94+ | **stopped at pos 12.61 forever** — ~0.2 m short of the lane end | continues, queues on `v1_0` at pos 47.07 — *outside* the junction |
+
+The exit link `v1_0` explains it. At t=91:
+
+* **ours** — 8 vehicles, **every one at speed 0.000**, front vehicle at pos **5.7** (i.e. the queue
+  reaches back to the junction exit), and the whole link is **still frozen at t=92, 93, 94**;
+* **SUMO** — 6 vehicles, front at pos 19.6, and the queue is **discharging**: `f_cyc_ccw.0` moves at
+  t=91, `.1` at t=92, `.2` at t=93, `.3` at t=94 — a textbook backward discharge wave.
+
+`v1_0` runs J10 → J11, and **J11's own junction-interior overlap occurred at t=84**, ten seconds
+earlier. So J11's wedge stopped `v1_0` discharging, `v1_0` backed up into J10's exit, and
+`f_cyc_ccw2.3` stranded inside J10. The order across the net is a **cascade**:
+
+    J01 t=50  ->  J11 t=84  ->  J10 t=94 (wedge)  ->  J00 t=140
+
+This removes §5.2 from the open list and *strengthens* the overlap-first reading — but it still does
+not prove causation, and the `-light` control (which overlaps 3 times yet drains completely) remains
+the standing reason not to promote it. See the tracker.
+
+### NEW open question this raised — a possible keep-clear gap, NOT yet a claim
+
+At t=90 our vehicle **entered** `:J10_7_0` while its exit link already held 8 fully-stopped vehicles
+with the nearest only 5.7 m past the entry. Entering a junction you demonstrably cannot clear is what
+SUMO's `checkRewindLinkLanes` exists to prevent, and we have `KeepClearConstraint` (`Engine.cs:7345`,
+binder 11) which is *supposed* to protect ego's own downstream exit. **Why it did not fire here is not
+known and has not been investigated.**
+
+Two reasons not to treat this as a second confirmed defect yet:
+
+1. **It may be downstream.** By t=90 the run has already diverged from SUMO (since J01 at t=50), so
+   our `v1_0` queue state is not the state SUMO faced. SUMO never had to refuse this entry, so this
+   trace cannot show what SUMO would have done — it shows only what *we* did.
+2. **It is exactly the reasoning shape that has failed here before.** Naming a mechanism from one
+   suggestive observation, without a trace of the constraint's own decision, is what produced seven
+   refuted interventions. The next step, if this is picked up, is the **binder tag at t=90** for that
+   vehicle — did `KeepClearConstraint` evaluate and permit, or was it never consulted? — not a source
+   reading.
