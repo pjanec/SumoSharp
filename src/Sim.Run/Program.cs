@@ -122,10 +122,10 @@ internal static class Program
         // Semantics are `EnvGate(name, engineDefault)` -- UNSET means the ENGINE DEFAULT, not `false`.
         // docs/ENV-GATES.md "Adding a gate" mandates exactly this and forbids the bare `== "1"` form,
         // because `== "1"` makes an unset variable silently force the gate OFF and override the engine
-        // default. That is not hypothetical: it is what `SumoShim` does to the three junction gates
-        // today, so every drop-in shim invocation runs with gates the engine and the goldens have ON
-        // (already documented in ENV-GATES.md and tracked in TASKS-TODO.md -- not a new finding, and
-        // deliberately not fixed here).
+        // default. That is not hypothetical: `SumoShim` did exactly that to three junction gates, so
+        // every drop-in shim invocation ran with gates the engine and the goldens had ON. Fixed in
+        // docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 19 and now guarded by
+        // EnvGateDocumentationTests.GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm.
         engine.InternalJunctionApproachArm = EnvGate("SUMOSHARP_APPROACHARM", engine.InternalJunctionApproachArm);
         // The CONVERSE half, for the paired experiment (docs/JUNCTION-REALISM-TRACE-FINDINGS.md §8):
         // the approach arm stops ego entering into an approaching foe's path, while this one stops ego
@@ -150,6 +150,12 @@ internal static class Program
         // permit?" -- the two have different fixes and reading the source cannot tell them apart
         // (CLAUDE.md measurement discipline #2). Unset => no trace.
         engine.DiagTraceVehicleId = Environment.GetEnvironmentVariable("SUMOSHARP_TRACEVEH");
+        // DIAGNOSTIC (#15 float/swap analysis, parity-neutral): histogram every COMMITTED lane change by
+        // [path][changer-speed bucket], so "which code path swaps a car that is standing still?" is a
+        // measurement rather than an argument. Engine.RecordLaneChangeCommit already builds it; nothing
+        // outside LiveCitySim could read it, which is why the stopped-lane-change artefact had been
+        // characterised only by counting FCD lane transitions. Unset => the engine default (off).
+        engine.DiagLaneChangeLog = EnvGate("SUMOSHARP_LCLOG", engine.DiagLaneChangeLog);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)
@@ -214,6 +220,26 @@ internal static class Program
         if (statisticOut is not null)
         {
             Console.WriteLine($"wrote {statisticOut}");
+        }
+
+        if (engine.DiagLaneChangeLog)
+        {
+            // Flattened as path*3 + speedBucket -- see Engine.RecordLaneChangeCommit.
+            var paths = new[] { "overtake", "speedGain", "strategic", "keepRight" };
+            var buckets = new[] { "stopped(<0.5)", "slow(<2)", "moving" };
+            var hist = engine.LaneChangeByPathChangerSpeed;
+            var nearStopped = engine.LaneChangeTargetNearStopped;
+            Console.WriteLine("-- committed lane changes by [path][changer speed] --");
+            for (var p = 0; p < paths.Length; p++)
+            {
+                var row = string.Empty;
+                for (var bi = 0; bi < 3; bi++)
+                {
+                    row += $"{buckets[bi]}={hist[(p * 3) + bi]}  ";
+                }
+
+                Console.WriteLine($"  {paths[p],-10} {row} targetCarNear&Stopped={nearStopped[p]}");
+            }
         }
 
         return 0;

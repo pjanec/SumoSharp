@@ -1483,3 +1483,62 @@ it gets edited.
 2. Trace one excess change with `SUMOSHARP_TRACEVEH` / the binder log and find which trigger fired that
    SUMO's did not.
 3. Only then decide what to change.
+
+---
+
+## Entry 20 — AFTER: the excess is in ALL THREE paths, worst in keepRight (23×)
+
+### Predictions scored
+
+1. **WRONG.** I predicted the excess would be *concentrated* in a minority of vehicles. It is **broad** —
+   95 distinct vehicles of 450 produce the 113. What I did not predict, and what turned out to be the
+   real signature, is **direction**: 91 of our 113 (**81%**) move toward the LOWER lane index, while
+   SUMO's are near-balanced (14 vs 19). We also oscillate: **30%** of our stopped changes come from
+   vehicles that changed more than once while stopped, against SUMO's **6%**.
+2. **PARTLY WRONG.** I predicted the excess would be predominantly strategic. It is in **all three**
+   paths, and by ratio the worst is keepRight.
+3. **CORRECT.** The overlap half stayed at 0 in both engines. Still not reproduced on this net; the
+   minimal repro remains owed.
+
+### The path-by-path comparison, both engines, same net and horizon
+
+SUMO via `--lanechange-output` (it records a `reason` per change); ours via `SUMOSHARP_LCLOG`, the #15
+histogram that already existed in `Engine.RecordLaneChangeCommit` but which **nothing outside
+`LiveCitySim` could read** — now wired into `Sim.Run` and printed at the end of a run.
+
+| path | SUMO, changer stopped | ours, changer stopped | ratio |
+|---|---|---|---|
+| **keepRight** | 11 | **255** | **23×** |
+| **strategic** | 14 | **225** | **16×** |
+| **speedGain** | 40 | **182** | **4.6×** |
+| overtake | — | 0 | — |
+| **total** | **65 of 405 changes (16%)** | **662 of 1002 (66%)** | |
+
+Two things fall out. We make **2.5× more lane changes overall** (1002 vs 405), and **66% of ours happen
+while the changer is standing still** against SUMO's 16%. And `targetCarNear&Stopped` — the change landed
+with the nearest target-lane car within 20 m and stopped, i.e. **into a queue** — is 223 of the strategic
+commits and 131 of the speedGain ones, against only 13 of keepRight's. That is the owner's "changes lane
+into an already occupied lane", now counted.
+
+⚠ **UNIT CAVEAT, stated rather than glossed.** The histogram (662) and the FCD detector (113) do **not**
+measure the same thing and must never be quoted as one number: the FCD detector counts observable
+**same-edge** lateral transitions with the vehicle stopped on both samples, while the histogram counts
+every committed swap including those coinciding with an edge transition. Use the histogram for the
+**path breakdown** and the FCD rate for the **cross-engine magnitude**; do not divide one by the other.
+
+### What this rules out
+
+`Engine.LaneChangeMinSpeed` as the single answer. It is 0 on the parity path so it suppresses nothing —
+but three independent paths are each over-firing by different factors, so one global speed threshold is
+not the mechanism; it would at best be a blunt mask over three separate defects. And it cannot be a
+blanket ban either: **SUMO makes 65 stopped changes, not 0.**
+
+### Where to start next
+
+**keepRight, on ratio.** Our port of `MSLCM_LC2013`'s accumulator (`ApplyKeepRightDecision`, mirroring
+`deltaProb = threshold * (fullSpeedDrivingSeconds / acceptanceTime) / KEEP_RIGHT_TIME`) matches SUMO's
+formula closely, and both engines reach the block for a stopped car — so the divergence is **upstream of
+the accumulator**, in what returns early. Note the formula's own shape: `acceptanceTime = 7 ·
+roadSpeedFactor · max(1, speed)` bottoms out at its floor for a stopped car, so a stopped vehicle
+accumulates keep-right pressure at the **maximum** rate unless something stops it getting there. That is
+a lead to instrument, **not** a finding — this workstream's reasoned-from-source hypotheses are 0-for-13.
