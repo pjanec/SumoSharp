@@ -2305,3 +2305,92 @@ describes a bug fixed hours after it was written (see `LANE-CHANGE-OVERLAP-STATU
 never updated, and the July 29 solution reorg moved `Sim.Run`/`Sim.Viewer`/`Sim.Viz`/
 `Sim.BenchLiveCity` OUT of `Traffic.sln` (build their csproj explicitly) while
 `tests/Sim.LiveCity.Tests` moved IN — CLAUDE.md's trap list is stale on both points.
+
+## Entry 34 — BEFORE: the follower LC-deferral fix (the Entry 32 pair, plus the missing speedGain-RIGHT arm)
+
+Operational hand-off: `docs/FOLLOWER-LC-DEFERRAL-RESUME.md`. This entry is the design-first
+BEFORE record — written and committed before any source edit, per CLAUDE.md.
+
+### The finding that reframes §3(c)
+
+The resume doc's (c) said "audit why our f.3 does not fire speedGain-right while rolling; check
+neighLaneVSafe / threshold / a commit veto". The audit took one grep: **our engine has NO
+speedGain-RIGHT arm at all.** `DecideSpeedGainForVehicle` evaluates only `lane.LeftNeighbor`
+(positive accumulation, left fire, `Engine.cs:12904-13052`); right changes exist ONLY via the
+keepRight accumulator. In SUMO the accumulator is ONE signed variable (negative = right wish,
+positive = left wish): the right-direction `_wantsChange` (MSLCM_LC2013.cpp:1698-1817) decays it
+(`*= 0.5^TS` when this lane is >5 km/h faster than the right, :1700-1705), accumulates it
+(`-= TS * relativeGain` when not, gated `sgp < 0 || relativeGain > 0`, :1717-1719), and fires
+LCA_SPEEDGAIN at `sgp < -2.0 && neighDist/max(0.1, speed) > 20` (:1811-1816) — with NO
+`relativeGain > eps` condition, unlike the left fire. Our f.3 "not firing" is not a bug in a
+mechanism; the mechanism is absent. So (c) is a port, not an audit.
+
+Two structural facts from the vendored source that the port must respect:
+
+1. **The keepRight accumulator lives INSIDE the right-arm's `else` branch** (:1706-1794): when
+   the current lane is >5/3.6 m/s faster than the right lane's anticipated speed, SUMO skips
+   keepRight accumulation entirely that step. Our `ApplyKeepRightDecision` accumulates
+   unconditionally — a (previously latent) deviation that becomes load-bearing once the vsafe
+   pair is computed. The port wraps the existing keepRight body in SUMO's gate.
+2. **`currentDist`/`neighDist` are the raw LaneQ continuation lengths** (:1135-1136), lane-start-
+   relative (proven by rule 2's `neighDist - posOnLane`), passed RAW into anticipateFollowSpeed
+   (:1548-1549) and the deltaProb formula — confirming Entry 32's arithmetic (300, not 300-pos).
+
+### The change (one coupled edit, all in `ApplyKeepRightDecision` + helpers)
+
+- **(a) `neighDist` ← right lane's best-lanes continuation.** `KeepRightStrategicStay` already
+  computes it (`v.KeepRightStayRightContLength`, memoized per lane); gains a sibling out
+  `currContLength` for ego's own lane (cached as `v.KeepRightStayCurrContLength`). Fallback to
+  `lane.Length`/`rightLane.Length` when 0 (single-edge route → matches SUMO, where LaneQ.length
+  = lane length with no continuation; or no bestLanes entry).
+- **(b) right-lane leader past the lane end.** `BuildActualDownstreamSpan` (T2.6) generalized to
+  take an arbitrary same-edge source lane (`BuildDownstreamSpanFrom`); when
+  `GetNeighborLeader(v, rightLane)` is null, walk the right lane's continuation with
+  `TryFindCrossJunctionLeader` (same frozen `NeighborRearmost` source the left path's
+  `TryFindContinuationLeader` uses). The (leader, gap) PAIR now feeds the cut, the vsafe, and
+  the commit safety — cross-boundary gaps come from the walk, never from cross-lane position
+  arithmetic. Lookahead is TryFindCrossJunctionLeader's Speed2Dist+brakeGap — shorter than
+  SUMO's consecutive-lane scan, documented; binding case (L2 ego at lane end, leader just past
+  the boundary) is well inside it.
+- **(c) the speedGain-right arm, ported faithfully** (:1682, :1698-1719, :1811-1816):
+  vsafe pair via the existing `AnticipateFollowSpeed` (+ an explicit-gap overload for the
+  continuation leader), `relativeGain`, the 5/3.6 decay-vs-accumulate gate wrapping the
+  keepRight body, the :1020 ceil truncation after mutation (same documented ≤1e-5 ordering
+  tolerance as the left block), fire at `sgp < -2.0 && neighDist/max(0.1,speed) > 20`. Commit:
+  INLINE swap (the sibling keepRight convention — the caller re-reads `v.LaneHandle` same
+  iteration) behind the same veto chain as the keepRight fire (IsTargetLaneSafe/overlap/slot/
+  coop cut-in) plus `CommitLaneChange`'s plain LaneChangeMinSpeed gate (the LEFT speedGain
+  twin's convention, NOT keepRight's coop-conditioned #15 form — same SUMO mechanism, same
+  knob semantics). On commit: `v.SpeedGainProbability = 0` (own accumulator only — the
+  resetState() both-accumulators question stays deferred per the resume doc, revisited after
+  this lands). Histogram path 1 (speedGain), `bypassesMinSpeed: false`.
+- Cleanup: the verbatim-duplicated `[keepright]` trace block (:13252-13288) emits once, extended
+  with the sgp/relativeGain/vsafe fields (committed instrument, Measurement discipline #8).
+
+NOT touched: the LEFT speedGain block (its pos-relative dists are shipped, golden-validated,
+out of scope), TryStrategicLaneChange, `checkOverTakeRight` (:1750-1758, still inert — needs a
+structurally slower leader vMax), the decision ordering (keepRight-block before strategic —
+existing engine convention; SUMO's stay suppressor + rule 2 still precede all accumulation, so
+a route-leaving right lane within 200 m can never receive a speedGain-right fire).
+
+### Predictions (recorded before measuring)
+
+- **P1 keepright-standing**: f.0's stopped keepRight fire preserved (t≈17-18). Rolling keepRight
+  deltaProb reads **0.0804**/step with the continuation (was 0.0508). f.3/f.4 fire speedGain-
+  right AT SPEED in the approach window (SUMO: t=22 @ 3.7 m/s; ours within ±3 steps, speed > 2);
+  f.5 fires late/near-stopped (SUMO t=25 @ 0.14). No follower waits for the t=83 discharge.
+- **P2 goldens**: 661 byte-identical. Two argued-inert risk spots, named so a failure localizes:
+  (i) the 5/3.6 gate skipping keepRight accumulation on 12-overtake's pass phase (old decrement
+  there was already cut-shrunk to ≈0); (ii) continuation neighDist on multi-edge multi-lane
+  goldens (44/45 arrival edges are route-final → continuation == lane length → unchanged). If
+  either moves a golden, the golden is SUMO-diffed before any acceptance (gate 2).
+- **P3 L2 stopped-LC rate**: moves DOWN from 1.155 toward SUMO's 0.410 (at-speed fires replace
+  deferred-to-standstill ones), but NOT to zero — SUMO itself fires speedGain-right at
+  standstill when the right lane is genuinely better (f.5), and we now reproduce that too.
+  Predict 0.4-0.9 with the same denominator instrument.
+- **P4 battery**: no stuckDwell regression; arrivals within noise (possible small multi-lane
+  throughput gain from earlier lane sorting).
+- **P5 determinism**: ≥4 repeat hashes identical, parallel == serial (all new reads are frozen-
+  snapshot or ego-own; BestLanesCached is a ConcurrentDictionary).
+- **P6 demo**: overlaps 0 at checkpoints; dead-stop share at or BELOW ≈12% (the new right fires
+  respect LaneChangeMinSpeed, so high-realism zones convert stopped sorts into at-speed sorts).
