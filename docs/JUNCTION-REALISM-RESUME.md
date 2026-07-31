@@ -85,7 +85,20 @@ taken after.
    and never covered by that test's old 290-arrivals figure despite the test being named for it.
 2. **Normal-traffic junction overlaps on the real nets.** `city-mixed-1k` still shows 10 peak
    overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
-3. **Lateral lane change while stopped — CHARACTERISED IN DEPTH, still unfixed (0-for-16).**
+3. **Lateral lane change while stopped — ⭐ MECHANISM NAMED for the strategic path (Entry 24); the
+   next task is a DESIGN, not an edit.**
+   On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
+   **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
+   **we change at t=45 / pos 189.60 / 1.00 m/s** (at the lane end, stopped). The traced veto is
+   `unsafeLeadOnly=True, nFollow=none`, identical every step — the target lane's **leader** blocks, and
+   both cruise at 13.89 (their shared max) so **the gap can never open by itself**. SUMO brakes to fit
+   behind it (`MSLCM_LC2013::informLeader`). **We have that port** — `DeadLaneMergeBrakeConstraint`
+   cites it — but scoped to "genuine dead lanes only", so it never engages. Widening it is
+   parity-relevant; Entry 24 lists the three questions a design must answer, including a blast-radius
+   check that is testable *before* writing the fix.
+   Use `SUMOSHARP_TRACEVEH=<id>` for the `[strategic]` / `[strategic-veto]` lines.
+
+   Background (still true, do not re-derive):
    Read journal Entries 20-22 before touching it; four hypotheses are already dead **by measurement**.
    - **The metric is a RATE, not a count**: ours **1.560** vs SUMO's **0.410** per 1000
      stopped-vehicle-steps (3.8×). SUMO stands cars still *more* than we do, so normalising
