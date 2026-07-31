@@ -35,11 +35,18 @@ foes already on conflicting internal lanes; keepclear reads downstream space pas
 - **Tie-breaking / deadlock avoidance**: for mutual conflicts the leader is decided by
   `MSVehicle::isLeader` (ET/CET entry-time ordering + speed + id tie-break) — ALREADY PORTED
   (F3 T2.3, `IsLeader`/`ResponseFor`, flag-gated) — and by the link response matrix.
-- **MUST VERIFY IN SOURCE before coding (do not assume)**: whether `myFoeLanes` derives from the
-  geometric `foes` bitstring (prioritized links also brake for foes physically in the zone) or the
-  `response` matrix (only yielders brake). This decides whether a prioritized straight brakes for
-  a stalled turner — the exact owner scenario — and the answer must come from
-  `setRequestInformation`, not from reasoning (score in this workstream: ~0-for-18).
+- **VERIFIED IN SOURCE (F0.1, source half — July 31)**: `MSRightOfWayJunction::postloadInit`
+  (`MSRightOfWayJunction.cpp:92-146`) builds `myLinkFoeInternalLanes[link]` from
+  **`linkFoes.test(c)` — the GEOMETRIC `foes` bitstring** (`SUMO_ATTR_FOES`), while
+  `myLinkFoeLinks` (approach gating) uses `linkResponse` (`SUMO_ATTR_RESPONSE`). So the split is:
+  *response decides who yields at entry; foes decides whose PHYSICAL occupancy everyone respects.*
+  A prioritized straight DOES brake for a car occupying the crossing internal lane — the exact
+  owner scenario. Two implementation details from the same read: (i) when
+  `linkResponse.test(c) || foe.isIndirect() || bidi`, the foe lane's second-stage internal
+  predecessor is ALSO appended (`:129-137`); (ii) same-target merge handling is
+  `MSLink.cpp:302-332` — `sameTarget && !contIntersect` → merge conflict via
+  `computeDistToDivergence`, with `CONFLICT_DUMMY_MERGE` only when the lane ends stay ≥ minDist
+  apart. F0.1's TraCI probe remains as empirical confirmation for the implementor.
 
 ## 3. The port shape (one new plan-phase arm + ingest geometry)
 
