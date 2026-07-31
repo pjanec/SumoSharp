@@ -149,3 +149,44 @@ matches SUMO step-for-step on the traced case, and ships on by default.
 
 **Task 2 (the gridlock) is next, and it is a fresh investigation** — nothing measured so far has moved
 it. Its BEFORE entry follows.
+
+---
+
+## Entry 3 — BEFORE — task 2: the gridlock. Why does L1 stay deadlocked?
+
+**The question.** L1 ends with **226 vehicles permanently stopped, every one at 0.000 m/s**, against
+honest SUMO's **0 on identical inputs**. The approach arm moved it by 3 vehicles (60 → 63), so whatever
+holds L1 is untouched by everything measured so far. L1 is therefore the CLEAN SURFACE: single-lane, no
+multilane over-yield confound, and the overlap fix is inert on it.
+
+**The standing lead, from §7.** At t=90 `f_cyc_ccw2.3` entered `:J10_7_0` while its exit link `v1_0`
+already held **8 fully-stopped vehicles, the nearest 5.7 m past the junction exit**, and then stranded
+inside forever. Entering a junction you demonstrably cannot clear is what SUMO's `checkRewindLinkLanes`
+prevents, and what our `KeepClearConstraint` (binder **11**) is supposed to cover.
+
+**The question is binary and an instrument answers it:** at the admission step, did `KeepClearConstraint`
+**evaluate and permit**, or was it **never consulted**? Those have completely different fixes — a wrong
+predicate versus an unreachable code path — and guessing between them is exactly the reasoning that has
+been refuted seven times in this codebase.
+
+**What I expect.** Weakly, that keep-clear evaluated and permitted, because it is documented as
+protecting "ego's own downstream exit" and the exit *was* provably blocked. **I have been wrong on the
+last such prediction** (Entry 1), so the alternatives are named up front and the data decides:
+(a) never consulted — the arm is gated on something L1 does not satisfy;
+(b) consulted, permitted — its occupancy notion differs from "8 stopped cars on my exit";
+(c) consulted, bound, but too late — it braked, ego was already committed past the stop line.
+
+**Immediate next step.** Add `--binder-log PATH` to `Sim.Run` — a committed CSV instrument
+(`t,vehId,lane,pos,speed,binder`) reading `Engine.BindingConstraints`, which is already public and
+indexed by `EntityIndex`. Committed rather than scratch, per the lesson that a deleted probe makes its
+own numbers unfalsifiable. Legend (from `Sim.Viewer/Program.cs:1424`): 0 none, 1 leaderFollow,
+2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge, 6 stopLine, 7 redLight, 8 railSignal,
+9 railCrossing, **10 junctionYield**, **11 keepClear**, 12 obstacle, 13 crowd, 14 internalJunctionAdmission,
+15 colocationSymmetryBreak, 16 crowdYield.
+
+Then read the binder for `f_cyc_ccw2.3` across t=85…95 on L1, and for the whole stopped population at
+t_end (which binder holds 226 vehicles at 0.000 m/s?).
+
+**Definition of done for task 2's first step:** a named answer to (a)/(b)/(c) with the binder trace
+that shows it, plus the t_end binder histogram. NOT a fix — the fix is designed after the mechanism is
+named, per the design-first rule.
