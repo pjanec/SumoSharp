@@ -78,3 +78,7 @@ cyclonedds.log
 # Ephemeral parity-investigation scratch (SUMO reference runs, diagnostic scenarios, diff scripts);
 # never committed -- investigation artifacts per the committed-vs-ephemeral rule (CLAUDE.md).
 scratch-diag/
+
+# Python bytecode from the scripts/ analysis tools (scripts/run-net-regression.py importlib-loads
+# scripts/analyze-junction-realism-fcd.py, which materialises this). Ephemeral build output.
+scripts/__pycache__/
