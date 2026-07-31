@@ -871,3 +871,43 @@ the binder log, one in the evac diag's verdict label, one in the regression batt
 1–10 overlap pairs); the lateral-lane-change-at-red repro (`SUMOSHARP-ISSUE-stopped-lane-change-overlap.md`
 §5 specifies what to build) plus the measured **61 vs 17** stopped sideways lane changes against SUMO;
 the pedestrian amplifier.
+
+---
+
+## Entry 15 — the lateral-lane-change-while-stopped artefact, re-measured with the junction fixes ON
+
+Owner priority #3 ("purely lateral lane changes in high-realism zones"). Detector:
+`scripts/detect-stopped-lane-change.py`. A "stopped sideways lane change" = a vehicle at ≤0.1 m/s
+changing to an adjacent lane **of the same edge** between consecutive steps — i.e. sliding sideways
+while stationary, which is the artefact as reported.
+
+| engine | net | stopped sideways LCs | landed overlapping |
+|---|---|---|---|
+| **ours** | L2 | **83** | 0 |
+| SUMO | L2 | **33** | 0 |
+| **ours** | L2-light | **53** | 0 |
+| SUMO | L2-light | **17** | 0 |
+
+Pre-fix baseline for comparison: ours 47 / SUMO 33 on L2; ours 61 / SUMO 17 on L2-light.
+
+**Two findings.**
+
+1. **We slide sideways while stopped 2.5–3× as often as SUMO** (83 vs 33; 53 vs 17). That is the
+   reported artefact, measured, with an oracle. It is *not* an overlap defect — see 2 — it is a
+   frequency defect, and it is exactly what makes the demo look wrong.
+2. ⚠ **The junction fixes made it WORSE on L2: 47 → 83**, against SUMO's unchanged 33. That is a real
+   side-effect and it follows directly from what those gates do — they hold more vehicles stopped, and
+   stopped vehicles are the ones that perform this manoeuvre. L2-light improved slightly (61 → 53), so
+   it is demand-dependent. **Recorded rather than buried: the gridlock fix has a cosmetic cost on the
+   defect the owner ranks third.**
+
+**Still zero "landed on top of another car" on this net, in either engine.** So the *overlap* half of
+`SUMOSHARP-ISSUE-stopped-lane-change-overlap.md` still does not reproduce here; its §5 minimal repro
+(a car *forced* into a lane with another already stopped at the same red) remains unbuilt. The two
+halves are separable and only the frequency half is reproduced.
+
+**Next for this item:** find what makes a stopped car change lane at all. SUMO does it 33 times, we do
+it 83, on identical demand — so the gap is in our lane-change *trigger* while stationary, not in the
+manoeuvre itself. `Engine.LaneChangeMinSpeed` (a realism knob, demo-set to 1.0–1.5 m/s, 0 on the parity
+path) is the obvious first thing to look at: these runs are `--parity`, so it is **0**, meaning nothing
+suppresses a lane change at zero speed. That is a hypothesis, not a finding — instrument it.
