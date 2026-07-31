@@ -2461,3 +2461,54 @@ unported (SUMO `isStopped()` = SCHEDULED stop only); jam continuation depth is o
 | 4 battery | vs net-regression-urgentfollow-on.txt, no stuckDwell regression | ✓ stuckDwell 0 everywhere; L2 IMPROVED (arrived 442→448, running 8→2); two flagged rows: city-mixed-1k arrived −4/1014 (noise-scale), city-organic-L2 overlaps 4→7 — the latter is in the owner-reported queue-tail family (backlog item 0) and is examined there. Report committed: `docs/reports/net-regression-entry34-stays.txt` (the new current reference) |
 | 5 determinism | ≥4 repeat + serial hashes identical | ✓ 5/5 |
 | 6 demo smoke | overlaps 0, dead-stop ≈12% | ✓ overlaps 0 at all 8 checkpoints, SMOKE OK, no gridlock; dead-stop share 61/664 = **9.2%** (P6 predicted at-or-below ≈12%; the 61 are the demo's deliberate low-realism keepRight swaps) |
+
+## Entry 35 — the two Geneva-terrain reports reproduced OFFLINE and decomposed to one missing SUMO mechanism
+
+Owner report (July 31, Windows 3D viewer, Geneva terrain, pre-Entry-34 build): *(a)* cars arriving
+at a jam overlap the queue tail, "stacking many cars on a single place"; *(b)* "if car blocked in
+the middle, turning left, cars going straight passing through him freely — many cases, different
+junctions". Also confirmed there: no gridlock, no purely-lateral changes — the shipped fixes hold.
+
+**Both reproduce offline on committed nets, on the CURRENT (post-34b) engine.** Instrument:
+`scripts/classify-junction-overlaps.py` (committed tonight; OBB conventions imported from the
+analyzer that owns them). city-organic-L2, 1000 steps, deterministic engine, same instrument both
+engines:
+
+| classifier | ours | honest SUMO |
+|---|---|---|
+| junction pair-steps, crossLane BOTH MOVING | **145** | 4 |
+| junction pair-steps, crossLane both slow | **23** | 0 |
+| junction pair-steps, crossLane STOPPED × MOVER (report b) | **17** | 0 |
+| normal-lane deep (>1 m) rear-end overlap ONSETS (report a) | **12** | **0** |
+
+city-mixed-1k: 10 deep onsets, same story. Two decisive structural facts:
+
+1. **Every single deep rear-end onset — 22 of 22 across both nets — is a SAME-JUNCTION
+   DOUBLE-LANDING**: both members left the same junction in the same step from DIFFERENT internal
+   lanes (`:301_13_0` × `:301_6_0`, etc.) and landed overlapped on the shared arrival lane. In a
+   jam this stacks arrivals on the queue tail — report (a) is the jammed face of this merge race.
+   (The 145 both-moving pair-steps are the same converging paths overlapping while still inside.)
+2. **The traced pass-through** (report (b), t=234 j=123): veh 15 stopped on `:123_3_0`; veh 122
+   drives `:123_1_1` through it at 8 m/s. Veh 122's full trace shows exactly which constraints ran:
+   `[cjl]` walks only EGO's OWN path lanes (`rearmost=none` — veh 15 is not on 122's path),
+   `[merge]` follows the ARRIVAL lane's rearmost, `[keepclear]` reads downstream space. **No
+   constraint reads occupancy of a geometrically-CROSSING internal lane.**
+
+**The one SUMO mechanism covering both**: `MSLink` foe-lane link-leaders. `setRequestInformation`
+precomputes `myFoeLanes` (internal lanes of conflicting links — crossing AND same-target/merging)
+with `myConflicts` (per-foe-lane conflict-zone geometry, `lengthBehindCrossing`);
+`MSVehicle::planMoveInternal` (:3403) calls `link->getLeaderInfo(...)` per upcoming link every step
+and brakes for vehicles ON those foe lanes with gaps measured to the conflict point. Live consumers
+verified. A crossing stopped foe ⇒ ego stops before the conflict zone (kills (b)); a same-target
+foe ⇒ ego follows it with the accumulated merge gap (kills (a) and the 145). This is exactly the
+machinery the F3/isLeader workstream carved out as "foe-lane / approaching-foe gating — separate
+behaviour, larger blast radius" (F3 tracker, carried-out list); the F3 Stage-1/2 ports
+(`LinkIndexByInternalLane`, `EntryConnectionByLink`, ET/CET timestamps, `IsLeader`) are its
+prerequisites and are already in the engine.
+
+Design-first: `docs/JUNCTION-FOE-LANE-DESIGN.md` + `-TASKS.md` + `-TRACKER.md` written tonight;
+implementation awaits owner sign-off per CLAUDE.md ways-of-working. Note for the design's deadlock
+section: mutual crossing-yield must be broken by the response matrix + the F3 ET/CET tie-break —
+and whether SUMO's prioritized links also brake for foes physically inside the conflict zone
+(myFoeLanes built from the geometric `foes` bitstring vs the `response` yield matrix) is a
+MUST-VERIFY-IN-SOURCE item, not an assumption.

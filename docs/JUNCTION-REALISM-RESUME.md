@@ -85,27 +85,20 @@ taken after.
 
 ## 5. Remaining backlog, in owner priority order
 
-0. **⚠ OWNER-REPORTED (July 31, Geneva-terrain 3D viewer, pre-Entry-34 engine build) — NEXT
-   HIGH PRIORITY, verbatim from the owner's session:** the good news first — *"no total
-   gridlock and no purely lateral lane changes seen"* (the shipped fixes carry over to the
-   coupled demo terrain). Two defects observed, both to be reproduced and traced (instruments
-   first, no reasoned fixes — the score in this workstream is now ~0-for-18 on reasoning):
-   - **(a) Queue-tail arrival overlap / stacking**: *"few cases when cars arriving to a traffic
-     jam overlapped with the last one in the queue, stacking many cars on a single place."*
-     Likely family: the queue-TAIL is invisible to an arriving car (back-protrusion invisibility,
-     Entry 27a/28, is one known member; insertion-time and cross-edge-follow gaps are others).
-     Start by reproducing on a saturated net and clustering overlap onsets by (arriving-car,
-     queue-tail) pairs — the Entry 27 episode method.
-   - **(b) Straight-through cars drive THROUGH a car blocked mid-junction turning left**: *"very
-     often, if car blocked in the middle, turning left, cars going straight passing through him
-     freely — many cases in different situations and different junctions."* This is the
-     through-driving defect class again but with a BLOCKED (stationary) left-turner as the
-     ghost: suspect the straight movement's foe set does not contain a stalled turner OCCUPYING
-     the crossing internal lane (cf. `collision.check-junctions` honesty note, and T2.6 which
-     fixed the same-lane entry case — this is the CROSS-lane case). Repro shape: L2-style
-     4-way, left-turner held mid-junction by its exit queue, straight stream on the
-     conflicting movement; witness = OBB overlap pairs on internal lanes with one member
-     speed ≈ 0 and the other > 5.
+0. **⚠ OWNER-REPORTED (July 31, Geneva-terrain 3D viewer) — NEXT HIGH PRIORITY. Now REPRODUCED
+   OFFLINE, DECOMPOSED, AND DESIGNED (journal Entry 35): both reports reduce to ONE missing SUMO
+   mechanism — `MSLink` foe-lane link-leaders (`getLeaderInfo` over `myFoeLanes`/`myConflicts`).**
+   Measured with the committed instrument `scripts/classify-junction-overlaps.py` on
+   city-organic-L2 vs honest SUMO: pass-through (stopped × mover on crossing internal lanes)
+   17 vs 0 pair-steps; deep queue-landing overlaps 12 vs 0 onsets — and **22 of 22** deep onsets
+   across two nets are SAME-JUNCTION DOUBLE-LANDINGS (two movements exiting the same junction the
+   same step onto the shared arrival lane — the jammed form is the owner's queue-tail stacking).
+   Traced example: veh 122 through stopped veh 15 at j=123 t=234 — no constraint reads
+   crossing-internal-lane occupancy. **Design-first docs are written and WAIT FOR OWNER SIGN-OFF:
+   `docs/JUNCTION-FOE-LANE-DESIGN.md` (+ -TASKS / -TRACKER). START THERE.** The F3/isLeader ports
+   (link indices, ET/CET, IsLeader) are the prerequisites and are already in the engine; the good
+   news from the same owner session — no gridlock, no pure-lateral changes — confirms the shipped
+   fixes hold on the coupled terrain.
 
 1. **In-junction wedges that survive the Entry 17/18 fixes.** Two named, with exact repros, on
    `scenarios/_repro/synthetic-junction2` (dense cfg, gates pinned): `internalJunctionAdmission`
