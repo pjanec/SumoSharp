@@ -1314,3 +1314,59 @@ L1 **112 → 386** of 450 · L2 residual gone · `stuckDwell` **0 across the 26-
 **661 goldens byte-identical** · gate **776 passed / 5 skipped / 0 failed**.
 Cost: `city-organic` 499 → 491 and 2 extra in-junction wedges on the dense torture scenario, both named
 above with exact repros.
+
+---
+
+## Entry 19 — BEFORE: fix the `SumoShim` gate bug (the drop-in binary ships three gates OFF)
+
+`src/Sim.Sumo/SumoShim.cs:259/267/274` reads `SUMOSHARP_CONTTURNFIX`, `SUMOSHARP_ISLEADERFIX` and
+`SUMOSHARP_INTERNALJUNCTIONFIX` with the unsafe two-state form `GetEnvironmentVariable(name) == "1"`,
+while all three `Engine` properties default to **`true`**. So **an unset variable forces the gate OFF**,
+and every `sumosharp` invocation that does not set them — including the SumoData pipeline's, via
+`SUMO_BINARY` — runs with three junction gates disabled that the engine, the goldens and the LiveCity host
+all have enabled. `ENV-GATES.md` has carried this as a known open bug; each of the three source comments
+still asserts `Unset/non-"1" => false, the Engine default`, which was true when written and false since
+PR #13 (`604ad72`) flipped them.
+
+**Entry 18 turned this from a tidiness issue into a demonstrated one.** Two shim-driven tests were
+silently calibrated in the gates-off configuration, and one of them —
+`DenseFlowDeadLaneDrainTests` — carried a "hard invariant" floor of 290 arrivals that **the shipped
+engine could not reach** (289 when pinned). Nobody could see it, because the gates were quietly off.
+
+**The fix is three lines**: the same `EnvGate(name, engineDefault)` helper `Sim.Run/Program.cs:231` and
+`LiveCitySim.cs:1588` already use.
+
+### Blast radius, enumerated before touching anything
+
+Eight test classes drive `SumoShim.Run`. Three of them compare **shim-produced output against committed
+goldens** — `RungHDgap1SumoCliTests` (FCD vs `golden.fcd.xml` through the real tolerance comparator),
+`RungHDgap2TripinfoTests` (tripinfo vs `golden.tripinfo.xml`), `RungHDgap4MaxParallelismTests`. Those are
+the ones a default flip could break.
+
+### Predictions, recorded before measuring
+
+1. **The three golden-comparing shim tests stay green.** Their scenarios already pass through the DIRECT
+   engine path with all three gates at `true` — that is what the 661-golden suite asserts every run — so
+   pointing the shim at the same defaults can only make it agree more, not less. If one of them DOES
+   break, that is a much more interesting finding than this bug: it would mean the shim and the direct
+   engine disagree for some reason other than the gates.
+2. **`LowDensityTeleportTests` and `DenseFlowDeadLaneDrainTests` are unaffected** — Entry 18 already pins
+   all three explicitly via `JunctionGateEnv`.
+3. **`IgnoreJunctionBlockerTests` WILL move, and needs a change of its own.** It is an A/B over
+   `CONTTURNFIX` and leaves the other two unpinned, so today they are off and after the fix they are on —
+   which silently changes what its four arms mean. It must pin the two it is not varying. Measured
+   already: all-three-ON gives **1** teleport where the all-three-OFF config gives 0, so its
+   `offOn == 0` assertion (written in Entry 18) will fail and must be re-set to the measured truth.
+4. ⚠ **A CORRECTION I OWE from Entry 18.** That entry's "teleports → 0, matching vanilla SUMO" is true of
+   the configuration those arms actually ran (all three gates off, the shim's real behaviour) — but the
+   **shipped** engine, with all three on, fires **1**, not 0. The claim was accurate about what it cited
+   and misleading about what we ship. The number to quote after this change is **1**.
+
+### Immediate next steps
+
+1. Swap the three reads to `EnvGate`; keep the comments honest about what unset now means.
+2. Pin the two non-varied gates in `IgnoreJunctionBlockerTests`; re-measure its four arms; set the
+   assertions to the measured values, keeping the absolute (not relative) form.
+3. Full gate + the 26-net battery — the battery is driven by `Sim.Run`, not the shim, so it should be
+   **byte-identical**; if it is not, something else reads these gates and I have missed a consumer.
+4. Update `ENV-GATES.md`: the open-bug warning box becomes a fixed-in note.
