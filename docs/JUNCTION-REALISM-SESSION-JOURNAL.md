@@ -1781,3 +1781,94 @@ what real scenarios leave to the default.** A parity suite that always specifies
 test that attribute's default. Every remaining "we default X to Y" shortcut in the ingest layer deserves
 the same suspicion — and `scripts/fcd-divergence-onset.py` is the cheap way to look, because a
 first-step disagreement is exactly what a wrong default produces.
+
+---
+
+## Entry 24 — THE STRATEGIC-PATH MECHANISM, named and traced
+
+Continuing the lockstep sweep from Entry 23. With the two insertion bugs fixed, the next divergence on
+`junction-realism-L2-light` moved to **t=3**, and it is not a subtle one.
+
+### The observation
+
+`f_left_W00.0` is a **left-turner**: it departs on lane 0 and its route needs lane 1.
+
+| | first lane change to `in_W00_1` |
+|---|---|
+| **SUMO** | **t=3, pos 30.94, speed 11.95** — 158 m before the junction, at speed |
+| **ours** | **t=45, pos 189.60, speed 1.00** — at the lane END, essentially stopped |
+
+A **42-step, 158-metre delay** that converts an ordinary moving strategic change into a stationary one at
+the stop line. Note SUMO *decelerated* to do it (13.89 → 11.95).
+
+**This is the "lateral lane change while standing at red" artefact, in its strategic form** — and the
+strategic path is the second-largest contributor (225 stopped commits, 16× SUMO's).
+
+### Two hypotheses tested and killed before the right one
+
+1. **"The `laDist` distance gate defers it."** *Refuted by trace.* `defers=no` from t=1 onward:
+   `usableDist=170.61` against `laDist=292.80`. The gate permits the change immediately. (Hypothesis #15.)
+2. **"`ComputeBestLanes` gives ego's own non-continuing lane too long a continuation."** Also wrong —
+   `curr.Length` came out at exactly the lane's own 189.6 m, which is correct. (Hypothesis #16.)
+
+### The actual blocker, traced
+
+```
+[strategic-veto] t=1  @18.99 spd=13.89  unsafe=True  unsafeLeadOnly=True  unsafeFollowOnly=False
+                       obstacle=False overlapped=False deferCutIn=False
+                       nLead=f_cyc_ccw.0  nFollow=none
+```
+
+Identical every step to t=44. **The target lane's LEADER makes the change unsafe** — there is no follower
+involved at all. And both vehicles are cruising at 13.89 m/s, their shared maximum, so **the gap can
+never open by itself**. Our engine simply waits for a gap that will not exist until traffic stops — which
+is precisely when it finally changes, at 1.00 m/s.
+
+SUMO does not wait: an **urgent** strategic changer *brakes to fit behind the leader* rather than
+vetoing. That is `MSLCM_LC2013::informLeader` (:471-472) — ego adopts `stopSpeed(myLeftSpace)` and drops
+in behind. Hence SUMO's 11.95 m/s at the moment of the change.
+
+### We HAVE that port — scoped so narrowly it never fires here
+
+`Engine.DeadLaneMergeBrakeConstraint` is explicitly *"ported from `MSLCM_LC2013::informLeader`"*, but its
+own header restricts it: *"returns +infinity unless the vehicle's CURRENT lane has NO connection to its
+next ROUTE edge (a genuine dead lane)"*. It was written for the GAP-1 dead-lane deadlock and deliberately
+kept inert everywhere else so no golden could move.
+
+So the engine has SUMO's mechanism and applies it to one special case, while SUMO applies it to **every
+urgent strategic change**. Ego stayed at 13.89 m/s for all 44 steps: it never engaged.
+
+### Why this is the most promising lead so far
+
+It explains the shape of the artefact rather than a symptom of it:
+
+- **Strategic changes cluster at zero speed** because that is the only time a gap appears.
+- It predicts the **81% rightward bias** indirectly — a change deferred until the queue forms happens
+  wherever the vehicle then is, not where it should have happened.
+- It is consistent with `targetCarNear&Stopped` = 172 of the strategic commits: by the time we change,
+  the target lane is a stopped queue.
+
+⚠ **It is a hypothesis with a mechanism and a trace, not a finding.** The scoreboard is 0-for-16 and two
+more died in this entry. What is *established* is the trace above: the veto is the target-lane leader,
+every step, at equal speeds.
+
+### The next step is a DESIGN, not an edit
+
+Widening `informLeader` from "dead lanes only" to "any urgent strategic change" is a behavioural change
+to a parity-relevant path, and the reason it was scoped narrowly in the first place was to keep the
+goldens still. CLAUDE.md's design-first rule applies. The specific questions a design must answer:
+
+1. What exactly makes a strategic change **urgent** in our port (SUMO: `LCA_URGENT`, set when
+   `changeToBest && currentDistDisallows(...)`), and is that the same set the `laDist` gate already
+   admits?
+2. Does ego brake via a new constraint term, or by reusing `DeadLaneMergeBrakeConstraint` with a widened
+   predicate? The latter is one guard, not two — which this session has twice paid for getting wrong.
+3. What is the golden blast radius? Every golden vehicle "is always on a lane that continues its route",
+   per that method's own comment, so a widened predicate may still be inert — **testable before writing
+   the fix.**
+
+### Instruments committed with this entry
+
+`[strategic]` (the `laDist` gate's inputs) and `[strategic-veto]` (which of the four vetoes fired, and
+the leader/follower involved), both behind `SUMOSHARP_TRACEVEH`. Together they take "why did this vehicle
+not change lanes?" from an argument to a one-run answer.

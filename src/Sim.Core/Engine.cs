@@ -13904,6 +13904,15 @@ public sealed partial class Engine : IEngine
         var laDist = (v.LookAheadSpeed * lookForward * strategicParam * (right ? 1.0 : lookaheadLeft)) + (2.0 * lengthWithGap);
 
         // MSLCM_LC2013.h:189 currentDistDisallows.
+        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+        {
+            Console.Error.WriteLine(
+                $"[strategic] t={CurrentTime:F1} veh={v.Def.Id} lane={v.LaneId}@{v.Kinematics.Pos:F2} "
+                + $"spd={v.Kinematics.Speed:F2} bestLaneOffset={bestLaneOffset} usableDist={usableDist:F2} "
+                + $"laDist={laDist:F2} lookAheadSpeed={v.LookAheadSpeed:F2} "
+                + $"defers={(usableDist / Math.Abs(bestLaneOffset) >= laDist ? "YES" : "no")}");
+        }
+
         if (usableDist / Math.Abs(bestLaneOffset) >= laDist)
         {
             return false;
@@ -13943,6 +13952,21 @@ public sealed partial class Engine : IEngine
         var deferStrategicCutIn = CoordinatedLaneChange && CooperativeLcFor(v)
             && MergeStoppedStrategicDeferDist > 0.0 && usableDist > MergeStoppedStrategicDeferDist
             && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt);
+        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+        {
+            Console.Error.WriteLine(
+                $"[strategic-veto] t={CurrentTime:F1} veh={v.Def.Id} @{v.Kinematics.Pos:F2} "
+                + $"spd={v.Kinematics.Speed:F2} "
+                + $"unsafe={!IsTargetLaneSafe(v, neighLead, neighFollow, dt)} "
+                + $"unsafeLeadOnly={!IsTargetLaneSafe(v, neighLead, null, dt)} "
+                + $"unsafeFollowOnly={!IsTargetLaneSafe(v, null, neighFollow, dt)} "
+                + $"obstacle={TargetLaneBlockedByObstacle(v, neighborLane, time, dt)} "
+                + $"overlapped={IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt)} "
+                + $"deferCutIn={deferStrategicCutIn} "
+                + $"nLead={(neighLead is null ? "none" : neighLead.Def.Id)} "
+                + $"nFollow={(neighFollow is null ? "none" : neighFollow.Def.Id)}");
+        }
+
         if (!IsTargetLaneSafe(v, neighLead, neighFollow, dt) || TargetLaneBlockedByObstacle(v, neighborLane, time, dt) || IsTargetLaneOverlapped(v, neighborLane.Handle, neighbors, dt) || deferStrategicCutIn)
         {
             // #15 (docs/LIVE-CITY-15-COOPERATIVE-LC-DESIGN.md): NEW strategic-path informFollower --
