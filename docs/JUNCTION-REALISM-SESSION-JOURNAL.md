@@ -705,3 +705,59 @@ conclusion will be believed; make it print the evidence.*
 3. Stopped-lane-change minimal repro; pedestrian amplifier. Both untouched.
 
 **No prediction recorded.** Six for six wrong, plus two instrument errors.
+
+---
+
+## Entry 11 — AFTER — the gate TRIPLES the active-pusher population; the overlap is a density effect
+
+| arm | pusher pairs tracked | worst separation |
+|---|---|---|
+| gate **OFF** | **25** | 4.073 m |
+| gate **ON** | **72** | **0.463 m** |
+
+Identical at 300 / 600 / 1200 steps with the gate off (the evac cascade completes early, so the horizon
+is not the variable).
+
+**The gate nearly TRIPLES the number of simultaneously-active evac pushers, 25 → 72.** That is the
+difference, and it is a much better explanation than anything about junction car-following: holding
+engine vehicles out of junctions they cannot clear leaves more of them stopped, more of them qualify as
+"pushing", and the ORCA solve is then asked to keep separation among ~3× as many agents in the same
+space. It fails at 0.463 m.
+
+**So the chain is: gate → more stopped engine vehicles → more active pushers → ORCA density failure.**
+The junction logic is three steps removed from the overlap.
+
+This fits a **known, documented** weakness rather than a new one: `TASKS-TODO.md` A19 records that
+`MaxNeighbours` is uncapped — *"ORCA considers every agent within 15 m (~283 at pocket density) where
+RVO2 ships a default of 10"* — i.e. the solve is already known to be strained by density. ⚠ **That is a
+plausible mechanism, not a demonstrated one.** Nobody has shown A19 causes *this* overlap. The
+demonstrated facts are the two rows above.
+
+**What this changes about the decision.** The regression is real and still owed a fix, but it is
+**not** evidence that `BayExitLaneKeepClear` is unsound as junction logic — which is what "a gross
+car–car overlap" implied when the owner accepted the trade. The gate's own behaviour is sound; it
+loads a subsystem that does not cope. That makes the fix belong in `Sim.Evac`/`MixedTrafficCrowd`, and
+it makes the failing test a *coupled-system* failure rather than a junction one.
+
+---
+
+## Entry 12 — BEFORE — next steps for a fresh session
+
+**1. Fix the red suite (highest priority — a green gate is the repo's iron law).** Two honest routes:
+   (a) fix the density failure in the crowd solve (cap `MaxNeighbours` for pushers — this is A19, which
+       is behavioural for pedestrians and must ship opt-in per CLAUDE.md rule 3); or
+   (b) if the evac scenario's 3× pusher count is itself the anomaly, cap or throttle pusher activation
+       in `Sim.Evac`.
+   Decide with an instrument: how many pushers are active per step in each arm, and does the overlap
+   appear only above some count?
+
+**2. L1's second gridlock mechanism.** Still 112/229 at every threshold. Re-run the Entry 5/6 chain on
+   a gate-ON L1 run — wait-for graph plus the **alternating-binder check**, since signal-phase masking
+   hid the first cycle completely and will do so again.
+
+**3. Untouched:** the stopped-lane-change minimal repro (`SUMOSHARP-ISSUE-stopped-lane-change-overlap.md`
+   §5 specifies exactly what to build) and the pedestrian amplifier (needs a `LiveCitySim` harness —
+   `Sim.Run` has no ped coupling).
+
+**4. Housekeeping:** `TASKS-TODO.md` still states the parity iron law as 775/4; measured is 776/4
+   (773 baseline + 3 T1 tests). Single-source it rather than editing the literal — see Entry 0.

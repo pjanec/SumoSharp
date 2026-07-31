@@ -57,7 +57,12 @@ public class EvacPusherOverlapDiagTests
         var firstSeen = new Dictionary<(int, int), (int Step, double Sep)>();
         var worst = new Dictionary<(int, int), (int Step, double Sep)>();
 
-        for (var step = 0; step < 300; step++)
+        // Horizon is env-tunable (EVAC_DIAG_STEPS, default 300 = what
+        // ActivePushers_NeverInterpenetrate uses) so the "is this pre-existing?" question can be asked
+        // by running LONGER with the gate off, without editing the test each time.
+        var steps = int.TryParse(Environment.GetEnvironmentVariable("EVAC_DIAG_STEPS"), out var envSteps)
+            ? envSteps : 300;
+        for (var step = 0; step < steps; step++)
         {
             director.Tick();
 

@@ -158,6 +158,7 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 | `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `true` |
 | `SUMOSHARP_PHYSOCC` | `Engine.JunctionPhysicalOccupancyGate` | **engine default** | `false` |
 | `SUMOSHARP_BAYEXITKEEPCLEAR` | `Engine.BayExitLaneKeepClear` | **engine default** | `true` |
+| `EVAC_DIAG_STEPS` | `EvacPusherOverlapDiagTests` horizon (steps). Diagnostic-only; the test asserts nothing about separation | `300` | n/a |
 | `SUMOSHARP_BAYEXITEXTRA` | `Engine.BayExitLaneKeepClearExtra` (metres of exit-lane room beyond ego length; numeric, not a gate) | **engine default** | `-1` = use MinGap |
 
 **Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default
