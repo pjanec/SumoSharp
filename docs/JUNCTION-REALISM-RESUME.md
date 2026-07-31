@@ -109,7 +109,8 @@ taken after.
    paths to standstill. Entry 32 has the term-checked arithmetic (our keepRight rolling rate is
    63% of SUMO's — `neighDist` missing the best-lanes continuation), why Entries 21/22 rejected
    the right ingredients (coupled pair tried one half at a time, racy-era numbers), the exact fix
-   shape (both halves in ONE design-first change), and the acceptance gates. START THERE.**
+   shape (both halves in ONE design-first change), and the acceptance gates. **The operational
+   hand-off page for this fix is `docs/FOLLOWER-LC-DEFERRAL-RESUME.md` — START THERE.**
    Background (Entry 24):
    On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
    **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
