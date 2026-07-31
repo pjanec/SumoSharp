@@ -314,3 +314,34 @@ outside the junction (a full exit link), which would make it a *capacity* proble
 deadlock's clothes, and would point back at the exit-link occupancy seen in §7.
 
 **Do NOT design a fix until step 2 answers this.**
+
+---
+
+## Entry 5 — INTERIM — the Entry-5 alternative is largely ruled out: there IS free space, unreachable
+
+Answering the "capacity problem wearing a deadlock's clothes" alternative from Entry 5 BEFORE, from the
+binder log already in hand. Occupancy of the eight internal grid links at t=1799 (each ~65 m usable):
+
+| link | vehicles | stopped | front pos | front binder |
+|---|---|---|---|---|
+| `h0_0` (J00→J10) | 6 | 6 | 61.89 | junctionYield |
+| `h1_0` (J01→J11) | 9 | 9 | 65.21 | crossJxnLeader |
+| `v0_0` (J00→J01) | 9 | 9 | 64.83 | crossJxnLeader |
+| `v1_0` (J10→J11) | 9 | 9 | 64.60 | junctionYield |
+| `v1r_0` (J11→J10) | 9 | 9 | 65.59 | **redLight** |
+| **`h0r_0`, `h1r_0`, `v0r_0`** | **0** | — | — | **EMPTY** |
+
+**Three of the eight internal links are completely EMPTY.** The network is not uniformly saturated —
+the jam is *direction-specific*, and there is free space the traffic cannot reach. That is the
+signature of a blocked circular wait, not of a network at capacity: a capacity failure fills
+everything.
+
+The full links' front vehicles are held **at the stop line by junction constraints**
+(`junctionYield`, `crossJxnLeader`) — i.e. by the wedged junction interior in front of them, not by a
+full buffer beyond it. So the causal direction is **junction interior wedges first → the approach link
+backs up**, which is the opposite of the capacity reading.
+
+**Not fully closed:** one full link (`v1r_0`) has its front held by `redLight`, so at least one arm of
+the structure terminates on a signal rather than on a vehicle. Whether that matters depends on the
+blocker graph, which is the instrument now being built (Entry 5 step 2). This entry narrows the
+alternative; it does not eliminate it.
