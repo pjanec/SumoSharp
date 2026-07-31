@@ -429,3 +429,73 @@ interpenetration at t=50), so SUMO's `f_cyc_ccw.6` is not in the same traffic st
 comparison is therefore **suggestive, not an oracle diff** — it can show what SUMO *does* in a similar
 situation but cannot prove what it would do in ours. Any conclusion drawn from it must carry that
 caveat, and if the answer is (a) or (c) the decisive evidence is our own trace, not the comparison.
+
+---
+
+## Entry 6 — AFTER — ROOT CAUSE: `KeepClearConstraint` is structurally inert for the bay→stage-2 advance
+
+**The trace.** `f_cyc_ccw.6`, the vehicle that closes the 14-vehicle cycle:
+
+| t | ours | SUMO (same id) |
+|---|---|---|
+| 140–146 | held in bay `:J10_11_0` by **internalJunctionAdmission / ApproachArm** | already through |
+| **147** | **released** → `:J10_15_0` pos 2.50 spd 2.60 | on `v1_0` pos 5.37 |
+| 148 | `:J10_15_0` pos 7.11 spd 4.61, `crossJxnLeader` | `v1_0` pos 11.02 |
+| 149 → ∞ | **`:J10_15_0` pos 7.22 spd 0.000 forever** | `v1_0` pos 12.16, queued **outside** the box |
+
+`:J10_15_0` is ~7.7 m long, so ours halts **~0.5 m short of clearing the junction**.
+
+**`crossJxnLeader` is NOT the bug — it is behaving correctly.** At t=147, when ego was released into
+the junction, the exit lane `v1_0` already held **9 stopped vehicles with the nearest at pos 4.59** —
+whose back bumper is at 4.59 − 5.0 = **−0.41 m, i.e. already inside the junction**. There was
+physically nowhere to go. Ego stopping is right; **ego being let in was wrong.**
+
+**Why nothing stopped it, exactly.** `KeepClearConstraint` (`Engine.cs:7719`) opens with a forward scan
+for ego's upcoming junction entry link and then bails:
+
+```
+if (egoInternalLaneId is null || v.LaneId == egoInternalLaneId || egoLinkSeqIndex < 1)
+    return double.PositiveInfinity;   // "already on the internal lane (committed)"
+```
+
+Ego at t=146 is on `:J10_11_0` — **a stage-1 bay, which IS an internal lane** — so `v.LaneId ==
+egoInternalLaneId` and keep-clear returns inert. **Keep-clear protects only the FIRST entry into a
+junction from an approach lane. It never covers the bay→stage-2 advance.** And the gate that *does*
+control that advance, `InternalJunctionAdmissionConstraint`, checks only **foe lanes** — never **ego's
+own exit lane occupancy**.
+
+So the bay→stage-2 admission has **no keep-clear at all**. That is the hole, and it is
+`checkRewindLinkLanes`' territory (don't commit into a junction lane whose exit you cannot clear).
+
+### ⚠ Correction to Entry 3
+
+Entry 3 concluded *"the §7 lead — our keep-clear has a wrong predicate — is dead as stated"*, reasoning
+from `keepClear` binding **0 of 226** times. **That inference was wrong.** The zero does not mean the
+case is absent; it means the guard is **structurally excluded from the case that matters**. Absence of
+a binder is not absence of the mechanism — it can be the stronger finding that the guard never runs.
+Worth carrying: *a diagnostic that never fires is evidence about the GUARD, not about the hazard.*
+
+### Fix direction (design, not yet written)
+
+Extend the bay→stage-2 admission with an **exit-lane occupancy check**: before releasing ego from a
+cont bay onto its final internal lane, require that ego's exit lane can accept it (its last vehicle's
+back bumper clears the internal lane's end by at least ego's length + minGap). This is the
+`checkRewindLinkLanes` half of the port, it is SUMO-faithful, and it is scoped to exactly the
+transition that has no guard today.
+
+**Expected to be strongly beneficial but NOT parity-inert** — it changes when vehicles enter junctions,
+so it needs the full gate plus the cross-net battery, and any golden shift needs a SUMO diff. It is
+also the first change in this workstream that plausibly moves the gridlock rather than the overlaps.
+
+---
+
+## Entry 7 — BEFORE — implement the bay→stage-2 exit-lane check
+
+**Next step.** Design-first per CLAUDE.md: extend `JUNCTION-APPROACH-ARM-DESIGN.md` with a new section
+(or a sibling doc) covering the exit-lane admission, then implement behind
+`Engine.BayExitLaneKeepClear` (default OFF until measured), then run: the repro L1/L2 A/B, the
+cross-net battery against the committed baseline, and the parity gate.
+
+**Success condition, stated in advance:** L1 `arrived` moves materially above 63 (SUMO: 450). If it
+does not, the mechanism is named correctly but is not the binding one, and that null gets published
+like the others.
