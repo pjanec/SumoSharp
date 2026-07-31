@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <input>
+        <net-file value="net.net.xml"/>
+        <route-files value="rou.rou.xml"/>
+    </input>
+    <time>
+        <begin value="0"/>
+        <end value="1800.0"/>
+        <step-length value="1.0"/>
+    </time>
+    <processing>
+        <!-- honest SUMO: never conceal a wedge or an interpenetration (CLAUDE.md #11) -->
+        <time-to-teleport value="-1"/>
+        <collision.action value="warn"/>
+        <collision.check-junctions value="true"/>
+        <!-- phase-1 parity settings -->
+        <step-method.ballistic value="false"/>
+        <default.action-step-length value="1.0"/>
+        <lateral-resolution value="-1"/>
+    </processing>
+    <report>
+        <no-step-log value="true"/>
+    </report>
+</configuration>

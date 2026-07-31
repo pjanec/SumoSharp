@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0" length="5.0" width="1.8" minGap="2.5" maxSpeed="13.89" speedFactor="1.0" speedDev="0"/>
+
+    <!-- gridlock: counter-clockwise around the internal cycle -->
+    <route id="cyc_ccw" edges="in_W00 h0 v1 h1r out_W01"/>
+    <!-- gridlock: clockwise around the internal cycle -->
+    <route id="cyc_cw" edges="in_S00 v0 h1 v1r out_S10"/>
+    <!-- gridlock: second counter-clockwise entry, offset by one junction -->
+    <route id="cyc_ccw2" edges="in_S10 v1 h1r v0r out_S00"/>
+    <!-- gridlock: second clockwise entry, offset by one junction -->
+    <route id="cyc_cw2" edges="in_W01 h1 v1r h0r out_W00"/>
+    <!-- pass-through: westbound entry turning LEFT (north) across opposing traffic at J00 -->
+    <route id="left_W00" edges="in_W00 v0 out_N01"/>
+    <!-- pass-through: the opposing STRAIGHT the left-turner must yield to at J00 -->
+    <route id="thru_E10" edges="in_E10 h0r out_W00"/>
+    <!-- pass-through: eastbound entry turning LEFT (south) across opposing traffic at J11 -->
+    <route id="left_E11" edges="in_E11 v1r out_S10"/>
+    <!-- pass-through: the opposing STRAIGHT at J11 -->
+    <route id="thru_W01" edges="in_W01 h1 out_E11"/>
+    <!-- lane-change-at-red: fills the northbound approach to J00 -->
+    <route id="fill_S00" edges="in_S00 v0 out_N01"/>
+    <!-- lane-change-at-red: fills the southbound approach to J11 -->
+    <route id="fill_N11" edges="in_N11 v1r out_S10"/>
+
+    <flow id="f_cyc_ccw" route="cyc_ccw" type="car" begin="0.0" end="600.0" period="12" departLane="0" departSpeed="max"/>
+    <flow id="f_fill_S00" route="fill_S00" type="car" begin="0.0" end="600.0" period="8" departLane="0" departSpeed="max"/>
+    <flow id="f_left_W00" route="left_W00" type="car" begin="0.0" end="600.0" period="24" departLane="0" departSpeed="max"/>
+    <flow id="f_thru_E10" route="thru_E10" type="car" begin="0.0" end="600.0" period="24" departLane="0" departSpeed="max"/>
+    <flow id="f_cyc_cw" route="cyc_cw" type="car" begin="1.0" end="600.0" period="12" departLane="0" departSpeed="max"/>
+    <flow id="f_cyc_ccw2" route="cyc_ccw2" type="car" begin="2.0" end="600.0" period="12" departLane="0" departSpeed="max"/>
+    <flow id="f_fill_N11" route="fill_N11" type="car" begin="2.0" end="600.0" period="8" departLane="0" departSpeed="max"/>
+    <flow id="f_cyc_cw2" route="cyc_cw2" type="car" begin="3.0" end="600.0" period="12" departLane="0" departSpeed="max"/>
+    <flow id="f_left_E11" route="left_E11" type="car" begin="6.0" end="600.0" period="24" departLane="0" departSpeed="max"/>
+    <flow id="f_thru_W01" route="thru_W01" type="car" begin="6.0" end="600.0" period="24" departLane="0" departSpeed="max"/>
+</routes>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<edges>
+    <!-- internal grid links: these four form the gridlock cycle -->
+    <edge id="h0" from="J00" to="J10" numLanes="2" speed="13.89"/>
+    <edge id="h0r" from="J10" to="J00" numLanes="2" speed="13.89"/>
+    <edge id="h1" from="J01" to="J11" numLanes="2" speed="13.89"/>
+    <edge id="h1r" from="J11" to="J01" numLanes="2" speed="13.89"/>
+    <edge id="v0" from="J00" to="J01" numLanes="2" speed="13.89"/>
+    <edge id="v0r" from="J01" to="J00" numLanes="2" speed="13.89"/>
+    <edge id="v1" from="J10" to="J11" numLanes="2" speed="13.89"/>
+    <edge id="v1r" from="J11" to="J10" numLanes="2" speed="13.89"/>
+    <!-- external stub arms: demand sources and sinks -->
+    <edge id="in_W00" from="W00" to="J00" numLanes="2" speed="13.89"/>
+    <edge id="out_W00" from="J00" to="W00" numLanes="2" speed="13.89"/>
+    <edge id="in_S00" from="S00" to="J00" numLanes="2" speed="13.89"/>
+    <edge id="out_S00" from="J00" to="S00" numLanes="2" speed="13.89"/>
+    <edge id="in_E10" from="E10" to="J10" numLanes="2" speed="13.89"/>
+    <edge id="out_E10" from="J10" to="E10" numLanes="2" speed="13.89"/>
+    <edge id="in_S10" from="S10" to="J10" numLanes="2" speed="13.89"/>
+    <edge id="out_S10" from="J10" to="S10" numLanes="2" speed="13.89"/>
+    <edge id="in_W01" from="W01" to="J01" numLanes="2" speed="13.89"/>
+    <edge id="out_W01" from="J01" to="W01" numLanes="2" speed="13.89"/>
+    <edge id="in_N01" from="N01" to="J01" numLanes="2" speed="13.89"/>
+    <edge id="out_N01" from="J01" to="N01" numLanes="2" speed="13.89"/>
+    <edge id="in_E11" from="E11" to="J11" numLanes="2" speed="13.89"/>
+    <edge id="out_E11" from="J11" to="E11" numLanes="2" speed="13.89"/>
+    <edge id="in_N11" from="N11" to="J11" numLanes="2" speed="13.89"/>
+    <edge id="out_N11" from="J11" to="N11" numLanes="2" speed="13.89"/>
+</edges>
