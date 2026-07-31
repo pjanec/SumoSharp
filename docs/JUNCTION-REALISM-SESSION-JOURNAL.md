@@ -2079,3 +2079,71 @@ ego's ACTUAL lane's connection — the planning-time mirror of `TryReResolveFrom
 blast radius: every golden vehicle is always on its pool lane (the same argument that held for binder
 18, twice verified), so the widened resolution should be golden-inert — verify, don't assume. The
 `[cjl]` trace is committed for the next session.
+
+## Entry 29 — T2.6 BEFORE: the actual-lane walk in CrossJunctionLeaderConstraint
+
+**The change.** `CrossJunctionLeaderConstraint` gains a THIRD leader walk, engaged only when ego is
+OFF-POOL (`ego.LaneHandle != _laneSeqPool[slot]`, current lane not internal): the downstream span is
+resolved from ego's ACTUAL lane's connection to the next route edge — via chain (the same 8-guard
+walk `ResolveSequenceCore` uses) plus the arrival lane — and its follow speed is Min-folded with the
+two existing walks. The two existing walks are KEPT: mid-convergence (ego on `arrival[k]`, still
+intending to reach `pool[k]` before the boundary) must keep braking for the pool path it will most
+likely take; the actual-lane walk is purely ADDITIVE braking, which is also what SUMO itself does —
+`planMoveInternal` builds its link chain from the vehicle's CURRENT lane every step. The span ends at
+the arrival lane (no continuation beyond): the boundary crossing re-resolves the whole pool from the
+actual lane anyway (`TryReResolveFromActualLane`), and the defect being fixed is the blind FIRST
+entry. A drop-lane (no connection to the next route edge) falls back to the existing walks —
+`DeadLaneMergeBrakeConstraint` owns that regime.
+
+**Predictions, recorded before measuring:**
+1. **Goldens: all 661 byte-identical.** Golden vehicles are always on-pool (argument held twice for
+   binder 18), so the third walk never engages. If any golden moves, the off-pool predicate is wrong.
+2. **The repro dies:** `junction-realism-L2`, `SUMOSHARP_URGENTFOLLOW=1`, `f_cyc_ccw.40` at t≈681 —
+   the `[cjl]` trace shows a walk on `:J00_13_0` finding the queue (today it walks `:J00_13_1`,
+   Entry 28), and the vehicle brakes instead of entering on top of it. The six-car pileup at
+   t=680–690 does not form.
+3. **Both A/B arms improve** (the pileup class is present in both, Entry 27): ON-arm peak overlaps
+   21 → materially down, distinct pairs 77 → down; OFF-arm 9 peak / 66 distinct → down too.
+4. **Battery: no stuckDwell regression anywhere.** Risk accepted in advance: a small arrivals dip is
+   possible (vehicles now brake for real queues they previously drove into); an arrivals COLLAPSE
+   (>5% on any net) means the predicate engages too often and the change is wrong, not "a cost".
+
+**Gate to re-measure after (design §5):** goldens · L2-light t≈3 · L2 arrived ≥ 433 / overlaps ≤ 9 /
+stuckDwell 0 · stopped-LC rate < 1.396 with denominator · 26-net battery · the 4 synthetic-junction2
+tests. If all green with the coupling ON, the default flips (T3.1–T3.3).
+
+### Entry 29 AFTER — measured. All four predictions held; one new trap documented.
+
+**Trap first (a new instance of #9): `src/Sim.Run` is NOT in `Traffic.sln`.** The first
+post-fix measurement round ran `dotnet run --no-build` against an hour-old `Sim.Core.dll` and
+reproduced the pre-fix numbers exactly — including the "unchanged" `[cjl]` trace. Caught because the
+third walk's trace line was missing at the traced step. Build `src/Sim.Run` explicitly, like the two
+csproj files CLAUDE.md already lists.
+
+1. **Goldens: 778 passed / 5 skipped / 0 failed** — the fix is golden-inert as predicted.
+2. **The repro dies.** `[cjl]` at t=681 now walks BOTH `:J00_13_1` (pool) and `:J00_13_0` (actual),
+   finds the queue (`f_cyc_ccw.31@14.69`), and `f_cyc_ccw.40` holds 1.00 m before the boundary
+   (seen pins at 1.00 for t=683–694) instead of entering at `:J00_13_0@3.54` on top of a parked car.
+3. **Both arms improved, dramatically** (battery instrument, same as Entry 26):
+
+   | junction-realism-L2 | OFF pre-fix | OFF now | ON pre-fix | ON now | SUMO |
+   |---|---|---|---|---|---|
+   | arrived | 433 | **436** | 441 | **442** | 450 |
+   | running at end | 17 | **14** | 9 | **8** | 0 |
+   | peak overlapping pairs | 9 | **1** | 21 | **3** | 0 |
+   | stuckDwell | 0 | 0 | 0 | **0** | 0 |
+
+   Stopped-LC rate: OFF 1.466, ON **1.155** per 1000 stopped-vehicle-steps (denominators 68 897 /
+   68 390 — comparable, no collapse artefact). L2-light left-turner: changes at t=2, pos 30.94,
+   11.95 m/s — SUMO's move, unchanged.
+4. **Battery: zero T2.6 regressions.** Four rows differ from the committed
+   `net-regression-keepclear-direction.txt` baseline (city-3000 arrived −11, L1 −24,
+   willpass-saturation overlaps 3→4, city-organic-L2 −1) — a stash-revert A/B on those four nets
+   shows **all are pre-existing baseline rot** (identical numbers with the fix reverted; the
+   baseline predates the Entry 23 insertion-parity fixes). city-organic-L2 is actually IMPROVED by
+   the fix (arrived 617→618, overlaps 5→4). No stuckDwell moved anywhere.
+
+**Gate scorecard (design §5): every row green with the coupling ON** — goldens ✓, L2-light t≈3 ✓,
+L2 arrived 442 ≥ 433 / overlaps 3 ≤ 9 / stuckDwell 0 ✓, rate 1.155 < 1.396 ✓, battery ✓. The
+overlap gate that blocked the flip in Entries 26–27 is resolved by fixing the defect it was
+entangled with, not by rewriting the gate. T3 (default flip) is unblocked.

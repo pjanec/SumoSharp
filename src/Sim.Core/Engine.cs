@@ -10179,14 +10179,149 @@ public sealed partial class Engine : IEngine
                 predIsCacc: aLeader.VType.CarFollowModel == "CACC", ego.LevelOfService, _config!.Ballistic)
             : double.PositiveInfinity;
 
-        // DIAGNOSTIC ONLY: attribute the trailing fold to whichever scan actually produced it, matching
-        // Math.Min's own tie-break (poolFollow wins on an exact tie) so blockerIdx always names the
-        // leader behind the returned value, never the one the Math.Min below discarded.
-        blockerIdx = poolFollow <= arrivalFollow
-            ? (leader is not null ? leader.EntityIndex : -1)
-            : (aLeader is not null ? aLeader.EntityIndex : -1);
+        // T2.6 (JUNCTION-REALISM-SESSION-JOURNAL.md Entries 28-29): the ACTUAL-lane walk. Both spans
+        // above descend from the slot's EXIT lane, so for an OFF-POOL vehicle -- one that never
+        // completed its strategic change onto that lane -- they walk a path the body will not take:
+        // at the boundary it crosses via its OWN lane's connection (`:J00_13_0` in the traced pileup,
+        // while both spans walked `:J00_13_1`), entering the occupied internal lane BLIND. When ego
+        // is off-pool, additionally walk the physical path its actual lane connects onto (via chain +
+        // arrival lane, BuildActualDownstreamSpan below) and Min-fold the result. Purely ADDITIVE
+        // braking, and what SUMO itself does -- planMoveInternal builds its link chain from the
+        // vehicle's CURRENT lane every step. The two walks above are KEPT: mid-convergence (ego on
+        // arrival[k], still changing toward pool[k]) must keep braking for the pool path it is about
+        // to take. Inert for every on-pool vehicle -- which is every golden vehicle.
+        var actualFollow = double.PositiveInfinity;
+        var actualLeaderIdx = -1;
+        if (ego.LaneHandle != _laneSeqPool[ego.LaneSeqStart + ego.LaneSeqIndex])
+        {
+            Span<int> actualBuf = stackalloc int[12];
+            var actualLen = BuildActualDownstreamSpan(ego, actualBuf);
+            if (actualLen > 0
+                && TryFindCrossJunctionLeader(
+                    ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
+                    actualBuf.Slice(0, actualLen), new NeighborRearmost(neighbors, ego), dt,
+                    out var xLeader, out var xGap))
+            {
+                actualFollow = FollowSpeedFor(
+                    ego.VType, ego.Kinematics.Speed, xGap, xLeader.Kinematics.Speed, xLeader.VType.Decel,
+                    laneVehicleMaxSpeed, dt, time, ref ego.AccControlMode, ref ego.AccLastUpdateTime,
+                    ref ego.CaccControlMode, ego.Acceleration, hasPred: true,
+                    predIsCacc: xLeader.VType.CarFollowModel == "CACC", ego.LevelOfService, _config!.Ballistic);
+                actualLeaderIdx = xLeader.EntityIndex;
+            }
+        }
 
-        return Math.Min(poolFollow, arrivalFollow);
+        // DIAGNOSTIC ONLY: attribute the trailing fold to whichever scan actually produced it, matching
+        // the nested Math.Min's own tie-breaks (poolFollow wins over both on an exact tie, arrivalFollow
+        // over actualFollow) so blockerIdx always names the leader behind the returned value, never one
+        // the fold discarded.
+        blockerIdx = poolFollow <= arrivalFollow && poolFollow <= actualFollow
+            ? (leader is not null ? leader.EntityIndex : -1)
+            : arrivalFollow <= actualFollow
+                ? (aLeader is not null ? aLeader.EntityIndex : -1)
+                : actualLeaderIdx;
+
+        return Math.Min(Math.Min(poolFollow, arrivalFollow), actualFollow);
+    }
+
+    // T2.6: the downstream lanes an OFF-POOL vehicle will PHYSICALLY traverse -- the planning-time
+    // mirror of TryReResolveFromActualLane's boundary-crossing resolution, scoped to the first
+    // junction: the connection ego's ACTUAL lane has to the next route edge, its internal via-chain
+    // (a `cont` turn traverses 2+ internal lanes -- the same 8-guard walk ResolveSequenceCore's
+    // C4-vii-a arm uses), then the arrival lane on that edge. The span STOPS at the arrival lane:
+    // the boundary crossing re-resolves the whole pool from the actual lane anyway, and the defect
+    // this serves is the blind FIRST entry into an occupied internal lane (Entry 28's pileup).
+    // Returns 0 (caller falls back to the pool walks alone) for: ego on a junction interior (the
+    // pool was just re-resolved from the actual lane there), desynced pool bookkeeping, a route
+    // ending on this edge, or a drop lane with no connection to the next route edge (the boundary
+    // reroutes or clamps there and DeadLaneMergeBrakeConstraint owns the braking).
+    private int BuildActualDownstreamSpan(VehicleRuntime ego, Span<int> buf)
+    {
+        var currentLane = _network!.LanesByHandle[ego.LaneHandle];
+        if (currentLane.EdgeId.Length > 0 && currentLane.EdgeId[0] == ':')
+        {
+            return 0;
+        }
+
+        // The next ROUTE edge after the current one, read from the pool slots exactly the way
+        // TryReResolveFromActualLane builds `remaining` (skip internal slots, dedupe by edge).
+        string? firstEdge = null;
+        string? nextEdgeId = null;
+        for (var k = ego.LaneSeqIndex; k < ego.LaneSeqLen; k++)
+        {
+            var lane = _network.LanesByHandle[_laneSeqPool[ego.LaneSeqStart + k]];
+            if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            if (firstEdge is null)
+            {
+                firstEdge = lane.EdgeId;
+            }
+            else if (lane.EdgeId != firstEdge)
+            {
+                nextEdgeId = lane.EdgeId;
+                break;
+            }
+        }
+
+        if (nextEdgeId is null || firstEdge != currentLane.EdgeId)
+        {
+            return 0;
+        }
+
+        if (!_network.ConnectionsByFromLaneTo.TryGetValue(
+                (currentLane.EdgeId, currentLane.Index, nextEdgeId), out var connection))
+        {
+            return 0;
+        }
+
+        var n = 0;
+        if (connection.Via is { } via)
+        {
+            buf[n++] = _network.LaneHandleById[via];
+
+            var chainVia = via;
+            for (var guard = 0; guard < 8 && n < buf.Length - 1; guard++)
+            {
+                var chainLane = _network.LanesById[chainVia];
+                if (!_network.ConnectionsByFromEdgeLane.TryGetValue(
+                        (chainLane.EdgeId, chainLane.Index), out var chainConns))
+                {
+                    break;
+                }
+
+                Connection? nextHop = null;
+                foreach (var c in chainConns)
+                {
+                    if (c.To == nextEdgeId && c.Via is not null)
+                    {
+                        nextHop = c;
+                        break;
+                    }
+                }
+
+                if (nextHop?.Via is not { } nextVia)
+                {
+                    break;
+                }
+
+                buf[n++] = _network.LaneHandleById[nextVia];
+                chainVia = nextVia;
+            }
+        }
+
+        foreach (var lane in _network.EdgesById[nextEdgeId].Lanes)
+        {
+            if (lane.Index == connection.ToLane)
+            {
+                buf[n++] = _network.LaneHandleById[lane.Id];
+                break;
+            }
+        }
+
+        return n;
     }
 
     // Shared cross-junction downstream-leader scan (used by CrossJunctionLeaderConstraint during

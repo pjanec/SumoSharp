@@ -8,7 +8,7 @@ Tasks: `URGENT-STRATEGIC-FOLLOW-TASKS.md` · Design: `URGENT-STRATEGIC-FOLLOW-DE
 - [x] T1.2 verdict: safety gaps, not extra vetoes; missing informFollower; then the REAL cause — the stop-pin defeats our reroute exit (Entry 26)
 - [x] T2 the scoped fix: follower half ported (binder 19) + pair scoped to the MOVING-merge regime (Entry 26)
 - [x] T2.5 attribution (Entry 27): coupling EXONERATED — 0 of the ON-arm pairs involve a recent moving change; both arms share ONE pileup-episode defect class (distinct pairs 77 vs 66); 21-vs-9 was peak-metric episode size
-- [ ] T2.6 fix the internal-lane pileup — **Entry 28 names the exact fix shape**: planning walks must resolve the downstream span from the ACTUAL lane when ego is off-pool (`walkLane=:J00_13_1` vs body entering `:J00_13_0`); back-protrusion (27a) is second-order. Then re-measure §5 gates and revisit the flip
+- [x] T2.6 fix the internal-lane pileup (Entry 29): third `CrossJunctionLeaderConstraint` walk over the ACTUAL lane's connection path when ego is off-pool (`BuildActualDownstreamSpan`). Goldens inert; L2 overlaps OFF 9→1, ON 21→3; arrived up both arms; battery clean (four flagged rows proven pre-existing by stash A/B). **All §5 gates green with the coupling ON**
 - [ ] T3.1 full measurement sweep
 - [ ] T3.2 default flip
 - [ ] T3.3 behavioural regression test
