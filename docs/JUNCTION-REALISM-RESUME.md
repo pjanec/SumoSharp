@@ -102,8 +102,15 @@ taken after.
 3. **Lateral lane change while stopped — strategic path SHIPPED default-ON (Entry 31; tracker all
    green).** The scoped informLeader/informFollower pair (binders 18/19) is
    `UrgentStrategicLeaderFollow = true`; `UrgentStrategicFollowBehaviourTests` pins the behaviour;
-   `SUMOSHARP_URGENTFOLLOW=0` is the A/B/bisect switch. **Remaining halves: keepRight (23× by
-   stopped count) and speedGain (4.6×) — untraced, separate mechanisms.** Background (Entry 24):
+   `SUMOSHARP_URGENTFOLLOW=0` is the A/B/bisect switch. **Remaining halves: keepRight and
+   speedGain — now DECOMPOSED on a lockstep oracle net (Entry 32, `scenarios/_diag/
+   keepright-standing`): head-car stopped keepRight is correct SUMO behaviour; the artefact is
+   followers, which SUMO fires AT SPEED via speedGain-right on the approach while we defer both
+   paths to standstill. Entry 32 has the term-checked arithmetic (our keepRight rolling rate is
+   63% of SUMO's — `neighDist` missing the best-lanes continuation), why Entries 21/22 rejected
+   the right ingredients (coupled pair tried one half at a time, racy-era numbers), the exact fix
+   shape (both halves in ONE design-first change), and the acceptance gates. START THERE.**
+   Background (Entry 24):
    On `junction-realism-L2-light`, left-turner `f_left_W00.0` must reach lane 1:
    **SUMO changes at t=3 / pos 30.94 / 11.95 m/s** (158 m out, having *decelerated* to fit);
    **we change at t=45 / pos 189.60 / 1.00 m/s** (at the lane end, stopped). The traced veto is

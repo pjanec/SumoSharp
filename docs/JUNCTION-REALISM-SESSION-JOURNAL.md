@@ -2284,3 +2284,24 @@ Also revisit Entry 22's `resetState()` omission after 1–3 land (its cost may r
 strategic fix and the determinism guard — re-measure the split (`SUMOSHARP_LCLOG=1`) before
 quoting it; the post-flip histogram on L2 reads keepRight 200 / strategic 165 / speedGain 172
 stopped commits.
+
+## Entry 33 — the live-city demo re-measured on the shipped engine (closed-loop; realism metrics only)
+
+`Sim.Viewer --mode live-city --smoke --frames 400` (LIVECITY_WITNESS=1, no behavioural gates set,
+nothing inherited in the shell) + `Sim.Viz --live-city`. CLOSED-LOOP demand — no capacity claims.
+
+| metric | committed baseline | now | verdict |
+|---|---|---|---|
+| car-car overlaps (witness checkpoints) | 258 → 3 after the July 21 fix | **0 at all 8 checkpoints** | better (different instrument cadence — directional, not apples-to-apples) |
+| lateral LC dead-stop share | 84/264 = 31.8% (vanilla SUMO ref ≈ 12%) | 52/424 = **12.3%** | **matches the SUMO reference** |
+| total lateral changes | 264 | 424 (+60%) | mixed — more at-speed maneuvering (the flipped coupling changes lanes early); worth an episode-level look if it reads as visual churn |
+| gridlock | — | none; stoppedFrac peaks 0.64, always clears; arrivals monotone; `LIVECITY-SMOKE: OK` | good |
+| ped-on-RED near-collisions | 0 ("2b compliance holds") | **2**, plus 37/1957 low-power-ped-on-signalized samples during RED ("should be 0") | ⚠ NEW ANOMALY — ped-side compliance, untraced; may predate this branch (instrument not re-run since July 21). Backlog item |
+
+The owner's stopped-lane-change artefact **as seen in the demo** is now at the vanilla-SUMO
+dead-stop ratio. The remaining engine-side gap is the follower rate (Entry 32). Raw logs in the
+session scratchpad; doc-rot note: `LIVE-CITY-STATUS.md`'s "3360+ overlaps KNOWN BLOCKER" section
+describes a bug fixed hours after it was written (see `LANE-CHANGE-OVERLAP-STATUS.md`) and was
+never updated, and the July 29 solution reorg moved `Sim.Run`/`Sim.Viewer`/`Sim.Viz`/
+`Sim.BenchLiveCity` OUT of `Traffic.sln` (build their csproj explicitly) while
+`tests/Sim.LiveCity.Tests` moved IN — CLAUDE.md's trap list is stale on both points.
