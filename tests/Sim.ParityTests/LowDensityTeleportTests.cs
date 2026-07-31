@@ -49,6 +49,12 @@ public class LowDensityTeleportTests
 
         var outDir = Path.Combine(Path.GetTempPath(), "sumosharp-lowdens-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(outDir);
+
+        // See DenseFlowDeadLaneDrainTests for the full rationale: SumoShim's `== "1"` gate reads force
+        // three junction gates OFF that the Engine ships ON, so an unpinned run here measured a
+        // configuration nobody ships. Pinning them changed this scenario's reading from 5 teleports to 2
+        // at the time it was introduced (CLAUDE.md measurement-discipline #10).
+        var prevGates = JunctionGateEnv.PinToEngineDefaults();
         try
         {
             var statistic = Path.Combine(outDir, "stat.xml");
@@ -80,6 +86,7 @@ public class LowDensityTeleportTests
         }
         finally
         {
+            JunctionGateEnv.Restore(prevGates);
             Directory.Delete(outDir, recursive: true);
         }
     }

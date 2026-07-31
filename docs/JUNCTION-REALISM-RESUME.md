@@ -3,7 +3,8 @@
 **Read this first, cold.** It is self-contained: you can pick the work up from this page alone.
 Branch: **`claude/sumosharp-traffic-bugs-g1y9hl`**. Gate state at handoff:
 **`dotnet test tests/Sim.ParityTests -c Release` = 776 passed / 5 skipped / 0 failed**, all 661 goldens
-byte-identical.
+byte-identical. (Unchanged across Entries 17–18 — the goldens cannot cover the queue geometry those
+fixes touch, so their silence was never evidence either way.)
 
 ---
 
@@ -27,7 +28,7 @@ global, not zone-scoped** — an earlier suggestion to zone-scope it was wrong a
 |---|---|
 | Cars driving **through** each other at a junction | **FIXED, shipping default-ON.** Root cause: the omitted `myInternalLinkFoes` half of `MSLink::setRequestInformation`. Our trajectory is now byte-identical to SUMO across the traced hold-and-release. Overlap **events** on the repro: 12 751 → 313 (−97.5%) |
 | Two cars **overlapping stopped** in a junction | **FIXED** — same mechanism |
-| **Gridlock** | **FIXED on L2** (450 arrived / 0 running, identical to honest SUMO). **L1 root-caused but NOT fixed** — see §4, this is the next task |
+| **Gridlock** | **FIXED on L2 and L1.** L2 drains identically to honest SUMO; L1 went **112 → 386 arrived** of 450 with `stuckDwell` **1062 → 0**. `stuckDwell` is now 0 on every net in the 26-net battery except `city-3000` (13, unchanged). Two root causes, both in Entry 17/18 |
 | **Lateral lane change while stopped at red** | **MEASURED, not fixed.** We do it 2.5–3× as often as SUMO (83 vs 33 on L2; 53 vs 17 on L2-light). The *overlap* half does not reproduce on this net at all — 0 in both engines |
 
 ## 3. What shipped (engine changes, all on this branch)
@@ -42,48 +43,41 @@ global, not zone-scoped** — an earlier suggestion to zone-scope it was wrong a
 Accepted cost, owner-approved: ~1% arrivals on two organic city nets (`city-mixed-1k` 1014 → 1001,
 `city-organic` 509 → 499), in exchange for eliminating a total deadlock.
 
-## 4. ⭐ THE NEXT TASK — `KeepClearConstraint` does not fire when its own condition holds
+## 4. What was fixed since (Entries 17–18) — read before touching junction code
 
-**This is the highest-value item and it has an exact repro.**
+Two independent defects, both source-verified against vendored SUMO, both shipped unconditionally.
 
-`KeepClearConstraint` (`Engine.cs:~7719`) already implements the box-block check — the downstream
-available-space walk (`LaneBruttoVehLenSum` / `LaneSpaceTillLastStanding`) and a brake to the entry stop
-line. **It applies to the wedged links** (its only scope gate is `request.Foes.Contains('1')`, and all
-three wedged links have crossing foes). **And it never binds.**
+**(a) `LaneSpaceTillLastStanding` walked the exit-lane queue from the WRONG END.** SUMO iterates
+`myVehicles`, which `MSLane.h:1439` documents as **rear-most first**, returning the space up to the
+queue's **tail**. We walked the pos-ascending bucket in reverse, measuring to the **head** — 59.22 m of
+reported room on a 65.60 m lane whose tail sat at pos 4.21. `KeepClearConstraint` therefore applied,
+evaluated, and **never bound**, so vehicles entered junctions they could not clear. One loop direction.
 
-Measured, `scenarios/_diag/junction-realism-L1`, vehicle `f_cyc_cw2.30` entering `:J01_10_0`:
+**(b) `SameTargetMergeConstraint` PHASE 0 was missing `!foe.WillPass`.** `MSLink::blockedByFoe` opens with
+`if (!avi.willPass) return false` (MSLink.cpp:935); the crossing arm ports it, PHASE 0 did not. A vehicle
+sat inside a junction with an **empty downstream** for 120 s yielding to a foe that was **stopped at a red
+light** — with both speeds at 0 the arrival-time windows overlap forever.
 
-| t | exit lane `h1_0` | ego |
-|---|---|---|
-| 405–407 | **9 vehicles, all stopped, nearest at pos 4.21** | on approach `in_W01_0`, accelerating |
-| **408** | unchanged | **enters the junction** |
-| 409 → end | unchanged | stopped at pos 3.61 **forever** |
+Also ported: SUMO's guard against aborting a vehicle already committed inside a junction
+(`!(removalBegin == 0 && myLane->getEdge().isInternal())`, MSVehicle.cpp:5235). Right by the source,
+but **no measurement shows it changed an outcome** — recorded as unmeasured, not as a win.
 
-Ego needs `Length + MinGap` = **7.5 m**; the space was **4.21 m**, unchanged for four steps before
-entry. `keepClear` bound **zero times** for this vehicle over its whole life.
+**Measured together:** L1 112 → 386 · L2 residual gone · `city-mixed-1k` 1001 → 1012 ·
+synthetic-junction2 teleports → **0, exactly matching vanilla SUMO** · **all 661 goldens byte-identical**.
+Cost: `city-organic` 499 → 491, and 2 extra in-junction wedges on the dense torture scenario.
 
-**Two testable candidates:**
-1. `LaneSpaceTillLastStanding` never sets `foundStopped` → the `!foundStopped` early-out returns
-   `+infinity` regardless of how little space there is;
-2. `seenSpace` comes out too large (wrong end of the exit lane, or the internal lanes' brutto sum not
-   subtracted as intended).
-
-**How to start:** instrument the walk's intermediates at that ONE step (`seenSpace`, `foundStopped`,
-each lane's contribution). Do not add a second box-block check — two overlapping guards make future
-attribution ambiguous, and this session paid for that twice already.
-
-⚠ **Blast radius.** `KeepClearConstraint` is **default-on, unconditional, parity-relevant** engine code
-behind no gate. If it under-fires here it plausibly under-fires everywhere, which makes it a likely
-contributor to the junction wedges still present on the `city-*` nets — a bigger prize than L1 alone.
-It also means **goldens will probably move**: plan the SUMO diff up front, per CLAUDE.md.
-
-**Success condition, fixed in advance:** L1 `arrived` moves materially above **112** (SUMO: 450). If it
-does not, the mechanism is named correctly but is not the binding one — **publish that null**, as five
-earlier hypotheses were.
+⚠ **`SumoShim` forces three junction gates OFF that the `Engine` ships ON** (the unsafe `== "1"` read —
+`ENV-GATES.md` flags it). Any shim-driven measurement or test must pin them: use
+`tests/Sim.ParityTests/JunctionGateEnv.cs`. Two tests were silently calibrated in the gates-off
+configuration, and one of their constants was **unreachable by the shipped engine**.
 
 ## 5. Remaining backlog, in owner priority order
 
-1. **§4 above.**
+1. **In-junction wedges that survive the Entry 17/18 fixes.** Two named, with exact repros, on
+   `scenarios/_repro/synthetic-junction2` (dense cfg, gates pinned): `internalJunctionAdmission`
+   (binder 14) on `:2810_8_0`, and `crossJxnLeader` on `:2450_0_1`. Separately, vehicles **122 and 256**
+   are stranded on the dead lane `30_1` at pos 24.12 / 16.62 — **pre-existing, identical in both arms**,
+   and never covered by that test's old 290-arrivals figure despite the test being named for it.
 2. **Normal-traffic junction overlaps on the real nets.** `city-mixed-1k` still shows 10 peak
    overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
 3. **Lateral lane change while stopped.** Two separable halves:
@@ -111,6 +105,8 @@ earlier hypotheses were.
 | `scripts/analyze-junction-realism-fcd.py` | onset, dwell, wedge/overlap causal order, OBB overlap pairs. Runs on **either** engine's FCD |
 | `scripts/run-net-regression.py` | the 26-net battery. `--compare <baseline>` prints regressions |
 | `scripts/detect-stopped-lane-change.py` | stopped sideways lane changes + whether they landed overlapping |
+| `SUMOSHARP_TRACEVEH=<vehId>` | per-vehicle constraint trace to stderr: `KeepClearConstraint`'s space walk, `SameTargetMergeConstraint`'s phase + foe. Read by **both** `Sim.Run` and the `sumosharp` drop-in |
+| `SUMOSHARP_BINDERLOG=<path>` | the binder CSV below, from the **drop-in binary** — needed because shim and `Sim.Run` are different engine configurations |
 | `Sim.Run --binder-log PATH` | per-vehicle per-step CSV: `t,veh,lane,pos,speed,binder,binderName,jyArm,jyGreen,blocker` — **the single most useful instrument here** |
 | `tests/…/EvacPusherOverlapDiagTests.cs` | always-passing report on evac pusher separation |
 
@@ -141,7 +137,16 @@ Binder legend: 0 none · 1 leaderFollow · 2 crossJxnLeader · 3 freeFlow · 4 s
 6. **Check whether the guard already exists before building one.** Two of the most valuable moves this
    session were *not* writing code.
 
-**Scoreboard, kept honestly: nine wrong hypotheses, five instrument/process defects.** Every real result
+7. **A vehicle disappearing is not a vehicle standing still.** A stall-run metric that never closes its
+   run when a vehicle leaves the sim scored two teleported vehicles as stalled for 1677 s and 1228 s.
+   The wedge was real; the durations were fiction. Check the exit condition of any run-length metric.
+8. **A shim-driven number is a different engine configuration.** `SumoShim` forces three junction gates
+   off that the engine ships on. Pin them (`JunctionGateEnv`) or the number is not about what we ship.
+9. **An assertion can outlive its premise.** "The knob must not make teleports worse" became
+   unsatisfiable-except-at-zero once the baseline reached zero. Re-read what an assertion *means* when
+   its baseline moves, rather than treating the failure as a regression.
+
+**Scoreboard, kept honestly: eleven wrong hypotheses, six instrument/process defects.** Every real result
 came from an instrument; the instruments needed fixing about as often as the engine did. Record
 predictions *before* measuring — several would otherwise have been quietly revised afterwards.
 
