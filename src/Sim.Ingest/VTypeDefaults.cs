@@ -23,6 +23,10 @@ public sealed record ResolvedVType(
     double Sigma,
     double Tau,
     double SpeedFactor,
+    // The vType's own `speedDev`, or NaN when it did not specify one (then the cfg-wide
+    // `--default.speeddev` applies). NaN rather than a magic number so "unspecified" cannot be
+    // confused with a real 0 -- and 0 is precisely the value that matters here.
+    double SpeedDev,
     double Width,
     double Height,
     // Rung A3: sumo/src/microsim/MSVehicle.cpp:7266 ignoreRed's jmDriveAfterRedTime junction-
@@ -338,6 +342,7 @@ public static class VTypeDefaults
             // mean, 1.0, with no per-vehicle deviation to model yet; overridable via rou.xml's
             // speedFactor="..." for a fixed (non-distributional) override.
             SpeedFactor: vType.SpeedFactor ?? 1.0,
+            SpeedDev: vType.SpeedDev ?? double.NaN,
             // Per-vclass width default (SUMOVTypeParameter.cpp constructor default 1.8, or the
             // vclass-specific override in VClassDefaultValues).
             Width: raw.Width,

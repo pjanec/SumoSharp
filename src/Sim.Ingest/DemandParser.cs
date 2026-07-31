@@ -434,6 +434,7 @@ public static class DemandParser
         Length: ParseNullableDouble(vTypeEl, "length"),
         EmergencyDecel: ParseNullableDouble(vTypeEl, "emergencyDecel"),
         SpeedFactor: ParseNullableDouble(vTypeEl, "speedFactor"),
+        SpeedDev: ParseNullableDouble(vTypeEl, "speedDev"),
         // Rung A3: a vType ATTRIBUTE, not a <param> child -- SUMO's getJMParam reads the
         // attribute map (SUMOVTypeParameter's map of junction-model params populated
         // straight from the <vType>'s own XML attributes for jm* names).
@@ -562,7 +563,19 @@ public static class DemandParser
         var value = element.Attribute("departPos")?.Value;
         if (value is null)
         {
-            return DepartPosValue.Given(0.0);
+            // ABSENT => BASE, which is SUMO's own default (DepartPosDefinition::BASE, SUMOVehicleParameter
+            // ctor). This used to return Given(0.0) as a deliberate shortcut whose comment claimed a
+            // vehicle with no departPos "behaves identically" -- it does NOT: Given(0) puts the FRONT
+            // bumper at 0, while BASE puts it at MIN(length + POSITION_EPS, laneLength), e.g. 5.1 m for a
+            // 5 m car. Every one of the 179 committed golden scenarios sets departPos EXPLICITLY, which is
+            // exactly why the discrepancy stayed invisible; it bites every scenario that omits the
+            // attribute, which is most real ones.
+            //
+            // Found by scripts/fcd-divergence-onset.py: ours and SUMO disagreed by 5.1 m on the very
+            // FIRST vehicle at t=0 on scenarios/_diag/junction-realism-L2-light, so the two engines were
+            // never in the same state on any of the synthetic repro nets and no lockstep window existed
+            // to compare them in. See docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 23.
+            return DepartPosValue.Base;
         }
 
         if (double.TryParse(value, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var literal))
@@ -576,10 +589,7 @@ public static class DemandParser
         }
 
         // DepartPosDefinition::BASE -- resolved at insertion to MSBaseVehicle::basePos (see
-        // DepartValue.cs / Engine.TryInsertOnLane). This is also SUMO's DEFAULT departPos, so a
-        // vehicle with no departPos attribute at all behaves identically; we keep the null case as
-        // Given(0.0) for byte-identical parity with every pre-existing golden (none of which used
-        // "base" or relied on the >0 basePos offset) and resolve "base" explicitly here.
+        // DepartValue.cs / Engine.TryInsertOnLane). Same value the absent case above now returns.
         if (value == "base")
         {
             return DepartPosValue.Base;

@@ -1838,13 +1838,21 @@ public sealed partial class Engine : IEngine
         // call), completely independent of `rngState` above (VehicleRuntime.RngState / C1's
         // per-step dawdle stream -- see VehicleRng.SeedFor's 3-arg overload and
         // VehicleRuntime.SpeedFactor's own comments for why this independence matters).
-        // ScenarioConfig.SpeedDev is the dev SUMOVTypeParameter.cpp:374-378's
-        // `default.speeddev` override resolves to (every existing scenario sets it to 0, so
-        // NormcDistribution.SampleNormc's dev<=0 branch returns `vType.SpeedFactor` --
-        // 1.0 -- with NO draw at all, byte-identical to every pre-C7 rung).
+        // THE DEVIATION IS THE vTYPE'S OWN when it specified one, and only otherwise the cfg-wide
+        // `--default.speeddev` (SUMOVTypeParameter.cpp:374-378: the option is a DEFAULT for types that
+        // do not set `speedDev`, not an override of those that do).
+        //
+        // ⚠ Reading only the cfg value was a real parity bug, invisible to every golden because 88 of
+        // them pin `<default.speeddev value="0"/>` in their sumocfg. A scenario that instead writes the
+        // idiomatic `speedDev="0"` on its vType -- as SUMO users normally do, and as every
+        // scenarios/_diag net does -- got RANDOMLY SAMPLED speed factors here (0.88, 0.94, ...) against
+        // SUMO's exact 1.0. That is not a cosmetic difference: heterogeneous desired speeds manufacture
+        // speed-gain lane-change incentives that homogeneous traffic does not have, so it contaminated
+        // every cross-engine lane-change comparison made on those nets. See journal Entry 23.
+        var speedDev = double.IsNaN(vType.SpeedDev) ? _config!.SpeedDev : vType.SpeedDev;
         var speedFactorRng = VehicleRng.SeedFor(Seed, entityIndex, SpeedFactorRngSalt);
         var speedFactor = NormcDistribution.ComputeChosenSpeedDeviation(
-            mean: vType.SpeedFactor, dev: _config!.SpeedDev, min: 0.2, max: 2.0, rng: ref speedFactorRng);
+            mean: vType.SpeedFactor, dev: speedDev, min: 0.2, max: 2.0, rng: ref speedFactorRng);
 
         // P1E-4 (§1A, §0.5.1): device.rerouting equip + first periodic-reroute schedule, drawn
         // ONCE here exactly like speedFactor above. Entirely inert (equipped stays false,

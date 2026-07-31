@@ -21,6 +21,12 @@ public sealed record VType(
     double? Length = null,
     double? EmergencyDecel = null,
     double? SpeedFactor = null,
+    // SUMO's `speedDev` vType attribute -- the deviation of THIS type's speed-factor distribution.
+    // null == not specified, in which case the cfg-wide `--default.speeddev` applies. Parsing it is
+    // load-bearing: SUMO honours the vType's own value, and a scenario that writes the idiomatic
+    // `speedDev="0"` on its vType (rather than pinning the cfg option) gets homogeneous traffic in SUMO
+    // and, before this was parsed, RANDOMLY SAMPLED speed factors here. See journal Entry 23.
+    double? SpeedDev = null,
     // Rung A3: sumo/src/microsim/MSVehicle.cpp:7266 ignoreRed's
     // getJMParam(SUMO_ATTR_JM_DRIVE_AFTER_RED_TIME, -1) -- a vType-level (not <param> child)
     // junction-model attribute; null here (no override present) resolves to SUMO's -1 default

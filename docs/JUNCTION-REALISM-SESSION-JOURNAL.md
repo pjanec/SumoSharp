@@ -1695,3 +1695,89 @@ and SUMO's trajectories diverge immediately, so the only sound way to ask "what 
 to drive SUMO through TraCI to the same state (`moveToXY`/`setSpeed`) or to find a scenario where the
 two stay in lockstep long enough. Every per-vehicle cross-engine claim in Entries 21-22 that lacks that
 is a lead, not evidence.
+
+---
+
+## Entry 23 — TWO REAL PARITY BUGS in vehicle insertion, found by asking for a lockstep window
+
+Entry 22 ended by saying the next step was a **controlled** comparison, because diverged trajectories had
+invalidated every per-vehicle cross-engine claim. Building the cheapest possible version of that —
+"how long do the two engines stay in the same state?" — immediately found two genuine parity bugs.
+
+New committed instrument: **`scripts/fcd-divergence-onset.py`**, which reports the first step at which
+two FCDs disagree. On `junction-realism-L2-light` it answered **t=0**, with the very first vehicle 5.10 m
+out of place. There was never a lockstep window on any synthetic repro net.
+
+### Bug 1 — absent `departPos` defaulted to 0 instead of SUMO's `base`
+
+`DemandParser.ParseDepartPos` returned `Given(0.0)` when the attribute was absent. SUMO's default is
+`DepartPosDefinition::BASE`, which puts the **front bumper** at `MIN(length + POSITION_EPS, laneLength)`
+— **5.1 m** for a 5 m car, not 0.
+
+The shortcut was **deliberate and its comment was knowingly wrong**: it claimed a vehicle with no
+`departPos` "behaves identically", justified by "byte-identical parity with every pre-existing golden
+(none of which used `base` or relied on the >0 basePos offset)". That justification was true only
+because **all 179 golden scenarios set `departPos` explicitly** — and it also predicted its own fix would
+be free. It was: **all 661 goldens stayed byte-identical.**
+
+### Bug 2 — a vType's own `speedDev` was never parsed
+
+`ScenarioConfigParser` read the cfg-wide `--default.speeddev` (defaulting to 0.1) and `Engine` used it
+for **every** vehicle. The `speedDev` attribute on `<vType>` was not parsed at all. In SUMO the option is
+a *default for types that do not specify one*, never an override of those that do.
+
+Consequence: a scenario writing the idiomatic `<vType ... speedFactor="1.0" speedDev="0"/>` — as SUMO
+users normally do, and as every `scenarios/_diag` net does — got **randomly sampled speed factors** here
+(measured 0.8816, 0.9395, 1.0 on three vehicles) against SUMO's exact **1.0**. Invisible again for the
+same structural reason: **88 golden cfgs pin `<default.speeddev value="0"/>`.**
+
+**This one is not cosmetic for this workstream.** Heterogeneous desired speeds manufacture speed-gain
+lane-change incentives that homogeneous traffic simply does not have — so it contaminated *every*
+cross-engine lane-change comparison made on those nets, including Entry 20's headline table.
+
+### Measured effect
+
+| | before | after | SUMO |
+|---|---|---|---|
+| L2 lockstep window | **0 steps** | 3 steps | — |
+| L2 stopped-LC rate (per 1000 stopped-veh-steps) | 1.560 | **1.396** | 0.410 |
+| L2 stopped keepRight commits | 255 | **184** | — |
+| L2 arrived | 431 | **433** | 450 |
+| L2 peak overlapping pairs | 3 | **9** ⚠ | **0** |
+| L1 arrived | 386 | **362** ⚠ | 450 |
+| L1 peak overlapping pairs | 2 | **1** | 0 |
+| goldens | — | **661 byte-identical** | — |
+
+So the artefact drops ~10% and the gap narrows 3.8× → 3.4×, but the **honest** headline is that these are
+correctness fixes, not artefact fixes: their real value is that **cross-engine comparison on these nets
+is now valid at all**.
+
+⚠ **The cost, stated plainly: L2 peak overlapping pairs went 3 → 9, against SUMO's 0.** Most likely the
+corrected physics exercising a pre-existing junction weakness harder — homogeneous speed factors platoon
+vehicles more tightly, so more of them reach a junction together — rather than the fixes creating a new
+defect. **That is a hypothesis and it is untested.** It is owed work, and it is in the defect class the
+owner ranks highest.
+
+**Kept anyway, deliberately.** Reverting would restore a lower overlap count by keeping initial
+conditions that do not match SUMO — hiding a real weakness behind a wrong setup, and permanently
+invalidating every oracle comparison built on these nets. `stuckDwell` stayed 0 on every battery net, so
+no gridlock returned.
+
+### Two tests updated, neither weakened
+
+- `RungHDp0c1SymbolicDepartTests.AbsentDepartAttributes_DefaultToGivenZero` **asserted the bug**. Its own
+  comment pinned "default exactly like before this rung" — backward compatibility with our own earlier
+  behaviour, explicitly not fidelity to SUMO. Renamed to `..._DefaultToSumoDefaults` and the departPos
+  expectation corrected to `Base`; `departSpeed`/`departLane` are unchanged because SUMO's defaults there
+  really are 0 and lane 0.
+- `InternalJunctionAdmissionTests`' witness pair re-anchored a **second** time (89/102 → 78/156,
+  co-occurring steps [320, 323], 0 violations). Its vacuity guard fired correctly again: insertion moved,
+  so the measured pair moved. No assertion changed meaning.
+
+### Lesson, and it generalises past this repo
+
+**Both bugs were structurally invisible to the entire golden suite, because the goldens pin explicitly
+what real scenarios leave to the default.** A parity suite that always specifies an attribute can never
+test that attribute's default. Every remaining "we default X to Y" shortcut in the ingest layer deserves
+the same suspicion — and `scripts/fcd-divergence-onset.py` is the cheap way to look, because a
+first-step disagreement is exactly what a wrong default produces.

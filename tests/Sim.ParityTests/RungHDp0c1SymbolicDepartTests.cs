@@ -90,10 +90,20 @@ public class RungHDp0c1SymbolicDepartTests
         Assert.Equal(1, v.DepartLaneIndex.Literal);
     }
 
-    // Absent attributes must still default exactly like before this rung (Given + 0), not throw or
-    // silently pick a symbolic Kind.
+    // Absent attributes must resolve to SUMO'S OWN DEFAULTS, not throw and not silently pick some other
+    // symbolic Kind.
+    //
+    // ⚠ departPos CHANGED (journal Entry 23), and this test previously pinned the wrong value. It
+    // asserted `Given(0.0)` with the rationale "default exactly like before this rung" -- i.e. backward
+    // compatibility with our own earlier behaviour, NOT fidelity to SUMO. SUMO's default is
+    // `DepartPosDefinition::BASE` (SUMOVehicleParameter's ctor), which places the FRONT bumper at
+    // MIN(length + POSITION_EPS, laneLength) -- 5.1 m for a 5 m car, not 0. The discrepancy was
+    // invisible because all 179 committed golden scenarios set departPos explicitly; it was found by
+    // diffing a synthetic net against SUMO, where the very first vehicle sat 5.1 m out of place at t=0.
+    //
+    // departSpeed and departLane are unchanged: SUMO's defaults there really are 0 and lane 0.
     [Fact]
-    public void AbsentDepartAttributes_DefaultToGivenZero()
+    public void AbsentDepartAttributes_DefaultToSumoDefaults()
     {
         var demand = DemandParser.ParseXml(RouHeader + """
                 <vehicle id="v0" type="car" route="r0" depart="0"/>
@@ -101,7 +111,7 @@ public class RungHDp0c1SymbolicDepartTests
             """);
 
         var v = Assert.Single(demand.Vehicles);
-        Assert.Equal(DepartPosValue.Given(0.0), v.DepartPos);
+        Assert.Equal(DepartPosValue.Base, v.DepartPos);
         Assert.Equal(DepartSpeedValue.Given(0.0), v.DepartSpeed);
         Assert.Equal(DepartLaneValue.Given(0), v.DepartLaneIndex);
     }
