@@ -4,7 +4,7 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **775/4** with all 661 goldens byte-identical
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **777/4** with all 661 goldens byte-identical
 (755/4 before the car-yields-ped branch, which adds exactly 20 tests and perturbs none);
 `Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
 (⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
@@ -16,6 +16,12 @@ cost ~1 s of wall clock per simulated second because `DrClock` tracks wall time 
 Reasoning + why a `--filter` alone cannot enable them: `demos/City3D/CityLib.Tests/RealTimeFactAttribute.cs`.
 ⚠ Also **clear `~/.nuget/packages/sumosharp.*` before repacking City3D**, or the version-pinned local feed
 serves a stale engine and you measure code you are not looking at.
+
+> ⚠ **Name the PROJECT, not the solution, when quoting these.** `Sim.ParityTests` is **777 pass / 0 fail /
+> 4 skip**; the whole `Traffic.sln` is **~1120 pass / 0 fail / 4 skip** across five test projects
+> (ParityTests 777, Pedestrians 324, IgBridge 11, Host 6, DotRecast 2). Quoting 777 as "the solution" — as
+> several docs and commit messages in this repo have — understates the suite by a third and invites a
+> correction from anyone who runs it.
 
 > **The bench hash moved with PR #13** (`D96213B7BB4021A7` → `BF3794A4704BCD79`) because the seven
 > junction/overlap gates now default **ON**. Verified attributable by stashing only the `Engine` defaults and

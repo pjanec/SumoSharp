@@ -40,6 +40,10 @@ public sealed class PublishScheduler
     // Movers currently remembered (i.e. published at least once and not yet pruned). Test/telemetry hook.
     public int TrackedCount => _lastSent.Count;
 
+    // The policy this scheduler was constructed with. Exposed read-only so a measurement harness can read
+    // a DrErrorPublishPolicy's per-reason fire counters without reaching around the publisher that owns it.
+    public IPublishPolicy Policy => _policy;
+
     // Decide for ONE candidate mover. Computes the receiver's DR prediction from this mover's last-PUBLISHED
     // state (via the shared DrExtrapolation.Arc, so it matches the viewer exactly) and hands the policy both
     // the time-since-last (for DefaultPublishPolicy) and the prediction error (for DrErrorPublishPolicy). On

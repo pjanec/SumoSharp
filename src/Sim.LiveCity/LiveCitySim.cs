@@ -78,6 +78,11 @@ public sealed class LiveCitySim : IDisposable
     // and disposes it, exactly as the design's "LiveCitySim does not know about files" tenet requires.
     private readonly IReplicationSink? _recordVehSink;
     private readonly ReplicationPublisher? _recordPublisher;
+
+    // The recording tee's publisher, or null if no record sink was supplied. Exposed so a measurement
+    // harness can read its DrErrorPublishPolicy's per-reason fire counters -- the record tee is the right
+    // one to measure, since it is a dedicated publisher whose counters no other consumer perturbs.
+    public ReplicationPublisher? RecordPublisher => _recordPublisher;
     private bool _recordGeometryPublished;
 
     // docs/DENSITY-DIFF-HARNESS-DESIGN.md §2, -TASKS.md B1: OPTIONAL demand-recorder tee -- mirrors
