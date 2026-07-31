@@ -155,7 +155,7 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 
 | Gate | Sets | Unset ⇒ | Engine default |
 | --- | --- | --- | --- |
-| `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `false` |
+| `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `true` |
 | `SUMOSHARP_PHYSOCC` | `Engine.JunctionPhysicalOccupancyGate` | **engine default** | `false` |
 
 **Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default

@@ -13255,8 +13255,15 @@ public sealed partial class Engine : IEngine
     // events -- because a vehicle it correctly HOLDS inside a junction then gets driven through at
     // 8-10 m/s by cross traffic. It fixes admission and exposes the missing converse
     // (JunctionPhysicalOccupancyGate). docs/JUNCTION-REALISM-TRACE-FINDINGS.md §8 has both tables.
-    // Flipping this default is gated on the PAIRED experiment named there, not on the repro alone.
-    public bool InternalJunctionApproachArm { get; set; }
+    // DEFAULT ON as of the task-1 trace. The city-organic "regression" that held this OFF was a
+    // duration-weighted statistic mistaken for an incidence change: overlap EVENTS (pair x step) rose
+    // 255 -> 296, but DISTINCT overlapping pairs went 92 -> 93, with 43 new and 42 gone -- churn, not
+    // accumulation, and both-moving incidence actually fell 76 -> 74. Against that: repro L2 arrivals
+    // +130% and overlap events -97.5%. The one class that genuinely grew (a stopped car driven through,
+    // 24 -> 29 pairs) is the occupancy gate's territory, and that gate is measured at 320 -> 61 arrivals
+    // globally, so its answer is zone-scoped. Tables: JUNCTION-REALISM-TRACE-FINDINGS.md §8/§9 and the
+    // session journal Entry 1-AFTER.
+    public bool InternalJunctionApproachArm { get; set; } = true;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

@@ -78,3 +78,74 @@ default-ON as-is.
 
 **Definition of done for task 1:** the classification table, a named cause, and either the arm's
 default flipped or a written reason it cannot be.
+
+---
+
+## Entry 1 — AFTER — task 1 measured. My prediction was WRONG; the residual is largely a metric artefact.
+
+**Prediction (Entry 1 BEFORE):** the new overlaps would be *predominantly* one-stopped-one-moving — a
+vehicle the arm correctly holds, driven through. **Refuted.** Of the 43 pairs that appear only with the
+arm on, **67% are both-moving** and 33% are one-stopped-one-moving. The alternative the BEFORE entry
+required me to leave open — transient crossings on internal lanes that overlap by construction — is the
+majority case.
+
+**The headline number I had been reporting was the wrong statistic.** "255 → 296 events (+16%)" counts
+pair×step, so it inflates with *duration*. The number of **distinct vehicle pairs that ever overlap is
+92 → 93** — flat. And the churn is symmetric: **43 new pairs, 42 gone.** The arm changes *which*
+vehicles conflict, not how many.
+
+| class | events OFF | events ON | **pairs OFF** | **pairs ON** |
+|---|---|---|---|---|
+| both stopped | 114 | 117 | 6 | 9 |
+| one stopped, one moving | 43 | 64 | 24 | 29 |
+| both moving | 98 | 115 | 76 | 74 |
+| **total** | 255 | 296 | **92** | **93** |
+
+**What is genuinely up, stated without minimising it:** the visually-worst class — a stopped car driven
+through — grows **24 → 29 distinct pairs** (+5) and 43 → 64 events (+49%). That is real, it is the
+artefact the owner reported, and it is not zero. It is also the class the occupancy gate would address,
+which §9 measured as costing 320 → 61 arrivals globally, so the answer for it is **zone-scoped**, per
+the owner's own rule that these artefacts are unacceptable in-zone and tolerable outside.
+
+**Verdict on task 1: the arm is NOT meaningfully regressing `city-organic`.** Overall incidence is flat
+(92→93), both-moving incidence is slightly *down* (76→74), against **−97.5% overlap events and +130%
+arrivals** on the repro. The trade is strongly asymmetric in the arm's favour.
+
+**Decision: flip `Engine.InternalJunctionApproachArm` to default ON.** The blocker identified in §8 is
+resolved — it was a duration-weighted statistic mistaken for an incidence change.
+
+**Method note worth keeping:** two of my summary statistics have now misled me in this workstream —
+peak-simultaneous pairs *understated* the arm 20× (9→7 vs 12 751→313), and event count *overstated* the
+city-organic regression (+16% vs +1 distinct pair). **Report incidence and duration separately; never
+let one stand for the other.**
+
+---
+
+## Entry 2 — BEFORE — flip the default, then re-gate
+
+**Expectation.** Parity should stay **776/4** with all 661 goldens byte-identical: the arm was already
+measured at 776/4 with it ON, and the goldens are inert to it either way. The regression battery should
+be unchanged from the arm-ON report already committed. If parity moves, the flip is wrong and I revert.
+
+**Immediate next step.**
+```
+# flip the default in Engine.cs + update ENV-GATES.md's "engine default" column
+dotnet build Traffic.sln -c Release && dotnet test tests/Sim.ParityTests -c Release --no-build
+```
+Then task 2 (the gridlock) opens with its own BEFORE entry: L1 is the clean surface (the arm does not
+help it at all — 60 → 63 arrived), and the named first instrument is **the binder tag at the step a
+vehicle enters a junction whose exit is already full** (§7's keep-clear question), NOT a source read.
+
+---
+
+## Entry 2 — AFTER — default flipped ON, gate green
+
+`dotnet test tests/Sim.ParityTests -c Release` → **776 passed / 4 skipped / 0 failed**, all 661 goldens
+byte-identical, exactly as Entry 2 BEFORE predicted. `Engine.InternalJunctionApproachArm` now defaults
+**true**; `ENV-GATES.md`'s engine-default column updated to match.
+
+**Task 1 is CLOSED.** The junction drive-through / interpenetration defect the owner reported is fixed,
+matches SUMO step-for-step on the traced case, and ships on by default.
+
+**Task 2 (the gridlock) is next, and it is a fresh investigation** — nothing measured so far has moved
+it. Its BEFORE entry follows.
