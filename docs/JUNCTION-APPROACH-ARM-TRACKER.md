@@ -32,8 +32,24 @@ success conditions **first-hand**, including that its test is non-vacuous.
 
 ## Stage 3 — gate
 
-- [ ] **T6b (baseline half)** cross-net regression battery built + baseline committed ← *must land
-      BEFORE any engine edit; a baseline captured afterwards is not a baseline*
+- [x] **T6b (baseline half)** — `scripts/run-net-regression.py`, baseline in
+      `docs/reports/net-regression-baseline.txt`. Captured **before** any engine edit.
+
+  **Two findings from the baseline that were not expected and change the framing:**
+
+  1. **Junction-interior overlaps are NOT confined to the synthetic repro — they are on the committed
+     benchmark city nets today.** Peak simultaneous overlapping pairs: `city-mixed-1k` **9**,
+     `city-3000` **6**, `city-organic-L2` 4, `willpass-saturation` 4, `city-organic` 3, `city-30` 1,
+     `city-300` 1. Several of those nets also fail to drain (`city-mixed-1k` 223 still running with a
+     **81-step** junction dwell; `city-organic` 62; `city-organic-L2` 12). So this defect has been
+     shipping on the real nets, not just on a net built to provoke it.
+  2. ⚠ **Overlap does NOT imply gridlock.** `junction-realism-L{1,2}-light` **fully drain** (228/228,
+     0 running) while still producing **3 and 2** overlapping pairs and dwells of 21 and 4 steps. At
+     light demand we interpenetrate and recover; only at stress demand does it become permanent.
+     This does not refute the §5 hypothesis — interpenetration may still be what converts a recoverable
+     queue into a permanent wedge — but it does kill the simple form of it. "Fix the overlap and the
+     gridlock goes away" is now explicitly **unsupported by the data we have**, and the `-light`
+     control is the row that says so.
 - [ ] **T6** re-run both surfaces and record the numbers **whichever way they come out**
 - [ ] **T6b (after half)** no committed net regresses on arrived / still-running / junction dwell /
       overlap pairs. Owner's bar: *a symmetric deadlock is as bad as the existing one* — fixing the

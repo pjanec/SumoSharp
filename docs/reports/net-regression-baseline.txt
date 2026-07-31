@@ -1,0 +1,30 @@
+net                         status          steps  arrived  running  maxDwell  overlaps  wall_s
+-----------------------------------------------------------------------------------------------
+city-15000                  EXCLUDED        by --exclude (see script header)
+city-30                     DRAINED          1200      290        0         4         1     1.2
+city-300                    STUCK            1200      454      270         1         1     9.2
+city-3000                   INCONCLUSIVE     1200     3446     4179         5         6    51.8
+city-mixed-1k               STUCK            1200     1013      223        81         9    15.5
+city-organic                STUCK            1200      510        5        62         3     4.1
+city-organic-L2             STUCK            1000      618        2        12         4     5.7
+emergency-corridor-demo     DRAINED           160        6        0         0         0     0.9
+ext-agents-demo             DRAINED           120        2        0         0         0     0.9
+ext-showcase                DRAINED           340        5        0         0         0     0.9
+ext-swerve-demo             DRAINED           120        1        0         0         0     0.9
+highway-dense               STUCK            1000      405       15         0         0     3.3
+livecity-mega               SKIP            no end time in sumocfg
+overtake-opposite-demo      STUCK             120        1        1         0         0     0.8
+rail-crossing-demo          DRAINED           296       23        0         0         0     0.9
+reroute-demo                DRAINED           600        1        0         0         0     0.9
+c4vii-willpass-grid         DRAINED          1200       75        0         0         0     1.2
+cont-turn-sequence          DRAINED            90        1        0         0         0     0.9
+junction-realism-L1         INCONCLUSIVE     1200       60      225      1060         4     3.9
+junction-realism-L1-light   DRAINED          1200      228        0        21         3     1.6
+junction-realism-L2         INCONCLUSIVE     1200      139      310       956         9     5.2
+junction-realism-L2-light   DRAINED          1200      228        0         4         2     1.7
+multilane-internal-lc-crash DRAINED           600       10        0         1         0     1.1
+rbl-left-turns              DRAINED           120        4        0         0         0     0.9
+sym-rbl-straight            DRAINED           120        4        0         0         0     0.9
+uturn-contturn-freeze       DRAINED           240       21        0         0         0     0.9
+wide-swerve                 DRAINED           120        1        0         0         0     0.9
+willpass-saturation         DRAINED          1200      412        0        18         4     2.5
