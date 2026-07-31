@@ -7286,7 +7286,7 @@ public sealed partial class Engine : IEngine
                     SameTargetMergeConstraint(
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
                         j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority,
-                        egoInsideJunction));
+                        prePass, egoInsideJunction));
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 3; blockerIdx = -1; } // diag: sameTargetMerge, foe not exposed by SameTargetMergeConstraint
                 continue;
             }
@@ -8520,7 +8520,7 @@ public sealed partial class Engine : IEngine
     private double SameTargetMergeConstraint(
         VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
         bool egoOnInternal, Lane? approachLane, double egoDistToEntry, int foeLinkIndex, ActiveVehicleQuery allVehicles,
-        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false,
+        double dt, double time, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool egoHasSignalPriority = false, bool prePass = false,
         // T1.9 (docs/NEED-contturn-stuck-in-junction.md): "ego is physically inside this junction", the
         // faithful port of SUMO's MSLane::isInternal() -- true on EVERY stage of a cont turn, unlike
         // `egoOnInternal` which is equality against the LINK-CONTROLLING lane only. Used ONLY for the
@@ -8592,10 +8592,28 @@ public sealed partial class Engine : IEngine
         // turn `egoOnInternal` is false while ego sits on the first-stage lane, which is exactly how
         // __veh127 froze for 95 steps on :d_3_4_5_0 with nothing ahead of it (binder 10 / arm 3
         // sameTargetMerge, confirmed only after the T1.8 stale-diagnostic fix made the arm visible).
+        // THE MISSING `!foe.WillPass` TERM. MSLink::blockedByFoe opens with `if (!avi.willPass) return
+        // false` (MSLink.cpp:935) -- a foe that is not going to enter its link this step blocks nobody.
+        // The CROSSING arm ports that as `foeYieldsThisStep` (:7524) and its own comment at :7531 says
+        // the red-light case "is now handled generally by the `!foe.WillPass` term above". PHASE 0 never
+        // got that term, so this arm alone still yields to a foe that cannot move.
+        //
+        // WHAT IT COSTS WITHOUT IT -- a permanent deadlock, traced on scenarios/_repro/synthetic-junction2:
+        // vehicle 89 sat on `:2336_18_0` from t=322 with its ENTIRE downstream empty, held by
+        // `PHASE0-arrivalYield foe=152`, while foe 152 stood at a RED LIGHT on `-2437_1` for 158
+        // consecutive steps. PHASE 0 compares arrival-time windows, and with both speeds at 0 the leave
+        // times diverge and the windows overlap forever; 89 was teleported at t=442, exactly
+        // `time-to-teleport` after wedging. See docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 17.
+        //
+        // `prePass ||` mirrors `foeYieldsThisStep`'s `!prePass &&` exactly: the pre-pass keeps the
+        // blanket yield so it can compute each vNext (hence WillPass) without reading the refinement --
+        // the one approximation that breaks the setApproaching-before-opened() circularity. A pre-pass
+        // yield sets CrossingYieldTaken below so PlanMovements RECOMPUTES rather than reusing the Intent.
         if (!egoInsideJunction
             && !egoHasSignalPriority
             && foeMerging is not null
             && foeMerging.LaneId != foeInternalLaneId
+            && (prePass || foeMerging.WillPass)
             && IndexOfLaneHandle(foeMerging, foeInternalLaneHandle) > foeMerging.LaneSeqIndex)
         {
             var foeInternalLaneAppr = _network.LanesByHandle[foeInternalLaneHandle];
@@ -8637,6 +8655,13 @@ public sealed partial class Engine : IEngine
                     foeArrival, foeLeave, foeSpeed, foeSpeed, foeMerging.VType.Decel))
             {
                 TraceMerge(ego, "PHASE0-arrivalYield", foeMerging.Def.Id, egoDistToEntry);
+                if (prePass)
+                {
+                    // Same contract as the crossing arm (:7612): a finite pre-pass yield is the only
+                    // thing the real pass can relax, so it must not be reused.
+                    ego.CrossingYieldTaken = true;
+                }
+
                 return StopSpeedFor(
                     ego.VType, ego.Kinematics.Speed,
                     egoDistToEntry - PositionEps,

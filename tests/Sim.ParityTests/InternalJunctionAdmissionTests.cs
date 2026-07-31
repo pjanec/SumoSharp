@@ -108,15 +108,23 @@ public class InternalJunctionAdmissionTests
     // ============================================================================================
     // Success condition 3 (design §7 T3.2.3) -- THE LOAD-BEARING ONE. Flag ON (together with
     // ContTurnInsideJunctionGate + JunctionIsLeaderGate, the same three-flag configuration
-    // docs/NEED-internal-junction-second-stage-admission.md measured the deadlock under): veh 95 must
-    // be HELD on its bay lane `:2336_18_0` while veh 102 occupies its unconditional foe lane
-    // `:2336_3_0` (proving the gate actually engages for the measured pair, not merely that the
-    // conflicting state never arises for some unrelated reason), and must NEVER reach cont stage-2
-    // `:2336_42_0` while veh 102 is still on `:2336_3_0` (the direct behavioural assertion the task
-    // requires -- NOT a teleport-count proxy).
+    // docs/NEED-internal-junction-second-stage-admission.md measured the deadlock under): a bay
+    // occupant must be HELD on its bay lane `:2336_18_0` while a conflict-lane occupant occupies the
+    // unconditional foe lane `:2336_3_0` (proving the gate actually engages for the measured pair, not
+    // merely that the conflicting state never arises for some unrelated reason), and must NEVER reach
+    // cont stage-2 `:2336_42_0` while the foe is still on `:2336_3_0` (the direct behavioural assertion
+    // the task requires -- NOT a teleport-count proxy).
+    //
+    // RE-ANCHORED after commit 9cebb69 changed junction-entry timing network-wide: the original
+    // witness pair (veh 95 bay / veh 102 conflict) no longer co-occurs on `:2336_18_0` /
+    // `:2336_3_0` in the new trajectory, which tripped the vacuity guard below. Re-measured against the
+    // post-9cebb69 trajectory (2000 steps, same scenario/gates): the new witness pair is veh 89 (bay)
+    // / veh 102 (conflict), co-occurring on steps [321, 326] inclusive (6 steps), with 0 violation
+    // steps. This was the longest co-occurrence found among all (bay, conflict) pairs observed in the
+    // run; the mechanism under test is unchanged, only the witness moved.
     // ============================================================================================
     [Fact]
-    public void FlagOn_Veh95IsHeldInTheBay_WhileVeh102Occupies3_0_AndNeverReachesStage2InThatState()
+    public void FlagOn_Veh89IsHeldInTheBay_WhileVeh102Occupies3_0_AndNeverReachesStage2InThatState()
     {
         var engine = new Engine
         {
@@ -131,7 +139,7 @@ public class InternalJunctionAdmissionTests
         var traj = engine.Run(steps);
 
         var byTime = traj.AllPoints
-            .Where(p => p.VehicleId is "95" or "102")
+            .Where(p => p.VehicleId is "89" or "102")
             .GroupBy(p => p.Time)
             .OrderBy(g => g.Key);
 
@@ -140,42 +148,42 @@ public class InternalJunctionAdmissionTests
 
         foreach (var g in byTime)
         {
-            string? lane95 = null;
+            string? lane89 = null;
             string? lane102 = null;
             foreach (var p in g)
             {
-                if (p.VehicleId == "95") lane95 = p.Lane;
+                if (p.VehicleId == "89") lane89 = p.Lane;
                 else if (p.VehicleId == "102") lane102 = p.Lane;
             }
 
-            if (lane95 == BayLane && lane102 == ConflictLane)
+            if (lane89 == BayLane && lane102 == ConflictLane)
             {
                 everHeldInBayWhileFoeOccupies = true;
             }
 
-            if (lane95 == Stage2Lane && lane102 == ConflictLane)
+            if (lane89 == Stage2Lane && lane102 == ConflictLane)
             {
                 violationSteps.Add(g.Key);
             }
         }
 
         _out.WriteLine(
-            $"veh 95 observed on bay lane {BayLane} while veh 102 occupied {ConflictLane}: "
+            $"veh 89 observed on bay lane {BayLane} while veh 102 occupied {ConflictLane}: "
             + $"{(everHeldInBayWhileFoeOccupies ? "YES (gate engaged for the measured pair)" : "NO")}");
         _out.WriteLine(
-            $"veh 95 observed on stage-2 lane {Stage2Lane} while veh 102 occupied {ConflictLane}: "
+            $"veh 89 observed on stage-2 lane {Stage2Lane} while veh 102 occupied {ConflictLane}: "
             + $"{violationSteps.Count} step(s)"
             + (violationSteps.Count > 0 ? $" [{string.Join(",", violationSteps.Take(10))}]" : string.Empty));
 
         Assert.True(everHeldInBayWhileFoeOccupies,
-            $"veh 95 was never observed on its bay lane {BayLane} while veh 102 occupied {ConflictLane} -- "
+            $"veh 89 was never observed on its bay lane {BayLane} while veh 102 occupied {ConflictLane} -- "
             + "cannot confirm the admission gate actually engaged for the measured pair (the test would be "
             + "vacuous otherwise).");
 
         Assert.True(violationSteps.Count == 0,
-            $"veh 95 reached cont stage-2 ({Stage2Lane}) while veh 102 still occupied its unconditional foe "
+            $"veh 89 reached cont stage-2 ({Stage2Lane}) while veh 102 still occupied its unconditional foe "
             + $"lane {ConflictLane} at step(s) [{string.Join(",", violationSteps.Take(10))}] -- "
-            + "InternalJunctionAdmissionGate should have held veh 95 in its bay; SUMO would never admit it "
+            + "InternalJunctionAdmissionGate should have held veh 89 in its bay; SUMO would never admit it "
             + "there. See docs/NEED-internal-junction-second-stage-admission.md.");
     }
 }
