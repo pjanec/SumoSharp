@@ -2458,6 +2458,6 @@ unported (SUMO `isStopped()` = SCHEDULED stop only); jam continuation depth is o
 | 1 oracle | followers at speed, f.0 preserved, deltaProb 0.0804 | ✓ (identity shuffle documented) |
 | 2 goldens | 661 byte-identical, suite green | ✓ 779/5/0 (witness re-anchor, Entry 31 method) |
 | 3 L2 rate | materially below 1.155 toward 0.410, denominator reported | ✓ **0.861** (denom 69 720; stopped changes 79→60; landed overlaps 0) |
-| 4 battery | vs net-regression-urgentfollow-on.txt, no stuckDwell regression | pending (running) |
+| 4 battery | vs net-regression-urgentfollow-on.txt, no stuckDwell regression | ✓ stuckDwell 0 everywhere; L2 IMPROVED (arrived 442→448, running 8→2); two flagged rows: city-mixed-1k arrived −4/1014 (noise-scale), city-organic-L2 overlaps 4→7 — the latter is in the owner-reported queue-tail family (backlog item 0) and is examined there. Report committed: `docs/reports/net-regression-entry34-stays.txt` (the new current reference) |
 | 5 determinism | ≥4 repeat + serial hashes identical | ✓ 5/5 |
-| 6 demo smoke | overlaps 0, dead-stop ≈12% | pending |
+| 6 demo smoke | overlaps 0, dead-stop ≈12% | ✓ overlaps 0 at all 8 checkpoints, SMOKE OK, no gridlock; dead-stop share 61/664 = **9.2%** (P6 predicted at-or-below ≈12%; the 61 are the demo's deliberate low-realism keepRight swaps) |

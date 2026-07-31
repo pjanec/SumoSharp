@@ -1,5 +1,14 @@
 # FOLLOWER-LC-DEFERRAL — resume here (the Entry 32 fix)
 
+> **STATUS: FIXED AND SHIPPED (July 31, Entries 34 + 34b, commits `05653f4` + `bc381db`).**
+> The speedGain-RIGHT arm is ported (it was ABSENT, not broken — §3(c)'s audit answer), the
+> continuation `neighDist` reads SUMO's exact 0.0804 rolling deltaProb, and SUMO's strategic
+> stay complex (:1131-1150 offset override + :1398/:1411 with the jam term) is ported in BOTH
+> directions. L2 stopped-LC rate **1.155 → 0.861** (SUMO 0.410), oracle followers change at
+> speed, goldens byte-identical, suite 779/5/0, deterministic 5/5 hashes. Full characterisation:
+> journal Entry 34 BEFORE / AFTER / 34b. This page is kept as the METHOD record; do not
+> re-implement from it.
+
 **Read this first, cold. It is self-contained.** Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**,
 handoff at `ad085a4`. Gate state: `dotnet test tests/Sim.ParityTests -c Release` =
 **779 passed / 5 skipped / 0 failed**, all 661 goldens byte-identical, engine deterministic
