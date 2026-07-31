@@ -29,7 +29,7 @@ global, not zone-scoped** — an earlier suggestion to zone-scope it was wrong a
 | Cars driving **through** each other at a junction | **FIXED, shipping default-ON.** Root cause: the omitted `myInternalLinkFoes` half of `MSLink::setRequestInformation`. Our trajectory is now byte-identical to SUMO across the traced hold-and-release. Overlap **events** on the repro: 12 751 → 313 (−97.5%) |
 | Two cars **overlapping stopped** in a junction | **FIXED** — same mechanism |
 | **Gridlock** | **FIXED on L2 and L1.** L2 drains identically to honest SUMO; L1 went **112 → 386 arrived** of 450 with `stuckDwell` **1062 → 0**. `stuckDwell` is now 0 on every net in the 26-net battery except `city-3000` (13, unchanged). Two root causes, both in Entry 17/18 |
-| **Lateral lane change while stopped at red** | **MEASURED, not fixed.** We do it 2.5–3× as often as SUMO (83 vs 33 on L2; 53 vs 17 on L2-light). The *overlap* half does not reproduce on this net at all — 0 in both engines |
+| **Lateral lane change while stopped at red** | **CHARACTERISED, not fixed.** Per opportunity we do it **3.8×** as often as SUMO (1.560 vs 0.410 per 1000 stopped-vehicle-steps); four candidate causes are dead by measurement — see §5.3. The *overlap* half does not reproduce on this net at all — 0 in both engines |
 
 ## 3. What shipped (engine changes, all on this branch)
 
@@ -85,11 +85,24 @@ taken after.
    and never covered by that test's old 290-arrivals figure despite the test being named for it.
 2. **Normal-traffic junction overlaps on the real nets.** `city-mixed-1k` still shows 10 peak
    overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
-3. **Lateral lane change while stopped.** Two separable halves:
-   - **frequency** (reproduced): 83 vs SUMO's 33. The gap is in our lane-change **trigger while
-     stationary**, not the manoeuvre. `Engine.LaneChangeMinSpeed` is **0** on the parity path, so
-     nothing suppresses a change at zero speed — *hypothesis, not a finding; instrument it*.
-     ⚠ Note the junction fixes made this **worse** (47 → 83): more held vehicles ⇒ more sideways slides.
+3. **Lateral lane change while stopped — CHARACTERISED IN DEPTH, still unfixed (0-for-16).**
+   Read journal Entries 20-22 before touching it; four hypotheses are already dead **by measurement**.
+   - **The metric is a RATE, not a count**: ours **1.560** vs SUMO's **0.410** per 1000
+     stopped-vehicle-steps (3.8×). SUMO stands cars still *more* than we do, so normalising
+     strengthens the gap rather than explaining it. `scripts/detect-stopped-lane-change.py` prints it.
+   - **All three commit paths over-fire** (keepRight 23×, strategic 16×, speedGain 4.6× by stopped
+     count), so no single threshold is the answer. **81%** of ours go toward the lower lane index
+     where SUMO's are balanced. Read the split with `SUMOSHARP_LCLOG=1`.
+   - **Ruled out BY MEASUREMENT, do not retry**: `LaneChangeMinSpeed` (inert on the parity path);
+     `neighDist` → best-lanes continuation (made it worse, Entry 21); `resetState()` zeroing both
+     accumulators (a real omission, but −10 arrivals on `city-mixed-1k` for no benefit, Entry 22);
+     a blanket ban on stopped changes (SUMO makes 65, not 0).
+   - ⚠ **Two instrument errors are recorded in Entry 22 — read them first.** SUMO's TraCI getter for
+     `keepRightProbability` **NEGATES**, and the two engines' trajectories diverge immediately, so a
+     per-vehicle cross-engine side-by-side is **not** a controlled comparison. Building one (TraCI
+     `moveToXY`/`setSpeed`, or a scenario that stays in lockstep) is the real next step.
+   ⚠ The junction fixes made the raw COUNT worse (47 → 83 → 113): more held vehicles ⇒ more sideways
+     slides. The *rate* is the comparable quantity.
    - **into an occupied lane** (NOT reproduced here): build the minimal repro
      `docs/SUMOSHARP-ISSUE-stopped-lane-change-overlap.md` §5 specifies.
 4. **Pedestrian amplifier** (owner's hypothesis: a ped on the exit crossing holds a car inside the
@@ -111,6 +124,8 @@ taken after.
 | `scripts/run-net-regression.py` | the 26-net battery. `--compare <baseline>` prints regressions |
 | `scripts/detect-stopped-lane-change.py` | stopped sideways lane changes + whether they landed overlapping |
 | `SUMOSHARP_TRACEVEH=<vehId>` | per-vehicle constraint trace to stderr: `KeepClearConstraint`'s space walk, `SameTargetMergeConstraint`'s phase + foe. Read by **both** `Sim.Run` and the `sumosharp` drop-in |
+| `SUMOSHARP_LCLOG=1` | committed lane changes histogrammed by [path][changer speed] — the only way to see WHICH path swaps a standing car |
+| `pip install traci` → `laneChangeModel.keepRightProbability` | SUMO's own accumulator, live. ⚠ the getter **NEGATES** (MSLCM_LC2013.cpp:2120) |
 | `SUMOSHARP_BINDERLOG=<path>` | the binder CSV below, from the **drop-in binary** — needed because shim and `Sim.Run` are different engine configurations |
 | `Sim.Run --binder-log PATH` | per-vehicle per-step CSV: `t,veh,lane,pos,speed,binder,binderName,jyArm,jyGreen,blocker` — **the single most useful instrument here** |
 | `tests/…/EvacPusherOverlapDiagTests.cs` | always-passing report on evac pusher separation |
