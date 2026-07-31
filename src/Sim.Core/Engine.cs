@@ -13249,7 +13249,14 @@ public sealed partial class Engine : IEngine
     // exactly ONE variable and every earlier measurement in the F3 log stays reproducible with it off.
     // It is also what the non-vacuity tests toggle -- a guard that cannot be turned off cannot be proven
     // to be doing anything.
-    public bool InternalJunctionApproachArm { get; set; } = true;
+    // DEFAULT OFF, and that is a MEASURED decision rather than caution. The arm is parity-clean (661
+    // goldens byte-identical) and more than doubles throughput on the repro, but the cross-net battery
+    // showed it makes junction overlaps WORSE on a real committed net -- city-organic 255 -> 296 overlap
+    // events -- because a vehicle it correctly HOLDS inside a junction then gets driven through at
+    // 8-10 m/s by cross traffic. It fixes admission and exposes the missing converse
+    // (JunctionPhysicalOccupancyGate). docs/JUNCTION-REALISM-TRACE-FINDINGS.md §8 has both tables.
+    // Flipping this default is gated on the PAIRED experiment named there, not on the repro alone.
+    public bool InternalJunctionApproachArm { get; set; }
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

@@ -118,6 +118,14 @@ internal static class Program
         // (already documented in ENV-GATES.md and tracked in TASKS-TODO.md -- not a new finding, and
         // deliberately not fixed here).
         engine.InternalJunctionApproachArm = EnvGate("SUMOSHARP_APPROACHARM", engine.InternalJunctionApproachArm);
+        // The CONVERSE half, for the paired experiment (docs/JUNCTION-REALISM-TRACE-FINDINGS.md §8):
+        // the approach arm stops ego entering into an approaching foe's path, while this one stops ego
+        // driving through a foe ALREADY STOPPED inside the junction. Measured separately they look like
+        // two unrelated gates; the §8 measurement says they are two halves of one mechanism, which is
+        // why this toggle exists next to the one above -- both must be settable in BOTH arms of the same
+        // A/B, per CLAUDE.md measurement discipline #10 (an inherited value is indistinguishable from a
+        // measured one).
+        engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCC", engine.JunctionPhysicalOccupancyGate);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

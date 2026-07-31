@@ -155,7 +155,8 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 
 | Gate | Sets | Unset ⇒ | Engine default |
 | --- | --- | --- | --- |
-| `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `true` |
+| `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `false` |
+| `SUMOSHARP_PHYSOCC` | `Engine.JunctionPhysicalOccupancyGate` | **engine default** | `false` |
 
 **Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default
 alone, so a plain `Sim.Run` invocation is the shipped behaviour. Contrast the three drop-in gates
@@ -165,10 +166,13 @@ It exists so the arm's before/after can be measured through **one binary and one
 with a flipped default would make the two arms cross-instrument, which CLAUDE.md #8/#13 rules invalid.
 
 *The deciding measurement* (ENV-GATES' own rule 3 — a gate whose deciding measurement is unnamed is a
-gate nobody can retire): the arm is retired to unconditional once
-`docs/JUNCTION-APPROACH-ARM-TRACKER.md`'s T6/T6b tables show no committed net regressing on arrived /
-still-running / junction dwell / overlap pairs, with the goldens byte-identical. Until then it stays a
-flag so the A/B remains reproducible.
+gate nobody can retire): **the two are decided TOGETHER, by the paired experiment in
+`docs/JUNCTION-REALISM-TRACE-FINDINGS.md` §8.** Measured alone, each looks like a failure — the approach
+arm raises `city-organic` overlaps 255 → 296 by creating stationary vehicles nothing protects, and the
+occupancy gate is recorded as "counterproductive three times" when tried alone. §8's reading is that
+they are two halves of one mechanism. They are retired to unconditional only when the pair shows no
+committed net regressing on arrived / still-running / `stuckDwell` / overlap pairs, goldens
+byte-identical. Until then both stay flags so the 2×2 stays reproducible.
 
 ## Adding a gate
 

@@ -252,3 +252,53 @@ already says artefacts are unacceptable and where the paired occupancy gate belo
 **Not claimed:** that the pair fixes the gridlock. The arm alone did not — L1 went 60 → 63 arrived and
 both nets still deadlock, against SUMO's 450/450. Whatever holds L1 solid remains untraced, and §7's
 keep-clear question is still the best lead.
+
+---
+
+## 9. The paired experiment — §8's hypothesis is REFUTED
+
+§8 read the evidence as "the approach arm and `JunctionPhysicalOccupancyGate` are two halves of one
+mechanism; neither works alone." That was written down as an untested hypothesis. **It has now been
+tested, as a full 2×2 with both gates set explicitly in every cell (CLAUDE.md #10), and it is wrong.**
+
+Overlap EVENTS (every overlapping pair, every step — not the peak-simultaneous summary §8 used):
+
+| cell | arrived | running | overlap events |
+|---|---|---|---|
+| L1 arm OFF occ OFF | 60 | 225 | 6467 |
+| L1 arm OFF occ ON | 55 | 224 | 3207 |
+| L1 arm ON occ OFF | 63 | 226 | 6464 |
+| L1 arm ON occ ON | 54 | 227 | 3204 |
+| **L2 arm OFF occ OFF** | 139 | 311 | 12751 |
+| L2 arm OFF occ ON | 83 | 333 | 9316 |
+| **L2 arm ON occ OFF** | **320** | **130** | **313** |
+| L2 arm ON occ ON | **61** | 327 | 3223 |
+| SUMO-honest (both) | 450 | 0 | 0 |
+
+**The pair is far WORSE than the arm alone.** On L2 the occupancy gate takes arrivals from **320 down
+to 61** — below even the do-nothing baseline of 139. It costs throughput in every combination it
+appears in (139 → 83 with the arm off; 320 → 61 with it on). That is the fourth independent measurement
+finding this gate counterproductive, and the first showing it is counterproductive *paired* as well as
+alone. **Do not re-attempt the pairing without new evidence.**
+
+**Two corrections this experiment forces on §8:**
+
+1. **§8's "two halves of one mechanism" reading is retracted.** The occupancy gate does roughly halve
+   overlaps everywhere (L1 6467→3204, L2 12751→3223 with the arm on), so its *stated* purpose works —
+   it simply buys that with a ruinous amount of throughput. It is not the arm's missing partner.
+2. **§8 understated the arm badly, because it used the wrong summary statistic.** Peak-simultaneous
+   pairs moved only 9 → 7, which looked marginal. Total overlap events on the same runs moved
+   **12 751 → 313, a 97.5% reduction.** A peak is a poor summary of a duration-weighted phenomenon;
+   the event count is the honest one. **The arm alone is by a wide margin the best cell measured.**
+
+### Where that leaves the recommendation
+
+The arm alone: repro L2 arrivals **+130%**, overlap events **−97.5%**, goldens **661 byte-identical**,
+parity 776/4 — against one real committed net (`city-organic`) where overlap events rise 255 → 296.
+That residual is now the ONLY thing standing between this change and a default-ON ship, and it needs its
+own trace (§7's keep-clear question is the standing lead — `city-organic` is also the net with a 68-step
+junction dwell). Pairing it with the occupancy gate is no longer a candidate answer.
+
+**Still not fixed, and still not close:** the gridlock. The best cell leaves 130 vehicles permanently
+stopped on L2 and 226 on L1, against SUMO's 0. Every measurement in this document has moved overlaps;
+none has moved the deadlock.
