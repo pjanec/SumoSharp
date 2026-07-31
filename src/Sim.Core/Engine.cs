@@ -14565,7 +14565,12 @@ public sealed partial class Engine : IEngine
                 cooperativeShift: v.CooperativeShift,
                 posLat: v.Kinematics.LatOffset,
                 edgeSpeedLimit: EdgeSpeedLimitOf(lane),
-                isStoppedAtStop: IsStoppedAtStop(v));
+                isStoppedAtStop: IsStoppedAtStop(v),
+                // DIAGNOSTIC ONLY (never read by the sim): the argmin of this step's constraint fold.
+                // Read straight off the runtime here because the read-buffer-indexed
+                // Engine.BindingConstraints span is keyed by read-buffer COLUMN, not EntityIndex, and is
+                // empty on hosts that never pump the read buffer -- see VehicleExportSnapshot's own note.
+                bindingConstraint: v.BindingConstraint);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,

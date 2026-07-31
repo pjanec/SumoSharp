@@ -86,6 +86,19 @@ public readonly struct VehicleExportSnapshot
     public readonly double EdgeSpeedLimit;
     public readonly bool IsStoppedAtStop;
 
+    /// <summary>
+    /// DIAGNOSTIC ONLY: which constraint won <c>ComputeMoveIntent</c>'s <c>Math.Min</c> fold for this
+    /// vehicle this step (the "binder"). Never read by the simulation.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the snapshot rather than looked up through <see cref="Engine.BindingConstraints"/>,
+    /// because that span is indexed by the READ-BUFFER column and is only populated when a host pumps
+    /// the read buffer — whereas <see cref="EntityIndex"/> is the ECS entity index. Reading one with the
+    /// other silently produced 100% out-of-range on the first attempt at a binder log, which is the
+    /// whole reason this field exists. Legend: see <c>Sim.Harness.BinderLogObserver.BinderNames</c>.
+    /// </remarks>
+    public readonly byte BindingConstraint;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -103,7 +116,8 @@ public readonly struct VehicleExportSnapshot
         bool cooperativeShift = false,
         double posLat = 0.0,
         double edgeSpeedLimit = 0.0,
-        bool isStoppedAtStop = false)
+        bool isStoppedAtStop = false,
+        byte bindingConstraint = 0)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -122,5 +136,6 @@ public readonly struct VehicleExportSnapshot
         PosLat = posLat;
         EdgeSpeedLimit = edgeSpeedLimit;
         IsStoppedAtStop = isStoppedAtStop;
+        BindingConstraint = bindingConstraint;
     }
 }

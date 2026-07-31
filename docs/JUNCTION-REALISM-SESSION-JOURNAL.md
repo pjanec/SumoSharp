@@ -190,3 +190,71 @@ t_end (which binder holds 226 vehicles at 0.000 m/s?).
 **Definition of done for task 2's first step:** a named answer to (a)/(b)/(c) with the binder trace
 that shows it, plus the t_end binder histogram. NOT a fix — the fix is designed after the mechanism is
 named, per the design-first rule.
+
+---
+
+## Entry 3 — AFTER — the answer is NONE of (a)/(b)/(c): `keepClear` never binds at all
+
+**First, the instrument was wrong and its own guard caught it.** v1 read
+`Engine.BindingConstraints[snapshot.EntityIndex]` and reported **100% OUT_OF_RANGE**. That span is indexed
+by **read-buffer column**, and the read buffer is empty on a host that never pumps it, while
+`EntityIndex` is the **ECS entity index**. Fixed by carrying the binder on `VehicleExportSnapshot`
+itself (one construction site, trailing optional param, additive). Had I not put the range guard in, it
+would have logged garbage tags and I would have "found" a mechanism that did not exist.
+
+**The §7 admission case, `f_cyc_ccw2.3` on L1:**
+
+| t | lane | pos | speed | binder |
+|---|---|---|---|---|
+| 86–89 | `in_S10_0` | 191.80 | 0.00 | **redLight** |
+| 90 | `:J10_7_0` | 1.60 | 2.60 | **junctionYield** |
+| 91 | `:J10_7_0` | 6.80 | 5.20 | junctionYield |
+| 92 | `:J10_7_0` | 11.95 | 5.15 | **crossJxnLeader** |
+| 93–∞ | `:J10_7_0` | 12.61 | **0.00** | **crossJxnLeader** |
+
+**`keepClear` (binder 11) does not appear — not here, and not once in the 226-vehicle t_end
+histogram.** My prediction (weakly: "keep-clear evaluated and permitted") is refuted, and so are
+alternatives (b) and (c). The constraint is simply never the binding one anywhere in this run, so the
+§7 lead — "our keep-clear has a wrong predicate" — is **dead as stated**.
+
+**What actually holds the gridlock.** Binder over the 226 permanently-stopped vehicles at t_end:
+
+| binder | all stopped | **stopped INSIDE a junction (the heads)** |
+|---|---|---|
+| leaderFollow | 198 (87.6%) | 4 |
+| **crossJxnLeader** | 17 (7.5%) | **8** |
+| junctionYield | 8 (3.5%) | 2 |
+| internalJunctionAdmission | 2 (0.9%) | 2 |
+| redLight | 1 (0.4%) | — |
+| **keepClear** | **0** | **0** |
+
+Judged on HEADS rather than population (the F3 lesson — followers are pure queue shadow, and here
+87.6% of the stopped population is exactly that), **the dominant mechanism is `crossJxnLeader`: 8 of
+the 16 vehicles wedged inside junctions are car-following a leader on a crossing internal lane, at
+exactly 0.000 m/s, forever.**
+
+**That is a documented failure mode with a name.** `docs/NEED-arm5-mutual-junction-deadlock.md`: *"two
+cars on crossing internal lanes of one junction can end up car-following EACH OTHER via arm 5
+(`AdaptToJunctionLeader`), which has no right-of-way notion and no escape — measured at 121/121 steps,
+speed exactly 0.000."* Same signature, same binder, unbounded instead of 121 steps.
+
+⚠ **And the supposed defence is already ON.** That NEED says SUMO avoids the state via `isLeader`
+entry-time ordering, and `Engine.JunctionIsLeaderGate` defaults **true** — yet the state forms anyway.
+So either the ordering does not cover this configuration, or something upstream lets the pair enter.
+**That is the next question, and it needs the same treatment: an instrument, not a source read.**
+
+---
+
+## Entry 4 — BEFORE — task 2 continued: why does `crossJxnLeader` deadlock with `isLeader` on?
+
+**Immediate next step.** Take the 8 `crossJxnLeader` heads from the t_end histogram, identify each
+one's leader (the vehicle it is following on the crossing internal lane), and test whether the pair is
+**mutual** — i.e. A follows B while B follows A. `NEED-arm5` predicts mutual; if it is instead a chain
+(A→B→C→…), the mechanism is different and the NEED is the wrong lead.
+
+**Expectation, recorded so it can be shown wrong:** mutual pairs. **Track record so far this session:
+two predictions made, both wrong**, so the alternatives are named: a chain terminating on something
+outside the junction, or a cycle longer than 2.
+
+**Do NOT design a fix before this is answered** — a mutual pair needs a tie-break, a chain needs a
+different intervention entirely.

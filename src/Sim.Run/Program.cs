@@ -38,7 +38,9 @@ internal static class Program
         if (args.Length == 0 || args[0] is "-h" or "--help")
         {
             Console.Error.WriteLine(
-                "usage: Sim.Run <scenarioDir> [--steps N] [--fcd-out PATH] [--warmup N]");
+                "usage: Sim.Run <scenarioDir> [--steps N] [--fcd-out PATH] [--warmup N]\n"
+                + "                            [--summary-output PATH] [--statistic-output PATH]\n"
+                + "                            [--binder-log PATH] [--parity|--coordinated-lc]");
             return args.Length == 0 ? 2 : 0;
         }
 
@@ -54,6 +56,7 @@ internal static class Program
         var warmupSteps = 0;
         string? summaryOut = null;
         string? statisticOut = null;
+        string? binderLog = null;
         // P2G-2: the dense lane-change model (aggressive multi-lane overtaking/merging) is the PRODUCT
         // DEFAULT -- believable, and it flows the realistic organic net about as well as parity. `--parity`
         // selects the deterministic SUMO-anchor mode (byte-identical to the committed goldens, the mode the
@@ -79,6 +82,12 @@ internal static class Program
                     break;
                 case "--statistic-output" when i + 1 < args.Length:
                     statisticOut = args[++i];
+                    break;
+                // Additive diagnostic (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 3): per-vehicle,
+                // per-step binding constraint as CSV. Absent => no observer registered => no behaviour
+                // change, exactly like --summary-output above.
+                case "--binder-log" when i + 1 < args.Length:
+                    binderLog = args[++i];
                     break;
                 case "--parity":
                     coordinatedLc = false; // deterministic SUMO-anchor mode (matches the committed goldens)
@@ -158,11 +167,17 @@ internal static class Program
         // no behavior change) unless the flag was passed.
         using (var writer = new FcdWriterObserver(fcdOut))
         using (var summaryWriter = summaryOut is not null ? new SummaryWriterObserver(summaryOut) : null)
+        using (var binderWriter = binderLog is not null ? new BinderLogObserver(binderLog) : null)
         {
             engine.AddExportObserver(writer);
             if (summaryWriter is not null)
             {
                 engine.AddExportObserver(summaryWriter);
+            }
+
+            if (binderWriter is not null)
+            {
+                engine.AddExportObserver(binderWriter);
             }
 
             engine.Run(steps);
