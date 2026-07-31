@@ -978,3 +978,53 @@ warning**: check the binder over TIME, not at one instant, because signal-phase 
 cycle completely.
 
 **No prediction recorded.** Nine wrong hypotheses, five instrument/process defects.
+
+---
+
+## Entry 15 — AFTER — L1's residual is the SAME box-block defect, at a transition the fix does not cover
+
+Merge partners and exit-lane state for the three `sameTargetMerge` (arm 3) vehicles:
+
+| wedged vehicle | its internal lane | exit lane | exit-lane state |
+|---|---|---|---|
+| `f_fill_N11.39` | `:J11_1_0` | `v1r_0` | **10 vehicles, nearest at pos 1.11, all stopped** |
+| `f_cyc_cw2.23` | `:J11_9_0` | `v1r_0` | same lane, same jam |
+| `f_cyc_cw2.30` | `:J01_10_0` | `h1_0` | **10 vehicles, nearest at pos 0.73, all stopped** |
+
+**All three sit inside a junction whose exit lane is jammed to within ~1 m of the junction.** That is
+precisely the box-block condition `BayExitLaneKeepClear` exists to prevent — and the gate is **ON** in
+this run.
+
+**Why it does not fire here, confirmed against the net:** all three lanes are **`cont=0`**
+(`:J11_1_0` link 1, `:J11_9_0` link 9, `:J01_10_0` link 10). The gate only guards the **cont bay →
+stage-2** advance — it requires `request.Cont` and `IntLanes[i] != ownLane`. These are **plain,
+single-stage** internal lanes entered directly from an approach lane, and that transition has no
+exit-lane check at all.
+
+**So it is one defect at two transitions:**
+
+| transition | guarded by | state |
+|---|---|---|
+| approach lane → **cont bay** → stage 2 | `BayExitLaneKeepClear` | **fixed** (L2 drains 450/450) |
+| approach lane → **plain internal lane** | `KeepClearConstraint`, in principle | **not effective** — `keepClear` binds rarely and these three got in |
+
+The `sameTargetMerge` arm is therefore **not the culprit** — it is doing its job, correctly refusing to
+merge into a full lane. It is the *symptom*, and naming it would have been the wrong fix. The cause is
+that nothing stopped these vehicles entering a junction whose exit was already full.
+
+### Fix direction (design first, not written yet)
+
+Extend the exit-lane occupancy check to the **non-cont entry**: before admitting a vehicle from an
+approach lane onto a plain internal lane, require its exit lane can accept it — the same rule
+`BayExitLaneKeepClear` already applies at the bay, and the same `checkRewindLinkLanes` idea. Either
+generalise that gate or repair `KeepClearConstraint`, whose existing scan already looks for "ego's
+upcoming junction entry link" and *should* be covering exactly this.
+
+**Expect it NOT to be parity-inert** — it changes junction entry for ordinary (non-cont) links, which
+is far more common than the cont case, so goldens may well move and every shift needs a SUMO diff.
+This is a bigger blast radius than the bay fix. It also plausibly costs more throughput, and the
+lateral-lane-change frequency (Entry 15) may rise again for the same reason.
+
+**Success condition, stated in advance:** L1 `arrived` moves materially above 112 (SUMO: 450). If it
+does not, the mechanism is named correctly but is not the binding one — publish that null like the
+others.
