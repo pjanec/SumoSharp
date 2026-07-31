@@ -911,3 +911,70 @@ it 83, on identical demand — so the gap is in our lane-change *trigger* while 
 manoeuvre itself. `Engine.LaneChangeMinSpeed` (a realism knob, demo-set to 1.0–1.5 m/s, 0 on the parity
 path) is the obvious first thing to look at: these runs are `--parity`, so it is **0**, meaning nothing
 suppresses a lane change at zero speed. That is a hypothesis, not a finding — instrument it.
+
+---
+
+## Entry 14 — AFTER — ⚠ ENTRY 13's CONCLUSION WAS WRONG, AND THE CAUSE WAS MY OWN SILENT EDIT FAILURE
+
+Entry 13 concluded *"arm 0 is genuinely recorded ... 0 = bound via a path that never classified
+itself"*, reasoning that the assignment at `Engine.cs:7637` precedes the only binding return. **The
+reasoning was sound and the premise was false.** `JunctionYieldConstraint` classifies every binding
+return correctly. The arm was computed and then **dropped on the way out**: `EmitTrajectory`'s
+`VehicleExportSnapshot` construction never passed `junctionYieldArm`, so it silently took the
+constructor's `= 0` default.
+
+**That missing argument is mine.** My Entry-13 edit used a text replace anchored on
+`bindingConstraint: v.BindingConstraint);` — but the call site had already gained
+`blockerEntityIndex:` after it, so the anchor did not match and **the replace silently did nothing**. I
+did not assert the match, and I did not verify the wiring before interpreting the output. I then
+reported a conclusion built on a value that was never wired.
+
+**Process defect, stated so it stops recurring:** several edits this session were scripted text
+replaces. Where I asserted the anchor matched, they were safe; where I did not, one silently no-opped
+and cost a wrong conclusion. **Every scripted edit must assert its anchor, and any new diagnostic field
+must be proven non-constant before its output is interpreted.** A field that reads 0 for 100% of
+15 739 samples should have been treated as "probably not wired" *first* — which was my initial instinct
+and I argued myself out of it.
+
+### The actual answer
+
+Verified first-hand: FCD **byte-identical** to the pre-fix run (diagnostic-only confirmed), parity
+**776 passed / 5 skipped / 0 failed**.
+
+| jyArm | meaning | rows |
+|---|---|---|
+| 2 | cautiousApproach | 85 |
+| **3** | **sameTargetMerge** | **4 096** |
+| **5** | **onJunctionLeader** (`AdaptToJunctionLeader`) | **11 483** |
+| 6 | approachingCross | 75 |
+| 0 | unclassified | **0** |
+
+**The five vehicles wedged inside junctions at t_end:**
+
+| veh | lane | arm | blocker |
+|---|---|---|---|
+| `f_thru_E10.7` | `:J10_4_0` | **5 onJunctionLeader** | `f_cyc_ccw2.9` |
+| `f_cyc_cw2.8` | `:J00_4_0` | **5 onJunctionLeader** | `f_fill_S00.27` |
+| `f_fill_N11.39` | `:J11_1_0` | **3 sameTargetMerge** | (none — by design) |
+| `f_cyc_cw2.23` | `:J11_9_0` | **3 sameTargetMerge** | (none) |
+| `f_cyc_cw2.30` | `:J01_10_0` | **3 sameTargetMerge** | (none) |
+
+**So L1's residual gridlock is held by exactly two mechanisms: `SameTargetMergeConstraint` (3 vehicles)
+and `AdaptToJunctionLeader` (2 vehicles).** The blank blocker on arm 3 is correct, not a gap — that arm
+is geometry/merge-target based and tracks no single foe.
+
+---
+
+## Entry 15 — BEFORE — next: why does `SameTargetMergeConstraint` never release?
+
+Three vehicles sit **inside junctions**, held by arm 3, at 0.000 m/s for >1200 steps. That arm exists
+for on-ramp/roundabout-style merges where two junction links feed the SAME downstream lane: ego must
+follow whoever is already traversing the other merging lane. **A merge yield that never releases is a
+deadlock by construction if the other party is itself waiting.**
+
+**Step:** for each of the three, identify the merge partner (the other link feeding their shared exit
+lane) and that partner's own binder — the same wait-for-graph technique as Entry 5, **and with the same
+warning**: check the binder over TIME, not at one instant, because signal-phase masking hid the first
+cycle completely.
+
+**No prediction recorded.** Nine wrong hypotheses, five instrument/process defects.

@@ -14720,7 +14720,21 @@ public sealed partial class Engine : IEngine
                 bindingConstraint: v.BindingConstraint,
                 // DIAGNOSTIC ONLY (never read by the sim): companion to bindingConstraint above -- see
                 // VehicleRuntime.BlockerEntityIndex's own capture-site comment.
-                blockerEntityIndex: v.BlockerEntityIndex);
+                blockerEntityIndex: v.BlockerEntityIndex,
+                // DIAGNOSTIC ONLY (never read by the sim): this constructor call was dropping
+                // junctionYieldArm entirely (no named argument here), so it silently took the
+                // constructor's `= 0` default regardless of what JunctionYieldConstraint actually
+                // classified -- every JunctionYieldConstraint arm (cycleHold=1/cautiousApproach=2/
+                // sameTargetMerge=3/externalAgent=4/onJunctionLeader=5/approachingCross=6) already
+                // labels every finite/binding return (verified: instrumenting the return site of
+                // JunctionYieldConstraint for `jyArm==0 && double.IsFinite(constraint)` over the full
+                // junction-realism-L1 run, both passes, found zero hits -- and rows where `blocker` is
+                // non-blank already PROVE arm 5/6 fired, since blockerIdx is set in the exact same
+                // `if (constraint < jyBest) { ...; jyArm = thisArm; ...; blockerIdx = foe.EntityIndex; }`
+                // statement as jyArm). So the "jyArm==0 for 100% of junctionYield rows" symptom is this
+                // missing wire, not an unclassified arm inside JunctionYieldConstraint -- threading it
+                // through here is the actual fix; see VehicleExportSnapshot.JunctionYieldArm's own comment.
+                junctionYieldArm: v.JunctionYieldArm);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,
