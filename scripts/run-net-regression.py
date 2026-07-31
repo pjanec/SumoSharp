@@ -125,7 +125,8 @@ def run_one(scenario: Path, max_steps: int, drain_factor: float, timeout: int) -
     return dict(net=name, status="INCONCLUSIVE" if (inconclusive and not drained) else
                 ("DRAINED" if drained else "STUCK"),
                 steps=want, arrived=r["arrived"], running_end=r["running_end"],
-                max_dwell=r["max_dwell"], overlaps=r["overlaps"], wall=round(wall, 1))
+                max_dwell=r["max_dwell"], max_dwell_terminal=r["max_dwell_terminal"],
+                overlaps=r["overlaps"], wall=round(wall, 1))
 
 
 def analyze_sized(path: str, obbs: dict, default) -> dict:
@@ -171,28 +172,44 @@ def analyze_sized(path: str, obbs: dict, default) -> dict:
             el.clear()
     tend = t
     running_end = sum(1 for d in final.values() if d[0] == tend)
+    # TWO dwell numbers, because ONE CANNOT TELL A CORRECT WAIT FROM A WEDGE -- and the change this
+    # battery exists to judge (the internal-junction approach arm) deliberately HOLDS vehicles in their
+    # cont bays, which are internal lanes. SUMO holds the same vehicle in the same bay for ten seconds
+    # on the repro, so a rising `max_dwell` is the intended behaviour, not evidence of a deadlock.
+    # Scoring the arm on `max_dwell` alone would therefore report a regression for doing its job --
+    # exactly the "an occupancy metric is not a causation metric" error of CLAUDE.md lesson 15.
+    #
+    # `max_dwell_terminal` is the deadlock metric: the longest stopped-inside-junction run that is still
+    # unbroken when the simulation ends, i.e. one that NEVER resolved. A bay wait ends; a wedge does not.
+    terminal = {v: n for v, n in run.items() if n > 0 and v in seen_inside}
     return dict(arrived=len(final) - running_end, running_end=running_end,
-                max_dwell=max(dwell.values()) if dwell else 0, overlaps=max_pairs)
+                max_dwell=max(dwell.values()) if dwell else 0,
+                max_dwell_terminal=max(terminal.values()) if terminal else 0,
+                overlaps=max_pairs)
 
 
-HEADER = f"{'net':<28}{'status':<14}{'steps':>7}{'arrived':>9}{'running':>9}{'maxDwell':>10}{'overlaps':>10}{'wall_s':>8}"
+# maxDwell = longest stopped-inside-junction run (a correct bay wait counts here too).
+# stuckDwell = longest such run STILL UNBROKEN AT THE END -- the one that never resolved. That is the
+# deadlock number; maxDwell alone cannot distinguish waiting from wedged. See analyze_sized.
+HEADER = (f"{'net':<28}{'status':<14}{'steps':>7}{'arrived':>9}{'running':>9}"
+          f"{'maxDwell':>10}{'stuckDwell':>12}{'overlaps':>10}{'wall_s':>8}")
 
 
 def fmt(r: dict) -> str:
     if r["status"] in ("SKIP", "FAIL"):
         return f"{r['net']:<28}{r['status']:<14}  {r.get('note','')}"
     return (f"{r['net']:<28}{r['status']:<14}{r['steps']:>7}{r['arrived']:>9}{r['running_end']:>9}"
-            f"{r['max_dwell']:>10}{r['overlaps']:>10}{r['wall']:>8}")
+            f"{r['max_dwell']:>10}{r['max_dwell_terminal']:>12}{r['overlaps']:>10}{r['wall']:>8}")
 
 
 def parse_report(path: Path) -> dict[str, dict]:
     out = {}
     for line in path.read_text().splitlines():
-        m = re.match(r"^(\S+)\s+(DRAINED|STUCK|INCONCLUSIVE)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
+        m = re.match(r"^(\S+)\s+(DRAINED|STUCK|INCONCLUSIVE)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
         if m:
             out[m.group(1)] = dict(status=m.group(2), steps=int(m.group(3)), arrived=int(m.group(4)),
                                    running_end=int(m.group(5)), max_dwell=int(m.group(6)),
-                                   overlaps=int(m.group(7)))
+                                   max_dwell_terminal=int(m.group(7)), overlaps=int(m.group(8)))
     return out
 
 
@@ -254,8 +271,11 @@ def main() -> int:
                 deltas.append(f"arrived {b['arrived']}->{r['arrived']}")
             if r["running_end"] > b["running_end"]:
                 deltas.append(f"running {b['running_end']}->{r['running_end']}")
-            if r["max_dwell"] > b["max_dwell"]:
-                deltas.append(f"maxDwell {b['max_dwell']}->{r['max_dwell']}")
+            # maxDwell is reported but NOT a regression criterion: holding a vehicle in its cont bay
+            # is the intended behaviour of the change under test, and SUMO does the same. Only an
+            # UNRESOLVED dwell (still stopped inside a junction when the run ends) indicates a deadlock.
+            if r["max_dwell_terminal"] > b["max_dwell_terminal"]:
+                deltas.append(f"stuckDwell {b['max_dwell_terminal']}->{r['max_dwell_terminal']}")
             if r["overlaps"] > b["overlaps"]:
                 deltas.append(f"overlaps {b['overlaps']}->{r['overlaps']}")
             if deltas:
