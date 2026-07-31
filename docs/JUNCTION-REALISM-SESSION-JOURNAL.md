@@ -1542,3 +1542,79 @@ the accumulator**, in what returns early. Note the formula's own shape: `accepta
 roadSpeedFactor · max(1, speed)` bottoms out at its floor for a stopped car, so a stopped vehicle
 accumulates keep-right pressure at the **maximum** rate unless something stops it getting there. That is
 a lead to instrument, **not** a finding — this workstream's reasoned-from-source hypotheses are 0-for-13.
+
+---
+
+## Entry 21 — keepRight traced against SUMO's own accumulator; one fix tried and REVERTED
+
+### The instrument that finally produced a true statement: SUMO's accumulator, live
+
+`MSLCM_LC2013` exposes `myKeepRightProbability` as a TraCI parameter
+(`laneChangeModel.keepRightProbability`, MSLCM_LC2013.cpp:2119). `pip install traci` (the tools are not
+in the SUMO package on this box) makes it readable step by step, so **the two engines' accumulators can
+be compared directly instead of inferred**.
+
+**SUMO, junction-realism-L2, ~68 000 samples over 700 s:**
+
+| | |
+|---|---|
+| samples with `keepRightProbability == -0.0` | **64 612** |
+| stopped samples with it exactly 0 | **50 086** of 50 789 (98.6%) |
+| most negative value **ever reached**, per vehicle | **0.0 — it never goes negative at all** |
+
+The fire condition is `probability < -2.0`. **SUMO's value never becomes negative on this net**, so the
+negative-accumulation route to a keepRight change essentially never runs. Ours reaches **−2.615** and
+fires. That is the artefact stated as a fact rather than a theory.
+
+Per-vehicle detail for `f_cyc_cw2.2`, standing 11+ consecutive steps at a stop line on a lane with a
+right neighbour: SUMO prints `keepRightProb=-0.00` on every single step.
+
+### Ours, same situation, traced
+
+```
+t=53 spd=10.27  deltaProb=0.0231  keepRightProb=-0.086     <- moving
+t=56 spd= 0.00  deltaProb=0.2368  keepRightProb=-0.530     <- stopped: 11x faster
+t=58 spd= 0.00  deltaProb=0.2368  keepRightProb=-1.004
+```
+
+**Stopping ACCELERATES the accumulator by 11×**, because `acceptanceTime = 7 · roadSpeedFactor ·
+max(1, speed)` collapses to its floor while `fullSpeedDrivingSeconds` does not. The pressure to keep
+right is highest exactly when the car cannot move.
+
+### The fix I tried, and why it is REVERTED — hypothesis #14 wrong
+
+Our `neighDist` used the raw `rightLane.Length`, a documented simplification ("general best-lanes
+continuation distance is deferred") valid only for the single-edge routes it was written against. SUMO
+uses `neigh.length`, the best-lanes continuation — and assigns **0** to a lane that does not continue the
+route, which SUMO's own comment names as the intended brake:
+*"stopped vehicles obviously should not change lanes. Usually this is prevented by APPROPRIATE BESTLANE
+DISTANCES"* (MSLaneChanger.cpp:1209). We already compute that quantity and cache it
+(`KeepRightStayRightContLength`); the accumulator just never read it.
+
+**Measured: it made this vehicle WORSE and the net metric flat.** The right lane `h1_0` *does* continue
+the route — for 367 m — so `neighDist` went 59.20 → 367.20, `fullSpeedGap` 38.58 → 346.58,
+`fullSpeedDrivingSeconds` **saturated** at `acceptanceTime`, and `deltaProb` hit its theoretical maximum
+**0.4000/step**. The vehicle now fires at t=57 where before it did not fire at all. Across the net the
+stopped-LC rate went **1.560 → 1.570** — no improvement. Reverted: more faithful in isolation, no
+measured benefit, and keeping it would muddy attribution for the next attempt.
+
+**And it produced the decisive negative result.** With SUMO's own definition of `neighDist`, our
+accumulator runs at exactly 0.4/step — the maximum. SUMO, with the same definition, stays at 0. So
+**SUMO is not reaching the accumulator at all**, and no amount of correcting `neighDist` fixes this.
+
+### Where the evidence now points
+
+For SUMO's `deltaProb` to be 0 essentially always, `fullSpeedGap` must be 0 essentially always — and on
+a 367 m continuation the only term that can do that is the **neighbour-leader cut**
+(`fullSpeedGap = MIN2(fullSpeedGap, neighLead.second − secureGap)`).
+
+Our trace shows `neighLead=none` at precisely the moment the artefact fires — because ego is at
+**pos 59.20 of a 59.20 m lane**, so no leader can exist *on that lane* ahead of it. SUMO's neighbour
+leader comes from `MSLaneChanger::getRealRightLeader`, which **looks past the lane end into the
+continuation**; ours (`LaneNeighborQuery.GetNeighborLeader`) searches the single lane only. A car at a
+stop line therefore always finds a leader in SUMO and never finds one here — inverting the cut in
+exactly the place the artefact occurs.
+
+**That is the next thing to test, and it is a hypothesis, not a finding** (this workstream is now
+0-for-14). The engine already has cross-junction leader logic (binder 2 `crossJxnLeader`), so the
+machinery to try it exists.

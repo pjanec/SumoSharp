@@ -12840,6 +12840,25 @@ public sealed partial class Engine : IEngine
         var deltaProb = changeProbThresholdRight * (fullSpeedDrivingSeconds / acceptanceTime) / keepRightTime;
         var keepRightProbability = v.KeepRightProbability - (actionStepLengthSecs * deltaProb);
 
+        // DIAGNOSTIC (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 21): the full accumulator state for
+        // one vehicle. `saturated` is the load-bearing field -- it says fullSpeedDrivingSeconds has hit
+        // the acceptanceTime cap, which is when deltaProb reaches its maximum 0.4/step. Committed rather
+        // than scratch because the comparison it feeds -- against SUMO's own
+        // `laneChangeModel.keepRightProbability`, read live over TraCI -- is the only thing that has
+        // produced a true statement about this artefact so far.
+        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+        {
+            Console.Error.WriteLine(
+                $"[keepright] t={CurrentTime:F1} veh={v.Def.Id} lane={v.LaneId}@{v.Kinematics.Pos:F2} "
+                + $"spd={v.Kinematics.Speed:F2} vMax={vMax:F2} neighDist={neighDist:F2} "
+                + $"fullSpeedGap={fullSpeedGap:F2} fsds={fullSpeedDrivingSeconds:F2} "
+                + $"acceptanceTime={acceptanceTime:F2} "
+                + $"saturated={(fullSpeedDrivingSeconds >= acceptanceTime - 1e-9 ? "YES" : "no")} "
+                + $"neighLead={(neighLead is null ? "none" : neighLead.Def.Id)} "
+                + $"deltaProb={deltaProb:F4} keepRightProb={keepRightProbability:F3} "
+                + $"fires={(keepRightProbability * keepRightParam < -changeProbThresholdRight ? "YES" : "no")}");
+        }
+
         if (keepRightProbability * keepRightParam < -changeProbThresholdRight)
         {
             // MSLCM_LC2013.cpp:1789/1061-1064: fires -> lane change REQUESTED, then subject to the
