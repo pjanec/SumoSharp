@@ -1431,3 +1431,55 @@ because that battery is driven by `Sim.Run`, which already used `EnvGate`. Gate:
 ⚠ **Any SumoData-side measurement taken through `SUMO_BINARY` before this fix ran with three junction
 gates off and is not comparable with one taken after.** That is the part with consequences outside this
 repo.
+
+---
+
+## Entry 20 — BEFORE: lateral lane change while stopped, now measured as a RATE
+
+The last of the owner's original four defects. Entry 15 measured it as a raw count and the junction work
+has since made that count worse (47 → 83 → **113**). A raw count is not comparable between two engines
+that hold different numbers of vehicles stationary, so the first thing to establish was whether we simply
+queue more cars now.
+
+**We do not — the normalisation makes it worse.** Like-for-like on `junction-realism-L2`, 1200 steps,
+same 450 vehicles, SUMO 1.20.0 oracle regenerated on this box:
+
+| | ours | SUMO |
+|---|---|---|
+| stopped sideways lane changes | **113** | 33 |
+| stopped vehicle-steps (the opportunity denominator) | 72 440 | **80 505** |
+| **rate per 1000 stopped-vehicle-steps** | **1.560** | **0.410** |
+
+SUMO's cars stand still **more** than ours (80 505 vs 72 440 vehicle-steps) and still change lanes while
+stopped **3.8× less often**. The gap is wider per-opportunity (3.8×) than the raw ratio suggested (3.4×).
+The denominator is now part of the committed instrument, printed alongside the count, with a note saying
+to compare the rate and not the count.
+
+**SUMO does this too — 33 times, not 0.** So the fix is NOT a blanket ban on changing lanes at zero
+speed. Whatever we do must leave SUMO's 33 intact. That rules out the crudest form of the obvious lead.
+
+### The lead, and its status
+
+`Engine.LaneChangeMinSpeed` is **0** on the parity path, so nothing suppresses a change at zero speed.
+**This is a hypothesis, not a finding.** Hypotheses in this workstream are 0-for-11 — including two this
+session that were reasoned from the SUMO source and had the *sign* wrong — so it gets instrumented before
+it gets edited.
+
+### Predictions, recorded before measuring
+
+1. The excess is **concentrated**, not uniform: a minority of vehicles/lanes will produce most of the 113.
+   If instead it is spread evenly across every stopped car, the cause is a global trigger threshold and
+   `LaneChangeMinSpeed` becomes the likely answer after all.
+2. Our excess changes are predominantly **strategic** (route/continuation-driven, `bestLanes`) rather than
+   speed-gain, because a stopped car has no speed to gain. If they turn out to be speed-gain motivated,
+   the defect is in the gain computation's handling of zero speed.
+3. The **overlap half stays at 0** on this net in both engines — it has never reproduced here, and the
+   minimal repro `docs/SUMOSHARP-ISSUE-stopped-lane-change-overlap.md` §5 specifies is still owed.
+
+### Immediate next steps
+
+1. Bucket the 113 by vehicle, lane and manoeuvre direction; compare the same buckets against SUMO's 33 —
+   the difference in SHAPE is what names the mechanism.
+2. Trace one excess change with `SUMOSHARP_TRACEVEH` / the binder log and find which trigger fired that
+   SUMO's did not.
+3. Only then decide what to change.

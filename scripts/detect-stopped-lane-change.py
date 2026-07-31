@@ -98,12 +98,22 @@ def detect(path: str, lengths: dict[str, float]) -> dict:
     events: list[dict] = []
     total_changes = 0
     worst_overlap = 0.0
+    # DENOMINATOR. A raw count is not comparable between two engines that hold different numbers of
+    # vehicles stationary: whichever one queues more cars gets more stopped lane changes for free. The
+    # opportunity measure is vehicle-steps spent stopped, so the rate below is per 1000 of those.
+    # Measured on junction-realism-L2 the normalisation STRENGTHENED the finding rather than explaining
+    # it: SUMO logs MORE stopped vehicle-steps than we do (80455 vs 72440) and still changes lanes far
+    # less often -- 0.410 against our 1.560 per 1000, i.e. 3.8x, wider than the 113-vs-33 raw ratio.
+    stopped_veh_steps = 0
+    total_veh_steps = 0
 
     t = None
     step_vehicles: list[tuple[str, str, float, float]] = []  # (vid, lane, pos, speed) this step
 
     def flush_step():
-        nonlocal total_changes, worst_overlap
+        nonlocal total_changes, worst_overlap, stopped_veh_steps, total_veh_steps
+        total_veh_steps += len(step_vehicles)
+        stopped_veh_steps += sum(1 for _v, _l, _p, sp in step_vehicles if sp <= STOPPED)
         by_lane: dict[str, list[tuple[str, float, float]]] = collections.defaultdict(list)
         for vid, lane, pos, speed in step_vehicles:
             by_lane[lane].append((vid, pos, speed))
@@ -164,12 +174,18 @@ def detect(path: str, lengths: dict[str, float]) -> dict:
 
     landed_overlapping = [e for e in events if e["overlap_with"] is not None]
     return dict(path=path, events=events, total_changes=total_changes,
-                landed_overlapping=landed_overlapping, worst_overlap=worst_overlap)
+                landed_overlapping=landed_overlapping, worst_overlap=worst_overlap,
+                stopped_veh_steps=stopped_veh_steps, total_veh_steps=total_veh_steps,
+                rate_per_1k_stopped=(1000.0 * total_changes / stopped_veh_steps)
+                if stopped_veh_steps else 0.0)
 
 
 def report(r: dict, limit: int) -> None:
     print(f"\n#### {r['path'].split('/')[-1]}")
     print(f"  stopped sideways lane changes: {r['total_changes']}")
+    print(f"  stopped vehicle-steps: {r['stopped_veh_steps']} of {r['total_veh_steps']} total")
+    print(f"  RATE: {r['rate_per_1k_stopped']:.3f} per 1000 stopped-vehicle-steps"
+          "   <- compare THIS across engines, not the raw count")
     print(f"  landed overlapping another vehicle: {len(r['landed_overlapping'])}")
     print(f"  worst overlap: {r['worst_overlap']:.3f} m")
     if not r["events"]:
