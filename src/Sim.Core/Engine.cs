@@ -7739,6 +7739,32 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // NEVER ABORT A VEHICLE THAT IS ALREADY INSIDE A JUNCTION. SUMO's guard on the abort:
+        // `if (removalBegin != -1 && !(removalBegin == 0 && myLane->getEdge().isInternal()))`
+        // (MSVehicle.cpp:5235). Under this port's one-removal-point simplification `removalBegin == 0`
+        // is exactly "the upcoming internal lane is the IMMEDIATELY next lane in the sequence", i.e.
+        // the stop line we would brake to sits at the end of ego's OWN lane -- so the condition
+        // becomes "ego's own lane is internal".
+        //
+        // WHY IT MATTERS. Ego's own lane being internal means ego has already committed into the
+        // intersection; the only safe thing left is to clear it. Braking there parks a vehicle in the
+        // middle of the junction, which blocks every crossing stream -- the exact artefact this whole
+        // workstream exists to remove, and a keepClear that causes it is worse than one that never
+        // fires.
+        //
+        // ⚠ THIS WAS LATENT, NOT NEW. The omission predates the Entry 17 direction fix, but while
+        // `LaneSpaceTillLastStanding` measured from the wrong end the guard almost never bound, so
+        // nothing ever reached this line. Fixing the direction exposed it immediately: on
+        // scenarios/_repro/synthetic-junction2 vehicles 89 and 234 were braked ON the stage-1 bay lane
+        // `:2336_18_0` and stood there for 1677 s and 1228 s, taking that scenario's yield teleports
+        // from 2 to 5. Two independent defects in one guard, and only the pair is correct -- see
+        // docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 17.
+        var approachLaneIsEgoOwn = egoLinkSeqIndex == v.LaneSeqIndex + 1;
+        if (approachLaneIsEgoOwn && v.LaneId.StartsWith(':'))
+        {
+            return double.PositiveInfinity;
+        }
+
         var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
 
         JunctionRequest? request = null;
@@ -7760,19 +7786,39 @@ public sealed partial class Engine : IEngine
         // Downstream available-space walk from the entry link: subtract each internal lane's brutto
         // vehicle-length sum, add each normal exit lane's space-till-last-standing, stop at the first
         // STOPPED vehicle (lengthsInFront == 0, see header).
+        var trace = DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id;
         var seenSpace = 0.0;
         var foundStopped = false;
         for (var i = egoLinkSeqIndex; i < v.LaneSeqLen && !foundStopped; i++)
         {
             var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            double contribution;
             if (lane.Id.StartsWith(':'))
             {
-                seenSpace -= LaneBruttoVehLenSum(lane, v);
+                contribution = -LaneBruttoVehLenSum(lane, v);
+                seenSpace += contribution;
             }
             else
             {
-                seenSpace += LaneSpaceTillLastStanding(lane, v, dt, out foundStopped);
+                contribution = LaneSpaceTillLastStanding(lane, v, dt, out foundStopped);
+                seenSpace += contribution;
             }
+
+            if (trace)
+            {
+                Console.Error.WriteLine(
+                    $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} on={v.LaneId}@{v.Kinematics.Pos:F2} "
+                    + $"lane={lane.Id} len={lane.Length:F2} n={_neighborQuery!.OnLane(lane.Handle).Count} "
+                    + $"contrib={contribution:F2} seenSpace={seenSpace:F2} foundStopped={foundStopped}");
+            }
+        }
+
+        if (trace)
+        {
+            Console.Error.WriteLine(
+                $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} VERDICT seenSpace={seenSpace:F2} "
+                + $"required={v.VType.Length + v.VType.MinGap:F2} foundStopped={foundStopped} "
+                + $"binds={(foundStopped && seenSpace - (v.VType.Length + v.VType.MinGap) < 0.0 ? "YES" : "no")}");
         }
 
         if (!foundStopped || seenSpace - (v.VType.Length + v.VType.MinGap) >= 0.0)
@@ -8245,23 +8291,38 @@ public sealed partial class Engine : IEngine
         return sum;
     }
 
-    // C5 helper: MSLane::getSpaceTillLastStanding (sumo/src/microsim/MSLane.cpp). Walk the lane's
-    // vehicles front-first (largest pos first); at the first STOPPED one (speed < haltingSpeed)
-    // return its back position + its brakeGap minus the lengthWithGap of the vehicles ahead of it;
-    // if none is stopped return laneLength minus the total lengthWithGap. `foundStopped` reports
-    // whether a stopped vehicle bounded the result.
-    // Perf (super-linear fix): reads the per-lane bucket instead of scanning every active vehicle and
-    // re-sorting. The bucket is pos-ASCENDING, so walking it in REVERSE is the same front-first
-    // (pos-descending) order the former collect-and-sort produced -- byte-identical for the (universal
-    // in phase-1) case of distinct positions; the accumulated lengthWithGap is homogeneous so
-    // order-independent regardless. Ego is skipped inline exactly as the old LaneId filter excluded it.
+    // C5 helper: MSLane::getSpaceTillLastStanding (sumo/src/microsim/MSLane.cpp:4522). Walk the
+    // lane's vehicles REAR-MOST FIRST (smallest pos first); at the first STOPPED one (speed <
+    // haltingSpeed) return its back position + its brakeGap minus the lengthWithGap of the vehicles
+    // BEHIND it; if none is stopped return laneLength minus the total lengthWithGap. `foundStopped`
+    // reports whether a stopped vehicle bounded the result.
+    //
+    // ⚠ THE DIRECTION IS THE WHOLE POINT, and it was wrong here until Entry 17 of
+    // docs/JUNCTION-REALISM-SESSION-JOURNAL.md. SUMO iterates `myVehicles` in its natural order, and
+    // MSLane.h:1439 documents that order: "The entering vehicles are inserted at the FRONT of this
+    // container and the leaving ones leave from the back ... the vehicle in front of the junction is
+    // myVehicles.back()". So the container is REAR-most first, and the returned quantity is the space
+    // up to the TAIL of the queue -- the vehicle nearest the junction ego wants to enter -- with the
+    // still-moving vehicles behind it discounted via `lengths`.
+    //
+    // Walking front-first instead returns the HEAD of the queue's back position, which on a jammed
+    // exit lane is near the far end of the lane. Measured on scenarios/_diag/junction-realism-L1 at
+    // t=407: nine stopped vehicles on the 65.60 m lane `h1_0` with the tail at pos 4.21, and the
+    // front-first walk reported 59.22 m of room. `KeepClearConstraint` therefore let ego into a box it
+    // could not clear and the junction deadlocked. Everything else about the port was correct -- the
+    // guard applied, `foundStopped` was set; only the end it measured from was wrong.
+    //
+    // Perf: reads the per-lane bucket (pos-ASCENDING, rear-most at index 0 -- LaneNeighborQuery's own
+    // comment at :152) instead of scanning every active vehicle and re-sorting. That bucket order IS
+    // `myVehicles`' order, so the walk is a straight forward iteration. Ego is skipped inline exactly
+    // as the old LaneId filter excluded it.
     private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, double dt, out bool foundStopped)
     {
         foundStopped = false;
         var onLane = _neighborQuery!.OnLane(lane.Handle);
 
         var lengths = 0.0;
-        for (var i = onLane.Count - 1; i >= 0; i--)
+        for (var i = 0; i < onLane.Count; i++)
         {
             var last = onLane[i];
             if (ReferenceEquals(last, ego))
@@ -8439,6 +8500,23 @@ public sealed partial class Engine : IEngine
     // mirror images, so `flbc==lbc` cancels; scenarios/31) but ~0.005 for an asymmetric one
     // (scenarios/29, a curved vs straight lane pair). Hence scenario 31 is the committed exact
     // anchor; 29 stays a geometry-refinement anchor until that term is ported.
+    // Diagnostic sink for SameTargetMergeConstraint's three phases -- which one bound, against which
+    // foe, and the phase's own scalar (the arrival-yield's distance-to-entry, or the computed gap).
+    // The binder log records arm 3 (sameTargetMerge) with NO blocker, so a wedge under this arm is
+    // otherwise unattributable; that gap cost a whole diagnosis step here. Inert unless
+    // DiagTraceVehicleId names this vehicle.
+    private void TraceMerge(VehicleRuntime ego, string phase, string foeId, double scalar)
+    {
+        if (DiagTraceVehicleId is null || DiagTraceVehicleId != ego.Def.Id)
+        {
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"[merge] t={CurrentTime:F1} veh={ego.Def.Id} on={ego.LaneId}@{ego.Kinematics.Pos:F2} "
+            + $"{phase} foe={foeId} x={scalar:F2}");
+    }
+
     private double SameTargetMergeConstraint(
         VehicleRuntime ego, Junction junction, JunctionLink egoLink, string egoInternalLaneId,
         bool egoOnInternal, Lane? approachLane, double egoDistToEntry, int foeLinkIndex, ActiveVehicleQuery allVehicles,
@@ -8558,6 +8636,7 @@ public sealed partial class Engine : IEngine
                     egoArrival, egoLeave, egoSpeed, egoSpeed, ego.VType.Decel,
                     foeArrival, foeLeave, foeSpeed, foeSpeed, foeMerging.VType.Decel))
             {
+                TraceMerge(ego, "PHASE0-arrivalYield", foeMerging.Def.Id, egoDistToEntry);
                 return StopSpeedFor(
                     ego.VType, ego.Kinematics.Speed,
                     egoDistToEntry - PositionEps,
@@ -8594,6 +8673,7 @@ public sealed partial class Engine : IEngine
             }
 
             var gap = distToCrossing - ego.VType.MinGap - leaderBackDist2;
+            TraceMerge(ego, gap >= 0.0 ? "PHASE1-follow" : "PHASE1-stop", foeMerging.Def.Id, gap);
             if (gap >= 0.0)
             {
                 return FollowSpeedFor(
@@ -8634,6 +8714,7 @@ public sealed partial class Engine : IEngine
         }
 
         var targetGap = distToMerge + (leaderOnTarget.Kinematics.Pos - leaderOnTarget.VType.Length) - ego.VType.MinGap;
+        TraceMerge(ego, "PHASE2-targetFollow", leaderOnTarget.Def.Id + "@" + leaderOnTarget.LaneId, targetGap);
         return FollowSpeedFor(
             ego.VType, ego.Kinematics.Speed, targetGap, leaderOnTarget.Kinematics.Speed, leaderOnTarget.VType.Decel,
             laneVehicleMaxSpeed, dt, time: time,
@@ -13411,6 +13492,20 @@ public sealed partial class Engine : IEngine
     // lower price -- that is an empirical question, so it gets a knob and a sweep rather than an
     // argument. Sweep results live in docs/JUNCTION-REALISM-SESSION-JOURNAL.md.
     public double BayExitLaneKeepClearExtra { get; set; } = -1.0;
+
+    // DIAGNOSTIC, not behavioural: when set to a SUMO vehicle id, the constraints that opt in write
+    // their internal decision to stderr for that ONE vehicle. Today: KeepClearConstraint's downstream
+    // available-space walk (per-lane contribution, running `seenSpace`, `foundStopped`, verdict) and
+    // SameTargetMergeConstraint's phase + foe. Null (the default) means no trace and no cost beyond a
+    // null check.
+    //
+    // WHY IT IS COMMITTED RATHER THAN A SCRATCH PRINTF. The question this answers -- "the guard was
+    // never consulted" vs "the guard evaluated and permitted" -- has completely different fixes, and
+    // guessing between them from the source is the reasoning refuted repeatedly here (CLAUDE.md
+    // measurement discipline #2). Entry 16 of the junction-realism journal spent a whole step on
+    // exactly that question and could only narrow it to two candidates; this closes it in one run.
+    // A probe that is deleted after use makes its own numbers unfalsifiable (CLAUDE.md #8).
+    public string? DiagTraceVehicleId { get; set; }
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

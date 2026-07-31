@@ -160,6 +160,8 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 | `SUMOSHARP_BAYEXITKEEPCLEAR` | `Engine.BayExitLaneKeepClear` | **engine default** | `true` |
 | `EVAC_DIAG_STEPS` | `EvacPusherOverlapDiagTests` horizon (steps). Diagnostic-only; the test asserts nothing about separation | `300` | n/a |
 | `SUMOSHARP_BAYEXITEXTRA` | `Engine.BayExitLaneKeepClearExtra` (metres of exit-lane room beyond ego length; numeric, not a gate) | **engine default** | `-1` = use MinGap |
+| `SUMOSHARP_TRACEVEH` | `Engine.DiagTraceVehicleId` — a SUMO **vehicle id**, not a boolean. Makes the opted-in constraints dump their internal decision to **stderr** for that one vehicle: `KeepClearConstraint`'s downstream available-space walk (per-lane contribution, running `seenSpace`, `foundStopped`, verdict) and `SameTargetMergeConstraint`'s phase + foe. **Diagnostic only — changes no trajectory** | no trace | `null` |
+| `SUMOSHARP_BINDERLOG` | a **file path**, not a boolean. Makes the `sumosharp` drop-in binary write `Sim.Harness.BinderLogObserver`'s per-vehicle per-step binder CSV. Env-driven rather than a `--flag` so the SUMO-compatible CLI contract is untouched. **Diagnostic only — changes no trajectory** | no log | n/a |
 
 **Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default
 alone, so a plain `Sim.Run` invocation is the shipped behaviour. Contrast the three drop-in gates

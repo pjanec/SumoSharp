@@ -272,6 +272,14 @@ public static class SumoShim
         // `--flag` in the parsed-args table. Unset/non-"1" => false, the Engine default, so every
         // existing shim invocation that never sets this env var is byte-identical to before.
         engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("SUMOSHARP_INTERNALJUNCTIONFIX") == "1";
+        // DIAGNOSTIC, not behavioural (see Engine.DiagTraceVehicleId): dumps KeepClearConstraint's
+        // downstream available-space walk to stderr for ONE vehicle id. Read here as well as in
+        // Sim.Run because the two load-bearing gridlock diagnostics (LowDensityTeleportTests,
+        // DenseFlowDeadLaneDrainTests) drive THIS path, and a trace taken through a different host is
+        // a different engine configuration -- SumoShim forces three junction gates OFF that Sim.Run
+        // leaves at their (true) engine defaults, so a Sim.Run trace of a shim result would be
+        // cross-instrument (CLAUDE.md #8/#13). Unset => no trace.
+        engine.DiagTraceVehicleId = Environment.GetEnvironmentVariable("SUMOSHARP_TRACEVEH");
         try
         {
             engine.LoadScenario(cfgPath);
@@ -284,9 +292,21 @@ public static class SumoShim
 
         // Register only the writers the caller asked for; each is additive and reads the same per-frame
         // export snapshot (see the observer classes' own comments). No flag -> no observer -> no file.
+        // DIAGNOSTIC, env-driven rather than a `--flag` so the drop-in binary's SUMO-compatible CLI
+        // contract is untouched (same posture as the three junction gates above). Writes Sim.Run's
+        // per-vehicle per-step binder CSV for a shim run -- needed because the two load-bearing
+        // gridlock diagnostics drive THIS path with three junction gates forced off, so a Sim.Run
+        // binder log of the same scenario is a different engine configuration (CLAUDE.md #8/#13).
+        var binderLogOut = Environment.GetEnvironmentVariable("SUMOSHARP_BINDERLOG");
         using (var fcdWriter = fcdOut is not null ? new FcdWriterObserver(fcdOut) : null)
         using (var summaryWriter = summaryOut is not null ? new SummaryWriterObserver(summaryOut) : null)
+        using (var binderLog = string.IsNullOrEmpty(binderLogOut) ? null : new BinderLogObserver(binderLogOut))
         {
+            if (binderLog is not null)
+            {
+                engine.AddExportObserver(binderLog);
+            }
+
             if (fcdWriter is not null)
             {
                 engine.AddExportObserver(fcdWriter);

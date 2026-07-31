@@ -145,6 +145,11 @@ internal static class Program
         {
             engine.BayExitLaneKeepClearExtra = bayExitExtra;
         }
+        // DIAGNOSTIC (not behavioural): dump KeepClearConstraint's downstream available-space walk to
+        // stderr for ONE vehicle id. Answers "was the guard never consulted, or did it evaluate and
+        // permit?" -- the two have different fixes and reading the source cannot tell them apart
+        // (CLAUDE.md measurement discipline #2). Unset => no trace.
+        engine.DiagTraceVehicleId = Environment.GetEnvironmentVariable("SUMOSHARP_TRACEVEH");
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

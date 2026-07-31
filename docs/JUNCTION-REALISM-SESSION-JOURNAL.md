@@ -1136,3 +1136,99 @@ an order-independent sum and is unaffected.
 2. Flip the direction; re-run the same trace; confirm prediction 2.
 3. `run-net-regression.py` vs `docs/reports/net-regression-bay-exit-keepclear.txt`; goldens; SUMO diff
    on anything that moves.
+
+---
+
+## Entry 17 — AFTER: the direction bug is confirmed and fixed; two defects in one guard; a third exposed
+
+### Prediction 1 — CONFIRMED, exactly
+
+`SUMOSHARP_TRACEVEH=f_cyc_cw2.30`, L1, the decision step:
+
+```
+t=407 veh=f_cyc_cw2.30 on=in_W01_0@192.10 lane=:J01_10_0 len=14.40 n=1 contrib=-7.50 seenSpace=-7.50 foundStopped=False
+t=407 veh=f_cyc_cw2.30 on=in_W01_0@192.10 lane=h1_0      len=65.60 n=9 contrib=59.22 seenSpace=51.72 foundStopped=True
+t=407 veh=f_cyc_cw2.30 VERDICT seenSpace=51.72 required=7.50 foundStopped=True binds=no
+```
+
+`foundStopped` **was** set — candidate 1 refuted as predicted. `h1_0` is 65.60 m long, the queue tail sits at
+pos 4.21, and the walk reported **59.22 m** of room: the front-most vehicle's back position. Candidate 2,
+"measured from the wrong end", confirmed to the metre.
+
+### Prediction 2 — CONFIRMED
+
+After flipping the walk to rear-most-first, the same step reports `seenSpace=7.09` against `required=7.50`
+and `binds=YES`. Ego is held on its approach instead of entering.
+
+### Prediction 3 — CONFIRMED, decisively. This was the success condition.
+
+| net | arrived | running | stuckDwell | overlaps |
+|---|---|---|---|---|
+| junction-realism-L1 | **112 → 388** (SUMO 450) | 229 → 50 | **1062 → 0** | 4 → 2 |
+| junction-realism-L2 | 421 → 431 | 29 → 19 | **34 → 0** | 8 → 3 |
+| city-mixed-1k | 1001 → 1007 | 235 → 229 | 0 | 10 → 9 |
+| city-organic | 499 → **491** | 16 → 24 | 0 | 2 |
+
+`stuckDwell` is now **0 on every net in the battery except `city-3000`** (13, unchanged). The L1 gridlock
+this workstream opened with is gone.
+
+### Prediction 4 — WRONG, and pleasantly so
+
+**All 661 goldens stayed byte-identical.** I predicted they would move because the guard is default-on,
+unconditional and parity-relevant. They did not: the goldens are 2–5 vehicle, ~40-step scenarios and
+cannot contain a queue of ≥2 stopped vehicles on an exit lane, which is the only configuration in which
+the two walk directions differ. Measurement discipline #1 in reverse — the goldens are *structurally
+incapable* of covering this, so their silence was never evidence either way.
+
+### The second defect in the same guard: braking a vehicle that is already inside the junction
+
+Fixing the direction immediately wedged vehicles **89** and **234** on the stage-1 bay `:2336_18_0` of
+`scenarios/_repro/synthetic-junction2`. `KeepClearConstraint` was braking a vehicle that had already
+committed into the intersection — which SUMO explicitly forbids
+(`!(removalBegin == 0 && myLane->getEdge().isInternal())`, MSVehicle.cpp:5235) and we never ported.
+Latent for as long as the direction bug kept the guard from ever binding. Fixed; see the comment at the
+guard.
+
+⚠ **It was not what held 89** — see below. It is right on its own merits and by SUMO's own source, but I
+have **no measurement showing it changed any outcome**; recorded as such rather than claimed as a win.
+
+### The third defect, EXPOSED not created: `SameTargetMergeConstraint` PHASE 0 deadlocks two stopped cars
+
+Traced with the new `[merge]` line: at t=390 vehicle 89 sits on `:2336_18_0@4.44` with its **entire
+downstream empty**, held by `PHASE0-arrivalYield foe=152 x=0.10`. Foe 152 is itself stopped on
+`-2437_1@19.08`. PHASE 0 compares arrival-time windows; with both speeds at 0 the leave-times diverge and
+the windows overlap forever. 89 is teleported at t=442, exactly 120 s (`time-to-teleport`) after wedging.
+
+**This has its own exact repro** (`scenario.sumocfg`, veh 89, t=390, foe 152) and is the next thing worth
+chasing — the same arm is L1's residual (Entry 15).
+
+### Wrong hypothesis #10, recorded
+
+I reasoned that `egoInsideJunction` (T1.9) was the missing gate and that `ContTurnInsideJunctionGate` off
+on the shim path explained everything. **Measured: setting it on makes the baseline WORSE**, 2 → 5
+teleports. The gate is not a fix for this scenario; `Engine.cs:13229` already documented that exact
+`5 teleports (jam=0, yield=5)` cost. Reading the source named the mechanism and got the sign wrong.
+
+### What the two failing tests actually measure
+
+Both drive `SumoShim`, which forces three junction gates **OFF that the engine ships ON** — the open bug
+`docs/ENV-GATES.md` already flags. Pinning all three to the engine defaults in both arms (discipline #10):
+
+| measurement | shim config (what the tests assert) | **shipped config (gates pinned ON)** |
+|---|---|---|
+| low-density teleports | 2 → **5** | **2 → 2 (no regression at all)** |
+| dense arrivals @1000 | 290 → 288 | 289 → 287 |
+| dense teleports | 2 → 3 | 2 → 5 |
+
+So `LowDensityTeleportTests`' failure is **entirely an artefact of a configuration the engine does not
+ship**. The dense one is real: run to t=2500 the base plateaus at 289 and the fix at 287, i.e. the fix
+leaves **2 more vehicles permanently stuck** out of 290 — small, but it is the gridlock signature, not
+slowness, and it is owed an honest accounting rather than a re-baselined constant.
+
+### Net position
+
+Against: 2 permanently stuck vehicles on one 2×-compressed torture scenario, and 8 arrivals on
+`city-organic`. For: L1's 338-vehicle permanent gridlock converted to drainage, L2's residual gone,
+`city-mixed-1k` improved, all 661 goldens byte-identical, and `stuckDwell` at 0 across the battery bar one
+net. The trade is heavily positive but it is **not free**, and the residual has a named mechanism and an
+exact repro rather than a shrug.
