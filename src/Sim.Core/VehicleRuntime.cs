@@ -140,6 +140,14 @@ internal sealed class VehicleRuntime
     // plan pass (see Engine.ComputeMoveIntent's argmin fold). Never read by sim logic -> parity-neutral.
     public byte BindingConstraint;
 
+    // DIAGNOSTIC ONLY: the EntityIndex of the foe/leader that BindingConstraint's winning arm selected,
+    // for the three constraints that identify a single blocking vehicle (crossJxnLeader=2,
+    // junctionYield=10, internalJunctionAdmission=14/17) -- see the capture sites at the
+    // ComputeMoveIntent fold call. -1 when the winning arm has no single identifiable foe (every other
+    // binder, plus the JunctionYieldConstraint arms that block on geometry/visibility rather than a
+    // specific vehicle). Never read by sim logic -> parity-neutral, same guarantee as BindingConstraint.
+    public int BlockerEntityIndex = -1;
+
     // DIAGNOSTIC ONLY (#15): when JunctionYieldConstraint bound this vehicle, WHICH arm did (low 4 bits:
     // 1 cycleHold, 2 cautiousApproach, 3 sameTargetMerge, 4 externalAgent, 5 adaptToJunctionLeader,
     // 6 approachingCross) plus bit 0x80 = the ego link held a protected-green signal priority. Never read

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using Sim.Core;
 
@@ -31,10 +32,29 @@ namespace Sim.Harness;
 /// </para>
 /// <para>
 /// TAG LEGEND (the authority is the fold in <c>Engine.ComputeMoveIntent</c>; this mirrors
-/// <c>Sim.Viewer/Program.cs</c>'s list and extends it with the three junction tags added later):
+/// <c>Sim.Viewer/Program.cs</c>'s list and extends it with the junction tags added later):
 /// 0 none, 1 leaderFollow, 2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge,
 /// 6 stopLine, 7 redLight, 8 railSignal, 9 railCrossing, 10 junctionYield, 11 keepClear,
-/// 12 obstacle, 13 crowd, 14 internalJunctionAdmission, 15 colocationSymmetryBreak, 16 crowdYield.
+/// 12 obstacle, 13 crowd, 14 internalJunctionAdmission (lane-foe half -- a foe already STANDING on
+/// a foe lane), 15 colocationSymmetryBreak, 16 crowdYield, 17 internalJunctionAdmission
+/// (approach-arm half -- a foe APPROACHING, <c>InternalJunctionApproachArm</c>-gated; split out of
+/// 14 so the two independent block reasons inside <c>InternalJunctionAdmissionConstraint</c> are
+/// separately attributable, see that method's own header comment).
+/// </para>
+/// <para>
+/// BLOCKER COLUMN: <see cref="VehicleExportSnapshot.BlockerEntityIndex"/>, the EntityIndex of the
+/// foe/leader vehicle that the winning binder actually selected -- populated only for tags 2
+/// (crossJxnLeader), 10 (junctionYield) and 14/17 (internalJunctionAdmission), which are the three
+/// constraints that identify a single blocking vehicle at their <c>Engine.ComputeMoveIntent</c> fold
+/// call sites; -1 (VehicleRuntime.BlockerEntityIndex's default) for every other binder, and for any
+/// of those three arms that itself has no single identifiable foe (e.g. JunctionYieldConstraint's
+/// cycleHold/cautiousApproach/sameTargetMerge/externalAgent arms -- see that method's own comment).
+/// Resolved to the blocker's SUMO vehicle-id STRING here, not left as a raw index, by buffering each
+/// step's rows (via <c>OnFrameBegin</c>/<c>OnFrameEnd</c>) until every active vehicle's id for this
+/// frame is known -- <c>OnVehicleExported</c> alone cannot resolve a blocker that exports LATER in
+/// the same frame's iteration order. Falls back to <c>#&lt;index&gt;</c> when the index does not
+/// resolve within the frame (blocker isn't active / a stale index), so a lookup miss is visible
+/// in the CSV rather than silently dropped.
 /// </para>
 /// <para>
 /// NOT part of <c>dotnet test</c> and not on any parity path: it is attached only when a caller
@@ -49,14 +69,42 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
         "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane", "deadLaneMerge",
         "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield", "keepClear",
         "obstacle", "crowd", "internalJunctionAdmission", "colocationSymmetryBreak", "crowdYield",
+        "internalJunctionApproachArm",
     };
 
     private readonly StreamWriter _writer;
 
+    // Per-frame buffer (cleared at OnFrameBegin, flushed+resolved at OnFrameEnd): this diagnostic
+    // observer is not on any hot sim path (CLAUDE.md rule 4's zero-alloc discipline binds
+    // Engine.ComputeMoveIntent, not an opt-in CSV writer that already allocates a StreamWriter per
+    // instance), so a small per-step Dictionary/List is the simplest correct shape rather than a
+    // two-pass file re-read.
+    private readonly Dictionary<int, string> _idByEntityIndex = new();
+    private readonly List<Row> _rows = new();
+
+    private readonly struct Row
+    {
+        public readonly double Time; public readonly string VehicleId; public readonly string Lane;
+        public readonly double Pos; public readonly double Speed; public readonly byte Binder;
+        public readonly int BlockerEntityIndex;
+
+        public Row(double time, string vehicleId, string lane, double pos, double speed, byte binder, int blockerEntityIndex)
+        {
+            Time = time; VehicleId = vehicleId; Lane = lane; Pos = pos; Speed = speed; Binder = binder;
+            BlockerEntityIndex = blockerEntityIndex;
+        }
+    }
+
     public BinderLogObserver(string path)
     {
         _writer = new StreamWriter(path);
-        _writer.WriteLine("t,veh,lane,pos,speed,binder,binderName");
+        _writer.WriteLine("t,veh,lane,pos,speed,binder,binderName,blocker");
+    }
+
+    public void OnFrameBegin(double time)
+    {
+        _idByEntityIndex.Clear();
+        _rows.Clear();
     }
 
     public void OnVehicleExported(in VehicleExportSnapshot s)
@@ -66,22 +114,47 @@ public sealed class BinderLogObserver : ISimExportObserver, IDisposable
         // indexed by READ-BUFFER COLUMN and is empty on a host that never pumps the read buffer, while
         // EntityIndex is the ECS entity index. The guard below caught it instead of silently logging
         // garbage -- keep it.
-        var tag = s.BindingConstraint;
-        var name = tag < BinderNames.Length ? BinderNames[tag] : "OUT_OF_RANGE";
+        _idByEntityIndex[s.EntityIndex] = s.VehicleId;
+        _rows.Add(new Row(s.Time, s.VehicleId, s.Lane, s.Pos, s.Speed, s.BindingConstraint, s.BlockerEntityIndex));
+    }
 
-        _writer.Write(s.Time.ToString("R", CultureInfo.InvariantCulture));
-        _writer.Write(',');
-        _writer.Write(s.VehicleId);
-        _writer.Write(',');
-        _writer.Write(s.Lane);
-        _writer.Write(',');
-        _writer.Write(s.Pos.ToString("R", CultureInfo.InvariantCulture));
-        _writer.Write(',');
-        _writer.Write(s.Speed.ToString("R", CultureInfo.InvariantCulture));
-        _writer.Write(',');
-        _writer.Write(tag.ToString(CultureInfo.InvariantCulture));
-        _writer.Write(',');
-        _writer.WriteLine(name);
+    public void OnFrameEnd(double time)
+    {
+        foreach (var row in _rows)
+        {
+            var name = row.Binder < BinderNames.Length ? BinderNames[row.Binder] : "OUT_OF_RANGE";
+            string blocker;
+            if (row.BlockerEntityIndex < 0)
+            {
+                blocker = "";
+            }
+            else if (_idByEntityIndex.TryGetValue(row.BlockerEntityIndex, out var blockerId))
+            {
+                blocker = blockerId;
+            }
+            else
+            {
+                // Blocker not exported this frame (not active / stale index) -- report the raw index
+                // rather than silently dropping it, per this class's own header comment.
+                blocker = "#" + row.BlockerEntityIndex.ToString(CultureInfo.InvariantCulture);
+            }
+
+            _writer.Write(row.Time.ToString("R", CultureInfo.InvariantCulture));
+            _writer.Write(',');
+            _writer.Write(row.VehicleId);
+            _writer.Write(',');
+            _writer.Write(row.Lane);
+            _writer.Write(',');
+            _writer.Write(row.Pos.ToString("R", CultureInfo.InvariantCulture));
+            _writer.Write(',');
+            _writer.Write(row.Speed.ToString("R", CultureInfo.InvariantCulture));
+            _writer.Write(',');
+            _writer.Write(row.Binder.ToString(CultureInfo.InvariantCulture));
+            _writer.Write(',');
+            _writer.Write(name);
+            _writer.Write(',');
+            _writer.WriteLine(blocker);
+        }
     }
 
     public void Dispose() => _writer.Dispose();

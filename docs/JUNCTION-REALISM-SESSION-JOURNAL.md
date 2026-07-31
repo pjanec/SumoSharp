@@ -345,3 +345,59 @@ backs up**, which is the opposite of the capacity reading.
 the structure terminates on a signal rather than on a vehicle. Whether that matters depends on the
 blocker graph, which is the instrument now being built (Entry 5 step 2). This entry narrows the
 alternative; it does not eliminate it.
+
+---
+
+## Entry 5 — AFTER — ROOT CAUSE: a circular wait MASKED by the traffic-light phase
+
+**T5 accepted** (verified first-hand, not from the agent's report): FCD **byte-identical** to the
+pre-T5 run and parity **776/4**, so the tag split and blocker export are provably diagnostic-only. The
+agent also found and fixed a real bug I would have missed — the untracked fold sites did not reset
+`blockerIdx`, so a later non-tracked winner (e.g. `redLight`) kept a stale foe index from an earlier
+one. It also correctly caught that `HeldAtLinkLastStep` consumes tag 14 and must now accept 17.
+
+### The measurement, and the trap in it
+
+Wait-for graph at t_end, over all 226 stopped vehicles: **0 cycles**. All 16 wedge heads terminate at
+**one single vehicle** — `f_fill_N11.14`, on `v1r_0` at pos 65.59, speed 0.000, binder **redLight**.
+A 226-vehicle jam rooted in one car at a red light.
+
+**That reading is WRONG, and the snapshot is what makes it look right.** Tracing that one vehicle over
+its whole life:
+
+* it last moved at **t=180**, and has been stationary for **1619 s** on a **static 90 s** signal cycle;
+* its binder ALTERNATES — **redLight 911 samples, junctionYield 756**. The light does turn green;
+* on **every one of those 756 green samples** it yields to exactly one foe: **`f_cyc_ccw.6`**;
+* `f_cyc_ccw.6` is stranded **inside junction J10** on `:J10_15_0` for 1653 samples, binder
+  `crossJxnLeader`, blocked by `f_cyc_ccw2.5`;
+* and the wait-for chain **from `f_cyc_ccw.6` runs 13 hops back to `f_fill_N11.14`**.
+
+**So the cycle is closed: `f_fill_N11.14` → `f_cyc_ccw.6` → (13 hops) → `f_fill_N11.14`.** A 14-vehicle
+circular wait spanning J10 and J11.
+
+**Why the cycle detector said zero.** At any single instant the root's binding constraint is whichever
+is *tighter* — and during the red phase that is the signal, which has no vehicle edge. So the snapshot
+graph is a TREE rooted at an apparently-external cause, and the vehicle-to-vehicle edge that closes the
+loop is invisible for ~54% of samples. **A single-instant wait-for graph cannot see a cycle that a
+periodic constraint intermittently masks.** This is the fifth wrong prediction of the session (I
+predicted a cycle, got "no cycle", and the "no cycle" was itself the artefact) and the most instructive:
+it is not that the answer was unknowable, it is that the *instrument's time resolution* hid it.
+
+### What this means for the fix
+
+The gridlock is a **genuine circular wait**, so §7.11's rule applies: *a symmetric predicate cannot
+arbitrate a cycle; check for a tie-break and copy SUMO's.* But it is now much better localised than
+"junctions deadlock":
+
+1. The cycle is closed by **one vehicle stranded inside J10** (`f_cyc_ccw.6` on `:J10_15_0`), held by
+   `crossJxnLeader` — the arm with **no right-of-way notion and no escape**
+   (`NEED-arm5-mutual-junction-deadlock.md`).
+2. Everything else, including the 226-vehicle jam, is downstream of that one stranding.
+3. SUMO on identical input strands vehicles too (44 of them) but **always resolves within 29 steps**.
+
+**The next question is therefore narrow and specific:** why does `f_cyc_ccw.6` never escape
+`:J10_15_0`, when SUMO's equivalent always does? Trace that ONE vehicle against the SUMO oracle from
+the step it entered — the same technique that found the §4 admission defect in minutes.
+
+**Do not** attempt a global cycle-breaking tie-break first: it is a large behavioural change aimed at a
+symptom, and the single-vehicle trace is cheap and has a working precedent in this very document.

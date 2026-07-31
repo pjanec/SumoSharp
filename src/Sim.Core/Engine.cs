@@ -5273,9 +5273,18 @@ public sealed partial class Engine : IEngine
         // by sim logic; assigned to v.BindingConstraint (a diagnostic field) only on the real plan pass.
         // Ids: 1 leaderFollow, 2 crossJxnLeader, 3 freeFlow, 4 successiveLane, 5 deadLaneMerge,
         // 6 stopLine, 7 redLight, 8 railSignal, 9 railCrossing, 10 junctionYield, 11 keepClear,
-        // 12 obstacle, 13 crowd, 14 internalJunctionAdmission.
+        // 12 obstacle, 13 crowd, 14 internalJunctionAdmission (lane-foe half), 15
+        // colocationSymmetryBreak, 16 crowdYield, 17 internalJunctionAdmission (approach-arm half,
+        // JUNCTION-APPROACH-ARM-DESIGN.md T3/T4 -- split out of 14 so the two independent block
+        // reasons inside InternalJunctionAdmissionConstraint are separately attributable).
         byte binder = 0;
         double dc;
+        // DIAGNOSTIC ONLY: the EntityIndex of the blocking foe/leader the CURRENT winning binder
+        // selected -- captured only at the three fold sites (2/10/14/17) below that identify a single
+        // vehicle, and only when that site's `dc` becomes the new minimum, so it always describes the
+        // binder actually recorded in `binder`/`v.BindingConstraint`, never a stale value from an arm
+        // that lost the fold. -1 (VehicleRuntime.BlockerEntityIndex's default) everywhere else.
+        var blockerIdx = -1;
         // diag (#15): reset; JunctionYieldConstraint sets it iff a foe arm binds.
         // T1.8 (docs/NEED-stale-binder-diagnostics-under-reuseintent.md): written on BOTH passes, not
         // just the real one. These diagnostics must describe *the pass whose Intent is actually used*.
@@ -5295,13 +5304,13 @@ public sealed partial class Engine : IEngine
         // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
-        dc = LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot); if (dc < vPos) binder = 1; vPos = Math.Min(vPos, dc);
+        dc = LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot); if (dc < vPos) { binder = 1; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Cross-junction leader following: car-follow a slow leader that has already crossed onto a
         // downstream lane, while ego is still on its approach (the same-lane constraint above cannot
         // see it). +infinity unless a close downstream leader exists on ego's route path -- inert for
         // every scenario without one. See CrossJunctionLeaderConstraint's own header comment.
-        dc = CrossJunctionLeaderConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 2; vPos = Math.Min(vPos, dc);
+        dc = CrossJunctionLeaderConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, out var cjlFoeIdx); if (dc < vPos) { binder = 2; blockerIdx = cjlFoeIdx; } vPos = Math.Min(vPos, dc);
 
         // Desired free-flow speed (MSLane::getVehicleMaxSpeed): lane speed limit adapted
         // by this vehicle's speedFactor, capped by its vType maxSpeed. C11-i: for Krauss this
@@ -5310,7 +5319,7 @@ public sealed partial class Engine : IEngine
         // MSCFModel::freeSpeed braking-curve formula for this term either way, matching every
         // pre-C11 rung exactly); for IDM this routes through IdmModel.FreeSpeed
         // (MSCFModel_IDM.cpp:77-100) -- see FreeFlowDesiredSpeedConstraint's own header comment.
-        dc = FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt); if (dc < vPos) binder = 3; vPos = Math.Min(vPos, dc);
+        dc = FreeFlowDesiredSpeedConstraint(v, laneVehicleMaxSpeed, dt); if (dc < vPos) { binder = 3; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // C4-iii (successive-lane speed limit): FreeFlowDesiredSpeedConstraint above caps by the
         // CURRENT lane only; MSVehicle::planMoveInternal additionally caps the free-flow speed so
@@ -5319,40 +5328,40 @@ public sealed partial class Engine : IEngine
         // vMinComfortable); v = MIN2(va, v)`). Non-binding (+infinity) unless a slower lane lies
         // within braking distance ahead -- the first scenario to exercise it on-path is the
         // roundabout (32), whose curved internal ring lanes drop the speed limit.
-        dc = SuccessiveLaneSpeedConstraint(v, lane, dt); if (dc < vPos) binder = 4; vPos = Math.Min(vPos, dc);
+        dc = SuccessiveLaneSpeedConstraint(v, lane, dt); if (dc < vPos) { binder = 4; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // GAP-1 (dead-lane merge brake): decelerate smoothly toward the forced-merge point when
         // stuck on a lane that cannot reach the next route edge, so the vehicle falls back to
         // re-try its strategic merge instead of slamming into the lane end and deadlocking.
         // +infinity (inert) for every vehicle on an on-route lane -- see the method's own header.
-        dc = DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 5; vPos = Math.Min(vPos, dc);
+        dc = DeadLaneMergeBrakeConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 5; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Stop line (rung 5): MSVehicle.cpp's planMoveInternal "process stops" block
         // (~lines 2467-2540), non-waypoint arm only. +infinity (non-binding) once reached
         // (the source's own approach-block condition `!stop.reached || (waypoint &&
         // keepStopping())` is simply false for a non-waypoint stop that IS reached) or when
         // there is no stop at all.
-        dc = StopLineConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 6; vPos = Math.Min(vPos, dc);
+        dc = StopLineConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 6; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Red light (rung 10): MSVehicle.cpp's planMoveInternal per-link loop (~2641-2666,
         // 2734), yellowOrRed arm only. +infinity (non-binding) when this lane's outgoing
         // connection is not TL-controlled, or its light is green, at the time this Plan/
         // Execute cycle's result will be observed (see RedLightConstraint's own comment on
         // why that is `time + dt`, not `time`).
-        dc = RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 7; vPos = Math.Min(vPos, dc);
+        dc = RedLightConstraint(v, lane, time, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 7; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Rail signal (rung R4): MSRailSignal's block-based hold -- a train approaching a rail signal
         // whose forward block's opposing (bidi) lane is occupied by another train brakes to a stop at
         // the signal until that block clears. +infinity (non-binding) when this lane has no rail
         // signal or its conflict lanes are clear (green). Inert for every scenario with no
         // rail_signal junction (_railSignalConflictLaneHandles null). See RailSignalConstraint.
-        dc = RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 8; vPos = Math.Min(vPos, dc);
+        dc = RailSignalConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 8; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Rail crossing (rung R5): a road vehicle yields to a train at a level crossing -- brakes to
         // the crossing's stop line while it is closed (not green). +infinity (non-binding) when this
         // lane is not a controlled crossing approach or the crossing is open. Inert for every net
         // with no rail_crossing junction (_railCrossingByRoadLaneHandle null). See RailCrossingConstraint.
-        dc = RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 9; vPos = Math.Min(vPos, dc);
+        dc = RailCrossingConstraint(v, lane, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 9; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Priority-junction yielding (rung 9b-ii/iii, plus B5-iii's external-agent foe): MSLink's
         // right-of-way gate (stop-line brake while a higher-priority foe still approaches) plus
@@ -5368,7 +5377,7 @@ public sealed partial class Engine : IEngine
         // [StartTime, EndTime) active window at the SAME instant every other obstacle read this
         // step uses (ObstacleConstraint/TargetLaneBlockedByObstacle's own convention) -- nothing
         // about the pre-existing 9b-ii/iii SUMO-foe machinery reads `time` at all.
-        dc = JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed, prePass); if (dc < vPos) binder = 10; vPos = Math.Min(vPos, dc);
+        dc = JunctionYieldConstraint(v, ActiveVehicles(), time, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var jyFoeIdx, prePass); if (dc < vPos) { binder = 10; blockerIdx = jyFoeIdx; } vPos = Math.Min(vPos, dc);
 
         // C5 (keepClear / don't-block-the-box): MSVehicle::checkRewindLinkLanes' downstream
         // available-space accounting. A vehicle approaching a junction whose EXIT is jammed (a
@@ -5376,7 +5385,7 @@ public sealed partial class Engine : IEngine
         // creep onto the internal lane and block cross traffic. +infinity (non-binding) unless a
         // stopped vehicle is found on ego's downstream exit chain with leftSpace < 0 -- so every
         // existing (jam-free) scenario is untouched.
-        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 11; vPos = Math.Min(vPos, dc);
+        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 11; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
@@ -5385,19 +5394,19 @@ public sealed partial class Engine : IEngine
         // from. +infinity (non-binding) whenever _obstacles is empty or none is active/ahead
         // on this lane -- this is the inert-when-absent guard: an empty store makes this a
         // no-op Min term, leaving every existing (obstacle-free) parity scenario untouched.
-        dc = ObstacleConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 12; vPos = Math.Min(vPos, dc);
+        dc = ObstacleConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) { binder = 12; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Cross-regime bridge (Direction B longitudinal safety): brake for a crowd agent ego is still
         // laterally overlapping -- the "stop for a pedestrian you can't swerve clear of" net. +Infinity
         // (inert) unless a coupling has attached a CrowdSource, so byte-identical for every golden.
-        dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 13; vPos = Math.Min(vPos, dc);
+        dc = CrowdLongitudinalConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) { binder = 13; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // F3/internal-junction-foes T3.2: cont-turn stage-1 BAY admission gate (design §3). +infinity
         // (non-binding) whenever InternalJunctionAdmissionGate is off (the default) -- see the
         // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
         // header comment for the parity argument and the deliberate omissions.
-        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) binder = 14; vPos = Math.Min(vPos, dc);
-        dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) binder = 15; vPos = Math.Min(vPos, dc);
+        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var iajByApproachArm, out var iajFoeIdx); if (dc < vPos) { binder = iajByApproachArm ? (byte)17 : (byte)14; blockerIdx = iajFoeIdx; } vPos = Math.Min(vPos, dc);
+        dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) { binder = 15; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
         // safety guard -- anticipatory yield to a ped whose PREDICTED track crosses ego's corridor, plus a
@@ -5405,11 +5414,14 @@ public sealed partial class Engine : IEngine
         // attached AND the yield zone is on AND ego is inside it -- none of which a golden or the bench
         // does, so byte-identical. Strictly a Math.Min term: it can only slow ego, never speed it up.
         // NB binder id 16: 14/15 were taken by the F3 junction constraints above when that work merged.
-        dc = CrowdYieldConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) binder = 16; vPos = Math.Min(vPos, dc);
+        dc = CrowdYieldConstraint(v, time, laneVehicleMaxSpeed); if (dc < vPos) { binder = 16; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
         // diagnostic (#15): argmin of the fold, never read by sim. T1.8: written on BOTH passes so a
         // ReuseIntent vehicle (whose pre-pass Intent IS the final Intent) reports its CURRENT binder
         // instead of a stale one. See the comment on the JunctionYieldFoeSpeed reset above.
         v.BindingConstraint = binder;
+        // DIAGNOSTIC ONLY: companion to BindingConstraint above -- same both-passes reasoning, same
+        // never-read-by-sim guarantee. See blockerIdx's own declaration comment.
+        v.BlockerEntityIndex = blockerIdx;
 
         // P2G-2 (cooperative LC): consume any speed-advice a blocked lane-changer wrote LAST step's LC
         // phase (informFollower "make room"). +Infinity == none, so byte-identical when CoordinatedLaneChange
@@ -6869,8 +6881,13 @@ public sealed partial class Engine : IEngine
     // approximation that breaks the yield circularity (SUMO's setApproaching runs before opened()). With
     // prePass=false (the real PlanMovements call) the crossing arm additionally skips a foe whose
     // WillPass is false, matching MSLink::blockedByFoe's `!avi.willPass` short-circuit.
-    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed, bool prePass = false)
+    private double JunctionYieldConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double time, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed, out int blockerIdx, bool prePass = false)
     {
+        // DIAGNOSTIC ONLY: default until the foe-link loop's on-junction/approaching arms (the only
+        // ones with a single identifiable foe vehicle) capture it below -- every other arm (cycleHold,
+        // cautiousApproach, sameTargetMerge, externalAgent) blocks on geometry/visibility/an external
+        // agent, not a specific VehicleRuntime, so they leave this at -1.
+        blockerIdx = -1;
         // Step 1: ego's own upcoming/current junction link -- the first internal lane in
         // the pool slice at or after LaneSeqIndex. A lane already passed is simply never found
         // by this forward-only scan (LaneSeqIndex has already advanced beyond it), which is
@@ -7060,7 +7077,7 @@ public sealed partial class Engine : IEngine
                     v.VType, v.Kinematics.Speed,
                     egoDistToEntry - PositionEps,
                     laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
-            if (constraint < jyBest) { jyBest = constraint; jyArm = 1; } // diag: cycleHold
+            if (constraint < jyBest) { jyBest = constraint; jyArm = 1; blockerIdx = -1; } // diag: cycleHold, no single foe
         }
 
         // C3 (TASKS.md "on-ramp merge" / minor-link CAUTIOUS APPROACH): ported from
@@ -7191,7 +7208,7 @@ public sealed partial class Engine : IEngine
                         StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService));
                 }
 
-                if (constraint < jyBest) { jyBest = constraint; jyArm = 2; } // diag: cautiousApproach
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 2; blockerIdx = -1; } // diag: cautiousApproach, no single foe
             }
         }
 
@@ -7270,7 +7287,7 @@ public sealed partial class Engine : IEngine
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
                         j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority,
                         egoInsideJunction));
-                if (constraint < jyBest) { jyBest = constraint; jyArm = 3; } // diag: sameTargetMerge
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 3; blockerIdx = -1; } // diag: sameTargetMerge, foe not exposed by SameTargetMergeConstraint
                 continue;
             }
 
@@ -7309,7 +7326,7 @@ public sealed partial class Engine : IEngine
                         approachLane!.Length - v.Kinematics.Pos - PositionEps,
                         laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
                 constraint = Math.Min(constraint, extConstraint);
-                if (constraint < jyBest) { jyBest = constraint; jyArm = 4; } // diag: externalAgent
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 4; blockerIdx = -1; } // diag: externalAgent, not a VehicleRuntime
             }
 
             var foe = FindCrossFoeVehicle(v, foeInternalLaneHandle);
@@ -7612,7 +7629,7 @@ public sealed partial class Engine : IEngine
 
             constraint = Math.Min(constraint, thisConstraint);
             // T1.8: foe speed recorded on BOTH passes (see the JunctionYieldFoeSpeed reset comment).
-            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; } // diag: on-junction / approaching + foe speed
+            if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; blockerIdx = foe.EntityIndex; } // diag: on-junction / approaching + foe speed + blocker
         }
 
         // T1.8: written on BOTH passes so a ReuseIntent vehicle reports the arm that actually bound this
@@ -7875,8 +7892,19 @@ public sealed partial class Engine : IEngine
         return double.PositiveInfinity;
     }
 
-    private double InternalJunctionAdmissionConstraint(VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    private double InternalJunctionAdmissionConstraint(
+        VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed,
+        out bool byApproachArm, out int blockerIdx)
     {
+        // DIAGNOSTIC ONLY (task split of tag 14, JUNCTION-APPROACH-ARM-DESIGN.md T3/T4): this arm has
+        // TWO independent block reasons -- the lane-foe loop just below (a foe already STANDING on a
+        // foe lane) and the InternalJunctionApproachArm-gated loop after it (a foe APPROACHING). Both
+        // used to report the same binder tag (14), making them unattributable in a binder-log trace.
+        // `byApproachArm` distinguishes them at the ComputeMoveIntent fold call site (tag 14 vs 17);
+        // `blockerIdx` is the EntityIndex of whichever foe/`other` set `blocked = true`.
+        byApproachArm = false;
+        blockerIdx = -1;
+
         if (!InternalJunctionAdmissionGate)
         {
             return double.PositiveInfinity;
@@ -7992,6 +8020,7 @@ public sealed partial class Engine : IEngine
                 }
 
                 blocked = true;
+                blockerIdx = other.EntityIndex; // diag: lane-foe half (tag 14) -- who is standing in the way.
                 break;
             }
         }
@@ -8062,6 +8091,10 @@ public sealed partial class Engine : IEngine
                 }
 
                 blocked = true;
+                // diag: approach-arm half (tag 17) -- reachable only because the outer `if` above is
+                // gated on `!blocked`, so this arm never runs after the lane-foe loop already blocked.
+                byApproachArm = true;
+                blockerIdx = foe.EntityIndex;
             }
         }
 
@@ -9665,8 +9698,11 @@ public sealed partial class Engine : IEngine
     // red-light constraints separately cap the speed (Min), so this is safe to evaluate
     // unconditionally: when ego must yield it stops at the line (a smaller speed) and this term is
     // dominated; when ego proceeds, this is the leader it will actually follow through.
-    private double CrossJunctionLeaderConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed)
+    private double CrossJunctionLeaderConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed, out int blockerIdx)
     {
+        // DIAGNOSTIC ONLY: default until one of the two leader scans below actually wins the trailing
+        // Math.Min(poolFollow, arrivalFollow) -- see the two assignments right before the return.
+        blockerIdx = -1;
         // L0d (PERF-ROADMAP.md): the downstream (route-ahead) pool lanes are the CONTIGUOUS slice of
         // `_laneSeqPool` immediately after ego's current slot -- a zero-alloc `ReadOnlySpan<int>` over
         // it instead of copying into a per-vehicle-per-step `new List<int>`. The pool is stable during
@@ -9740,6 +9776,13 @@ public sealed partial class Engine : IEngine
                 ref ego.CaccControlMode, ego.Acceleration, hasPred: true,
                 predIsCacc: aLeader.VType.CarFollowModel == "CACC", ego.LevelOfService, _config!.Ballistic)
             : double.PositiveInfinity;
+
+        // DIAGNOSTIC ONLY: attribute the trailing fold to whichever scan actually produced it, matching
+        // Math.Min's own tie-break (poolFollow wins on an exact tie) so blockerIdx always names the
+        // leader behind the returned value, never the one the Math.Min below discarded.
+        blockerIdx = poolFollow <= arrivalFollow
+            ? (leader is not null ? leader.EntityIndex : -1)
+            : (aLeader is not null ? aLeader.EntityIndex : -1);
 
         return Math.Min(poolFollow, arrivalFollow);
     }
@@ -11141,7 +11184,10 @@ public sealed partial class Engine : IEngine
             // The binder set is the link-WAIT arms only. Excluded on purpose: 1/2 (car-following -- SUMO's
             // `adaptToLeader` does not set the flag), 3/4 (speed limits), 5 (dead-lane merge brake), 12/13
             // (obstacle/crowd), 15 (colocation break). None of those is a vehicle holding at a link.
-            v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14;
+            // 17 is included alongside 14: it is the SAME InternalJunctionAdmissionConstraint arm split
+            // into a separately-attributable diagnostic tag (see the ComputeMoveIntent fold's binder
+            // comment) -- both halves hold ego at its own link exactly the same way.
+            v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14 or 17;
 
             v.Kinematics.Speed = v.Intent.NewSpeed;
 
@@ -14570,7 +14616,10 @@ public sealed partial class Engine : IEngine
                 // Read straight off the runtime here because the read-buffer-indexed
                 // Engine.BindingConstraints span is keyed by read-buffer COLUMN, not EntityIndex, and is
                 // empty on hosts that never pump the read buffer -- see VehicleExportSnapshot's own note.
-                bindingConstraint: v.BindingConstraint);
+                bindingConstraint: v.BindingConstraint,
+                // DIAGNOSTIC ONLY (never read by the sim): companion to bindingConstraint above -- see
+                // VehicleRuntime.BlockerEntityIndex's own capture-site comment.
+                blockerEntityIndex: v.BlockerEntityIndex);
 
             trajectory.Add(new TrajectoryPoint(
                 VehicleId: snapshot.VehicleId,

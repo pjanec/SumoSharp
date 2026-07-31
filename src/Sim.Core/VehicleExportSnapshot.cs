@@ -99,6 +99,15 @@ public readonly struct VehicleExportSnapshot
     /// </remarks>
     public readonly byte BindingConstraint;
 
+    /// <summary>
+    /// DIAGNOSTIC ONLY: the <see cref="EntityIndex"/> of the foe/leader vehicle that
+    /// <see cref="BindingConstraint"/>'s winning arm selected, for the constraints that identify a
+    /// single blocking vehicle (crossJxnLeader=2, junctionYield=10, internalJunctionAdmission=14/17).
+    /// -1 when the winning binder has no single identifiable foe. Never read by the simulation --
+    /// see <see cref="Engine"/>'s <c>VehicleRuntime.BlockerEntityIndex</c> capture sites.
+    /// </summary>
+    public readonly int BlockerEntityIndex;
+
     public VehicleExportSnapshot(
         Entity entity,
         int entityIndex,
@@ -117,7 +126,8 @@ public readonly struct VehicleExportSnapshot
         double posLat = 0.0,
         double edgeSpeedLimit = 0.0,
         bool isStoppedAtStop = false,
-        byte bindingConstraint = 0)
+        byte bindingConstraint = 0,
+        int blockerEntityIndex = -1)
     {
         Entity = entity;
         EntityIndex = entityIndex;
@@ -137,5 +147,6 @@ public readonly struct VehicleExportSnapshot
         EdgeSpeedLimit = edgeSpeedLimit;
         IsStoppedAtStop = isStoppedAtStop;
         BindingConstraint = bindingConstraint;
+        BlockerEntityIndex = blockerEntityIndex;
     }
 }
