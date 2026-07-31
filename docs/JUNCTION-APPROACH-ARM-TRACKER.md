@@ -32,7 +32,12 @@ success conditions **first-hand**, including that its test is non-vacuous.
 
 ## Stage 3 — gate
 
+- [ ] **T6b (baseline half)** cross-net regression battery built + baseline committed ← *must land
+      BEFORE any engine edit; a baseline captured afterwards is not a baseline*
 - [ ] **T6** re-run both surfaces and record the numbers **whichever way they come out**
+- [ ] **T6b (after half)** no committed net regresses on arrived / still-running / junction dwell /
+      overlap pairs. Owner's bar: *a symmetric deadlock is as bad as the existing one* — fixing the
+      repro does not buy a regression anywhere else.
 
 | measurement | before | after | source |
 |---|---|---|---|

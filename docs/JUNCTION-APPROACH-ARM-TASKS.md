@@ -129,6 +129,36 @@ compare across instruments):
 2. Any golden shift is SUMO-diffed per design §7.2 before being accepted, and the diff is committed.
 3. The `-light` control is run too: if the fix only works at the stress demand, that is a finding.
 
+## T6b — CROSS-NET NO-REGRESSION BATTERY (owner requirement, blocking)
+
+**Design:** §10.1 (the symmetric-deadlock risk this exists to catch).
+**Files:** `scripts/run-net-regression.py` (new), `docs/reports/net-regression-*.txt` (committed).
+**Depends on:** the baseline half depends on nothing and is built FIRST, before any engine edit.
+
+**Owner's constraint, verbatim in effect:** *a symmetric deadlock is as bad as the existing one* — so
+this arm must be proven not to make things worse on **existing** nets, not merely to fix the repro.
+The repro is a net purpose-built to gridlock; passing it says nothing about the twenty committed nets
+that currently flow.
+
+Sweep every committed net the engine can run headlessly — `scenarios/_bench/*` (city-30, city-300,
+city-3000, city-mixed-1k, city-organic, city-organic-L2, highway-dense, …), `scenarios/_diag/*`, and
+the junction-bearing parity fixtures — under the drain-window protocol (insertions stop, run on, ask
+whether it cleared). Report per net: arrived, still-running at end, longest dwell inside a junction,
+junction-interior overlap pairs, and mean trip duration.
+
+**Order matters: the BASELINE IS CAPTURED AND COMMITTED BEFORE ANY ENGINE EDIT.** A baseline measured
+after the fact is not a baseline, and this workstream has already lost one (the Stage-2 threaded-tick
+"before" run was never captured because threading was already on).
+
+**Success conditions**
+1. A committed baseline report over every runnable committed net, produced by the committed script.
+2. After T4: **no net regresses** on any of — arrived (down), still-running-at-end (up), longest
+   junction dwell (up), or overlap pairs (up). Any net that does regress blocks the change until it is
+   explained; "the repro got better" does not buy it.
+3. Nets that ALREADY fail to drain at baseline are listed explicitly and separately, so a pre-existing
+   failure is never counted as a regression and never quietly hides one.
+4. Both arms measured with the **same** script (CLAUDE.md #8/#13 — cross-instrument numbers are invalid).
+
 ## T7 — the remaining reported defects (NOT in this workstream's scope, tracked so they are not lost)
 
 Not started, and deliberately **not** bundled — each needs its own trace before any design.

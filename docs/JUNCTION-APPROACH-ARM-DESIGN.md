@@ -161,6 +161,26 @@ guarantee inside high-realism zones, that is a *separate*, zone-scoped gate stac
 one — and it is the right place for `JunctionPhysicalOccupancyGate`, which is default-OFF today
 precisely because it is too blunt to be global.
 
+## 8b. Latitude to diverge from SUMO (owner, this session)
+
+*"We are free to divert from SUMO where we need more realism."* This is a real licence and it changes
+what a null result means, so it is written down rather than left implicit.
+
+Concretely, it is the escape hatch for the §10.1 deadlock risk. If the faithful arrival-window
+tie-break turns out to admit a symmetric wait that SUMO tolerates only because its own defaults conceal
+it (`time-to-teleport=300`, `collision.action=teleport`), we are **not** obliged to reproduce the
+concealment — we may add a stronger, deterministic tie-break of our own. Two conditions on using the
+licence, so it does not become a licence to invent:
+
+1. **Divergence is declared, never silent.** Any rule that is ours and not SUMO's is named in the code
+   comment, in this doc, and in the tracker, with the measurement that forced it.
+2. **Divergence is a last resort, after a trace.** Seven reasoned-from-source interventions have been
+   refuted in this codebase against one trace that worked; an invented rule adopted *before* tracing
+   why the faithful one failed is the same error with more freedom to be wrong.
+
+The reverse also holds: faithfulness is not a defence if the result is unrealistic. If the ported
+behaviour is SUMO-exact and still wedges, it is still wrong for this product.
+
 ## 9. Success conditions
 
 1. **The repro's seed case is fixed, asserted directly, not via an aggregate:** on
