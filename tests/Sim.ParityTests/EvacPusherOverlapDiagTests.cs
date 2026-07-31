@@ -56,6 +56,7 @@ public class EvacPusherOverlapDiagTests
         // handle-pair -> (first step both active, their separation on that step, worst separation, step of worst)
         var firstSeen = new Dictionary<(int, int), (int Step, double Sep)>();
         var worst = new Dictionary<(int, int), (int Step, double Sep)>();
+        var perStep = new List<(int Count, double MinSep)>();
 
         // Horizon is env-tunable (EVAC_DIAG_STEPS, default 300 = what
         // ActivePushers_NeverInterpenetrate uses) so the "is this pre-existing?" question can be asked
@@ -72,6 +73,7 @@ public class EvacPusherOverlapDiagTests
                 poses.Add((h, x, y));
             }
 
+            var stepMin = double.PositiveInfinity;
             for (var a = 0; a < poses.Count; a++)
             {
                 for (var b = a + 1; b < poses.Count; b++)
@@ -94,8 +96,37 @@ public class EvacPusherOverlapDiagTests
                     {
                         worst[key] = (step, d);
                     }
+
+                    if (d < stepMin)
+                    {
+                        stepMin = d;
+                    }
                 }
             }
+
+            perStep.Add((poses.Count, stepMin));
+        }
+
+        // Per-step ACTIVE COUNT vs that step's minimum separation. Entry 12's question: does the
+        // overlap appear only above some pusher count? If separation degrades monotonically with count
+        // the failure is DENSITY (fix in the crowd solve or in how many pushers are activated); if it
+        // is uncorrelated, density is the wrong story and something else is at work.
+        _out.WriteLine("step,activePushers,minSepThisStep");
+        for (var i = 0; i < perStep.Count; i++)
+        {
+            if (i % 10 == 0 || perStep[i].MinSep < 1.0)
+            {
+                _out.WriteLine($"{i},{perStep[i].Count},{(double.IsPositiveInfinity(perStep[i].MinSep) ? -1.0 : perStep[i].MinSep):F3}");
+            }
+        }
+
+        var byCount = perStep.Where(r => !double.IsPositiveInfinity(r.MinSep))
+            .GroupBy(r => r.Count)
+            .OrderBy(g => g.Key);
+        _out.WriteLine("-- min separation observed at each active-pusher count --");
+        foreach (var g in byCount)
+        {
+            _out.WriteLine($"  activeCount={g.Key,3}  steps={g.Count(),4}  minSep={g.Min(r => r.MinSep):F3}");
         }
 
         var ranked = worst.OrderBy(kv => kv.Value.Sep).Take(6).ToList();

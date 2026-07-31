@@ -761,3 +761,55 @@ it makes the failing test a *coupled-system* failure rather than a junction one.
 
 **4. Housekeeping:** `TASKS-TODO.md` still states the parity iron law as 775/4; measured is 776/4
    (773 baseline + 3 T1 tests). Single-source it rather than editing the literal — see Entry 0.
+
+---
+
+## Entry 12 — AFTER — ⚠ ENTRY 11's DENSITY EXPLANATION IS WRONG. I conflated two different counts.
+
+Separation against the number of **simultaneously active** pushers, gate ON:
+
+| active pushers | steps | min separation |
+|---|---|---|
+| 2 | 5 | 7.490 |
+| 3 | 5 | 4.200 |
+| 4 | 1 | 8.361 |
+| **6** | 9 | **0.463** ← the failure |
+| 7 | 5 | 2.853 |
+| 8 | 21 | 2.875 |
+| 9 | 10 | 4.197 |
+| 10 | 9 | 1.975 |
+| 11 | 3 | 4.496 |
+
+**The 0.463 m overlap happens at SIX active pushers, and separation is comfortable at 8, 9, 10 and 11.**
+Separation does not degrade with count. **The density explanation is refuted.**
+
+**The error, named precisely so it is not repeated:** Entry 11 read "pairs tracked 25 → 72" as a density
+increase. It is not. That number is the count of **distinct pairs that were ever co-active across the
+whole run** — a cumulative total. The **simultaneous** count never exceeds 11 in either arm. I compared
+a cumulative quantity against a per-instant one and called the difference density. The A19
+`MaxNeighbours` link that followed from it is therefore unsupported too, and both are withdrawn.
+
+**What is actually demonstrated:** with the gate on, two specific pushers reach 0.463 m at a moment
+when only six are active. That is a **pairwise** failure at low density, not an overload — which makes
+a `MaxNeighbours` cap the *wrong* fix and would have been a wasted change.
+
+**This is the eighth wrong hypothesis of the session and the third caught inside my own analysis rather
+than by an external result.** Standing lesson, now earned twice over: *state what a number counts before
+comparing two of them.* "Pairs" and "pushers" and "pairs ever" and "pairs now" are four different
+quantities and I used two of them interchangeably.
+
+---
+
+## Entry 13 — BEFORE — next: the pairwise failure at 6 active pushers
+
+**Step.** Take pair (1190, 11512) and dump both agents' positions, velocities and ORCA neighbour sets
+per step from ~step 60 to ~step 85, with the gate on. Six agents is few enough to reason about
+exhaustively. Questions: are they in each other's neighbour set at all; does the ORCA solve return a
+velocity that closes the gap; or is one of them not being solved (wedged/deactivated) while the other
+drives into it?
+
+**No prediction recorded.** Eight for eight wrong. The instrument decides.
+
+**Note for whoever picks this up:** the gate is default ON and the suite is RED by exactly this one
+test. Everything else — 661 goldens, the L2 gridlock fix, the junction overlap fix — is green and
+verified. Do not let the red test be "fixed" by relaxing its threshold; it is measuring a real overlap.
