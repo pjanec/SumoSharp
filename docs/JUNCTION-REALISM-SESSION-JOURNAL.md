@@ -659,3 +659,49 @@ Engine-moved or `VehicleMover`-moved at that moment. Then decide `Sim.Evac` vs g
 
 **Also still open:** L1 gridlocks at 112/229 with every threshold — a second, untraced mechanism;
 the stopped-lane-change minimal repro; the pedestrian amplifier.
+
+---
+
+## Entry 10 — AFTER — the evac overlap is in the ORCA crowd solve, NOT in junction car-following
+
+New committed instrument `tests/Sim.ParityTests/EvacPusherOverlapDiagTests.cs` (always-passing; it
+reports, it does not assert a separation). Over 300 steps, 72 pusher pairs tracked:
+
+| pair | worst sep | at step | separation when first both active |
+|---|---|---|---|
+| **1190 / 11512** | **0.463 m** | 80 | **8.182 m** @ step 18 |
+| 3572 / 4765 | 1.975 | 36 | 1.975 @ 36 |
+| 1190 / 7941 | 2.553 | 81 | 9.450 @ 44 |
+
+**The worst pair starts 8.2 m apart and closes to 0.46 m over ~60 steps** — genuine convergence, not a
+placement artefact. So hypothesis (b) from Entry 10 BEFORE is out.
+
+**But the subsystem is NOT what I first printed.** My instrument's own verdict string said
+*"converged ⇒ car-following (Sim.Core)"*. That is an **unwarranted inference and it is now removed from
+the instrument**: pushers are moved by `VehicleMover`, which wraps `MixedTrafficCrowd` — **an ORCA
+solve**. The Engine's lane car-following never governs their separation. `BayExitLaneKeepClear`
+perturbs the *engine* traffic the pushers derive from; the separation itself is decided in the crowd.
+
+**So the gate did not break car-following.** What it did was change the inputs enough to expose that
+**evac pushers can interpenetrate under the ORCA solve**. Whether that is a pre-existing weakness this
+input merely provokes, or something the gate genuinely causes, is *not yet established* — the baseline
+minSep of 4.073 m shows only that the baseline traffic did not provoke it.
+
+**This is the seventh unwarranted conclusion caught this session, and the second one inside an
+instrument** (after the binder log's out-of-range read). Both were caught because the instrument was
+made to show its working rather than just a verdict. Worth keeping as a habit: *a probe that prints a
+conclusion will be believed; make it print the evidence.*
+
+---
+
+## Entry 11 — BEFORE — next
+
+1. **Establish whether the ORCA pusher overlap is pre-existing.** Cheapest test: perturb the baseline
+   (gate OFF) evac run some other way — e.g. a different `EvacConfig` seed or push count — and see
+   whether sub-metre pusher separations appear without the gate. If they do, the gate is a trigger and
+   the defect is `MixedTrafficCrowd`'s; if they never do, the gate is implicated and needs the deeper look.
+2. **L1 still gridlocks** at 112/229 across every threshold — a second, untraced mechanism. Re-run the
+   Entry 5/6 chain on a gate-ON L1 run, remembering the signal-phase masking that hid the first cycle.
+3. Stopped-lane-change minimal repro; pedestrian amplifier. Both untouched.
+
+**No prediction recorded.** Six for six wrong, plus two instrument errors.
