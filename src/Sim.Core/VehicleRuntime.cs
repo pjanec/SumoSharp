@@ -351,6 +351,17 @@ internal sealed class VehicleRuntime
     // (every committed scenario) -- there, no vehicle's WillPass is ever read.
     public bool WillPass;
 
+    // Determinism guard (journal Entry 30): LAST step's WillPass, copied for every active vehicle in
+    // a serial prologue at the top of Engine.ComputeWillPass, BEFORE any parallel pre-pass iteration
+    // runs. The internal-junction approach arm's pre-pass invocation reads a FOE's willPass while the
+    // pre-pass itself is writing WillPass one-vehicle-per-parallel-iteration, so reading the live
+    // field there returns last step's or this step's value depending on thread schedule (measured:
+    // 3 distinct FCDs from 4 identical runs). Reading THIS field instead is deterministic and
+    // parallel-safe -- and semantically the closest to what the racy read returned in practice (the
+    // last-settled value). The REAL pass still reads the live, fully-populated WillPass. Own-field,
+    // written only in the serial prologue.
+    public bool WillPassPrev;
+
     // P2-G Bug-3 (generalized): set true by Engine.RedLightConstraint when THIS vehicle is held by a
     // red/yellow traffic light this step (it can brake and will stop before the stop line, so it does
     // NOT enter the junction). Read in Engine.ComputeWillPass to force WillPass=false for such a

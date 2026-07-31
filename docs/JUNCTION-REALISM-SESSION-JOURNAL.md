@@ -2147,3 +2147,50 @@ csproj files CLAUDE.md already lists.
 L2 arrived 442 ≥ 433 / overlaps 3 ≤ 9 / stuckDwell 0 ✓, rate 1.155 < 1.396 ✓, battery ✓. The
 overlap gate that blocked the flip in Entries 26–27 is resolved by fixing the defect it was
 entangled with, not by rewriting the gate. T3 (default flip) is unblocked.
+
+## Entry 30 — Entry 29's numbers were RACY: a latent parallel-plan race, found, guarded, everything re-measured
+
+**How it surfaced.** Cross-checking Entry 29's battery rows, the same command produced L2
+442/8/67 in one invocation and 440/10/77 in the next. Four identical `Sim.Run` invocations then
+produced **two distinct FCDs (2+2)**; through the shim, four runs produced **three distinct FCDs** —
+while `--max-parallelism 1` produced **4/4 identical**, and the pre-T2.6 commit produced 4/4
+identical on the same workload. A thread-schedule race, latent before T2.6's trajectory change
+excited it.
+
+**The defect (pre-existing, NOT in the T2.6 code).** `fcd-divergence-onset` + the binder log
+localized the flip to one vehicle-step: `f_cyc_ccw2.29` on bay `:J01_7_0` at t=505 is held by
+`internalJunctionApproachArm` (foe `f_cyc_cw2.36`) in one outcome and admitted in the other.
+The approach arm (Engine.cs:8344) read `foe.WillPass` with **no `prePass` guard**. `WillPass` is
+written BY the willPass pre-pass itself, one vehicle per parallel iteration — so a pre-pass read of
+a foe's `WillPass` returns last step's or this step's value depending on thread schedule. The other
+two `WillPass` readers already had the guard (`foeYieldsThisStep = !prePass && !foe.WillPass` at
+:7752; `(prePass || foeMerging.WillPass)` at :8844); this arm — shipped with Entry 17/18's
+approach-arm work — was the one that missed it. The willPass pre-pass header's parallel-safety
+argument ("no pre-pass iteration reads another vehicle's WillPass") was true when written and
+silently invalidated by the arm's later addition.
+
+**The guard (committed with this entry), and the two variants that were TRIED AND REFUTED first:**
+
+- **A (blanket-pass + recompute flag):** term `!prePass && !foe.WillPass` (crossing-arm convention)
+  + `CrossingYieldTaken` on a pre-pass block. Deterministic (7/7 identical) — and it **wedged the
+  saturated ON arm terminally**: L2 arrived 442 → **284**, stuckDwell 0 → **708**. The blanket
+  treatment turns bay egos' pre-pass intents to 0 — the "pathological all-false WillPass" state
+  `ResolveRightBeforeLeftCycles`' header warns about.
+- **B (Prev semantics + recompute flag):** byte-identical to A on this workload — so the flag, not
+  the semantics, made the wedge: forcing the real pass to re-apply the LIVE term un-fused the bay
+  vehicles, and the shipped behaviour those gridlock fixes were measured under had (racily)
+  evaluated the term on the pre-pass value and fused it.
+- **C (SHIPPED): Prev semantics, no flag.** The pre-pass reads the foe's LAST-step `WillPass`
+  (`VehicleRuntime.WillPassPrev`, snapshotted serially before the pre-pass dispatches); the real
+  pass reads the live field as before; fusion untouched. This is the racy read's practical value
+  made deterministic — the minimal change that preserves the shipped effective semantics.
+
+**Verified (C):** parallel ×N + serial → all byte-identical on the net that split 3 ways before;
+L2 arm0 **436 arrived / 14 running / 1 overlap / stuckDwell 0**, arm1 **440 / 10 / 3 / 0** — no
+wedge, and the T2.6 improvements hold under determinism.
+
+**Standing lesson (new trap):** *a determinism claim is workload-relative — a race can sit dormant
+for months of green suites until an unrelated trajectory change lines two threads up on the same
+transition step.* Any change that shifts saturated-net trajectories should re-run the cheap
+repeat-hash check (`N identical runs, compare FCD hashes`) before its numbers are trusted; Entry
+29's gate table was measured on racy code and superseded by the re-measurement below.

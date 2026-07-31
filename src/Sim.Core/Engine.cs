@@ -5423,7 +5423,7 @@ public sealed partial class Engine : IEngine
         // (non-binding) whenever InternalJunctionAdmissionGate is off (the default) -- see the
         // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
         // header comment for the parity argument and the deliberate omissions.
-        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var iajByApproachArm, out var iajFoeIdx); if (dc < vPos) { binder = iajByApproachArm ? (byte)17 : (byte)14; blockerIdx = iajFoeIdx; } vPos = Math.Min(vPos, dc);
+        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var iajByApproachArm, out var iajFoeIdx, prePass); if (dc < vPos) { binder = iajByApproachArm ? (byte)17 : (byte)14; blockerIdx = iajFoeIdx; } vPos = Math.Min(vPos, dc);
         dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) { binder = 15; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
@@ -6004,6 +6004,16 @@ public sealed partial class Engine : IEngine
         // near-junction traffic. When NOT eligible, ReuseIntent stays false and the exact original
         // two-pass path runs.
         var eligible = FusionEligible;
+
+        // Determinism guard (journal Entry 30, VehicleRuntime.WillPassPrev): snapshot LAST step's
+        // WillPass for every active vehicle BEFORE any pre-pass iteration runs, so the one pre-pass
+        // consumer of a FOE's willPass (the internal-junction approach arm) reads a value that cannot
+        // race with the pre-pass's own per-vehicle WillPass writes. Serial on purpose -- it is one
+        // bool copy per active vehicle and MUST complete before the parallel dispatch below.
+        foreach (var pv in ActiveVehicles())
+        {
+            pv.WillPassPrev = pv.WillPass;
+        }
 
         if (ShouldParallelizePlan())
         {
@@ -8168,7 +8178,7 @@ public sealed partial class Engine : IEngine
 
     private double InternalJunctionAdmissionConstraint(
         VehicleRuntime v, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed,
-        out bool byApproachArm, out int blockerIdx)
+        out bool byApproachArm, out int blockerIdx, bool prePass = false)
     {
         // DIAGNOSTIC ONLY (task split of tag 14, JUNCTION-APPROACH-ARM-DESIGN.md T3/T4): this arm has
         // TWO independent block reasons -- the lane-foe loop just below (a foe already STANDING on a
@@ -8341,7 +8351,19 @@ public sealed partial class Engine : IEngine
 
                 // MSLink.cpp:918, `if (!avi.willPass) { return false; }` -- a foe that will not proceed
                 // this step (held at its own red, say) is not a blocker.
-                if (!foe.WillPass)
+                //
+                // THE DETERMINISM GUARD (journal Entry 30). WillPass is written BY the pre-pass
+                // itself, one vehicle per parallel iteration, so a pre-pass read of a FOE's live
+                // WillPass returns last step's or this step's value depending on thread schedule --
+                // measured as 3 distinct FCDs from 4 identical runs on junction-realism-L2, all
+                // stable at --max-parallelism 1. In the pre-pass, read the foe's LAST-step value
+                // (WillPassPrev, snapshotted serially before the pre-pass dispatches) -- what the racy
+                // read returned in practice, made deterministic. NOT the crossing arm's blanket
+                // convention (`!prePass && ...`, :7752): treating every foe as passing here turns bay
+                // egos' pre-pass intents to 0, which is the "pathological all-false WillPass" state
+                // ResolveRightBeforeLeftCycles' header warns about -- measured as a terminal 708-step
+                // wedge on the saturated L2 (arrived 442 -> 284) before this was changed to Prev.
+                if (prePass ? !foe.WillPassPrev : !foe.WillPass)
                 {
                     continue;
                 }
