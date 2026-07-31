@@ -31,7 +31,7 @@
 
   <!-- Remote/DDS path ONLY; see the design-contract comment above. -->
   <ItemGroup Condition="'$(City3DRemote)'=='true'">
-    <PackageReference Include="SumoSharp.Replication.Dds" Version="0.1.0" />
+    <PackageReference Include="SumoSharp.Dds" Version="0.1.0" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(City3DRemote)'=='true'">

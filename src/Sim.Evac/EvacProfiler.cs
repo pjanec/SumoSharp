@@ -26,7 +26,9 @@ public sealed class EvacProfiler
         AutoTrackScan,
     }
 
-    private static readonly int PhaseCount = Enum.GetValues<Phase>().Length;
+    // Enum.GetValues(Type) (not the generic Enum.GetValues<T>(), which is net5+ only) so this compiles
+    // on netstandard2.1 as well as net8.0 (§V2 E1: Evac folds into the portable SumoSharp package).
+    private static readonly int PhaseCount = Enum.GetValues(typeof(Phase)).Length;
 
     private readonly long[] _phaseTicks = new long[PhaseCount];
     private long _tickTicks;

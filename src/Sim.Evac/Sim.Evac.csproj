@@ -5,16 +5,17 @@
        SetVehicleParams, SetDestination, Despawn, AddObstacle, CrowdSource/WorldDisc, OrcaCrowd)
        but the driving core never references it, so nothing here can move the determinism hash. -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- net8.0 + netstandard2.1 so this folds into the single portable SumoSharp package
+         (docs/SUMOSHARP-PACKAGING-DESIGN.md §V2 E1) alongside Core/Pedestrians, giving Unity
+         (Mono/IL2CPP) / Godot reach. Pure managed over Core seams; parity-inert. -->
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
 
-    <!-- NuGet: the panic-evacuation subsystem — an optional domain extension layered over
-         Sim.Core's public seams. Parity-exempt app layer. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Evac</PackageId>
-    <Description>SumoSharp — panic-evacuation subsystem for the SumoSharp traffic engine: fear/panic decision, pedestrians-as-obstacles, and a lightweight navmesh, built on SumoSharp.Core's frozen seams. Parity-exempt app layer. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+    <!-- Not published as its own package any more (§V2 E1/E4): the panic-evacuation subsystem ships
+         INSIDE the single `SumoSharp` engine package. IsPackable falls back to false via
+         Directory.Build.props; the bundling project (packaging/SumoSharp) emits this DLL into lib/. -->
   </PropertyGroup>
 
   <ItemGroup>
@@ -25,7 +26,16 @@
          FakeNavMesh/radial OrcaCrowd EvacDirector uses. No cycle: Sim.Pedestrians never references
          Sim.Evac. -->
     <ProjectReference Include="..\Sim.Pedestrians\Sim.Pedestrians.csproj" />
-    <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
+    <!-- Compiler-support polyfills (init/record/required) for netstandard2.1; compiles away on net8.0
+         (#if !NET8_0_OR_GREATER), so it cannot affect the net8 parity build — same pattern as
+         Sim.Pedestrians / Sim.LiveCity. -->
+    <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
+  </ItemGroup>
+
+  <!-- netstandard2.1 lacks in-box Span<T>/Memory<T>; net8.0 has them in the BCL. Same pinned line
+       the sibling portable projects use. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
   </ItemGroup>
 
 </Project>

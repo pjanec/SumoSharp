@@ -1,0 +1,61 @@
+# Build, test, and ARTIFACT the 2D raylib desktop viewer (docs/VIEWERS.md).
+# The viewer is a repo-built app, not a NuGet package, so this workflow builds its own solution
+# (solutions/SumoSharp.Viewer.Raylib.sln — native Raylib-cs/rlImgui restore on the runner), runs its headless
+# tests, and publishes the viewer binary as a downloadable artifact so anyone can grab a build without
+# a local toolchain. Separate from the hermetic parity gate (ci.yml) on purpose.
+#
+# Coverage note: the raylib viewer and the Godot viewer share the engine + Replication + DDS transport +
+# Sim.Viewer.Motion DR reconstruction, and this viewer exercises both local and DDS modes — so a green
+# run here validates the whole shared data/DR path both viewers ride (only Godot's own 3-D rendering is
+# not covered here; the Godot data path is covered by the CityLib tests in secondary-solutions.yml).
+name: viewer-raylib
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["**"]
+    paths:
+      - "src/Sim.Core/**"
+      - "src/Sim.Ingest/**"
+      - "src/Sim.Replication/**"
+      - "src/Sim.Replication.Dds/**"
+      - "src/Sim.Viewer.Motion/**"
+      - "src/Sim.Viewer.Core/**"
+      - "src/Sim.Viewer.Raylib/**"
+      - "src/Sim.Viewer/**"
+      - "src/Sim.LiveCity/**"
+      - "src/Sim.Pedestrians/**"
+      - "src/Sim.Evac/**"
+      - "src/Sim.Host/**"
+      - "tests/Sim.Viewer.Tests/**"
+      - "solutions/SumoSharp.Viewer.Raylib.sln"
+      - ".github/workflows/viewer-raylib.yml"
+
+jobs:
+  build-test-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build (Release) — restores Raylib-cs / rlImgui-cs natives
+        run: dotnet build solutions/SumoSharp.Viewer.Raylib.sln -c Release
+
+      # Sim.Viewer.Tests are headless (verified — no GL/window), so no Xvfb needed here.
+      - name: Test (headless)
+        run: dotnet test solutions/SumoSharp.Viewer.Raylib.sln -c Release --no-build
+
+      - name: Publish the 2D raylib viewer binary
+        run: dotnet publish src/Sim.Viewer/Sim.Viewer.csproj -c Release -o ./viewer-bin
+
+      - name: Upload viewer binary as artifact (linux-x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sumosharp-viewer-2d-linux-x64
+          path: ./viewer-bin/*

@@ -17,8 +17,6 @@
 
     <!-- NuGet: the microsimulation engine (Engine, obstacle store, read surface, runtime demand,
          async runner). The one package most users install; depends on SumoSharp.Ingest. -->
-    <IsPackable>true</IsPackable>
-    <PackageId>SumoSharp.Core</PackageId>
     <Description>SumoSharp — an unofficial C#/.NET reimplementation of Eclipse SUMO's microscopic traffic-simulation core, validated for behavioural parity against SUMO. Load a SUMO network, spawn/route vehicles at runtime, step deterministically or run async, read vehicle state (SoA spans), and inject live external obstacles. For games, training pipelines, and digital twins. Not affiliated with the Eclipse SUMO project.</Description>
   </PropertyGroup>
 
