@@ -135,6 +135,9 @@ internal static class Program
         // A/B, per CLAUDE.md measurement discipline #10 (an inherited value is indistinguishable from a
         // measured one).
         engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCC", engine.JunctionPhysicalOccupancyGate);
+        // The BOX-BLOCK half (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 6/7): don't release a
+        // vehicle from a cont bay when its own exit lane cannot accept it. Same EnvGate semantics.
+        engine.BayExitLaneKeepClear = EnvGate("SUMOSHARP_BAYEXITKEEPCLEAR", engine.BayExitLaneKeepClear);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

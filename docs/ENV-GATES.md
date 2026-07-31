@@ -157,6 +157,7 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 | --- | --- | --- | --- |
 | `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `true` |
 | `SUMOSHARP_PHYSOCC` | `Engine.JunctionPhysicalOccupancyGate` | **engine default** | `false` |
+| `SUMOSHARP_BAYEXITKEEPCLEAR` | `Engine.BayExitLaneKeepClear` | **engine default** | `false` |
 
 **Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default
 alone, so a plain `Sim.Run` invocation is the shipped behaviour. Contrast the three drop-in gates

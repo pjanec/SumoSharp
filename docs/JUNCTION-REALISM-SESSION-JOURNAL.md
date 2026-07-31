@@ -499,3 +499,61 @@ cross-net battery against the committed baseline, and the parity gate.
 **Success condition, stated in advance:** L1 `arrived` moves materially above 63 (SUMO: 450). If it
 does not, the mechanism is named correctly but is not the binding one, and that null gets published
 like the others.
+
+---
+
+## Entry 7 — AFTER — the gridlock is FIXED on L2 (450/450, matching SUMO). One real regression found.
+
+`Engine.BayExitLaneKeepClear` implemented (default **OFF**): before releasing ego from a cont bay onto
+its final internal lane, require that ego's own **exit lane** has room for it — rear-most occupant's
+**back bumper** (`Pos − Length`, front-bumper convention) ≥ ego's `Length + MinGap`. This is SUMO's
+`checkRewindLinkLanes` half, placed here because `KeepClearConstraint` is structurally inert for this
+transition (Entry 6).
+
+**The A/B — and this is the first thing all session to move the gridlock:**
+
+| cell | arrived | running | |
+|---|---|---|---|
+| L1 gate OFF | 63 | 226 | GRIDLOCK |
+| L1 gate ON | **112** | 229 | GRIDLOCK |
+| L2 gate OFF | 320 | 130 | GRIDLOCK |
+| **L2 gate ON** | **450** | **0** | **DRAINED** |
+| SUMO-honest (both) | 450 | 0 | DRAINED |
+
+**L2 now drains completely — 450/450, 0 overlap pairs at t_end, identical to honest SUMO.** L1 improves
+63 → 112 (+78%) but still deadlocks, so L1 carries at least one further mechanism.
+
+**Parity:** **776/4 with the gate OFF** (provably inert when disabled) and, with it force-enabled as a
+probe, **all 661 goldens still byte-identical** — only ONE test in the whole suite moves.
+
+### ⚠ The one regression, and why this does NOT ship default-ON
+
+`EvacPhase3Tests.ActivePushers_NeverInterpenetrate` fails with the gate on and passes with it off —
+**deterministically, verified by running it alone in both arms**, so it is attributable, not a flake.
+
+"Active pushers" are **vehicles** (`EvacDirector.ActivePushers()` filters on `VehicleMover.IsActive`
+and yields a `VehicleHandle`), so this is a **car–car proximity violation**: two pusher vehicles come
+within **< 1.0 m** of each other. That is a weak floor — 5 m vehicles need far more than 1 m — so
+failing it means two of them are essentially on top of each other.
+
+**Not investigated yet**, and deliberately not hand-waved: holding vehicles at bay ends changes where
+they stack, and something about that lets two evac pushers converge. Until that is understood the gate
+stays **default OFF**. It is the exact class of defect this workstream exists to remove, so shipping it
+to fix a different one would be self-defeating.
+
+---
+
+## Entry 8 — BEFORE — next steps, in order
+
+1. **Cross-net battery with the gate ON** (running) — does any committed net regress on
+   arrived / still-running / `stuckDwell` / overlap pairs?
+2. **Diagnose the evac pusher regression.** Instrument exists: `--binder-log` will say what holds the
+   two converging pushers. Expect nothing; five of five predictions this session have been wrong.
+3. **L1 still gridlocks** (112/341). Re-run the Entry-5/6 chain on the gate-ON L1 run: the wait-for
+   graph plus the alternating-binder check, since the first cycle was masked by the signal phase and
+   the same masking will apply again.
+
+**Standing caution for whoever picks this up:** the temptation now is to ship the gate because "L2
+drains and the goldens are clean". One committed test says it introduces a car–car proximity violation.
+That is the same trade this workstream already refused once (the occupancy gate: overlaps halved,
+throughput ruined) and it should be refused again until the regression is understood.

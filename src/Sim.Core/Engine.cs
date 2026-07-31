@@ -8098,6 +8098,73 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // JUNCTION-APPROACH-ARM Entry 6/7 (docs/JUNCTION-REALISM-SESSION-JOURNAL.md): the BOX-BLOCK
+        // half -- do not release ego from its cont bay onto the final internal lane when ego's own EXIT
+        // lane cannot accept it. SUMO's `checkRewindLinkLanes` ("don't commit into a junction lane whose
+        // exit you cannot fully clear"); MSVehicle.cpp.
+        //
+        // WHY IT IS HERE AND NOT IN KeepClearConstraint. `KeepClearConstraint` (:7719) opens with
+        //     if (... || v.LaneId == egoInternalLaneId || ...) return +infinity;   // "already committed"
+        // and a stage-1 BAY *is* an internal lane, so keep-clear is STRUCTURALLY INERT for the
+        // bay->stage-2 advance: it only ever protects the first entry into a junction from an approach
+        // lane. Measured consequence, traced end to end: `f_cyc_ccw.6` is released from bay `:J10_11_0`
+        // at t=147 onto `:J10_15_0` while its exit lane `v1_0` already holds 9 stopped vehicles whose
+        // nearest back bumper is at -0.41 m (i.e. already inside the junction). It halts 0.5 m short of
+        // clearing the box and never moves again -- and that single stranding closes a 14-vehicle
+        // circular wait that holds all 226 vehicles of the L1 gridlock. SUMO's same-id vehicle is
+        // through the box in two steps and queues OUTSIDE it.
+        //
+        // The car-following arm that stops ego (`crossJxnLeader`) is CORRECT -- there is genuinely no
+        // room. The defect is upstream: ego should never have been admitted.
+        if (!blocked && BayExitLaneKeepClear)
+        {
+            // Ego's exit lane = the first NON-internal lane at or after the next sequence slot. A cont
+            // turn is bay -> stage 2 -> exit, so this skips however many internal stages remain rather
+            // than assuming exactly one.
+            var exitLaneHandle = -1;
+            for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
+            {
+                var h = _laneSeqPool[v.LaneSeqStart + i];
+                if (!_isInternalLane[h])
+                {
+                    exitLaneHandle = h;
+                    break;
+                }
+            }
+
+            if (exitLaneHandle >= 0)
+            {
+                // Room required for ego to sit clear of the junction: its own length plus minGap. The
+                // occupancy test is the REAR-MOST vehicle's BACK BUMPER (pos - length), because `Pos` is
+                // the front-bumper arc position (SUMO's getPositionOnLane convention) -- using `Pos`
+                // directly here would overstate the free space by a whole vehicle length, which is the
+                // exact error docs/SUMOSHARP-ISSUE-stopped-lane-change-overlap.md §2 warns about.
+                var required = v.VType.Length + v.VType.MinGap;
+                var onExit = _neighborQuery!.OnLane(exitLaneHandle);
+                var rearMostBack = double.PositiveInfinity;
+                for (var i = 0; i < onExit.Count; i++)
+                {
+                    var other = onExit[i];
+                    if (ReferenceEquals(other, v) || other.IsParked)
+                    {
+                        continue;
+                    }
+
+                    var back = other.Kinematics.Pos - other.VType.Length;
+                    if (back < rearMostBack)
+                    {
+                        rearMostBack = back;
+                    }
+                }
+
+                if (rearMostBack < required)
+                {
+                    blocked = true;
+                    blockerIdx = -1; // a LANE-FULL condition, not a single identifiable foe
+                }
+            }
+        }
+
         if (!blocked)
         {
             return double.PositiveInfinity;
@@ -13310,6 +13377,20 @@ public sealed partial class Engine : IEngine
     // globally, so its answer is zone-scoped. Tables: JUNCTION-REALISM-TRACE-FINDINGS.md §8/§9 and the
     // session journal Entry 1-AFTER.
     public bool InternalJunctionApproachArm { get; set; } = true;
+
+    // JUNCTION-REALISM Entry 6/7: the BOX-BLOCK half of cont-bay admission -- do not release ego from
+    // its stage-1 bay when ego's own EXIT lane cannot accept it (SUMO's `checkRewindLinkLanes`).
+    //
+    // It exists as a separate gate because `KeepClearConstraint` is structurally inert here: that
+    // constraint returns +infinity once `v.LaneId == egoInternalLaneId`, and a bay IS an internal lane,
+    // so nothing has ever guarded the bay->stage-2 advance against a full exit. Traced consequence: one
+    // vehicle stranded 0.5 m short of clearing junction J10 closes a 14-vehicle circular wait that holds
+    // all 226 vehicles of the L1 gridlock (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 6).
+    //
+    // DEFAULT OFF until measured. Unlike the approach arm this is NOT expected to be golden-inert -- it
+    // changes when vehicles enter junctions -- so the deciding measurement is the repro A/B plus the
+    // cross-net battery plus a SUMO diff for any golden that shifts.
+    public bool BayExitLaneKeepClear { get; set; }
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never
