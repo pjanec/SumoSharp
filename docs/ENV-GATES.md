@@ -151,6 +151,25 @@ rather than `--flag`s because they are not SUMO options and must not appear in t
 | `SUMOSHARP_ISLEADERFIX` | `Engine.JunctionIsLeaderGate` | `false` | `true` ⚠ |
 | `SUMOSHARP_INTERNALJUNCTIONFIX` | `Engine.InternalJunctionAdmissionGate` | `false` | `true` ⚠ |
 
+## `Sim.Run` (the scenario→FCD CLI)
+
+| Gate | Sets | Unset ⇒ | Engine default |
+| --- | --- | --- | --- |
+| `SUMOSHARP_APPROACHARM` | `Engine.InternalJunctionApproachArm` | **engine default** | `true` |
+
+**Behavioural**, and the SAFE `EnvGate(name, engineDefault)` form — unset leaves the engine default
+alone, so a plain `Sim.Run` invocation is the shipped behaviour. Contrast the three drop-in gates
+above, which are the unsafe `== "1"` two-state form.
+
+It exists so the arm's before/after can be measured through **one binary and one code path**: rebuilding
+with a flipped default would make the two arms cross-instrument, which CLAUDE.md #8/#13 rules invalid.
+
+*The deciding measurement* (ENV-GATES' own rule 3 — a gate whose deciding measurement is unnamed is a
+gate nobody can retire): the arm is retired to unconditional once
+`docs/JUNCTION-APPROACH-ARM-TRACKER.md`'s T6/T6b tables show no committed net regressing on arrived /
+still-running / junction dwell / overlap pairs, with the goldens byte-identical. Until then it stays a
+flag so the A/B remains reproducible.
+
 ## Adding a gate
 
 1. Read it with **`EnvGate(name, engineDefault)`**, not `== "1"`, unless you can show the engine default is

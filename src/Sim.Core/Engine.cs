@@ -7996,6 +7996,75 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // JUNCTION-APPROACH-ARM T3/T4 (docs/JUNCTION-APPROACH-ARM-DESIGN.md §2/§5): the OTHER half of
+        // `MSLink::setRequestInformation`'s split. The loop above is `myFoeLanes` and asks "who is
+        // STANDING in my way"; this one is `myInternalLinkFoes`, consumed by `MSLink::opened()`
+        // (MSLink.cpp:845/856) -> `blockedAtTime` -> the foe link's `myApproachingVehicles`, and asks
+        // "who is APPROACHING and will be in my way".
+        //
+        // Without it a foe ONE STEP upstream of the conflict lane is invisible: the lane scan sees an
+        // empty lane, ego is admitted, and the foe arrives on that lane in the same step ego does.
+        // Measured on scenarios/_diag/junction-realism-L1 at t=49->50 as a 1.94 m interpenetration
+        // between a left-turner and the opposing straight -- where SUMO holds the very same vehicle in
+        // the very same bay for ten seconds (docs/JUNCTION-REALISM-TRACE-FINDINGS.md §4).
+        if (!blocked
+            && InternalJunctionApproachArm
+            && _network.InternalLinkFoes is not null
+            && _network.InternalLinkFoes.TryGetValue(internalJunction.Id, out var linkFoeLaneHandles))
+        {
+            for (var i = 0; i < linkFoeLaneHandles.Count && !blocked; i++)
+            {
+                var foeLaneHandle = linkFoeLaneHandles[i];
+                var foe = FindCrossFoeVehicle(v, foeLaneHandle);
+                if (foe is null || foe.IsParked)
+                {
+                    continue;
+                }
+
+                // The lane-foe loop above OWNS every vehicle already standing on an internal lane.
+                // Skipping them here is NOT mere de-duplication -- it is what makes this arm
+                // ANTISYMMETRIC, which is the property that stops it deadlocking. CLAUDE.md lesson 11:
+                // a symmetric predicate cannot arbitrate a cycle, and that is precisely how
+                // InternalJunctionAdmissionGate wedged four cars for 4890 steps before its entry-order
+                // sub-gate existed. The argument here: this arm's EGO is always on a cont BAY (the
+                // `Cont` + `IntLanes[i] != ownLane` tests above establish exactly that), while every foe
+                // reaching the test below is on a NORMAL approach lane. A vehicle on a normal lane can
+                // never be this arm's ego, so no two vehicles can block each other THROUGH THIS ARM.
+                // Pinned by InternalJunctionApproachArmTests, not left as prose.
+                if (_isInternalLane[foe.LaneHandle])
+                {
+                    continue;
+                }
+
+                // MSLink.cpp:918, `if (!avi.willPass) { return false; }` -- a foe that will not proceed
+                // this step (held at its own red, say) is not a blocker.
+                if (!foe.WillPass)
+                {
+                    continue;
+                }
+
+                // THE BOUND THAT KEEPS THIS FROM OVER-YIELDING, and the reason it is not a bare
+                // "is anyone routed through here" test. `_foeCrossFirst/Second` registers a vehicle
+                // against every internal lane still ahead on its route HOWEVER FAR AWAY, unlike SUMO's
+                // `myApproachingVehicles`, which only holds vehicles that have actually registered an
+                // approach. Unbounded, a car 200 m back on a stub would hold the bay forever -- the same
+                // failure that once left 58.8% of city-300 permanently stuck (see the crossing arm's
+                // note at :7470). This is deliberately the IDENTICAL reservation formula that arm's
+                // `foeNotApproaching` uses, which is the gate
+                // NEED-priorityjunction-farrouted-foe-falsepositive.md added for that over-yield, so the
+                // two arms cannot disagree about who counts as "approaching".
+                var foeMaxV = KraussModel.MaxNextSpeed(foe.Kinematics.Speed, foe.VType, dt);
+                var foeReservationDist = KraussModel.Speed2Dist(foeMaxV, dt)
+                    + KraussModel.BrakeGap(foeMaxV, foe.VType.Decel, foe.VType.Tau, dt);
+                if (SeenToInternalLaneEntry(foe, foeLaneHandle) > foeReservationDist)
+                {
+                    continue;
+                }
+
+                blocked = true;
+            }
+        }
+
         if (!blocked)
         {
             return double.PositiveInfinity;
@@ -13162,6 +13231,25 @@ public sealed partial class Engine : IEngine
     // admission gate reproduces its previously-measured behaviour bit for bit, so every earlier
     // measurement in the log remains reproducible and this one is attributable.
     public bool InternalJunctionAdmissionEntryOrder { get; set; } = true;
+
+    // JUNCTION-APPROACH-ARM T3/T4 (docs/JUNCTION-APPROACH-ARM-{DESIGN,TASKS,TRACKER}.md). Sub-gate of
+    // InternalJunctionAdmissionGate (INERT unless that one is also on): adds the `myInternalLinkFoes`
+    // half of `MSLink::setRequestInformation`'s split -- "who is APPROACHING the conflict lane and will
+    // be in my way" -- alongside the `myFoeLanes` half we already had, which only asks who is STANDING
+    // on it. `NetworkModel.InternalLinkFoes` (T1) is the parsed foe set; the arm itself lives in
+    // `InternalJunctionAdmissionConstraint`, where its full reasoning and its two guards are commented.
+    //
+    // WHY IT IS NEEDED, in one measurement rather than an argument: on
+    // scenarios/_diag/junction-realism-L1 the occupancy-only gate admits a left-turner out of its bay at
+    // t=49->50 against an opposing straight that is one step upstream of the conflict lane, producing a
+    // 1.94 m interpenetration -- where SUMO, on byte-identical inputs, holds that vehicle in that bay for
+    // ten seconds. docs/JUNCTION-REALISM-TRACE-FINDINGS.md §4 has the step-by-step diff.
+    //
+    // KEPT AS A SEPARATE FLAG for the same reason as the entry-order sub-gate above: so the A/B has
+    // exactly ONE variable and every earlier measurement in the F3 log stays reproducible with it off.
+    // It is also what the non-vacuity tests toggle -- a guard that cannot be turned off cannot be proven
+    // to be doing anything.
+    public bool InternalJunctionApproachArm { get; set; } = true;
 
     // Port of SUMO's `--ignore-junction-blocker TIME` option (MSFrame.cpp:370-371), INCLUDING its default.
     // "Ignore vehicles which block the junction after they have been standing for SECONDS (-1 means never

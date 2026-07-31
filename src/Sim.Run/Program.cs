@@ -105,6 +105,19 @@ internal static class Program
         fcdOut ??= Path.Combine(scenarioDir, "engine.fcd.xml");
 
         var engine = new Engine { CoordinatedLaneChange = coordinatedLc };
+        // JUNCTION-APPROACH-ARM: an A/B toggle for Engine.InternalJunctionApproachArm, so the arm's
+        // before/after can be measured through ONE binary and one code path (CLAUDE.md measurement
+        // discipline #8/#13 -- cross-instrument comparisons are invalid, and rebuilding with a flipped
+        // default would be exactly that).
+        //
+        // Semantics are `EnvGate(name, engineDefault)` -- UNSET means the ENGINE DEFAULT, not `false`.
+        // docs/ENV-GATES.md "Adding a gate" mandates exactly this and forbids the bare `== "1"` form,
+        // because `== "1"` makes an unset variable silently force the gate OFF and override the engine
+        // default. That is not hypothetical: it is what `SumoShim` does to the three junction gates
+        // today, so every drop-in shim invocation runs with gates the engine and the goldens have ON
+        // (already documented in ENV-GATES.md and tracked in TASKS-TODO.md -- not a new finding, and
+        // deliberately not fixed here).
+        engine.InternalJunctionApproachArm = EnvGate("SUMOSHARP_APPROACHARM", engine.InternalJunctionApproachArm);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)
@@ -174,4 +187,13 @@ internal static class Program
         var matches = Directory.GetFiles(dir, pattern);
         return matches.Length == 1 ? matches[0] : null;
     }
+
+    // docs/ENV-GATES.md "Adding a gate" rule 1: read a gate as (unset => engine default), never as a
+    // bare `== "1"`, which silently forces an unset gate OFF regardless of what the engine ships.
+    private static bool EnvGate(string name, bool engineDefault)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
 }
