@@ -219,3 +219,10 @@ Some of these reference docs that live in *their* repo, not this one; those link
 - **Record the failures.** A doc describing something that did not work is worth more here than one
   describing something that did, because the success is also in the code and the tests, and the failure is
   nowhere else.
+
+## Junction realism / gridlock (branch `claude/sumosharp-traffic-bugs-g1y9hl`)
+
+**Start at `JUNCTION-REALISM-RESUME.md`** — self-contained cold-start page for the junction
+drive-through / junction-overlap / gridlock / lateral-lane-change workstream: what is fixed and
+shipping, the next task with an exact repro, the backlog in owner-priority order, the committed
+instruments, and the traps that cost this workstream real time.

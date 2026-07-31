@@ -5,8 +5,11 @@ next command) written *and committed* before the work, and an **AFTER** entry wi
 happened. If this session is compacted or dies, a fresh session reads the last entry and continues
 without re-deriving anything.
 
-**Read order for a fresh session:** this file's last entry → `JUNCTION-REALISM-TRACE-FINDINGS.md`
-(what is established, §5 lists what is NOT) → `JUNCTION-APPROACH-ARM-{DESIGN,TASKS,TRACKER}.md`.
+**Read order for a fresh session:** **`JUNCTION-REALISM-RESUME.md` FIRST** — it is the self-contained
+cold-start page (status, the next task with its exact repro, the backlog in owner-priority order, the
+instruments, and the traps). Come here only for the full BEFORE/AFTER trail, then
+`JUNCTION-REALISM-TRACE-FINDINGS.md` (§5 lists what is NOT established) →
+`JUNCTION-APPROACH-ARM-{DESIGN,TASKS,TRACKER}.md`.
 
 **Branch:** `claude/sumosharp-traffic-bugs-g1y9hl`.
 
