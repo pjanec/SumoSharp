@@ -2062,13 +2062,23 @@ public sealed partial class Engine : IEngine
     public bool DiagLaneChangeLog { get; set; }
     private readonly long[] _lcByPathChangerSpeed = new long[12];
     private readonly long[] _lcTargetNearStopped = new long[4]; // per path: commits with a target car <20m going <0.5
-    private void RecordLaneChangeCommit(int path, VehicleRuntime v, VehicleRuntime? nLead, VehicleRuntime? nFollow, bool bypassesMinSpeed)
+    private void RecordLaneChangeCommit(int path, VehicleRuntime v, VehicleRuntime? nLead, VehicleRuntime? nFollow, bool bypassesMinSpeed, string tag = "")
     {
         if (!DiagLaneChangeLog) return;
         // Count EXECUTED swaps only: the 3 CommitLaneChange paths are suppressed below LaneChangeMinSpeed
         // (so a stopped "decision" there never actually swaps); keep-right commits inline and bypasses
         // that guard, so it DOES execute while stopped. Mirror that here so the histogram = real swaps.
         if (!bypassesMinSpeed && LaneChangeMinSpeed > 0.0 && v.Kinematics.Speed < LaneChangeMinSpeed) return;
+        // Entry 34b per-EVENT attribution (committed instrument, Measurement discipline #8): the
+        // aggregate [path][speed] histogram cannot say WHICH path produced a specific FCD-observed
+        // stopped change; this line joins the two instruments on (t, veh). Same gate as the
+        // histogram -- off on every golden.
+        if (tag.Length > 0)
+        {
+            Console.Error.WriteLine(
+                $"[lccommit] t={CurrentTime:F1} veh={v.Def.Id} path={tag} lane={v.LaneId} "
+                + $"pos={v.Kinematics.Pos:F2} spd={v.Kinematics.Speed:F2}");
+        }
         var spd = v.Kinematics.Speed;
         var sb = spd < 0.5 ? 0 : spd < 2.0 ? 1 : 2;
         System.Threading.Interlocked.Increment(ref _lcByPathChangerSpeed[path * 3 + sb]);
@@ -5941,7 +5951,7 @@ public sealed partial class Engine : IEngine
             if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !IsTargetLaneOverlapped(v, targetHandle, neighbors, dt)
                 && !LaneChangeSlotContested(v, targetHandle, neighbors))
             {
-                RecordLaneChangeCommit(0, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (EV give-way vacate)
+                RecordLaneChangeCommit(0, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "giveWay"); // #15 float analysis (EV give-way vacate)
                 CommitLaneChange(v, targetHandle, target.Id);
                 return true;
             }
@@ -12409,6 +12419,7 @@ public sealed partial class Engine : IEngine
         // The remaining route's lane assignment changed -> the keep-right stayOnBest memo may be
         // stale even on the same lane (same reasoning as CommandBuffer.ReplaceRoute's own reset).
         v.KeepRightStayCacheLane = -1;
+        v.LeftStayCacheLane = -1;
         MarkStrandReason(0); // reResolveOK -- recovered, NOT stranded
         return true;
     }
@@ -12664,6 +12675,7 @@ public sealed partial class Engine : IEngine
         v.JunctionEntryTimeNeverYield = long.MaxValue;
         v.JunctionConflictEntryTime = long.MaxValue;
         v.KeepRightStayCacheLane = -1;
+        v.LeftStayCacheLane = -1;
         MarkStrandReason(1); // rerouteOK -- dead-lane reroute succeeded, NOT stranded
         return true;
     }
@@ -12918,6 +12930,62 @@ public sealed partial class Engine : IEngine
 
             var leftLane = _network.LanesByHandle[lane.LeftNeighbor];
 
+            // Entry 34b: SUMO's right/left-symmetric strategic stay complex, LEFT direction
+            // (MSLCM_LC2013.cpp:1131-1150 effective-offset override; :1398/:1411 stay rules with
+            // the :1290/:1297 jam-occupation term; laDist :1238-1239 with myLookaheadLeft = 2 for
+            // this direction). Same measured motivation as the right-side port in
+            // ApplyKeepRightDecision: SUMO's stopped queued vehicles read STAY|STRATEGIC and never
+            // accumulate a speed-gain wish; without the stays our stopped lane-0 queues speed-gain-
+            // LEFT into the adjacent queue (the largest single contributor to the L2 stopped-LC
+            // rate after the right side was fixed -- 70 of 174 strict-stopped commits, 41 on h1_0
+            // alone). DEVIATION (documented): v.LookAheadSpeed is READ but not updated here --
+            // updating it would add a second per-step decay for vehicles whose strategic path
+            // already maintains it (golden 18's fire timing) -- so a recently-fast vehicle
+            // under-stays vs SUMO; the stopped-queue class this targets has laSpeed ~ floor
+            // anyway. Single-edge routes: Eligible=false, no bestLanes pass -- byte-identical
+            // (scenarios 06/07/12 and every single-edge golden).
+            if (v.LeftStayCacheLane != v.LaneHandle)
+            {
+                v.LeftStayCacheLane = v.LaneHandle;
+                LeftStayInputs(v, lane, leftLane.Index, out var lsEligible, out var lsContLength, out var lsCurrOffset, out var lsNeighOffsetZero);
+                v.LeftStayEligible = lsEligible;
+                v.LeftStayNeighContLength = lsContLength;
+                v.LeftStayCurrOffset = lsCurrOffset;
+                v.LeftStayNeighOffsetZero = lsNeighOffsetZero;
+            }
+
+            if (v.LeftStayEligible)
+            {
+                var effOffsetLeft = (v.LeftStayCurrOffset == 0 && v.LeftStayNeighOffsetZero)
+                    ? 1
+                    : v.LeftStayCurrOffset;
+                if (effOffsetLeft <= 0)
+                {
+                    const double lookForwardLeft = 10.0;   // LOOK_FORWARD
+                    const double lookaheadLeftFactor = 2.0; // myLookaheadLeft ctor default
+                    var lengthWithGapLeft = v.VType.Length + v.VType.MinGap;
+                    var laDistLeft = (v.LookAheadSpeed * lookForwardLeft * lookaheadLeftFactor) + (2.0 * lengthWithGapLeft);
+
+                    var leftNeighDist = v.LeftStayNeighContLength > 0.0 ? v.LeftStayNeighContLength : leftLane.Length;
+                    var maxJamLeft = Math.Max(
+                        AheadJamOccupation(v, lane, postMoveNeighbors),
+                        AheadJamOccupation(v, leftLane, postMoveNeighbors));
+                    var neighLeftPlaceLeft = Math.Max(0.0, leftNeighDist - v.Kinematics.Pos - maxJamLeft);
+
+                    // :1398 -- for the left direction, !changeToBest is effOffset <= 0.
+                    if (neighLeftPlaceLeft / (Math.Abs(effOffsetLeft) + 2.0) < laDistLeft)
+                    {
+                        return;
+                    }
+
+                    // :1411 (rule 2)
+                    if (effOffsetLeft == 0 && neighLeftPlaceLeft * 2.0 < laDistLeft)
+                    {
+                        return;
+                    }
+                }
+            }
+
             var vMax = KraussModel.LaneVehicleMaxSpeed(lane.Speed, v.SpeedFactor, v.VType);
             var neighVMax = KraussModel.LaneVehicleMaxSpeed(leftLane.Speed, v.SpeedFactor, v.VType);
 
@@ -13030,7 +13098,7 @@ public sealed partial class Engine : IEngine
                     && !LaneChangeSlotContested(v, leftLane.Handle, postMoveNeighbors)
                     && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
-                    RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (speed-gain left)
+                    RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "sgLeft"); // #15 float analysis (speed-gain left)
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
@@ -13165,10 +13233,12 @@ public sealed partial class Engine : IEngine
         {
             v.KeepRightStayCacheLane = v.LaneHandle;
             v.KeepRightStaySuppress = KeepRightStrategicStay(
-                v, lane, rightLane.Index, out var rule2Eligible, out var rightContLength, out var currContLength);
-            v.KeepRightStayRule2Eligible = rule2Eligible;
+                v, lane, rightLane.Index, out var stayRulesEligible, out var rightContLength, out var currContLength, out var currOffset, out var rightOffsetZero);
+            v.KeepRightStayRule2Eligible = stayRulesEligible;
             v.KeepRightStayRightContLength = rightContLength;
             v.KeepRightStayCurrContLength = currContLength;
+            v.KeepRightStayCurrOffset = currOffset;
+            v.KeepRightStayRightOffsetZero = rightOffsetZero;
         }
         if (v.KeepRightStaySuppress)
         {
@@ -13180,44 +13250,79 @@ public sealed partial class Engine : IEngine
         // read it.
         var actionStepLengthSecs = _config!.ActionStepLength > 0 ? _config.ActionStepLength : dt;
 
-        // Turn-lane segregation fix: SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418) --
-        // `bestLaneOffset == 0 && (neighLeftPlace * 2. < laDist)`. Unlike VARIANT_21 (rule 3, the
-        // static `neighDist < TURN_LANE_DIST` above), this is POSITION-relative: it keeps ego on its
-        // best (route-continuing) lane once it is close enough to that lane's end that leaving it for
-        // the route-LEAVING right neighbour would risk not getting back in time. On a >200 m approach
-        // (rule 3 can't fire) this is the rule that stops a turner from keep-righting off its turn lane
-        // as it nears the junction; without it a left-turner on its dedicated lane oscillates back onto
-        // a through lane and serial-blocks it -- the arterial calibration-knee deficit. `neighLeftPlace
-        // = MAX2(0, neighDist - posOnLane - maxJam)` with maxJam = 0 (empty-road occupation scope, as
-        // every other keep-right term here). laDist is the RIGHT-direction look-ahead distance
-        // (MSLCM_LC2013.cpp:1238-1239): myLookAheadSpeed * LOOK_FORWARD * myStrategicParam * 1 +
-        // 2*lengthWithGap. myLookAheadSpeed is maintained here exactly as SUMO does at the top of every
-        // _wantsChange (grows instantly toward a higher speed, decays slowly otherwise); for an
-        // already-converged turner TryStrategicLaneChange returns before touching it, so this is that
-        // vehicle's sole update and no double-decay occurs. Inert for every vehicle not on a best lane
-        // with a route-leaving right neighbour (Eligible=false) -- byte-identical there.
+        // Entry 34b: the full right-direction stay complex, replacing the former rule-2-only,
+        // maxJam=0 port. Three SUMO pieces, all measured load-bearing on L2 (TraCI: 8811 of ~11k
+        // stopped non-rightmost samples read STAY|STRATEGIC; our port without them let stopped
+        // queued vehicles accumulate a speed-gain-right wish SUMO's never do, and the new
+        // speedGain-right fire then ping-ponged them against the strategic layer -- observed as a
+        // same-step sgRight+strategic commit pair at t=41 on in_W00_1):
+        //
+        //   1. The EFFECTIVE-offset override (MSLCM_LC2013.cpp:1131-1150): when ego's lane AND the
+        //      right lane both have bestLaneOffset 0 (right lane equally route-valid), SUMO sets
+        //      bestLaneOffset = laneOffset (-1) -- "changing right IS changing toward best" -- and
+        //      thereby SKIPS every stay rule. This is what lets the keepright-standing oracle's
+        //      followers accumulate freely (both lanes continue) and golden 44/45's arrival-edge
+        //      keep-right survive, while everything below throttles the unequal-lanes cases.
+        //   2. Rule :1398 (opposite-direction stay): !changeToBest && neighLeftPlace /
+        //      (|bestLaneOffset| + 2) < laDist -> STAY. The rule the ping-pong was missing: a
+        //      route-leaving right lane with > TURN_LANE_DIST of room (VARIANT_21 can't fire) still
+        //      may not be entered when the room to change back is short.
+        //   3. Rule :1411 (rule 2): bestLaneOffset == 0 && neighLeftPlace * 2 < laDist -> STAY.
+        //
+        // `neighLeftPlace = MAX2(0, neighDist - posOnLane - maxJam)` (:1297) with maxJam =
+        // MAX2(neigh.occupation, curr.occupation) (:1290) -- LaneQ.occupation at _wantsChange time
+        // is MSLaneChanger's `dens` (lengthWithGap of vehicles AHEAD of ego on that lane) plus
+        // nextOccupation (brutto sums of the continuation lanes); see AheadJamOccupation. The jam
+        // term is why a vehicle DEEP in a queue reads neighLeftPlace ~ 0 -> STAY while a queue HEAD
+        // (jam ~ 0) may still fire -- the oracle's f.0/f.5 stopped changes are SUMO-real and stay.
+        // The :1298-1300 stopped-neighLead cap is NOT ported: SUMO's isStopped() there means a
+        // SCHEDULED stop (bus/parking), which no committed scenario's neighbour leader ever has.
+        // laDist (:1238-1239): myLookAheadSpeed * LOOK_FORWARD * myStrategicParam * 1 +
+        // 2*lengthWithGap; myLookAheadSpeed maintained as at the top of every _wantsChange (grows
+        // instantly, decays slowly). Inert for single-edge routes (Eligible=false, no bestLanes
+        // pass) -- byte-identical there.
         if (v.KeepRightStayRule2Eligible)
         {
-            if (v.Kinematics.Speed > v.LookAheadSpeed)
+            var effOffset = (v.KeepRightStayCurrOffset == 0 && v.KeepRightStayRightOffsetZero)
+                ? -1
+                : v.KeepRightStayCurrOffset;
+            if (effOffset >= 0)
             {
-                v.LookAheadSpeed = v.Kinematics.Speed;
-            }
-            else
-            {
-                const double lookAheadSpeedMemory = 0.9; // LOOK_AHEAD_SPEED_MEMORY
-                var memoryFactor = 1.0 - (1.0 - lookAheadSpeedMemory) * actionStepLengthSecs;
-                v.LookAheadSpeed = Math.Max(0.0, (memoryFactor * v.LookAheadSpeed) + ((1.0 - memoryFactor) * v.Kinematics.Speed));
-            }
+                if (v.Kinematics.Speed > v.LookAheadSpeed)
+                {
+                    v.LookAheadSpeed = v.Kinematics.Speed;
+                }
+                else
+                {
+                    const double lookAheadSpeedMemory = 0.9; // LOOK_AHEAD_SPEED_MEMORY
+                    var memoryFactor = 1.0 - (1.0 - lookAheadSpeedMemory) * actionStepLengthSecs;
+                    v.LookAheadSpeed = Math.Max(0.0, (memoryFactor * v.LookAheadSpeed) + ((1.0 - memoryFactor) * v.Kinematics.Speed));
+                }
 
-            const double lookForward = 10.0;    // LOOK_FORWARD
-            const double strategicParam = 1.0;  // myStrategicParam ctor default
-            var lengthWithGap = v.VType.Length + v.VType.MinGap;
-            // Right direction: the (right ? 1 : myLookaheadLeft) factor is 1.
-            var laDistRight = (v.LookAheadSpeed * lookForward * strategicParam) + (2.0 * lengthWithGap);
-            var neighLeftPlace = Math.Max(0.0, v.KeepRightStayRightContLength - v.Kinematics.Pos);
-            if (neighLeftPlace * 2.0 < laDistRight)
-            {
-                return;
+                const double lookForward = 10.0;    // LOOK_FORWARD
+                const double strategicParam = 1.0;  // myStrategicParam ctor default
+                var lengthWithGap = v.VType.Length + v.VType.MinGap;
+                // Right direction: the (right ? 1 : myLookaheadLeft) factor is 1.
+                var laDistRight = (v.LookAheadSpeed * lookForward * strategicParam) + (2.0 * lengthWithGap);
+
+                var rule2NeighDist = v.KeepRightStayRightContLength > 0.0 ? v.KeepRightStayRightContLength : rightLane.Length;
+                var maxJam = Math.Max(
+                    AheadJamOccupation(v, lane, neighbors),
+                    AheadJamOccupation(v, rightLane, neighbors));
+                var neighLeftPlace = Math.Max(0.0, rule2NeighDist - v.Kinematics.Pos - maxJam);
+
+                // :1398 -- for the right direction, !changeToBest is effOffset >= 0 (best is not
+                // to the right), which is exactly this branch.
+                if (neighLeftPlace / (Math.Abs(effOffset) + 2.0) < laDistRight)
+                {
+                    return;
+                }
+
+                // :1411 (rule 2)
+                if (effOffset == 0 && neighLeftPlace * 2.0 < laDistRight)
+                {
+                    return;
+                }
             }
         }
 
@@ -13433,7 +13538,7 @@ public sealed partial class Engine : IEngine
                 // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
                 // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
                 // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
-                RecordLaneChangeCommit(3, v, neighLeadSameLane, neighFollowKr, bypassesMinSpeed: true); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
+                RecordLaneChangeCommit(3, v, neighLeadSameLane, neighFollowKr, bypassesMinSpeed: true, tag: "keepRight"); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
                 v.LaneId = rightLane.Id;
                 // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
                 v.LaneHandle = rightLane.Handle;
@@ -13491,7 +13596,7 @@ public sealed partial class Engine : IEngine
                 && !LaneChangeSlotContested(v, rightLane.Handle, neighbors)
                 && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollowSg, dt)))
             {
-                RecordLaneChangeCommit(1, v, neighLeadSameLane, neighFollowSg, bypassesMinSpeed: false); // #15 float analysis (speed-gain RIGHT)
+                RecordLaneChangeCommit(1, v, neighLeadSameLane, neighFollowSg, bypassesMinSpeed: false, tag: "sgRight"); // #15 float analysis (speed-gain RIGHT)
                 v.LaneId = rightLane.Id;
                 v.LaneHandle = rightLane.Handle;
                 // :1063/1080 resetState() on a COMMITTED change -- own accumulator only; the
@@ -13627,16 +13732,57 @@ public sealed partial class Engine : IEngine
             buf.Slice(0, n), new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
     }
 
+    // Entry 34b: SUMO's LaneQ.occupation as seen by the right-direction rule-2 stay
+    // (MSLCM_LC2013.cpp:1290) -- MSLaneChanger's `dens` (the lengthWithGap sum of vehicles AHEAD
+    // of ego on `lane`; the changer processes front-to-back, so at ego's turn `dens` holds exactly
+    // the already-processed = ahead vehicles) plus MSVehicle::updateOccupancyAndCurrentBestLane's
+    // `nextOccupation` (full brutto sums of the continuation lanes past the lane end; bestLanes
+    // holds NORMAL lanes only, so internal via lanes are excluded here too). Scope: the
+    // continuation is the one next route edge T2.6's walk resolves, not SUMO's multi-edge
+    // bestContinuations look-ahead -- an UNDER-count for queues spanning 2+ edges downstream
+    // (less STAY than SUMO there), documented. Reads only the frozen `neighbors` snapshot.
+    private double AheadJamOccupation(VehicleRuntime ego, Lane lane, LaneNeighborQuery neighbors)
+    {
+        var sum = 0.0;
+        foreach (var o in neighbors.OnLane(lane.Handle))
+        {
+            if (!ReferenceEquals(o, ego) && o.Kinematics.Pos > ego.Kinematics.Pos)
+            {
+                sum += o.VType.Length + o.VType.MinGap;
+            }
+        }
+
+        Span<int> buf = stackalloc int[12];
+        var n = BuildDownstreamSpanFrom(ego, lane, buf);
+        for (var i = 0; i < n; i++)
+        {
+            var contLane = _network!.LanesByHandle[buf[i]];
+            if (contLane.EdgeId.Length > 0 && contLane.EdgeId[0] == ':')
+            {
+                continue;
+            }
+
+            foreach (var o in neighbors.OnLane(buf[i]))
+            {
+                sum += o.VType.Length + o.VType.MinGap;
+            }
+        }
+
+        return sum;
+    }
+
     // Turn-lane segregation fix: `rule2Eligible` (currContinues && rightLeavesRoute) and
     // `rightContLength` (the right lane's best-lanes continuation length) are the position-INDEPENDENT
     // inputs ApplyKeepRightDecision needs to also evaluate SUMO's stayOnBest rule 2 -- computed here in
     // the SAME allocating pass so the memo covers both rules. Return value = VARIANT_21 (rule 3),
     // unchanged.
-    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool rule2Eligible, out double rightContLength, out double currContLength)
+    private bool KeepRightStrategicStay(VehicleRuntime v, Lane fromLane, int rightLaneIndex, out bool stayRulesEligible, out double rightContLength, out double currContLength, out int currOffset, out bool rightOffsetZero)
     {
-        rule2Eligible = false;
+        stayRulesEligible = false;
         rightContLength = 0.0;
         currContLength = 0.0;
+        currOffset = 0;
+        rightOffsetZero = false;
 
         var routeId = EffectiveRouteId(v);   // see _effectiveRouteIdByEntity's header comment
         var route = _routesById[routeId];
@@ -13658,17 +13804,75 @@ public sealed partial class Engine : IEngine
                 // Entry 34: ego's own continuation length (SUMO's curr.length) rides along in the
                 // same memoized pass -- feeds thisLaneVSafe in the right-direction LC block.
                 currContLength = continuation.Length;
+                // Entry 34b: the raw offset feeds the :1131-1150 effective-offset override and the
+                // :1398/:1411 stay rules in ApplyKeepRightDecision.
+                currOffset = continuation.BestLaneOffset;
+                stayRulesEligible = true;
             }
             else if (continuation.LaneIndex == rightLaneIndex)
             {
                 rightLeavesRoute = !continuation.AllowsContinuation;
                 rightSoon = continuation.Length < KeepRightTurnLaneDist;
                 rightContLength = continuation.Length;
+                rightOffsetZero = continuation.BestLaneOffset == 0 && continuation.AllowsContinuation;
             }
         }
 
-        rule2Eligible = currContinues && rightLeavesRoute;
         return currContinues && rightLeavesRoute && rightSoon;
+    }
+
+    // Entry 34b: the LEFT-direction sibling of KeepRightStrategicStay's cache pass -- the
+    // position-INDEPENDENT stay-rule inputs for (ego lane, LEFT neighbour): ego's bestLaneOffset,
+    // the left lane's continuation length (SUMO's neigh.length), and whether the left lane is
+    // equally route-valid (bestLaneOffset 0 AND continues -- the :1131-1150 override input).
+    // Shares the same memoized BestLanesCached pass; single-edge routes are ineligible (no
+    // ComputeBestLanes call at all), keeping every single-edge golden byte-identical.
+    private void LeftStayInputs(VehicleRuntime v, Lane fromLane, int leftLaneIndex, out bool eligible, out double neighContLength, out int currOffset, out bool neighOffsetZero)
+    {
+        eligible = false;
+        neighContLength = 0.0;
+        currOffset = 0;
+        neighOffsetZero = false;
+
+        var routeId = EffectiveRouteId(v);
+        var route = _routesById[routeId];
+        if (route.Edges.Count <= 1)
+        {
+            return;
+        }
+
+        // Off-route guard (same hazard TryBestLanesForEdge exists for): a rerouted/organic vehicle
+        // can transiently drive an edge its nominal route does not list; ComputeBestLanes THROWS
+        // there. Ineligible -> no stay -> the pre-Entry-34b behavior, never a crash.
+        var onRoute = false;
+        for (var i = 0; i < route.Edges.Count; i++)
+        {
+            if (route.Edges[i] == fromLane.EdgeId)
+            {
+                onRoute = true;
+                break;
+            }
+        }
+
+        if (!onRoute)
+        {
+            return;
+        }
+
+        var bestLanes = BestLanesCached(routeId, route.Edges, fromLane.EdgeId);
+        foreach (var continuation in bestLanes)
+        {
+            if (continuation.LaneIndex == fromLane.Index)
+            {
+                currOffset = continuation.BestLaneOffset;
+                eligible = true;
+            }
+            else if (continuation.LaneIndex == leftLaneIndex)
+            {
+                neighContLength = continuation.Length;
+                neighOffsetZero = continuation.BestLaneOffset == 0 && continuation.AllowsContinuation;
+            }
+        }
     }
 
     // C2-ii: MSLCM_LC2013's STRATEGIC/URGENT block (`_wantsChange`,
@@ -14760,7 +14964,7 @@ public sealed partial class Engine : IEngine
         }
 
         v.LcStrategicOutcome = 1;
-        RecordLaneChangeCommit(2, v, neighLead, neighFollow, bypassesMinSpeed: false); // #15 float analysis (strategic/urgent)
+        RecordLaneChangeCommit(2, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "strategic"); // #15 float analysis (strategic/urgent)
         CommitLaneChange(v, neighborLane.Handle, neighborLane.Id);
         // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
         v.SpeedGainProbability = 0.0;

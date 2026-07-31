@@ -169,9 +169,14 @@ internal sealed class VehicleRuntime
     // Turn-lane segregation fix (docs/GETBESTLANES-RESUME.md follow-up): the position-INDEPENDENT
     // components of SUMO's stayOnBest rule 2 (MSLCM_LC2013.cpp:1410-1418: `bestLaneOffset == 0 &&
     // neighLeftPlace * 2 < laDist`), cached alongside the VARIANT_21 memo above (same LaneHandle key,
-    // same reroute invalidation). `KeepRightStayRule2Eligible` = ego is on a route-continuing lane
-    // (own offset 0) whose right neighbour leaves the route (!AllowsContinuation) -- the same
-    // (currContinues && rightLeavesRoute) predicate VARIANT_21 needs, minus its static <200 m gate.
+    // same reroute invalidation). `KeepRightStayRule2Eligible` (Entry 34b: now "stay-rules
+    // eligible") = the route is multi-edge and bestLanes produced an entry for ego's lane, so the
+    // two offset fields below are valid and the right-direction stay rules (:1398/:1411) can run.
+    // `KeepRightStayCurrOffset` = ego's lane's bestLaneOffset; `KeepRightStayRightOffsetZero` =
+    // the right lane's bestLaneOffset is ALSO 0 -- the input to SUMO's :1131-1150 override, which
+    // sets the effective bestLaneOffset to -1 (changing right IS changing to best) when both are
+    // 0 and thereby SKIPS every stay rule; that override is what lets an equally-valid right lane
+    // receive speed-gain/keep-right changes while a route-leaving or worse right lane is stayed.
     // `KeepRightStayRightContLength` = that right lane's best-lanes continuation length (SUMO's
     // neigh.length), from which ApplyKeepRightDecision derives the POSITION-dependent
     // neighLeftPlace = MAX2(0, length - posOnLane) fresh each step. Both are pure functions of
@@ -180,6 +185,19 @@ internal sealed class VehicleRuntime
     // right neighbour continues the route -- byte-identical there.
     public bool KeepRightStayRule2Eligible;
     public double KeepRightStayRightContLength;
+    public int KeepRightStayCurrOffset;
+    public bool KeepRightStayRightOffsetZero;
+
+    // Entry 34b: the LEFT-direction mirror of the stay-rule cache above (SUMO runs the same
+    // :1398/:1411 stay complex for laneOffset=+1 with neigh = the LEFT lane and laDist scaled by
+    // myLookaheadLeft=2). Same memo key discipline: valid for LeftStayCacheLane == LaneHandle,
+    // reset on reroute alongside the right-side cache. Eligible=false for single-edge routes, so
+    // every single-edge golden's left/speed-gain path is byte-identical.
+    public int LeftStayCacheLane = -1;
+    public bool LeftStayEligible;
+    public double LeftStayNeighContLength;
+    public int LeftStayCurrOffset;
+    public bool LeftStayNeighOffsetZero;
 
     // Entry 34 (docs/JUNCTION-REALISM-SESSION-JOURNAL.md): EGO's OWN lane's best-lanes continuation
     // length (SUMO's curr.length, MSLCM_LC2013.cpp:1135), cached in the SAME memoized pass as the

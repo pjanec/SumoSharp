@@ -190,6 +190,7 @@ internal sealed class CommandBuffer : ICommandBuffer
                     // C4-vii-b: the remaining route changed -> the keep-right stayOnBest memo
                     // (ApplyKeepRightDecision) may be stale even on the same lane; force recompute.
                     cmd.Vehicle.KeepRightStayCacheLane = -1;
+                    cmd.Vehicle.LeftStayCacheLane = -1;
                     break;
 
                 case Kind.Destroy:
