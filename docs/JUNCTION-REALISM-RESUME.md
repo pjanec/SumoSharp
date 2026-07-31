@@ -2,7 +2,7 @@
 
 **Read this first, cold.** It is self-contained: you can pick the work up from this page alone.
 Branch: **`claude/sumosharp-traffic-bugs-g1y9hl`**. Gate state at handoff:
-**`dotnet test tests/Sim.ParityTests -c Release` = 776 passed / 5 skipped / 0 failed**, all 661 goldens
+**`dotnet test tests/Sim.ParityTests -c Release` = 778 passed / 5 skipped / 0 failed**, all 661 goldens
 byte-identical. (Unchanged across Entries 17–18 — the goldens cannot cover the queue geometry those
 fixes touch, so their silence was never evidence either way.)
 
@@ -66,10 +66,15 @@ but **no measurement shows it changed an outcome** — recorded as unmeasured, n
 synthetic-junction2 teleports → **0, exactly matching vanilla SUMO** · **all 661 goldens byte-identical**.
 Cost: `city-organic` 499 → 491, and 2 extra in-junction wedges on the dense torture scenario.
 
-⚠ **`SumoShim` forces three junction gates OFF that the `Engine` ships ON** (the unsafe `== "1"` read —
-`ENV-GATES.md` flags it). Any shim-driven measurement or test must pin them: use
-`tests/Sim.ParityTests/JunctionGateEnv.cs`. Two tests were silently calibrated in the gates-off
-configuration, and one of their constants was **unreachable by the shipped engine**.
+**(c) `SumoShim` shipped three junction gates OFF that the `Engine` has ON** — the unsafe `== "1"` read,
+fixed in Entry 19. Two shim-driven tests had been silently calibrated in that configuration, and one
+carried a "hard invariant" floor **unreachable by the shipped engine**. Now guarded twice:
+`SumoShimUnsetGateFallbackTests` (behavioural, with a vacuity guard) and
+`EnvGateDocumentationTests.GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm` (verified to
+fail on a revert). Shim-driven **tests** should still pin explicitly via
+`tests/Sim.ParityTests/JunctionGateEnv.cs` — pinning states intent.
+⚠ Any SumoData measurement taken through `SUMO_BINARY` **before** this fix is not comparable with one
+taken after.
 
 ## 5. Remaining backlog, in owner priority order
 

@@ -1370,3 +1370,64 @@ the ones a default flip could break.
 3. Full gate + the 26-net battery — the battery is driven by `Sim.Run`, not the shim, so it should be
    **byte-identical**; if it is not, something else reads these gates and I have missed a consumer.
 4. Update `ENV-GATES.md`: the open-bug warning box becomes a fixed-in note.
+
+---
+
+## Entry 19 — AFTER: shim gate bug fixed, all four predictions held
+
+Three reads switched to `EnvGate(name, engineDefault)`; the three now-false source comments corrected.
+
+### Predictions 1–3 — all CONFIRMED
+
+1. **The three golden-comparing shim tests stayed green.** `RungHDgap1SumoCliTests` (shim FCD vs
+   `golden.fcd.xml` through the real tolerance comparator), `RungHDgap2TripinfoTests`,
+   `RungHDgap4MaxParallelismTests` — all pass. As predicted: those scenarios already go through the
+   direct engine path with the gates at `true`, so pointing the shim at the same defaults could only
+   make it agree more.
+2. **`LowDensityTeleportTests` and `DenseFlowDeadLaneDrainTests` unaffected** — Entry 18's explicit
+   pinning made them immune to the change, which is the point of pinning.
+3. **`IgnoreJunctionBlockerTests` moved exactly as predicted.** With the two non-varied gates pinned, all
+   four arms read **1 (jam=0, yield=1)** — where the old silently-gates-off configuration read 0.
+
+### Prediction 4 — the correction I owed, now measured
+
+Entry 18 said "teleports → 0, matching vanilla SUMO". That was true of the arms it cited (all three gates
+off — the shim's actual behaviour at the time) and **misleading about what we ship**. In the shipped
+configuration synthetic-junction2 fires **1**, not 0. Vanilla SUMO fires 0, so **there is still a gap of
+one teleport**, and it is recorded rather than rounded away.
+
+### An assertion restored rather than replaced
+
+Entry 18 had swapped `IgnoreJunctionBlockerTests`' relative assertion (`fiveOn <= offOn`) for an absolute
+`== 0`, because against a 0 baseline the relative form was satisfiable only at exactly 0 and measured
+nothing. With the gates pinned the baseline is 1 again, **the relative form is meaningful again, and it is
+the right assertion** — the knob exists to release stalled vehicles, so enabling it must never cost
+teleports. Restored, and an absolute ceiling of 1 kept alongside it: the relative form alone cannot catch
+a mutual drift where every arm regresses together.
+
+### Two guards where there were none
+
+- **`SumoShimUnsetGateFallbackTests`** — behavioural, not source-shape: the shim with the variables
+  **absent** must produce byte-identical FCD to the shim with them explicitly at the engine defaults.
+  Measured: `unset = 1E99B042… = set-to-"1"`, while `set-to-"0" = 9B8E5356…`. It carries its own **vacuity
+  guard** (gates on and off must differ at all, else the scenario does not discriminate them and the test
+  asserts nothing) — the failure mode that let this bug live for months was precisely that nothing
+  exercised the path.
+- **`EnvGateDocumentationTests.GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm`** — fails the
+  build on any reintroduction. **Verified to fail**, naming `src/Sim.Sumo/SumoShim.cs:266`, by reverting
+  one read and re-running. A guard nobody has seen fail is not a guard.
+
+  Deliberately **not** a blanket ban: the two-state form is correct for a default-`false` gate, and four
+  legitimately use it (`LIVECITY_F3OCCUPANCY`, `LIVECITY_SEQDESYNC`, `LIVECITY_LCLOG`, `LIVECITY_WITNESS`
+  — checked, all default false). A general rule needs each gate's Engine default, which is not reliably
+  discoverable by scanning text.
+
+### Blast radius, measured
+
+26-net battery vs `net-regression-keepclear-direction.txt`: **no regressions, no changes** — as predicted,
+because that battery is driven by `Sim.Run`, which already used `EnvGate`. Gate: **778 passed / 5 skipped
+/ 0 failed** (+2 new guards). All 661 goldens byte-identical.
+
+⚠ **Any SumoData-side measurement taken through `SUMO_BINARY` before this fix ran with three junction
+gates off and is not comparable with one taken after.** That is the part with consequences outside this
+repo.

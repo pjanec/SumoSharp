@@ -35,23 +35,32 @@ out the failure mode: the demo would have run with all seven gates disabled whil
 and every other host had them enabled, and "the demo still gridlocks" would have read as a failed fix
 rather than a wiring mistake.
 
-> ### ⚠ `Sim.Sumo/SumoShim.cs` still uses the unsafe form — this is an open bug
+> ### ✅ `Sim.Sumo/SumoShim.cs` used the unsafe form — FIXED (journal Entry 19)
 >
-> The `sumosharp` drop-in binary (what the SumoData pipeline invokes via `SUMO_BINARY`) sets three gates
-> with `== "1"`, and all three engine defaults are now `true`:
+> The `sumosharp` drop-in binary (what the SumoData pipeline invokes via `SUMO_BINARY`) set three gates
+> with `== "1"` while all three engine defaults are `true`, so **every invocation that did not set them ran
+> with three junction gates OFF that the engine, the goldens and the LiveCity host all had ON**:
 >
-> | Gate | `Engine` default | drop-in binary, env unset |
+> | Gate | `Engine` default | drop-in binary, env unset — before → after |
 > | --- | --- | --- |
-> | `SUMOSHARP_CONTTURNFIX` → `ContTurnInsideJunctionGate` | `true` | **`false`** |
-> | `SUMOSHARP_ISLEADERFIX` → `JunctionIsLeaderGate` | `true` | **`false`** |
-> | `SUMOSHARP_INTERNALJUNCTIONFIX` → `InternalJunctionAdmissionGate` | `true` | **`false`** |
+> | `SUMOSHARP_CONTTURNFIX` → `ContTurnInsideJunctionGate` | `true` | **`false`** → `true` |
+> | `SUMOSHARP_ISLEADERFIX` → `JunctionIsLeaderGate` | `true` | **`false`** → `true` |
+> | `SUMOSHARP_INTERNALJUNCTIONFIX` → `InternalJunctionAdmissionGate` | `true` | **`false`** → `true` |
 >
-> So **every drop-in invocation that does not set these runs with three junction gates OFF that the
-> engine, the goldens and the LiveCity host all have ON.** Each of the three source comments still asserts
-> `Unset/non-"1" => false, the Engine default` — true when written, false since the same PR that wrote it.
-> No test covers the unset shim path (the tests that touch these set them to `"1"`), which is why CI is
-> green. Tracked in `TASKS-TODO.md`; not fixed here because flipping a drop-in binary's default behaviour
-> is a behavioural change that needs the goldens *and* the open-loop discharge test, not a quiet edit.
+> All three now use `EnvGate(name, engineDefault)`. **This was not theoretical.** Two shim-driven parity
+> tests were silently calibrated in the gates-off configuration, and `DenseFlowDeadLaneDrainTests` carried
+> a "hard invariant" arrivals floor of 290 that **the shipped engine could not reach** (289 when pinned) —
+> invisible precisely because the gates were quietly off.
+>
+> **Two guards now stand where none did.** `SumoShimUnsetGateFallbackTests` runs the shim with the
+> variables ABSENT and asserts byte-identical output to running them explicitly at the engine defaults
+> (with a vacuity guard proving the scenario discriminates them at all);
+> `EnvGateDocumentationTests.GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm` fails the build
+> on any reintroduction, naming the file and line. Shim-driven **tests** should still pin explicitly via
+> `tests/Sim.ParityTests/JunctionGateEnv.cs` — pinning states intent and survives either shim behaviour.
+>
+> ⚠ Any SumoData-side measurement taken through `SUMO_BINARY` **before this fix** ran with three junction
+> gates off, and is not comparable with one taken after.
 
 ## Classification, and what it means for you
 

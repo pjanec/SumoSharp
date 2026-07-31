@@ -64,6 +64,12 @@ public class IgnoreJunctionBlockerTests
         var cfg = Path.Combine(ScenarioDir(), "scenario.sumocfg");
         var outDir = Path.Combine(Path.GetTempPath(), "sumosharp-ignoreblocker-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(outDir);
+        // This A/B varies SUMOSHARP_CONTTURNFIX deliberately, so the OTHER two junction gates must be
+        // HELD FIXED at the engine defaults -- otherwise the four arms below differ in three variables
+        // at once and none of them means what its label says (CLAUDE.md measurement-discipline #10).
+        // Before SumoShim was switched to the safe EnvGate form they were silently OFF here; pinning
+        // them makes that explicit and survives either shim behaviour.
+        var prevGates = JunctionGateEnv.PinToEngineDefaults();
         var prevEnv = Environment.GetEnvironmentVariable("SUMOSHARP_CONTTURNFIX");
         try
         {
@@ -95,6 +101,7 @@ public class IgnoreJunctionBlockerTests
         finally
         {
             Environment.SetEnvironmentVariable("SUMOSHARP_CONTTURNFIX", prevEnv);
+            JunctionGateEnv.Restore(prevGates);
             Directory.Delete(outDir, recursive: true);
         }
     }
@@ -129,30 +136,33 @@ public class IgnoreJunctionBlockerTests
             + $"  ( 5, off)                   : {fiveOff.TeleportsTotal,3} (jam={fiveOff.TeleportsJam}, yield={fiveOff.TeleportsYield})\n"
             + "  (real SUMO 1.20.0 fires 0 teleports here)");
 
-        // STRENGTHENED, then bounded. The DEFAULT (-1 == SUMO's own) now fires ZERO teleports on this
-        // scenario in BOTH gate configurations -- exactly matching vanilla SUMO 1.20.0, and down from
-        // 2 (gates off) / 5 (gates on) before the Entry 17 junction fixes
-        // (docs/JUNCTION-REALISM-SESSION-JOURNAL.md). That equality with vanilla is the strongest
-        // statement this scenario can make and was previously not asserted at all, so it is asserted
-        // first and hard.
+        // THE LOAD-BEARING ASSERTION, restored to its original relative form. Entry 18 replaced it with
+        // an absolute `== 0` because, with the other two junction gates silently OFF (the SumoShim bug,
+        // fixed in Entry 19), the baseline had fallen to 0 and "must not make it worse" was satisfiable
+        // only at exactly 0 -- it measured nothing. With those gates pinned to the engine defaults the
+        // baseline is 1 again, so the relative form is meaningful and is the right assertion: the knob
+        // exists to RELEASE stalled vehicles, so enabling it must never cost teleports.
+        //
+        // Measured in the shipped configuration: all four arms fire 1 (jam=0, yield=1) -- the knob is
+        // fully inert on this scenario, which is the cleanest possible reading of its purpose.
         Assert.True(
-            offOn.TeleportsTotal == 0 && offOff.TeleportsTotal == 0,
-            $"the DEFAULT IgnoreJunctionBlockerSeconds=-1 must fire 0 teleports here, matching vanilla "
-            + $"SUMO 1.20.0: got {offOn.TeleportsTotal} with the cont-turn fix on and "
-            + $"{offOff.TeleportsTotal} with it off.");
+            fiveOn.TeleportsTotal <= offOn.TeleportsTotal && fiveOff.TeleportsTotal <= offOff.TeleportsTotal,
+            $"enabling IgnoreJunctionBlockerSeconds=5 must not INCREASE teleports: (-1) gave "
+            + $"{offOn.TeleportsTotal}/{offOff.TeleportsTotal} (cont-turn on/off) and (5) gave "
+            + $"{fiveOn.TeleportsTotal}/{fiveOff.TeleportsTotal}. The knob exists to release stalled "
+            + "vehicles; if it makes matters worse the port is wrong. "
+            + "See docs/NEED-arm5-mutual-junction-deadlock.md.");
 
-        // The old assertion here was `fiveOn <= offOn` -- "the knob must not make teleports WORSE".
-        // That was written when the baseline had stalled vehicles for the knob to release. It has none
-        // now, so the relative form is only satisfiable at exactly 0 and no longer measures anything:
-        // any release an aggressive opt-in valve performs against a clean baseline can only add risk.
-        // Replaced with a bounded absolute allowance. The knob is OFF by default (-1, SUMO's own
-        // default), so this bounds an opt-in path, not shipped behaviour.
+        // ABSOLUTE ceiling alongside it, which the relative form alone cannot give: a mutual drift where
+        // every arm regresses together would satisfy `fiveOn <= offOn` and still be a real regression.
+        // 1 is the measured shipped-configuration value; vanilla SUMO 1.20.0 fires 0 here, and that
+        // remaining 1 is the honest gap -- do not round it away.
         Assert.True(
-            fiveOn.TeleportsTotal <= 1 && fiveOff.TeleportsTotal <= 1,
-            $"IgnoreJunctionBlockerSeconds=5 fired {fiveOn.TeleportsTotal} (cont-turn on) / "
-            + $"{fiveOff.TeleportsTotal} (off) teleports against an allowance of 1. The knob exists to "
-            + "release stalled vehicles; more than a marginal cost against a 0 baseline means the port "
-            + "is wrong. See docs/NEED-arm5-mutual-junction-deadlock.md.");
+            offOn.TeleportsTotal <= 1 && offOff.TeleportsTotal <= 1
+                && fiveOn.TeleportsTotal <= 1 && fiveOff.TeleportsTotal <= 1,
+            $"synthetic-junction2 teleports exceeded the measured allowance of 1 in at least one arm: "
+            + $"(-1,on)={offOn.TeleportsTotal} (-1,off)={offOff.TeleportsTotal} "
+            + $"(5,on)={fiveOn.TeleportsTotal} (5,off)={fiveOff.TeleportsTotal}. Vanilla SUMO fires 0.");
     }
 
     private static string RepoRoot()

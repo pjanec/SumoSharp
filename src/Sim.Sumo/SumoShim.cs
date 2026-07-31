@@ -256,22 +256,20 @@ public static class SumoShim
         // this one shim path and stay directly comparable to LowDensityTeleportTests. Unset/non-"1" =>
         // false, the Engine default, so every existing shim invocation that never sets this env var is
         // byte-identical to before. See docs/NEED-arm5-mutual-junction-deadlock.md.
-        engine.ContTurnInsideJunctionGate = Environment.GetEnvironmentVariable("SUMOSHARP_CONTTURNFIX") == "1";
+        engine.ContTurnInsideJunctionGate = EnvGate("SUMOSHARP_CONTTURNFIX", engine.ContTurnInsideJunctionGate);
         // F3/isLeader T2.4b (docs/F3-ISLEADER-PORT-DESIGN.md §5a/§6; docs/F3-ISLEADER-PORT-TASKS.md
         // T2.4b): env-var test/measurement gate for Engine.JunctionIsLeaderGate -- NOT a SUMO option,
         // so (mirroring SUMOSHARP_CONTTURNFIX immediately above) it is deliberately NOT a `--flag` in
         // the parsed-args table. Kept permanently so an A/B can drive it through this SAME shim path
         // (never mixed with a direct `engine.Run()` baseline -- log §7/§9.33's own standing lesson).
-        // Unset/non-"1" => false, the Engine default, so every existing shim invocation that never
-        // sets this env var is byte-identical to before.
-        engine.JunctionIsLeaderGate = Environment.GetEnvironmentVariable("SUMOSHARP_ISLEADERFIX") == "1";
+        // Unset => the ENGINE DEFAULT (see EnvGate below).
+        engine.JunctionIsLeaderGate = EnvGate("SUMOSHARP_ISLEADERFIX", engine.JunctionIsLeaderGate);
         // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§6; docs/
         // F3-ISLEADER-PORT-TRACKER.md T3.2): env-var test/measurement gate for
         // Engine.InternalJunctionAdmissionGate -- NOT a SUMO option, so (mirroring
         // SUMOSHARP_CONTTURNFIX/SUMOSHARP_ISLEADERFIX immediately above) it is deliberately NOT a
-        // `--flag` in the parsed-args table. Unset/non-"1" => false, the Engine default, so every
-        // existing shim invocation that never sets this env var is byte-identical to before.
-        engine.InternalJunctionAdmissionGate = Environment.GetEnvironmentVariable("SUMOSHARP_INTERNALJUNCTIONFIX") == "1";
+        // `--flag` in the parsed-args table. Unset => the ENGINE DEFAULT (see EnvGate below).
+        engine.InternalJunctionAdmissionGate = EnvGate("SUMOSHARP_INTERNALJUNCTIONFIX", engine.InternalJunctionAdmissionGate);
         // DIAGNOSTIC, not behavioural (see Engine.DiagTraceVehicleId): dumps KeepClearConstraint's
         // downstream available-space walk to stderr for ONE vehicle id. Read here as well as in
         // Sim.Run because the two load-bearing gridlock diagnostics (LowDensityTeleportTests,
@@ -401,4 +399,22 @@ public static class SumoShim
 
     private static bool IsBooleanLiteral(string s) =>
         s is "true" or "false" or "1" or "0" or "True" or "False";
+    // THE SAFE ENV-GATE FORM (docs/ENV-GATES.md "The three-state trap"). `GetEnvironmentVariable(name)
+    // == "1"` is a TWO-state override that silently forces OFF when the variable is absent. That was
+    // harmless while every junction gate defaulted to false, and became a live bug the moment PR #13
+    // (604ad72) flipped seven of them to true: from then until this fix, EVERY `sumosharp` invocation
+    // that did not set these three -- including the SumoData pipeline's, via SUMO_BINARY -- ran with
+    // three junction gates DISABLED that the engine, the goldens and the LiveCity host all had enabled.
+    //
+    // It was not theoretical. Two shim-driven parity tests were silently calibrated in that
+    // gates-off configuration, and one of them carried a "hard invariant" arrivals floor THE SHIPPED
+    // ENGINE COULD NOT REACH; see docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entries 18-19.
+    //
+    // Absent => the engine's own default. Present => "1" is on, anything else off.
+    private static bool EnvGate(string name, bool engineDefault)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
 }

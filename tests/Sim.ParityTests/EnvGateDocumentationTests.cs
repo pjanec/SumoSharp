@@ -16,11 +16,18 @@ namespace Sim.ParityTests;
 // corresponds to a gate the code reads) while the doc's prose owns MEANING. A new gate fails the
 // build until someone describes it.
 //
-// Deliberately NOT asserted here: that a gate is read via EnvGate() rather than the unsafe
-// `== "1"` two-state form. Three SumoShim gates currently use the unsafe form against engine
-// defaults of `true` -- a real open bug, tracked in docs/TASKS-TODO.md and documented in
-// docs/ENV-GATES.md. Asserting the safe form would fail on that known bug rather than on a
-// regression, so it stays a documented finding until it is fixed; then this test can be tightened.
+// PARTIALLY asserted here since Entry 19: that the three JUNCTION gates whose Engine defaults are
+// `true` are not read with the unsafe `== "1"` two-state form (see the second test below). They were,
+// in SumoShim, for as long as those defaults have been true -- so the drop-in binary shipped three
+// junction gates OFF that the engine had ON, and one shim-driven test carried a "hard invariant" the
+// shipped engine could not reach. That is fixed; this guards the revert.
+//
+// NOT asserted generally, deliberately: the two-state form is perfectly SAFE for a gate whose Engine
+// default is `false`, and several legitimately use it (LIVECITY_F3OCCUPANCY, LIVECITY_SEQDESYNC,
+// LIVECITY_LCLOG, LIVECITY_WITNESS -- all default-false). A blanket ban would fail on correct code. A
+// truly general rule needs each gate's Engine default, which is not reliably discoverable by scanning
+// text; docs/ENV-GATES.md's table is the human check for that, and the named list below is the
+// machine check for the cases that have actually bitten.
 public class EnvGateDocumentationTests
 {
     // Both read forms. `EnvGate(name, engineDefault)` falls back to the engine default; the bare
@@ -74,6 +81,64 @@ public class EnvGateDocumentationTests
             + "src/ or demos/. A documented gate that does nothing is worse than an undocumented one -- "
             + "someone will set it and believe it took effect. Remove the row, or say in it that the gate "
             + "is retired:\n" + string.Join("\n", stale.Select(g => $"  {g}")));
+    }
+
+    // The gates whose Engine property defaults to TRUE, so that the two-state `== "1"` form -- which
+    // forces false whenever the variable is absent -- is a BUG rather than a style preference.
+    private static readonly string[] MustUseSafeForm =
+    {
+        "SUMOSHARP_CONTTURNFIX",         // Engine.ContTurnInsideJunctionGate    = true
+        "SUMOSHARP_ISLEADERFIX",         // Engine.JunctionIsLeaderGate          = true
+        "SUMOSHARP_INTERNALJUNCTIONFIX", // Engine.InternalJunctionAdmissionGate = true
+    };
+
+    [Fact]
+    public void GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm()
+    {
+        var root = RepoRoot();
+        var offenders = new List<string>();
+
+        foreach (var dir in new[] { "src", "demos" })
+        {
+            var abs = Path.Combine(root, dir);
+            if (!Directory.Exists(abs))
+            {
+                continue;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(abs, "*.cs", SearchOption.AllDirectories))
+            {
+                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
+                    || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+                {
+                    continue;
+                }
+
+                var lines = File.ReadAllLines(file);
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    foreach (var gate in MustUseSafeForm)
+                    {
+                        // The unsafe shape: a GetEnvironmentVariable read of this gate COMPARED on the
+                        // same line. EnvGate("NAME", default) never matches, because it does not compare.
+                        var idx = lines[i].IndexOf($"GetEnvironmentVariable(\"{gate}\")", StringComparison.Ordinal);
+                        if (idx >= 0 && lines[i].IndexOf("==", idx, StringComparison.Ordinal) >= 0)
+                        {
+                            offenders.Add(
+                                $"  {gate}  at {Path.GetRelativePath(root, file).Replace('\\', '/')}:{i + 1}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"{offenders.Count} gate read(s) use the unsafe two-state `GetEnvironmentVariable(name) == \"1\"` "
+            + "form for a gate whose Engine default is TRUE. That form FORCES THE GATE OFF whenever the "
+            + "variable is absent, so the host silently runs a different engine than the one we ship -- "
+            + "exactly the bug SumoShim carried (docs/JUNCTION-REALISM-SESSION-JOURNAL.md Entry 19). Use "
+            + "`EnvGate(name, engineDefault)` instead:\n" + string.Join("\n", offenders));
     }
 
     // gate name -> first "file:line" it is read at, for a failure message that points somewhere useful.

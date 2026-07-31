@@ -636,10 +636,15 @@ the open-loop discharge test, per the two hard constraints in the discharge sect
 whether it explains any SumoData-side measurement taken through `SUMO_BINARY`, since every one of those
 runs had three gates off.
 
-- [ ] **Fix the three `SumoShim` gates to fall back to the engine default**, correct the three now-false
-      comments, and add a test covering the **unset** shim path (nothing does today). Then tighten
-      `EnvGateDocumentationTests` to also assert the safe read form, which it deliberately does not assert
-      while this bug is open. Reference: `docs/ENV-GATES.md` §"The three-state trap".
+- [x] **DONE (journal Entry 19).** The three `SumoShim` gates now use `EnvGate(name, engineDefault)`; the
+      three now-false comments are corrected; `SumoShimUnsetGateFallbackTests` covers the **unset** shim
+      path behaviourally (unset must be byte-identical to explicitly-at-defaults, with a vacuity guard);
+      and `EnvGateDocumentationTests.GatesWhoseEngineDefaultIsTrue_AreNotReadWithTheTwoStateForm` now
+      asserts the safe read form for the three default-true gates — verified to FAIL, naming file:line,
+      when one read is reverted. Not asserted blanket-wide on purpose: the two-state form is correct for
+      a default-`false` gate, and four legitimately use it.
+      Gate after the change: **776 passed / 5 skipped / 0 failed**, 26-net battery **unchanged**.
+      Reference: `docs/ENV-GATES.md` §"The three-state trap".
 
 ## Surfaced by the docs audit (2026-07-28) — real open work that lived only in a doc
 
