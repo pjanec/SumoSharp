@@ -83,7 +83,14 @@ taken after.
    (binder 14) on `:2810_8_0`, and `crossJxnLeader` on `:2450_0_1`. Separately, vehicles **122 and 256**
    are stranded on the dead lane `30_1` at pos 24.12 / 16.62 — **pre-existing, identical in both arms**,
    and never covered by that test's old 290-arrivals figure despite the test being named for it.
-2. **Normal-traffic junction overlaps on the real nets.** `city-mixed-1k` still shows 10 peak
+2. **Normal-traffic junction overlaps — ⭐ MECHANISM NAMED AND TRACED (Entry 27).** A multi-vehicle
+   pileup on a single internal lane: (a) **back-protrusion invisibility** — a car whose front crossed
+   the boundary vanishes from the lane its back still occupies (SUMO: `myPartialVehicles`; we have no
+   partial occupancy), and (b) the **cross-junction leader arm follows a FAR leader instead of the
+   rearmost occupant** (`blocker=f_cyc_ccw.34` with three halted cars in between). Repro:
+   `junction-realism-L2`, `:J00_13_0`, t=680–690, six cars halted at pos 0.39–3.99. Present in BOTH
+   arms of the urgent-follow A/B — this blocks that flag's default flip (its overlap gate is entangled
+   with this defect). Also the likely `city-*` overlap cause. `city-mixed-1k` still shows 10 peak
    overlapping pairs, `city-3000` 6, `city-organic` 5. Untraced. Likely the same box-block family.
 3. **Lateral lane change while stopped — strategic-path mechanism CONFIRMED (Entry 25): the
    informLeader port reproduces SUMO's move to two decimals, and the naive global default COLLAPSES a

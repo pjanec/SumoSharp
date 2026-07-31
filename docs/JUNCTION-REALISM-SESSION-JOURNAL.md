@@ -1985,3 +1985,61 @@ same pattern as Entry 23's insertion fixes (3 → 9 for the same reason). **Unat
 **Default therefore stays OFF.** Next step (T2 continuation): attribute the 21 — junction-interior pairs
 of crossing streams would confirm the pre-existing class; lane pairs adjacent to a commit would implicate
 the coupling itself. Then either fix the junction weakness first or gate the flip on it.
+
+---
+
+## Entry 27 — T2.5: the coupling is EXONERATED, and the real overlap mechanism is finally named
+
+### Attribution of the 21-vs-9 overlap gate failure
+
+Enumerated every junction-interior overlapping pair in both arms (the peak metric counts only
+junction-interior pairs by construction — lane-level merge overlaps are invisible to it):
+
+| | scoped pair ON | flag OFF |
+|---|---|---|
+| peak simultaneous pairs (the gate metric) | 21 | 9 |
+| **distinct pairs over the run** | **77** | **66** |
+| dominant episode | 6 vehicles on `:J00_13_0`, t≈680–770 | 5+ vehicles on `:J00_9_1`, t≈655–735 |
+| pairs with a member that made a MOVING same-edge change ≤60 s before onset | **0** | 4 |
+
+Three conclusions, each measured:
+1. **The coupling is exonerated.** Not one ON-arm pair involves a recent coupling-committed changer.
+2. **The 21-vs-9 was trap #4 again (incidence ≠ duration):** both arms have ONE dominant pileup episode;
+   the ON arm's happened to involve 6 simultaneous vehicles (≈15 concurrent pairs) instead of 5. Distinct
+   pairs differ by 17%, not 2.3×.
+3. **Both arms exhibit the SAME defect class** — a multi-vehicle pileup on a single internal lane. This
+   is backlog #2 (the `city-*` junction overlaps), reproduced on the diag net, in both arms.
+
+### The pileup mechanism, traced to the step
+
+Binder log, the six `:J00_13_0` vehicles: each enters at 4–8 m/s and halts **at pos 0.39–3.99** — six 5 m
+cars parked inside four metres of each other. The entry-step evidence:
+
+```
+f_cyc_ccw.40 t=681 in_W00_0@188.20 spd=8.70 binder=crossJxnLeader blocker=f_cyc_ccw.34
+             t=682 :J00_13_0@3.54  <- enters INTO f_cyc_ccw.37, halted at 2.94 since t=680
+```
+
+`f_cyc_ccw.37` halted on `:J00_13_0` at pos 2.94, so its 5 m body **protrudes 2.06 m back across the
+boundary onto `in_W00_0`** (physically at ≈187.5). Ego at 188.20 is *already inside it* — and cannot see
+it: the lane bucket indexes 37 only on the internal lane, so the approach lane's own-lane leader query
+returns nothing, and the cross-junction leader arm picked the FAR leader `f_cyc_ccw.34` instead of the
+rearmost occupant. **Two coupled defects, now named:**
+
+- **(a) back-protrusion invisibility** — a vehicle whose front has crossed a lane boundary vanishes from
+  the lane its back still occupies. SUMO models this explicitly (`myPartialVehicles`,
+  `getBackPositionOnLane`); our single-bucket-per-vehicle model does not.
+- **(b) the cross-junction leader arm follows a far leader, not the rearmost** — `blocker=f_cyc_ccw.34`
+  while 37/40/41 stand between ego and 34.
+
+Every vehicle halts under `leaderFollow` immediately AFTER entering — the same-lane following works once
+they share a bucket. The damage is done at the boundary crossing.
+
+### Where this leaves the flip, and the priority
+
+The overlap gate failure was **not caused by the coupling** — but the gate as written still reads 21 > 9,
+and re-writing a gate to pass a change is exactly what this journal exists to prevent. The honest order:
+**fix the pileup mechanism (backlog #2, now with a named, traced cause and a two-line repro) first**, then
+re-measure the coupling against the gates on a net that no longer manufactures overlap episodes. The
+coupling stays default OFF until then — not because it is suspect, but because its acceptance gate is
+entangled with a defect it did not cause.
