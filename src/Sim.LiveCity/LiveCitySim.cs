@@ -396,6 +396,20 @@ public sealed class LiveCitySim : IDisposable
         // grids deadlock; see the Engine property comment). LIVECITY_F3OCCUPANCY=1 enables it for A/B
         // measurement of the crossing-internal-lane overlap it is meant to remove.
         _engine.JunctionPhysicalOccupancyGate = Environment.GetEnvironmentVariable("LIVECITY_F3OCCUPANCY") == "1";
+        // Entry 37: bounded patience for every physical-occupancy hold -- SUMO's own
+        // --ignore-junction-blocker knob (Engine.IgnoreJunctionBlockerSeconds; also cuts the
+        // crossing-foe arms, MSLink.cpp:1601). The measured need: with the F3 gate ON at demo
+        // density 400, a 5-vehicle ring (bay-hold -> admission -> leaderFollow queue) wedged one
+        // junction and cascaded citywide (stoppedFrac 0.9, arrivals halved); the ring's only
+        // cuttable edge was the hold on a foe that had ALREADY stood for minutes. Default: 60 s
+        // when the F3 gate is ON (a foe standing a minute inside a junction is a wedge, not a
+        // transient), -1 (SUMO parity, never ignore) when it is OFF -- so the gate-off demo is
+        // untouched. LIVECITY_IGNOREBLOCKER=<seconds> overrides either way (-1 disables).
+        var ignoreBlockerRaw = Environment.GetEnvironmentVariable("LIVECITY_IGNOREBLOCKER");
+        _engine.IgnoreJunctionBlockerSeconds = ignoreBlockerRaw is not null
+            && double.TryParse(ignoreBlockerRaw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ignoreBlockerSecs)
+            ? ignoreBlockerSecs
+            : (_engine.JunctionPhysicalOccupancyGate ? 60.0 : _engine.IgnoreJunctionBlockerSeconds);
         // F3/cont-turn predicate fix (docs/NEED-contturn-stuck-in-junction.md). OFF by default -- correct
         // in isolation but it regresses a saturated-grid diagnostic until checkRewindLinkLanes is ported
         // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
@@ -1459,7 +1473,8 @@ public sealed class LiveCitySim : IDisposable
     // head while the engine has it red" render bug).
     public readonly record struct CarAuthWitness(
         VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead,
-        string TlLinks, double NextMouthGap, char TlWire, byte Binder, byte JyArm, float JyFoeSpeed);
+        string TlLinks, double NextMouthGap, char TlWire, byte Binder, byte JyArm, float JyFoeSpeed,
+        int EntityIndex, int BlockerEntity);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -1475,6 +1490,8 @@ public sealed class LiveCitySim : IDisposable
         var binders = _engine.BindingConstraints;   // which speed constraint bound each car
         var jyArms = _engine.JunctionYieldArms;      // which junction-yield arm bound (+0x80 priority)
         var jyFoeSpd = _engine.JunctionYieldFoeSpeeds; // bound junction foe's speed (-1 none)
+        var entityIdx = _engine.EntityIndexes;       // Entry 37: chain diag (who waits on whom)
+        var blockerIdx = _engine.BlockerEntityIndexes;
         var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
@@ -1525,7 +1542,9 @@ public sealed class LiveCitySim : IDisposable
                 pos[i], posLat[i], speed[i], tl, gap, links, nextMouthGap, tlWire,
                 i < binders.Length ? binders[i] : (byte)0,
                 i < jyArms.Length ? jyArms[i] : (byte)0,
-                i < jyFoeSpd.Length ? jyFoeSpd[i] : -1f));
+                i < jyFoeSpd.Length ? jyFoeSpd[i] : -1f,
+                i < entityIdx.Length ? entityIdx[i] : -1,
+                i < blockerIdx.Length ? blockerIdx[i] : -1));
         }
 
         return outList;

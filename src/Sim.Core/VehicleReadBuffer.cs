@@ -55,6 +55,7 @@ internal sealed class VehicleReadBuffer
     public byte[] BindingConstraint = new byte[InitialCapacity];
     public byte[] JunctionYieldArm = new byte[InitialCapacity]; // #15 diag: which junction-yield arm bound (+0x80 priority)
     public float[] JunctionYieldFoeSpeed = new float[InitialCapacity]; // #15 diag: bound junction foe's speed (-1 none)
+    public int[] BlockerEntity = new int[InitialCapacity]; // Entry 37 diag: EntityIndex of the vehicle the binder blocked on (-1 none)
 
     // EntityIndex -> dense slot, frame-stamped so BeginFrame never has to clear it: a slot is current
     // only if its stamp equals the live frame counter.
@@ -75,7 +76,7 @@ internal sealed class VehicleReadBuffer
         int laneHandle, int nextLane, int prevLane, ReadOnlySpan<int> laneWindow,
         string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle, float length, float width,
-        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f)
+        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f, int blockerEntityIndex = -1)
     {
         EnsureColumnCapacity(Count + 1);
 
@@ -109,6 +110,7 @@ internal sealed class VehicleReadBuffer
         BindingConstraint[i] = bindingConstraint;
         JunctionYieldArm[i] = junctionYieldArm;
         JunctionYieldFoeSpeed[i] = junctionYieldFoeSpeed;
+        BlockerEntity[i] = blockerEntityIndex;
 
         _slotByEntity[entityIndex] = i;
         _frameOfEntity[entityIndex] = _frame;
@@ -166,6 +168,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref BindingConstraint, newCap);
         Array.Resize(ref JunctionYieldArm, newCap);
         Array.Resize(ref JunctionYieldFoeSpeed, newCap);
+        Array.Resize(ref BlockerEntity, newCap);
     }
 
     private void EnsureEntityCapacity(int needed)

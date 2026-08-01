@@ -164,6 +164,17 @@ internal static class Program
         // F3-era "counterproductive alone" verdict predates its sibling gates shipping default-ON
         // and the Entry-30 determinism fix, so it is re-measured through this gate.
         engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCCUPANCY", engine.JunctionPhysicalOccupancyGate);
+        // Entry 37: bounded patience for every physical-occupancy hold (SUMO's own
+        // --ignore-junction-blocker; the LiveCity host defaults it to 60 s whenever its F3 gate is
+        // ON -- see LiveCitySim). Seconds; -1 = never ignore (engine default, SUMO parity). Here it
+        // is measurement plumbing only: unset => engine/config default, so every existing A/B is
+        // untouched.
+        var ignoreBlockerRaw = Environment.GetEnvironmentVariable("SUMOSHARP_IGNOREBLOCKER");
+        if (ignoreBlockerRaw is not null
+            && double.TryParse(ignoreBlockerRaw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ignoreBlockerSecs))
+        {
+            engine.IgnoreJunctionBlockerSeconds = ignoreBlockerSecs;
+        }
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)

@@ -1417,6 +1417,64 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                     Console.Write($"LIVECITY-WITNESS: {sim.Time,6:F0} stuck={stuck,3} minorGreenYield={stuckMinorGreen,3} " +
                         $"majorGreenSTUCK={stuckMajorGreen,3} red={stuckRed,3} behindLeader/exit={stuckLeader,3} strandedDeadEnd={sim.StrandedOffRouteLastStep,3} " +
                         $"renderedGreen={renderedGreen,3} tlRenderLie={tlLie,3} onInternal={onInternal,3} stuckInternal={stuckInternal,3}");
+
+                    // Entry 37: the HEADS histogram. Judge stalls on heads, not the population
+                    // (CLAUDE.md measurement lesson 7): the red/behindLeader shares above are queue
+                    // shadow; the cars wedged ON internal lanes are what everything queues behind.
+                    // Full binder id range (BinderLogObserver.BinderNames) + jyArm incl. 7=bayOccupancy.
+                    if (stuckInternal > 0)
+                    {
+                        string[] fullBinderNames = { "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane",
+                            "deadLaneMerge", "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield",
+                            "keepClear", "obstacle", "crowd", "internalJunctionAdmission", "colocationSymmetryBreak",
+                            "crowdYield", "internalJunctionApproachArm", "urgentStrategicFollow", "urgentFollowerYield" };
+                        string[] fullArmNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge",
+                            "externalAgent", "adaptToJxnLeader", "approachingCross", "bayOccupancy" };
+                        var intBinder = new int[fullBinderNames.Length];
+                        var intJyArm = new int[fullArmNames.Length];
+                        foreach (var c in w)
+                        {
+                            if (c.Speed >= 0.3 || !c.LaneId.StartsWith(':')) continue;
+                            if (c.Binder >= 0 && c.Binder < intBinder.Length) intBinder[c.Binder]++;
+                            if (c.Binder == 10) { var arm = c.JyArm & 0x0F; if (arm < intJyArm.Length) intJyArm[arm]++; }
+                        }
+
+                        Console.Write("\nLIVECITY-INTERNALSTUCK:");
+                        for (var b = 0; b < intBinder.Length; b++) if (intBinder[b] > 0) Console.Write($" {fullBinderNames[b]}={intBinder[b]}");
+                        Console.Write(" || JYarm:");
+                        for (var a = 0; a < intJyArm.Length; a++) if (intJyArm[a] > 0) Console.Write($" {fullArmNames[a]}={intJyArm[a]}");
+
+                        // Entry 37: the CHAINS. One line per stuck-internal head: who it waits on and
+                        // that blocker's own state -- a printed wedge cycle instead of a binder-log
+                        // spelunk. Capped so a citywide jam can't flood the log.
+                        var byEntity = new Dictionary<int, int>(w.Count);
+                        for (var i2 = 0; i2 < w.Count; i2++) byEntity[w[i2].EntityIndex] = i2;
+                        Console.WriteLine();
+                        var printed = 0;
+                        foreach (var c in w)
+                        {
+                            if (c.Speed >= 0.3 || !c.LaneId.StartsWith(':') || printed >= 30) continue;
+                            printed++;
+                            var bn = c.Binder < fullBinderNames.Length ? fullBinderNames[c.Binder] : c.Binder.ToString();
+                            var an = (c.JyArm & 0x0F) < fullArmNames.Length ? fullArmNames[c.JyArm & 0x0F] : "?";
+                            var chain = $"LIVECITY-CHAIN: {c.Handle,5} {c.LaneId,-14}@{c.Pos,6:F1} {bn}/{an}";
+                            if (c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var bi))
+                            {
+                                var b2 = w[bi];
+                                var bn2 = b2.Binder < fullBinderNames.Length ? fullBinderNames[b2.Binder] : b2.Binder.ToString();
+                                var an2 = (b2.JyArm & 0x0F) < fullArmNames.Length ? fullArmNames[b2.JyArm & 0x0F] : "?";
+                                var b3 = b2.BlockerEntity >= 0 && byEntity.TryGetValue(b2.BlockerEntity, out var bj)
+                                    ? $" ->> {w[bj].Handle}" : (b2.BlockerEntity >= 0 ? $" ->> ent{b2.BlockerEntity}" : "");
+                                chain += $" -> {b2.Handle} {b2.LaneId}@{b2.Pos:F1}/{b2.Speed:F1} {bn2}/{an2}{b3}";
+                            }
+                            else if (c.BlockerEntity >= 0)
+                            {
+                                chain += $" -> ent{c.BlockerEntity}(?)";
+                            }
+
+                            Console.WriteLine(chain);
+                        }
+                    }
                     // Binding-constraint histogram for the majorGreenSTUCK cars (the no-innocent-explanation
                     // stalls). Id map: 1 leaderFollow 2 crossJxnLeader 3 freeFlow 4 successiveLane
                     // 5 deadLaneMerge 6 stopLine 7 redLight 8 railSignal 9 railCrossing 10 junctionYield

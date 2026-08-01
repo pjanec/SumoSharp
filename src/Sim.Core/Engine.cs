@@ -2166,6 +2166,11 @@ public sealed partial class Engine : IEngine
     // DIAGNOSTIC (#15): the bound junction foe's speed (m/s; -1 none). Meaningful where a foe arm bound.
     public ReadOnlySpan<float> JunctionYieldFoeSpeeds => _readBuffer.JunctionYieldFoeSpeed.AsSpan(0, _readBuffer.Count);
 
+    // Entry 37 diag: EntityIndex of the vehicle each car's binding constraint blocked on (-1 none) --
+    // the LiveCity witness uses it to print wedge CHAINS (who waits on whom) without a binder-log file.
+    public ReadOnlySpan<int> BlockerEntityIndexes => _readBuffer.BlockerEntity.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<int> EntityIndexes => _readBuffer.EntityIndex.AsSpan(0, _readBuffer.Count);
+
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
     // lands it is bumped per-slot so a handle held across a despawn goes stale (TryGetVehicle rejects it).
@@ -2425,7 +2430,7 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex);
         }
 
         DetectLifecycleEvents();
@@ -7965,6 +7970,19 @@ public sealed partial class Engine : IEngine
                     // A genuinely transiting car's back clears the interval within a step or two.
                     if (cand.Kinematics.Speed > 2.0
                         || cand.Kinematics.Pos - cand.VType.Length > bc.BayArcEnd + 1.0)
+                    {
+                        continue;
+                    }
+
+                    // Entry 37: SUMO's own `--ignore-junction-blocker` escape (gIgnoreJunctionBlocker,
+                    // MSLink.cpp:1601 -- already applied to the crossing-foe arms at the loop head
+                    // above), extended to this beyond-SUMO arm so the SAME knob bounds every
+                    // physical-occupancy hold. The traced live-city collapse was a 5-vehicle ring
+                    // spanning THREE mechanisms (jy7 -> admission -> leaderFollow queue back to the
+                    // jy7 ego) whose only cuttable edge was this hold: a bay body that has stood for
+                    // >= the threshold is a wedge, not a transient, and holding for it converts one
+                    // stuck car into a citywide gridlock. Inert at the -1 default (SUMO parity).
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds)
                     {
                         continue;
                     }
