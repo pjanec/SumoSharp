@@ -1477,7 +1477,11 @@ public sealed class LiveCitySim : IDisposable
     public readonly record struct CarAuthWitness(
         VehicleHandle Handle, string LaneId, double Pos, double PosLat, double Speed, char Tl, double GapAhead,
         string TlLinks, double NextMouthGap, char TlWire, byte Binder, byte JyArm, float JyFoeSpeed,
-        int EntityIndex, int BlockerEntity);
+        int EntityIndex, int BlockerEntity,
+        // Entry 41: the engine Def.Id ("__vehN") -- the ONLY key LIVECITY_TRACEVEH accepts, and the
+        // chain printer previously showed only the handle, so a stuck head could be SEEN but not
+        // TRACED without this.
+        string DefId);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -1495,6 +1499,7 @@ public sealed class LiveCitySim : IDisposable
         var jyFoeSpd = _engine.JunctionYieldFoeSpeeds; // bound junction foe's speed (-1 none)
         var entityIdx = _engine.EntityIndexes;       // Entry 37: chain diag (who waits on whom)
         var blockerIdx = _engine.BlockerEntityIndexes;
+        var defIds = _engine.VehicleIds;             // Entry 41: trace key for LIVECITY_TRACEVEH
         var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
@@ -1547,7 +1552,8 @@ public sealed class LiveCitySim : IDisposable
                 i < jyArms.Length ? jyArms[i] : (byte)0,
                 i < jyFoeSpd.Length ? jyFoeSpd[i] : -1f,
                 i < entityIdx.Length ? entityIdx[i] : -1,
-                i < blockerIdx.Length ? blockerIdx[i] : -1));
+                i < blockerIdx.Length ? blockerIdx[i] : -1,
+                i < defIds.Length ? defIds[i] : string.Empty));
         }
 
         return outList;

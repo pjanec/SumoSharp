@@ -8354,16 +8354,15 @@ public sealed partial class Engine : IEngine
             }
         }
 
-        if (trace)
-        {
-            Console.Error.WriteLine(
-                $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} VERDICT seenSpace={seenSpace:F2} "
-                + $"required={v.VType.Length + v.VType.MinGap:F2} foundStopped={foundStopped} "
-                + $"binds={(foundStopped && seenSpace - (v.VType.Length + v.VType.MinGap) < 0.0 ? "YES" : "no")}");
-        }
-
         if (!foundStopped || seenSpace - (v.VType.Length + v.VType.MinGap) >= 0.0)
         {
+            if (trace)
+            {
+                Console.Error.WriteLine(
+                    $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} VERDICT seenSpace={seenSpace:F2} "
+                    + $"required={v.VType.Length + v.VType.MinGap:F2} foundStopped={foundStopped} binds=no");
+            }
+
             // Either the exit chain is clear, or ego fits -> not a box-blocking situation.
             return double.PositiveInfinity;
         }
@@ -8373,7 +8372,17 @@ public sealed partial class Engine : IEngine
         const double distToStopLine = 1.0;
         var approachLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]];
         var stopDist = approachLane.Length - v.Kinematics.Pos - distToStopLine;
-        return StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+        var kcConstraint = StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+        if (trace)
+        {
+            Console.Error.WriteLine(
+                $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} VERDICT seenSpace={seenSpace:F2} "
+                + $"required={v.VType.Length + v.VType.MinGap:F2} foundStopped={foundStopped} binds=YES "
+                + $"approachLane={approachLane.Id} len={approachLane.Length:F2} seqIdx={v.LaneSeqIndex}/{egoLinkSeqIndex} "
+                + $"pos={v.Kinematics.Pos:F2} stopDist={stopDist:F2} constraint={kcConstraint:F2}");
+        }
+
+        return kcConstraint;
     }
 
     // F3/internal-junction-foes T3.2 (docs/F3-INTERNAL-JUNCTION-DESIGN.md §3/§3a; ported from

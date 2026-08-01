@@ -3074,3 +3074,48 @@ Then decide fixes with predictions in a fresh entry. Rerouting stays parked unti
 characterized (the 3D session's argument is accepted: rerouting would confound this exact
 validation, and the reroute design's own T3 already requires hour-horizon runs in BOTH gate
 arms before any default flip).
+
+### Entry 41 (MID) — reproduced and traced: the "too-cautious" gridlock root is a cont-turn FRAME BUG in KeepClearConstraint
+
+**Reproduction:** closed-loop smoke, `LIVECITY_CARS=800`, gate ON — total gridlock (stoppedFrac
+0.97, arrivals flatlined ~950). Witness output shows the owner's exact class directly:
+`CAR e_d_6_5_d_6_4_1 pos=98.6 tlLane=g bind=keepClear gap=84 exitMouth=inf` and even
+`bind=keepClear gap=inf exitMouth=inf` on GREEN — bound by keepClear with NOTHING ahead;
+`LIVECITY-STUCKCLEAR: keepClear=17` of 87 clear-stuck cars; chain roots are keepClear cars
+standing at pos ~4-6 just past a junction (the owner's "one or two cautious cars").
+
+**The trace (`__veh412`, [keepclear] VERDICT instrument extended with stopDist — committed):**
+
+    [keepclear] veh=__veh412 on=e_d_5_3_d_4_3_1@6.27 ... binds=YES
+                approachLane=:d_4_3_0_0 len=7.27 seqIdx=5/7 pos=6.27 stopDist=0.00 constraint=0.00
+
+The vehicle is on a 226 m NORMAL lane at pos 6.27, but its route through d_4_3 is a CONT turn:
+the pool holds the first-stage bay `:d_4_3_0_0` (slot 6 — not in `LinkByInternalLane`) between
+the current lane (slot 5) and the link-controlling stage-2 lane (slot 7). `approachLane` is
+computed as `pool[egoLinkSeqIndex − 1]` = THE BAY, and `stopDist = approachLane.Length −
+v.Kinematics.Pos − 1.0` mixes the bay's frame with a position measured on the normal lane:
+7.27 − 6.27 − 1.0 = **0.00 → the car brakes to zero at its CURRENT position and stands forever**
+— wherever it happened to be when the downstream verdict flipped (typically just after exiting
+the previous junction, or mid-lane: the queue-gap signature). This is EXACTLY the C4-vii-a
+cont-turn frame bug ("approachLane.Length − pos is negative garbage") that the merge arm was
+cured of by walking the pool; `KeepClearConstraint` never received that fix. It also explains
+the lane asymmetry the owner saw: INNER-lane (left-turn, cont-route) cars freeze mid-lane with
+gaps; outer straight-lane cars pack correctly.
+
+**The fix (DEFAULT-scope — this is a plain bug, SUMO's brake target is the junction-entry stop
+line along the vehicle's own continuation):** compute `stopDist` by walking the pool from the
+CURRENT lane to the first INTERNAL slot (the junction entry):
+`(currentLane.Length − pos) + Σ normal pool lanes strictly between − 1.0`. For a vehicle on the
+immediate approach lane of a non-cont link this is arithmetically IDENTICAL to the old formula
+(loop body never runs), which is the byte-identity argument for the committed keepClear anchor
+(scenarios/34-keepclear) and most goldens.
+
+**Predictions:**
+1. Goldens byte-identical (any golden that moves is a stop-ship; 34-keepclear binds on its own
+   immediate approach lane — identical arithmetic).
+2. Default L2/mixed hashes MAY move (keepClear binds occur in saturated defaults); if so,
+   re-baseline with the full ladder.
+3. Smoke 800 gate-ON: the gridlock breaks or materially recedes (arrivals well above ~950;
+   stoppedFrac off the 0.97 ceiling); the `bind=keepClear gap=inf` witness class disappears.
+4. Smoke 400 both arms: unchanged-or-better arrivals; hour-horizon suite stays green.
+5. Battery both arms: no new stuckDwell; willpass-saturation stays DRAINED 412/0.

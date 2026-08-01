@@ -1457,7 +1457,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                             printed++;
                             var bn = c.Binder < fullBinderNames.Length ? fullBinderNames[c.Binder] : c.Binder.ToString();
                             var an = (c.JyArm & 0x0F) < fullArmNames.Length ? fullArmNames[c.JyArm & 0x0F] : "?";
-                            var chain = $"LIVECITY-CHAIN: {c.Handle,5} {c.LaneId,-14}@{c.Pos,6:F1} {bn}/{an}";
+                            var chain = $"LIVECITY-CHAIN: {c.Handle,5}({c.DefId}) {c.LaneId,-14}@{c.Pos,6:F1} {bn}/{an}";
                             if (c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var bi))
                             {
                                 var b2 = w[bi];
@@ -1465,7 +1465,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                                 var an2 = (b2.JyArm & 0x0F) < fullArmNames.Length ? fullArmNames[b2.JyArm & 0x0F] : "?";
                                 var b3 = b2.BlockerEntity >= 0 && byEntity.TryGetValue(b2.BlockerEntity, out var bj)
                                     ? $" ->> {w[bj].Handle}" : (b2.BlockerEntity >= 0 ? $" ->> ent{b2.BlockerEntity}" : "");
-                                chain += $" -> {b2.Handle} {b2.LaneId}@{b2.Pos:F1}/{b2.Speed:F1} {bn2}/{an2}{b3}";
+                                chain += $" -> {b2.Handle}({b2.DefId}) {b2.LaneId}@{b2.Pos:F1}/{b2.Speed:F1} {bn2}/{an2}{b3}";
                             }
                             else if (c.BlockerEntity >= 0)
                             {
