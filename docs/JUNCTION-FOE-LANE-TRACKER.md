@@ -1,7 +1,7 @@
 # JUNCTION-FOE-LANE — tracker
 
 Design: `JUNCTION-FOE-LANE-DESIGN.md` · Tasks: `JUNCTION-FOE-LANE-TASKS.md` · Evidence: journal
-Entry 35. A box is ticked only when the reviewer has confirmed the task's success conditions
+Entry 35. **Operational hand-off page: `JUNCTION-FOE-LANE-RESUME.md` — a cold start begins THERE.** A box is ticked only when the reviewer has confirmed the task's success conditions
 first-hand (CLAUDE.md orchestration loop).
 
 - [x] **OWNER SIGN-OFF on the design** — "go autonomously", July 31 (owner session)
