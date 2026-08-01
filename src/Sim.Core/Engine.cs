@@ -7324,7 +7324,7 @@ public sealed partial class Engine : IEngine
         if (junction.Type == "allway_stop")
         {
             return AllwayStopConstraint(
-                v, junction, egoLink, request, approachLane, egoOnInternal,
+                v, junction, egoLink, request, approachLane, egoOnInternal, egoDistToEntry,
                 allVehicles, dt, actionStepLengthSecs, laneVehicleMaxSpeed);
         }
 
@@ -7646,11 +7646,14 @@ public sealed partial class Engine : IEngine
             {
                 // F3/cont-turn D3: same commitment test as the SUMO-foe arms -- an ego already inside the
                 // junction is past its entry and cannot be held at it.
+                // Entry 42: stop-line distance is the hoisted egoDistToEntry (identical arithmetic on
+                // the immediate approach lane; the raw approachLane form was BAY-frame garbage on a
+                // cont-turn route -- see the Entry 42 journal entry).
                 var extConstraint = egoInsideJunction
                     ? double.PositiveInfinity
                     : StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
-                        approachLane!.Length - v.Kinematics.Pos - PositionEps,
+                        egoDistToEntry - PositionEps,
                         laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
                 constraint = Math.Min(constraint, extConstraint);
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 4; blockerIdx = -1; } // diag: externalAgent, not a VehicleRuntime
@@ -7736,9 +7739,11 @@ public sealed partial class Engine : IEngine
                     // duplicated here rather than shared, since T2.4a's `GapForIsLeader` takes the
                     // already-derived scalars (design §3b), not the vehicle/lane inputs, and those two
                     // methods deliberately keep their own independent derivations (see their headers).
+                    // Entry 42: seen through the hoisted egoDistToEntry (cont-safe; identical on the
+                    // immediate approach lane).
                     var seenForGap = egoOnInternal
                         ? egoLane.Length - v.Kinematics.Pos
-                        : (approachLane!.Length - v.Kinematics.Pos) + egoLane.Length;
+                        : egoDistToEntry + egoLane.Length;
                     var distToCrossingForGap = seenForGap - conflict.EgoLengthBehindCrossing;
                     var foeDistToCrossingForGap = foeLaneForGap.Length - conflict.FoeLengthBehindCrossing;
                     var leaderBackForGap = foe.Kinematics.Pos - foe.VType.Length;
@@ -7768,14 +7773,14 @@ public sealed partial class Engine : IEngine
                     // by REFERENCE (T2.3's own doc comment).
                     var isLeader = IsLeader(_network!, junction, egoLink, egoCandidate, foeCandidate, gapForIsLeader, dt, time);
 
-                    if (!(isLeader || FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
+                    if (!(isLeader || FoeIsInTheWay(v, egoLane, egoDistToEntry, egoOnInternal, conflict, foe)))
                     {
                         continue;
                     }
                 }
                 else if (!respondsTo
                     && (egoOnInternal
-                        || !FoeIsInTheWay(v, egoLane, approachLane, egoOnInternal, conflict, foe)))
+                        || !FoeIsInTheWay(v, egoLane, egoDistToEntry, egoOnInternal, conflict, foe)))
                 {
                     continue;
                 }
@@ -7810,7 +7815,7 @@ public sealed partial class Engine : IEngine
                 // false) for every vType that leaves jmIgnoreJunctionFoeProb at its 0 default.
                 thisConstraint = IgnoresJunctionFoe(v, time)
                     ? double.PositiveInfinity
-                    : AdaptToJunctionLeader(v, egoLane, approachLane, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
+                    : AdaptToJunctionLeader(v, egoLane, egoDistToEntry, egoOnInternal, conflict, foe, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
             }
             else if (respondsTo && foeInternalSeqIndex > foe.LaneSeqIndex)
             {
@@ -7964,10 +7969,12 @@ public sealed partial class Engine : IEngine
                     v.CrossingYieldTaken = true;
                 }
 
+                // Entry 42: stop-line distance via the hoisted egoDistToEntry (cont-safe; identical
+                // on the immediate approach lane).
                 thisConstraint = takesCrossingYield
                     ? StopSpeedFor(
                         v.VType, v.Kinematics.Speed,
-                        approachLane!.Length - v.Kinematics.Pos - PositionEps,
+                        egoDistToEntry - PositionEps,
                         laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService)
                     : double.PositiveInfinity;
             }
@@ -8966,7 +8973,7 @@ public sealed partial class Engine : IEngine
     // writes nothing; the result is independent of vehicle processing order (CLAUDE.md rule 2/5).
     private double AllwayStopConstraint(
         VehicleRuntime v, Junction junction, JunctionLink egoLink, JunctionRequest request,
-        Lane? approachLane, bool egoOnInternal, ActiveVehicleQuery allVehicles,
+        Lane? approachLane, bool egoOnInternal, double egoDistToEntry, ActiveVehicleQuery allVehicles,
         double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
     {
         // Once ego is on its own internal lane it has already been granted entry -- no longer
@@ -8976,7 +8983,8 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        var egoSeen = approachLane.Length - v.Kinematics.Pos;
+        // Entry 42: the hoisted egoDistToEntry (cont-safe; identical on the immediate approach lane).
+        var egoSeen = egoDistToEntry;
         var stopLineBrake = StopSpeedFor(
             v.VType, v.Kinematics.Speed, egoSeen - PositionEps,
             laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
@@ -9633,7 +9641,7 @@ public sealed partial class Engine : IEngine
     private bool FoeIsInTheWay(
         VehicleRuntime ego,
         Lane egoLane,
-        Lane? approachLane,
+        double egoDistToEntry,
         bool egoOnInternal,
         JunctionConflict conflict,
         VehicleRuntime foe)
@@ -9641,9 +9649,10 @@ public sealed partial class Engine : IEngine
         var foeLane = _network!.LanesByHandle[foe.LaneHandle];
 
         // Same `seen`/distToCrossing derivation as AdaptToJunctionLeader (MSVehicle.cpp:3428/3473).
+        // Entry 42: cont-safe via the hoisted egoDistToEntry (identical on the immediate approach lane).
         var seen = egoOnInternal
             ? egoLane.Length - ego.Kinematics.Pos
-            : (approachLane!.Length - ego.Kinematics.Pos) + egoLane.Length;
+            : egoDistToEntry + egoLane.Length;
 
         var distToCrossing = seen - conflict.EgoLengthBehindCrossing;
         var foeDistToCrossing = foeLane.Length - conflict.FoeLengthBehindCrossing;
@@ -10081,7 +10090,7 @@ public sealed partial class Engine : IEngine
     private double AdaptToJunctionLeader(
         VehicleRuntime ego,
         Lane egoLane,
-        Lane? approachLane,
+        double egoDistToEntry,
         bool egoOnInternal,
         JunctionConflict conflict,
         VehicleRuntime foe,
@@ -10096,9 +10105,12 @@ public sealed partial class Engine : IEngine
         // MSVehicle.cpp:3428/3473's `seen`: distance from ego's front to the end of the exit
         // link it is currently driving toward -- ego's OWN internal lane (egoLane) is that
         // exit link, whether ego is still approaching it or already on it.
+        // Entry 42: cont-safe via the hoisted egoDistToEntry (identical on the immediate approach
+        // lane). The raw approachLane form froze cars mid-lane on cont-turn routes (the owner's
+        // pulsing stalls -- __veh382 at pos 9 of a 223 m lane, stopped for a foe 210 m away).
         var seen = egoOnInternal
             ? egoLane.Length - ego.Kinematics.Pos
-            : (approachLane!.Length - ego.Kinematics.Pos) + egoLane.Length;
+            : egoDistToEntry + egoLane.Length;
 
         var distToCrossing = seen - conflict.EgoLengthBehindCrossing;
         var foeDistToCrossing = foeLane.Length - conflict.FoeLengthBehindCrossing;

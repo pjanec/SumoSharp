@@ -3198,3 +3198,33 @@ IDENTICAL to the old expression (the goldens' configuration — byte-identity ar
    (and any bay-carrying) routes no longer freeze mid-lane for far-junction foes. Owner re-check
    is the acceptance gate; the residual "rotten" saturation behaviour beyond this is the
    rerouting question (design awaiting owner sign-off).
+
+## Entry 42 (AFTER) — the frame-bug sweep landed at DEFAULTS; the mid-lane pulsing class is gone; predictions vs measured
+
+**What shipped:** the hoisted `egoDistToEntry` threaded through all six remaining raw
+`approachLane.Length − pos` sites (`Engine.cs`, search `Entry 42`): the external-agent hold
+(jyArm 4), the approaching-cross stop line (jyArm 6), the isLeader gap derivation,
+`AllwayStopConstraint`, `FoeIsInTheWay`, and `AdaptToJunctionLeader` (jyArm 5 — the traced
+pulsing stall). `approachLane` is no longer passed where only the distance was wanted.
+
+**Predictions vs measured:**
+1. MIDLANE-STUCK junctionYield entries vanish: **CONFIRMED** — 800-car smoke now shows ONLY
+   12 `urgentStrategicFollow/cautiousApproach` mid-lane entries (genuine merge-waiters);
+   arrivals at t=1200 improved again, 2028 → 2069.
+2. Goldens byte-identical + bench unchanged: **CONFIRMED** — full sln green (782/5, 90/90, the
+   allway-stop and minor-link scenarios all inside the identical-arithmetic configuration);
+   `Sim.Bench` `A134ED3716DDE7BC` par==single.
+3. Hashes move, ladder green: **CONFIRMED** — L2 defaults `e2bba9c11b96f57d345a2c6cce613c49`,
+   gate-ON `03a86ad3f0f63da833cb24d08d7c4612`, determinism 3/3 each arm; batteries BOTH arms
+   stuckDwell 0 (city-3000 13 baseline; willpass-saturation DRAINED 412/0), noise-band flags
+   only; smoke 400 best-measured in BOTH arms (ON 870, OFF 878).
+
+**One measured consequence, understood and accepted:** L2 DEFAULTS `stopXmove` rose 13 → 61 —
+decomposed to the SAME known non-foes pair sites the GATE fixes (j=428 `:428_13_1`×`:428_15_0`,
+j=301, j=123...). The frame bugs had been accidentally SUPPRESSING the default engine's known
+foes-blindness by freezing traffic upstream of junctions; with flow restored, the default
+(SUMO-parity, drives-through) behaviour is simply exercised more often. Gate-ON on the same
+traffic: stopXmove 5, landings 4 — both best-measured. This is direct evidence FOR the F3.2
+default-flip discussion with the owner, not a regression to chase.
+
+**Gate-ON L2 ledger vs Entry 38: stopXmove 18 → 5, landings ~6 → 4, bothSlow 15 → 11.**

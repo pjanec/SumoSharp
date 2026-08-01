@@ -12,14 +12,16 @@ see §6). That design doc is the CURRENT task.
   only ParityTests is how a red hour-horizon test once shipped for five entries): ParityTests
   **782/5/0** (the +1 over Entry 38 is the F1.1 ingest pin test), LiveCity.Tests **90/90**,
   Pedestrians **324/324**, Viewer.Motion 19, Host 6, DotRecast 2 — all green at head.
-- **Default L2 FCD hash `9599b795e2aa212d894eff1f727a3444`** (city-organic-L2, 1000 steps,
-  Sim.Run, no env vars). Entry 41 fixed the `KeepClearConstraint` cont-turn FRAME BUG at
-  defaults (stop-line distance walked along ego's own continuation; the old form froze cars at
-  their current position on cont-turn routes — the owner's "too-cautious" gridlock). Entry 39 (A)
-  made actual-lane link resolution default. Obsolete default baselines: `5ac89389…` (E39-40),
-  `e94b88b7…` (E38), `c768d7f6…` (pre-38).
-  **Gate-ON L2 hash `16aa1edad766b530178cca4fc6e65067`** (obsolete: `f7d43252…`, `fd636381…`,
-  `0c9bad71…`).
+- **Default L2 FCD hash `e2bba9c11b96f57d345a2c6cce613c49`** (city-organic-L2, 1000 steps,
+  Sim.Run, no env vars). Entries 41-42 fixed the C4-vii-a cont-turn FRAME-BUG family at defaults
+  (keepClear stop line, then the remaining six `approachLane.Length − pos` sites incl.
+  adaptToJunctionLeader — the owner's "too-cautious"/mid-lane-pulsing gridlock roots). Entry 39
+  (A) made actual-lane link resolution default. Obsolete default baselines: `9599b795…` (E41),
+  `5ac89389…` (E39-40), `e94b88b7…` (E38), `c768d7f6…` (pre-38).
+  **Gate-ON L2 hash `03a86ad3f0f63da833cb24d08d7c4612`** (obsolete: `16aa1eda…`, `f7d43252…`,
+  `fd636381…`, `0c9bad71…`). NOTE: L2 DEFAULTS stopXmove is now ~61 — the known gate-fixed
+  non-foes sites exercised more because the frame fixes restored flow; gate-ON is 5. Evidence for
+  the F3.2 flip discussion, not a regression.
 - `Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single; moved at Entry 34, re-pinned in
   TASKS-TODO's iron-law block — when it moves again, re-pin in the same commit).
 - Everything ELSE in this workstream stays gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`**
