@@ -2772,3 +2772,39 @@ expected to change and will be re-baselined if all gates pass.
 4. L2/mixed classifier at defaults: unchanged or slightly better (the tie-break only fires on
    mutual pairs, which previously never resolved).
 5. Smoke at 400 cars: healthy in BOTH gate states.
+
+## Entry 38 (AFTER) — the merge deadlock fixed AT DEFAULTS; every surface green; predictions vs measured
+
+**What shipped (both UNGATED — default-behaviour changes justified by SUMO semantics):** the
+PHASE-1 `IsLeaderByEntryOrder` tie-break and the foes-based (`FoeWith`) merge-arm reachability,
+previously scoped under `JunctionPhysicalOccupancyGate`. The scoping was measurement hygiene that
+had left the SHIPPED engine with (a) a mutual-merge deadlock SUMO does not have and (b) the
+non-responding-side merge blindness. Crossing/bay arms stay gate-scoped.
+
+**Predictions vs measured:**
+1. Long-horizon stalls → 0: **CONFIRMED** (129 → 0 in BOTH arms; merge overlap events 6-7 → 2/0,
+   worst pen 0.77 m; the whole `LongHorizonGridlockDiagTests` passes again — arrivals 2852/2396).
+   `tests/Sim.LiveCity.Tests` is fully green (90/90) for the first time since Entry 34b.
+2. Suite 781/5/0, goldens untouched: **CONFIRMED** — but prediction 2's "any golden that moves is
+   a stop-ship" hid a subtlety: two FLOOR GUARDS (not goldens) tripped by ±1 events. Both traced
+   to the PRE-EXISTING dead-lane stranding class reshuffled by the changed junction interleave:
+   DenseFlow 287→286 (the documented dead-lane pair 122/256 AND both junction-interior wedges now
+   ALL ARRIVE; two different cars strand on dead lanes instead — the junction-wedge class is
+   GONE from the end state), and IgnoreJunctionBlocker's (5,ON) arm keeps 1 yield teleport
+   (veh 288, 1442 steps under `deadLaneMerge`, traced) while the DEFAULT arms IMPROVED 1 → 0.
+   Both guards re-anchored with the accounting in their comments.
+3. Battery: **CONFIRMED** — stuckDwell 0 everywhere (city-3000 13 = its longstanding baseline),
+   three ≤7-arrival noise flags; new reference `docs/reports/net-regression-entry38-mergefix.txt`.
+4. Classifier at defaults: **CONFIRMED, better than predicted** — L2 145/23/17/12 →
+   144/15/17/10; mixed-1k stopXmove 54 → 37, landings 10 → 6. The F2.2 merge benefits now reach
+   the shipped engine.
+5. Hashes: default L2 re-baselines to `e94b88b7534c21b5fd3bf8657dbb1666` (determinism 3/3);
+   gate-ON hash UNCHANGED (`0c9bad71…`) — both changes were already live under the gate, so every
+   Entry-36/37 gate-ON validation (smoke 400, battery-on, ladder) stands as measured.
+
+**Standing lesson made explicit:** a "byte-identical off" gate is only hygiene while the gated
+code is EXPERIMENTAL. Once a piece is validated as SUMO's own unconditional semantics (the
+tie-break, the foes-based reach), leaving it gated is itself a divergence — the default engine
+was carrying a deadlock and a blindness SUMO never had, and it took an hour-horizon surface to
+see it. The remaining gate-scoped pieces (crossing physical occupancy, bay arm) are genuinely
+beyond-SUMO and stay opt-in pending the F3.1 ladder.

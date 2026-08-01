@@ -4,9 +4,9 @@
 Suite: `dotnet test tests/Sim.ParityTests -c Release` = **781 / 5 / 0**. Everything in this
 workstream is gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`** (`Engine.JunctionPhysicalOccupancyGate`,
 default **OFF**); gate-off is **byte-identical** to the pre-workstream engine (city-organic-L2 FCD
-hash `c768d7f6dd8535f46f170956737a2921`, re-verify after any edit; gate-ON L2 hash for the current
-code: `0c9bad719a22ba1a56615ab246316a3c`). Trail: journal **Entries 35, 35b, 36** (36 has the two
-episode traces and the full scorecard), design `JUNCTION-FOE-LANE-DESIGN.md`, live state
+hash: **`e94b88b7534c21b5fd3bf8657dbb1666` since Entry 38** — the merge tie-break + foes-reach
+are now DEFAULT; `c768d7f6…` is the pre-Entry-38 baseline, obsolete. Gate-ON L2 hash:
+`0c9bad719a22ba1a56615ab246316a3c`, UNCHANGED by Entry 38). Trail: journal **Entries 35–38**, design `JUNCTION-FOE-LANE-DESIGN.md`, live state
 `JUNCTION-FOE-LANE-TRACKER.md`. Owner sign-off: given ("go autonomously").
 
 ## 1. Where this stands (post-Entry-36)
@@ -72,8 +72,13 @@ LIVECITY_CARS=400 LIVECITY_WITNESS=1 LIVECITY_F3OCCUPANCY=1 dotnet run --project
   -c Release --no-build -- --mode live-city --smoke --frames 1200 | grep -E "GRIDLOCK|INTERNALSTUCK|CHAIN"
 ```
 
-Pre-existing, separate: LongHorizonGridlockDiagTests' all-sibling-gates-ON config fails (129 long
-stalls) at bcd6813 already — Sim.LiveCity.Tests is not in Traffic.sln, nobody had run it.
+Entry 38 (CORRECTED — the "pre-existing" claim above was wrong; the 3D-test session's main-vs-branch
+bisect refuted it): the long-horizon failure was a LATENT mutual PHASE-1 merge deadlock surfaced by
+Entry 34b's lane redistribution. Fixed AT DEFAULTS by un-gating the merge tie-break + foes-based
+reachability (SUMO's unconditional semantics). `LongHorizonGridlockDiagTests` green (stalls 129→0
+both arms); run `dotnet test tests/Sim.LiveCity.Tests -c Release` (NOT in Traffic.sln) for ANY
+default-behaviour change — it is the only hour-horizon surface and it caught what everything else
+missed.
 
 ## 3. What remains before a default flip (F3.1 → F3.2)
 
