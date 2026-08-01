@@ -3386,3 +3386,124 @@ evidence, the honest-SUMO comparison playbook, method discipline, and the expect
 The 3D session supplies the companion dataset/launch doc. DEADLOCK-RING D1 (detection witness)
 is cleared for implementation by that session when needed; D2 (the break) still needs D1 numbers
 before code.
+
+## Entry 48 (BEFORE) — ON-SITE session (real Geneva data): headless harness unblocked; leaderFollow chain capture; standoff hunt predictions
+
+**Context.** This entry is written by the on-site session on the owner's machine
+(`D:\Work\GenevaCut\geneva_city.sumocfg`, the 28 276-lane central-Geneva cut). Two instrument
+commits landed first, both gate-verified:
+
+1. **`Sim.Viewer --mode live-city --smoke` now honours `--sumocfg`** (it was parsed and silently
+   ignored — the 3D session's `GENEVA-HEADLESS-HARNESS.md` §0 blocker; every prior headless
+   "Geneva" smoke actually measured the demo grid). Verified: Geneva lane ids + full witness set
+   headless. The witness-instruments-on-external-net gap is CLOSED.
+2. **leaderFollow (binder 1) now records its leader's EntityIndex as BlockerEntityIndex**
+   (diag-only, mirroring cjlFoeIdx at site 2). Motivation: first 1800 s Geneva capture (4000
+   cars, `LIVECITY_REROUTE=0`, F3 on) found durable standoffs — `__veh138` head at
+   `gen_road_3917_1@52.6` car-following (crossJxnLeader) `__veh4950` frozen at `:34586_0_1@2.9`
+   for **≥720 s** (36 consecutive 20 s reports, identical positions) — but every chain root bound
+   `leaderFollow` with blockerEnt=-1, so the Entry-47 two-hop reporter dead-ended one hop short.
+   Full sln suite green; bench hash `A134ED3716DDE7BC` unchanged (par==single).
+
+**The capture being rerun now** (identical env: 4000 cars / 2000 peds / reroute OFF / F3 ON /
+3600 steps): closed-loop, saturates to stoppedFrac 0.90 by t=1800, arrivals 2954. Durable heads:
+`__veh138` (36 reports), `__veh494` behind `__veh1410` at `gen_road_6200_0@3.2` (21), `__veh452`
+(16), `__veh24` (8).
+
+**Falsifiable predictions:**
+
+- P1: the same durable standoffs reform at the same junctions (determinism; same config/env).
+- P2: previously dead-ended chains now print the `->>` second hop; `__veh4950`'s leader is a
+  vehicle physically on/at the exit of junction 34586, not empty road (else the leaderFollow
+  binding itself is a frame/geometry bug — a different class).
+- P3: at least one durable chain resolves into one of: (a) a root bound on a junction arm
+  (junctionYield/keepClear/bay) whose release guard fails on this topology; (b) a CYCLE (the
+  ring class — D1's justification); (c) a crowd/crowdYield root (the pedestrian amplifier).
+
+## Entry 48 (AFTER) — predictions vs measured; D1 landed; the mutual tie-break is POLARITY-INVERTED (trace-proven)
+
+**P1 CONFIRMED** — bit-for-bit reproduction (same vehicles, same positions, same timestamps).
+**P2 CONFIRMED** — chains now pass through leaderFollow links; `__veh4950`'s leader is `__veh4622`
+10.4 m ahead ON THE SAME internal lane `:34586_0_1` (a queue THROUGH the junction, not empty road).
+**P3 CONFIRMED via (b), and better than predicted** — D1 (blocker-graph cycle scan, LIVECITY-RING +
+LIVECITY-CHAINROOT, commit `538b84a`) found **180 ring reports** in the 1800 s capture (4000 cars,
+reroute OFF, F3 ON). Three measured classes:
+
+1. **Block-scale keepClear loop** (8 members, ~1120 s): three keepClear-bound cars around a city
+   block each holding for an exit that feeds the loop; junction `:30143` + gen_road_726x.
+2. **Two-stream admission ring inside one large junction** (`:35479`, up to 12 members, ~400 s):
+   two long internal lanes, each stream's head on `internalJunctionAdmission` waiting on the other.
+3. **2-member cont-turn interlock, re-forming at IDENTICAL positions with different vehicles**
+   (`:35019_17_1@10.5` `adaptToJxnLeader` ↔ `:35019_16_0@2.8` `corridorFollow`; also `:36199`,
+   `:36546`, `:36535`, `:36315`): age resets every ~60 s — the IGNOREBLOCKER patience breaks it,
+   the junction moves, the ring re-forms. An oscillating throughput sink, not a permanent wedge.
+
+**Class-3 root cause, trace-proven** (`LIVECITY_TRACEVEH` on both members of the `:35019` pair,
+deterministic replay): `__veh4135` entered the junction at t=655.0 (step 1310), took its cont-turn
+stage-1 bay `:35019_17_1`, and braked `adaptToJxnLeader` to distToEntry=0.10 of its stage-2 lane
+for foe `__veh2740`. `__veh2740` entered at t=724.5 (step 1449) — 69.5 s LATER — skipped its own
+arm-5 follow, and was instead caught by the corridor arm-8 FOLLOW branch (gap 2.71 → 0.12 m as
+veh4135 stopped). 2-cycle closed; both stand until patience.
+
+The mechanism: **`Engine.cs:7820` (Entry 40's mutual on-junction tie-break) uses
+`IsLeaderByEntryOrder` with inverted polarity.** The function is SUMO's `MSVehicle::isLeader`
+tie-break chain verbatim (MSVehicle.cpp:7443-7473; the debug strings literally print
+`isLeader=(egoET > foeET)`) — it returns TRUE when EGO ENTERED LATER, i.e. "the foe is the
+leader; ego adapts". The corridor-HOLD site (`Engine.cs:8148`) correctly skips on
+`!IsLeaderByEntryOrder` (earlier entrant clears). The Entry-40 site skips on the un-negated value
+— so the LATER entrant skips the follow (and the EARLIER entrant keeps braking), the exact
+opposite of its own intent comment ("the EARLIER entrant of a mutual on-junction pair skips this
+foe"). Verified against both members' entry steps: 1310 vs 1449 reproduces the observed binding
+on both sides.
+
+Why every prior surface missed it: on the box grid the later entrant, having (wrongly) skipped
+arm 5, usually has no corridor overlap to catch it — it simply proceeds and the pair resolves; the
+deadlock needs cont-turn bay geometry (arm-8 FOLLOW has no tie-break), which Geneva has at scale.
+Side implication worth flagging: the inversion also lets a later entrant skip a LEGITIMATE
+physical follow — a candidate mechanism for the owner-observed junction overlaps.
+
+## Entry 49 (BEFORE) — fix the Entry-40 tie-break polarity (gate-scoped, one line)
+
+**Change:** `Engine.cs:7820` `IsLeaderByEntryOrder(...)` → `!IsLeaderByEntryOrder(...)`, matching
+the corridor-HOLD site and the vendored SUMO semantics. Entirely inside
+`JunctionPhysicalOccupancyGate` (engine default OFF) — goldens/default behaviour untouched by
+construction.
+
+**Falsifiable predictions:**
+
+- P1: goldens byte-identical; bench hash `A134ED3716DDE7BC` unchanged; full sln green.
+- P2: on the identical Geneva capture (4000 cars, reroute OFF, F3 ON, 3600 steps), the class-3
+  2-member interlock at `:35019` (12 reports) DISAPPEARS or at minimum stops recurring at the
+  same positions; total ring reports drop noticeably (class 3 junctions `:35019`/`:36199`/
+  `:36546`/`:36535`/`:36315` accounted for ~20% of the 180).
+- P3: arrivals at t=1800 do not regress (2954 baseline); expect a small gain.
+- P4: hour-horizon ON arm (forces the gate family on): arrivals ≥ 2562 baseline, stalls stay 0.
+- Risk watched: the now-released earlier entrant must NOT drive through the later entrant's body
+  — the on-junction OCCUPANCY/bay arms still hold physically; overlaps counter in the smoke
+  (LIVECITY-STUCKCLEAR `overlaps=`) must stay 0.
+
+## Entry 49 (AFTER) — predictions vs measured: the traced mechanism is CURED; the load moves to the class-2 admission rings; overlaps IMPROVE
+
+- **P1 CONFIRMED**: full sln green (782/5 goldens byte-identical, LiveCity 92/92 incl.
+  hour-horizon, peds 324), bench hash `A134ED3716DDE7BC` unchanged (par==single).
+- **P2 PARTIAL — the traced mechanism is gone, but total ring burden went UP.** The exact
+  2-member signature (`adaptToJxnLeader@:35019_17_1` ↔ `corridorFollow@:35019_16_0`, 12 baseline
+  reports) no longer occurs. `:35019` still shows 11 reports but of a DIFFERENT, younger shape
+  (3-member rotation through `internalJunctionAdmission` + a third stream, ages 10–30 s vs 54 s).
+  Total reports 180 → 273, and the shift is measured and attributable: reports involving
+  `internalJunctionAdmission` 101 → 200, the `:35479` two-stream admission ring 24 → 64,
+  age≥300 58 → 140. Reading: earlier entrants no longer over-yield mid-junction, so more of them
+  press into the admission arm, which has its OWN mutual structure (class 2) — now the dominant
+  open class. keepClear-involving reports flat (67 → 73). Single-run caveat applies (chaotic
+  closed-loop system), but the direction is consistent across three independent counters.
+- **P3 CONFIRMED (flat)**: arrivals 2961 vs 2954. The interlock cure does not buy throughput
+  while class 2 absorbs the pressure.
+- **P4**: hour-horizon suite green (its ON-arm assertions are the gate).
+- **Risk watch BETTER THAN PREDICTED**: cumulative overlap counter peak 57 (baseline) → 42 (fix)
+  — consistent with the Entry-48 side implication (the inversion let later entrants skip
+  LEGITIMATE physical follows; restoring them removes interpenetration pressure).
+
+**Verdict:** the fix stands (semantically correct vs vendored SUMO, completes Entry 40's own
+reviewed intent, trace-proven cure, overlaps improve, everything green). The class-2
+`internalJunctionAdmission` mutual structure is now the top open item, with D1 giving exact
+counts/ages to hunt it — trace target: the `:35479` pair of stream heads.

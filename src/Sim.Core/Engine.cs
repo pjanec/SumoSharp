@@ -7816,8 +7816,14 @@ public sealed partial class Engine : IEngine
                 // IsLeaderByEntryOrder chain the merge/bay arms already use -- total order, so
                 // exactly one of the pair yields and the pair interleaves). Defaults keep the
                 // pre-existing (latent) behaviour bit-for-bit until the isLeader port flips on.
+                // Entry 49: NEGATED, like the corridor-HOLD site below -- IsLeaderByEntryOrder
+                // returns SUMO's isLeader ("ego entered later; the FOE is the leader, ego adapts",
+                // MSVehicle.cpp:7443-7473), so the earlier entrant is the !-side. The un-negated
+                // form shipped by Entry 40 made the LATER entrant skip (and the earlier one brake),
+                // which closed the Geneva cont-turn interlock ring against the tie-break-free
+                // corridor-FOLLOW branch -- trace-proven on the :35019 pair (journal Entry 48).
                 if (JunctionPhysicalOccupancyGate && egoInsideJunction
-                    && IsLeaderByEntryOrder(
+                    && !IsLeaderByEntryOrder(
                         v.JunctionEntryTime, foe.JunctionEntryTime,
                         v.Kinematics.Speed, foe.Kinematics.Speed,
                         v.Def.Id, foe.Def.Id))
