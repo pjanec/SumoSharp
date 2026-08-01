@@ -3317,3 +3317,34 @@ identically in both arms, only LIVECITY_REROUTE differing):**
    verdict still shows durable standoffs. Named, not yet chased.
 
 Suites: LiveCity 92/92, EnvGateDocumentation green (gate + print-only changes; engine untouched).
+
+## Entry 46 — rerouting validated on Geneva (owner + 3D session); the honest effect size; bench gate-list refresh
+
+**Owner visual verdict (T4):** "prolongs time to the gridlock, city seems a bit more live —
+definitely good direction."
+
+**3D session hour-horizon A/B (Geneva-class net, all gates pinned, only LIVECITY_REROUTE
+differing):** arrivals +3.6% (gates-OFF arm, 2936→3042) / +5.2% (gates-ON arm, 2436→2562),
+long stalls 0 in all four cells; 13 279 reroutes by t=880 at 4000 cars in the viewer.
+**EFFECT-SIZE CORRECTION (label the topology like the demand model):** Entry 44's +36% came from
+the 800-car demo BOX — a small grid where every saturated artery has an obvious parallel
+alternative. On realistic topology the device is worth **+4–5%** plus the owner's qualitative
+"more alive / gridlock delayed". +36% must NOT be quoted as the expected Geneva figure.
+Local bench replication agrees: Sim.BenchLiveCity 400-car arms 395 → 410 arrived (+3.8%).
+
+**Bench triage:** the 3D session's first bench A/B returned identical arrivals both arms and was
+read as gate-wiring rot. VERIFIED LOCALLY: the bench (LiveCityConfig/LiveCitySim-based) DOES
+receive LIVECITY_REROUTE (arms differ, 395 vs 410) — the identical result was an env-propagation
+failure in that invocation, and the missing LIVECITY-REROUTES line was just LIVECITY_WITNESS
+being unset. The REAL rot was the curated env-gate PRINT list (its own staleness warning fired):
+refreshed with the whole F3/rerouting/urgentfollow family (both LIVECITY_* and SUMOSHARP_*
+prefixes), so future bench runs print every gate they observed.
+
+**The two standing decisions (owner's, restated with current evidence):**
+1. Rerouting default: stays OPT-IN per the 3D session's read (agreed) — +4–5% and inert-off are
+   solid, but `LIVECITY_REROUTE_PROB` is a realism knob the owner should pick a believed value
+   for before any default (not every driver has navigation).
+2. Junction gate (F3.2): the throughput cost has shrunk from ~25% (1571 vs 2094 at first
+   measurement) to ~16% (2562 vs 3042) across Entries 37-42, with long stalls 0 both ways and the
+   overlap/pass-through honesty it buys. Evidence trending toward ON; the decision remains WITH
+   the owner.
