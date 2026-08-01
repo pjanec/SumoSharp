@@ -2,12 +2,8 @@
 
 Design: `LIVECITY-REROUTING-DESIGN.md` · Tasks: `LIVECITY-REROUTING-TASKS.md`
 
-- [ ] **OWNER SIGN-OFF of the design doc** (gates everything below; the design's one open
-      decision is the rollout posture, DESIGN §2.4 — recommendation: opt-in first)
-- [ ] T1 config pass-through + env gates (LiveCityConfig fields, XML splice, `LIVECITY_REROUTE*`
-      vars, ENV-GATES rows; success conditions T1.1–T1.4)
-- [ ] T2 determinism with the device ON (new LiveCity.Tests case, reroute-count guard;
-      T2.1–T2.3)
-- [ ] T3 behavioural A/B (witness line, smoke OFF vs ON, hour-horizon ON; journal entry with
-      BEFORE-predictions; T3.1–T3.4)
-- [ ] T4 owner 3D validation on Geneva + default-flip decision (T4)
+- [x] **OWNER SIGN-OFF** — Aug 1: "let's pls implemente the rerouting behind a gate" (opt-in posture)
+- [x] T1 config pass-through + env gates — landed (`66684f0`); off = no splice (stream-identical OFF arm verified), env overrides live, ENV-GATES rows + doc test green
+- [x] T2 — `LiveCityReroutingTests`: off ⇒ 0 installs; on ⇒ two runs byte-identical + installs > 0; green
+- [x] T3 — journal Entry 44: 800-car closed-loop A/B, arrivals 2069 → **2810 (+36%)**, live 691→534, stoppedFrac 0.44→0.37, ~2000 reroutes/1200 s; OFF arm stream-identical; `LIVECITY-REROUTES` witness line live. (Gated hour-horizon test variant deferred until after owner validation — noted per tasks doc.)
+- [ ] T4 owner 3D validation on Geneva (`LIVECITY_REROUTE=1` + usual gates; watch `LIVECITY-REROUTES` grow) + the default-flip decision WITH the owner afterwards

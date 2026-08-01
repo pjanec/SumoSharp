@@ -3271,3 +3271,17 @@ identically in both arms, only LIVECITY_REROUTE differing):**
    plausibly BETTER (demand spreads off the saturated arteries); no GRIDLOCK; stoppedFrac not
    worse; MIDLANE/HEADSTUCK not worse.
 3. Full sln suite green; goldens untouched (engine defaults unchanged; the counter is unread).
+
+### Entry 44 (AFTER) — rerouting A/B measured; predictions vs measured
+
+1. OFF-arm inertness: **CONFIRMED** — the 800-car OFF-arm GRIDLOCK/witness stream is IDENTICAL
+   to the Entry-43 build's run over the shared window.
+2. ON arm: **CONFIRMED, decisively** — same closed-loop 800-car demand, only `LIVECITY_REROUTE`
+   differing (every other gate set identically in both arms): arrivals at t=1200
+   **2069 → 2810 (+36%)**, live population 691 → 534 (the city drains), stoppedFrac 0.44 → 0.37,
+   meanSpd 3.6 → 5.6 m/s, 1972 periodic reroutes installed. `LIVECITY-REROUTES` line makes the
+   device visible in any host.
+3. Suite: full sln run pending at commit time — LiveCity (incl. the two new rerouting tests) and
+   ParityTests + EnvGateDocumentation verified green standalone; goldens structurally untouched
+   (no engine default changed; the counter has no sim reader). DEMAND-MODEL LABEL: closed-loop —
+   these arrival gains are drain-rate gains, not capacity claims (measurement lesson 4).
