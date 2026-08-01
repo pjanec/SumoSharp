@@ -216,6 +216,12 @@ public sealed record Junction(
 // the parser samples the bay polyline and records the arc ranges (lane-position frame, both sides)
 // where the corridors come within body-overlap distance. Consumed only by the gate-scoped
 // bay-occupancy arm; no reader when the gate is off.
+//
+// F1.1 (journal Entry 39) widened the emitters, not the shape: rows are now ALSO emitted for
+// every ordered NON-FOES internal-lane pair of a junction (the measured driven-through class --
+// a stopped vehicle on a plain internal lane that is in neither link's foes row), so despite the
+// name, `BayLaneId` may be any internal lane, not only a first-stage cont bay. The record shape,
+// the 1.0 m brush filter, and the single gate-scoped consumer are unchanged.
 public sealed record BayConflict(
     int EgoLink, string BayLaneId,
     double EgoArcStart, double EgoArcEnd,

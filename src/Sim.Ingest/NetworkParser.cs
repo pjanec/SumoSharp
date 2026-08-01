@@ -865,6 +865,56 @@ public static class NetworkParser
             }
         }
 
+        // JUNCTION-FOE-LANE F1.1 (journal Entry 39): NON-FOES internal-lane pairs. The crossing/
+        // merge pass above only sees pairs netconvert marked as foes; the measured driven-through
+        // class (a STOPPED vehicle on a plain internal lane, ~15 of L2's 18 gate-ON stopXmove
+        // pair-steps: j=1150 :1150_2_0 x :1150_0_1, j=123 :123_11_0 x :123_9_1, ...) lives in
+        // ordered pairs whose corridors genuinely overlap but are in NEITHER foes row. Same
+        // sanctioned beyond-SUMO honesty deviation as the bay rows (SUMO 1.20 drives through these
+        // too; the artefact ladder forbids copying that), same machinery: proximity-sampled
+        // corridor overlap, the same non-negotiable 1.0 m brush filter, rows consumed ONLY by the
+        // gate-scoped bay-occupancy arm (the physical-occupancy index covers every internal lane,
+        // so the engine needs no changes). Foe side of a row is the foe link's internal lane; ego
+        // arcs stay in the ego stage-lane frame the arm already uses.
+        foreach (var request in requests)
+        {
+            if (!linksByIndex.TryGetValue(request.Index, out var egoLink)
+                || !lanesById.TryGetValue(egoLink.InternalLaneId, out var egoLane)
+                || egoLane.Shape.Count < 2)
+            {
+                continue;
+            }
+
+            for (var j = 0; j < intLanes.Count; j++)
+            {
+                if (j == request.Index || request.FoeWith(j))
+                {
+                    continue;
+                }
+
+                if (!linksByIndex.TryGetValue(j, out var foeLink)
+                    || foeLink.InternalLaneId == egoLink.InternalLaneId
+                    || !lanesById.TryGetValue(foeLink.InternalLaneId, out var foeLane)
+                    || foeLane.Shape.Count < 2)
+                {
+                    continue;
+                }
+
+                if (PolylineGeometry.TryCorridorOverlap(
+                        egoLane.Shape, foeLane.Shape, bodyOverlapThreshold,
+                        out var egoGeomStart, out var egoGeomEnd, out var foeGeomStart, out var foeGeomEnd)
+                    && egoGeomEnd - egoGeomStart >= minEgoOverlapLen)
+                {
+                    var egoScale = egoLane.Length / PolylineGeometry.PolylineLength(egoLane.Shape);
+                    var foeScale = foeLane.Length / PolylineGeometry.PolylineLength(foeLane.Shape);
+                    bayConflicts.Add(new BayConflict(
+                        egoLink.Index, foeLink.InternalLaneId,
+                        egoGeomStart * egoScale, egoGeomEnd * egoScale,
+                        foeGeomStart * foeScale, foeGeomEnd * foeScale));
+                }
+            }
+        }
+
         return new Junction(id, type, intLanes, links, requests, conflicts, merges, shape, bayConflicts);
     }
 

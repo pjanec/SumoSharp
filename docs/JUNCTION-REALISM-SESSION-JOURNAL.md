@@ -2859,3 +2859,48 @@ owner decision. Ingest is O(links²) per junction — measure parse wall-time on
 first suspect is symmetric-pair mutual holding (check `[bay]` traces for a two-cycle before
 touching any dial); if stopXmove does NOT collapse, the class was mis-attributed and the next
 step is ONE traced vehicle at j=1150, not a redesign.
+
+### Entry 39 (MID) — prediction 1 FALSIFIED by measurement; the class decomposes into three mechanisms
+
+**Measured after landing the non-foes ingest rows alone:** L2 gate-ON stopXmove 18 → **19**, same
+recurring sites. The rows ARE emitted (verified by parse dump: j=301 (7,8), j=271 (9,10),
+j=1150 link1×bay all present with metres-long intervals) — the prediction's "engine needs zero
+changes" was WRONG. Per the declared fail condition, five movers were traced (`[jy]` link-resolution
+instrument added to `JunctionYieldConstraint` for this — committed). The 19 pair-steps decompose
+into THREE mechanisms, none of which is "row missing for a plain non-foes pair":
+
+- **(A) Link mis-resolution during approach** (veh 127 + 246 at j=1150, veh 57 at j=123 — the
+  ~2-pair-step "lane-sequence mismatch" residual is actually the LARGEST class, ~7/19): the pool's
+  strategic chain resolves the SIBLING lane's connection (link 0 `:1150_0_0`) for the whole
+  approach while the vehicle physically drives lane 1 → every yield arm consults rows for a link
+  the vehicle will never drive; zero rows match; the vehicle enters blind and the boundary
+  re-splice (`TryReResolveFromActualLane`) corrects the pool one step too late. SUMO resolves the
+  upcoming link through the CURRENT lane's own links — `MSLane::succLinkSec` (MSLane.cpp:2573)
+  via `getBestLanesContinuation()` == the current lane's continuation (MSVehicle.cpp:6236) — so
+  this is a straight parity divergence, DEFAULT-scope, not gate-scope.
+- **(B) Late-stop race at the 2.0 m/s hold dial** (veh 179 at j=301, veh 385 at j=271, ~6/19): the
+  correct row exists and is consulted; the occupant enters the shared near-parallel corridor at
+  4-5 m/s (correctly skipped as transiting), decelerates through 2.0 m/s in EXACTLY the step ego
+  commits past the overlap start. Binary hold-or-commit cannot win this race — the honest shape is
+  CAR-FOLLOWING along the shared corridor (adaptToJunctionLeader semantics applied to bay-row
+  occupants), which is a separate, gate-scoped design with its own collapse risk (Entry 36
+  measured stop-line holds for transiting bodies at bothSlow 16→652).
+- **(C) Corner-cut past a straddling tail** (veh 104 at j=1021, ~2/19): the two internal-lane
+  centerlines never come within 3.2 m (no honest corridor row exists — verified by profile), but
+  the stopped foe at pos 4.19 < its own length hangs its tail BEHIND its lane start, into the
+  approach-mouth region ego's turn sweeps (backs 0.28 m apart). No lane-pair interval can see
+  this; it needs foe-approach-mouth geometry. Named residual for now.
+
+**Re-plan (in order): keep the ingest rows (they are the substrate B needs and already correct);
+fix (A) at DEFAULTS as SUMO-faithful (succLinkSec semantics — re-resolve the yield pass's ego
+link through the actual lane's connection when the pool's link belongs to a sibling lane); then
+re-measure everything; then design (B) on that baseline; (C) stays a named residual.**
+
+**Predictions for (A):**
+1. The j=1150 and j=123 episodes convert (the bay rows for the actual link then see the stopped
+   occupant on approach); L2 gate-ON stopXmove 19 → ≤12.
+2. DEFAULT behaviour changes (the crossing/merge arms consult the correct link too): the default
+   L2 hash `e94b88b7…` is EXPECTED to move; goldens must NOT (strategic changes in 2–5-vehicle
+   scenarios complete long before junctions; any golden that moves is a stop-ship).
+3. Battery at defaults: no new stuckDwell; hour-horizon LiveCity suite stays 90/90.
+4. Gate-ON smoke 400 stays drained (arrivals ≈830+).

@@ -7177,6 +7177,17 @@ public sealed partial class Engine : IEngine
 
         var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
 
+        // Entry 39 instrument ([bay]/[merge]-style, committed): WHICH link the yield pass resolved
+        // for the traced vehicle. The bay/crossing arms key every row lookup off egoLink.Index, so a
+        // vehicle whose pool resolves the WRONG sibling connection (the lane-sequence mismatch class)
+        // silently evaluates zero rows -- this line is the one that makes that visible.
+        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+        {
+            Console.Error.WriteLine(
+                $"[jy] t={CurrentTime:F1} veh={v.Def.Id} on={v.LaneId}@{v.Kinematics.Pos:F2} "
+                + $"resolved j={junction.Id} link={egoLink.Index} intLane={egoInternalLaneId} seqIdx={v.LaneSeqIndex}/{egoLinkSeqIndex}");
+        }
+
         // R4 (rail signal): at a rail_signal junction the SIGNAL arbitrates right-of-way (via
         // RailSignalConstraint's block reservation), NOT the static <request> priority matrix.
         // netconvert still emits a foes/response matrix for the junction's crossing links, but a
