@@ -7918,6 +7918,11 @@ public sealed partial class Engine : IEngine
         // column is the standing gate on that claim.
         if (JunctionPhysicalOccupancyGate && junction.BayConflicts.Count > 0)
         {
+            // Entry 36 instrument (committed, [cjl]-style): per-row bay-arm evaluation for the
+            // SUMOSHARP_TRACEVEH vehicle -- which rows matched, which occupant was seen, which
+            // skip fired. The dwell-634 diagnosis took a binder log to even name the arm; this
+            // makes the arm's own decisions visible first-hand.
+            var bayTrace = DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id;
             foreach (var bc in junction.BayConflicts)
             {
                 if (bc.EgoLink != egoLink.Index || v.LaneId == bc.BayLaneId)
@@ -7951,7 +7956,34 @@ public sealed partial class Engine : IEngine
                     // ones was measured too late (the occupant often stops one step AFTER ego
                     // commits: stopXmove 35). The stopped/creeping occupant is the owner's reported
                     // ghost (a turner held mid-junction by its stage-2).
-                    if (cand.Kinematics.Speed > 2.0 || cand.Kinematics.Pos > bc.BayArcEnd + 1.0)
+                    // Entry 36: the exiting test is the BACK bumper, not the front. The body test
+                    // below spans [back, front], so a car parked just past a SHORT overlap interval
+                    // (straight-vs-bay rows overlap only the first metre or two of the bay) has its
+                    // front past `BayArcEnd + 1.0` while its TAIL still blocks the corridor --
+                    // front-based, it was skipped as "exiting" and the straight was never held
+                    // (veh 431 clipped the parked 448 at t=543 with 5 m of stopping room in hand).
+                    // A genuinely transiting car's back clears the interval within a step or two.
+                    if (cand.Kinematics.Speed > 2.0
+                        || cand.Kinematics.Pos - cand.VType.Length > bc.BayArcEnd + 1.0)
+                    {
+                        continue;
+                    }
+
+                    // Entry 36: the antisymmetric backstop -- the exact F2.2 lesson, unapplied here
+                    // until the dwell-634 trace showed why it must be: two bay-held turners whose
+                    // corridors mutually overlap hold each other through THIS arm forever
+                    // (`198 ->7-> 235` and `235 ->7-> 198`, t=366..999, the whole 41-stuck end state
+                    // cascading behind them). When ego is already INSIDE the junction, the EARLIER
+                    // entrant skips the hold and clears (the pair interleaves); the tie-break chain
+                    // is total, so exactly one of a mutual pair yields. An approaching ego (not yet
+                    // inside) always holds -- that IS the wanted entry wait, and an ego held at the
+                    // stop line is on a normal lane, which `_physOnLane*` never indexes, so it can
+                    // never be the other side of a jyArm-7 cycle.
+                    if (egoInsideJunction
+                        && !IsLeaderByEntryOrder(
+                            v.JunctionEntryTime, cand.JunctionEntryTime,
+                            v.Kinematics.Speed, cand.Kinematics.Speed,
+                            v.Def.Id, cand.Def.Id))
                     {
                         continue;
                     }
@@ -7964,6 +7996,16 @@ public sealed partial class Engine : IEngine
                     }
                 }
 
+                if (bayTrace)
+                {
+                    Console.Error.WriteLine(
+                        $"[bay] t={CurrentTime:F1} veh={v.Def.Id} egoLink={egoLink.Index} bay={bc.BayLaneId} "
+                        + $"egoArc=[{bc.EgoArcStart:F2},{bc.EgoArcEnd:F2}] bayArc=[{bc.BayArcStart:F2},{bc.BayArcEnd:F2}] "
+                        + $"occ1={occ1?.Def.Id ?? "-"}@{(occ1 is null ? 0 : occ1.Kinematics.Pos):F2}/{(occ1 is null ? 0 : occ1.Kinematics.Speed):F2} "
+                        + $"occ2={occ2?.Def.Id ?? "-"} foe={bayFoe?.Def.Id ?? "NONE"} "
+                        + $"egoOnInternal={egoOnInternal} distToEntry={egoDistToEntry:F2}");
+                }
+
                 if (bayFoe is null)
                 {
                     continue; // no body inside the overlap interval
@@ -7974,12 +8016,21 @@ public sealed partial class Engine : IEngine
                     : egoDistToEntry + bc.EgoArcStart;
                 if (egoDistToOverlap <= 0.0)
                 {
+                    if (bayTrace)
+                    {
+                        Console.Error.WriteLine($"[bay] t={CurrentTime:F1} veh={v.Def.Id} bay={bc.BayLaneId} COMMITTED-skip distToOverlap={egoDistToOverlap:F2}");
+                    }
+
                     continue; // committed past the overlap start -- clear, never wedge
                 }
 
                 var bayConstraint = StopSpeedFor(
                     v.VType, v.Kinematics.Speed, egoDistToOverlap - PositionEps,
                     laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+                if (bayTrace)
+                {
+                    Console.Error.WriteLine($"[bay] t={CurrentTime:F1} veh={v.Def.Id} bay={bc.BayLaneId} HOLD distToOverlap={egoDistToOverlap:F2} constraint={bayConstraint:F2}");
+                }
                 constraint = Math.Min(constraint, bayConstraint);
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 7; v.JunctionYieldFoeSpeed = (float)bayFoe.Kinematics.Speed; blockerIdx = bayFoe.EntityIndex; } // diag: bayOccupancy
             }

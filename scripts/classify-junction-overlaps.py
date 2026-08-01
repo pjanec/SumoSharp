@@ -54,7 +54,7 @@ def _load_obb():
     return ajr
 
 
-def classify(path: str, length: float, width: float, deep: float) -> None:
+def classify(path: str, length: float, width: float, deep: float, examples: int = 3) -> None:
     ajr = _load_obb()
     obb = ajr.Obb(length, width)
 
@@ -90,7 +90,7 @@ def classify(path: str, length: float, width: float, deep: float) -> None:
                            else "bothMove" if slow > 0.5 else "stopXslow")
                     cls = ("sameLane" if a[1] == b[1] else "crossLane") + "|" + kin
                     pair_classes[cls] += 1
-                    if len(pair_examples[cls]) < 3:
+                    if len(pair_examples[cls]) < examples:
                         pair_examples[cls].append(
                             (t, j, a[0], a[1], round(a[5], 1), b[0], b[1], round(b[5], 1)))
         ts.clear()
@@ -164,9 +164,11 @@ def main() -> int:
     ap.add_argument("--vtype-width", type=float, default=1.8)
     ap.add_argument("--deep", type=float, default=1.0,
                     help="along-lane overlap depth (m) that counts as a deep rear-end onset")
+    ap.add_argument("--examples", type=int, default=3,
+                    help="max example pair-steps printed per class")
     args = ap.parse_args()
     for f in args.fcd:
-        classify(f, args.vtype_length, args.vtype_width, args.deep)
+        classify(f, args.vtype_length, args.vtype_width, args.deep, args.examples)
     return 0
 
 

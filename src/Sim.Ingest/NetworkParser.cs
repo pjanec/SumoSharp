@@ -803,6 +803,51 @@ public static class NetworkParser
                         egoGeomStart * egoScale, egoGeomEnd * egoScale,
                         bayGeomStart * bayScale, bayGeomEnd * bayScale));
                 }
+
+                // Entry 36: the FIRST-stage bay of a cont EGO link, compared against the same foe
+                // bay -- the piece the stage-2 comparison above cannot see. Two sibling turns from
+                // one approach lane have bays SHARING a start point (junction 301's :301_24_0 vs
+                // :301_25_0, both shorter than a car); with only the stage-2 row, ego's hold point
+                // lands beyond its own bay -- INSIDE the overlap -- and the pair stops
+                // interpenetrated, which is one half of the traced dwell-634 mutual wedge. Ego arcs
+                // are emitted RELATIVE TO THE STAGE-2 START (negative: bay-frame arc minus bay
+                // length) so the engine's `egoDistToEntry + EgoArcStart` -- whose walk already
+                // includes the bay -- lands the hold at the stop line unchanged.
+                JunctionRequest? egoRequest = null;
+                foreach (var r in requests)
+                {
+                    if (r.Index == egoLink.Index)
+                    {
+                        egoRequest = r;
+                        break;
+                    }
+                }
+
+                if (egoRequest is null || !egoRequest.Cont
+                    || egoLink.Connection.From.Length == 0 || egoLink.Connection.From[0] != ':')
+                {
+                    continue;
+                }
+
+                var egoBayLaneId = egoLink.Connection.From + "_" + egoLink.Connection.FromLane.ToString(CultureInfo.InvariantCulture);
+                if (egoBayLaneId == bayLaneId
+                    || !lanesById.TryGetValue(egoBayLaneId, out var egoBayLane) || egoBayLane.Shape.Count < 2)
+                {
+                    continue;
+                }
+
+                if (PolylineGeometry.TryCorridorOverlap(
+                        egoBayLane.Shape, bayLane.Shape, bodyOverlapThreshold,
+                        out var egoBayGeomStart, out var egoBayGeomEnd, out var bayGeomStart2, out var bayGeomEnd2))
+                {
+                    var egoBayScale = egoBayLane.Length / PolylineGeometry.PolylineLength(egoBayLane.Shape);
+                    var bayScale2 = bayLane.Length / PolylineGeometry.PolylineLength(bayLane.Shape);
+                    bayConflicts.Add(new BayConflict(
+                        egoLink.Index, bayLaneId,
+                        (egoBayGeomStart * egoBayScale) - egoBayLane.Length,
+                        (egoBayGeomEnd * egoBayScale) - egoBayLane.Length,
+                        bayGeomStart2 * bayScale2, bayGeomEnd2 * bayScale2));
+                }
             }
         }
 
