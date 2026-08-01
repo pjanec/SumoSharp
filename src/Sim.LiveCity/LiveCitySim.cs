@@ -375,10 +375,39 @@ public sealed class LiveCitySim : IDisposable
         var teleportXml = cfg.TimeToTeleportSeconds > 0.0
             ? "<time-to-teleport value=\"" + cfg.TimeToTeleportSeconds.ToString(CultureInfo.InvariantCulture) + "\"/>"
             : string.Empty;
+        // LIVECITY-REROUTING T1 (design §2.1): env overrides resolved into LOCALS (never mutating
+        // the caller's cfg; the pattern every other LIVECITY_* knob uses -- process-global, so set
+        // every one explicitly in both arms of any A/B), then the conditional splice. Unset env +
+        // cfg default 0 => NO splice => the engine config string is byte-identical to the
+        // pre-rerouting build (the T1.1 inertness condition).
+        var reroutePeriod = cfg.ReroutePeriodSeconds;
+        var rerouteProb = cfg.RerouteProbability;
+        if (Environment.GetEnvironmentVariable("LIVECITY_REROUTE") == "1" && reroutePeriod <= 0.0)
+        {
+            reroutePeriod = 60.0;
+        }
+
+        var envPeriod = Environment.GetEnvironmentVariable("LIVECITY_REROUTE_PERIOD");
+        if (envPeriod is not null && double.TryParse(envPeriod, NumberStyles.Float, CultureInfo.InvariantCulture, out var periodOverride))
+        {
+            reroutePeriod = periodOverride;
+        }
+
+        var envProb = Environment.GetEnvironmentVariable("LIVECITY_REROUTE_PROB");
+        if (envProb is not null && double.TryParse(envProb, NumberStyles.Float, CultureInfo.InvariantCulture, out var probOverride))
+        {
+            rerouteProb = probOverride;
+        }
+
+        _reroutePeriodResolved = reroutePeriod;
+        var rerouteXml = reroutePeriod > 0.0
+            ? "<device.rerouting.probability value=\"" + rerouteProb.ToString(CultureInfo.InvariantCulture) + "\"/>"
+              + "<device.rerouting.period value=\"" + reroutePeriod.ToString(CultureInfo.InvariantCulture) + "\"/>"
+            : string.Empty;
         var engineConfig = ScenarioConfigParser.ParseXml(
             "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\""
             + stepLengthText + "\"/></time>"
-            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + "</processing></configuration>");
+            + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + rerouteXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
         _engine.LaneChangeMinSpeed = cfg.LaneChangeMinSpeed;
         // Task A (redo): suppress ONLY the held-car crowd-swerve -- a car held (nearly) stopped by a
@@ -1384,6 +1413,12 @@ public sealed class LiveCitySim : IDisposable
     private bool? _midLaneWitnessOn;
     private double _lastMidLaneReport = double.NegativeInfinity;
 
+    // LIVECITY-REROUTING T2/T3: the engine's diagnostic install counter, surfaced for the
+    // determinism test's non-vacuity guard and the witness line below; plus the ctor-resolved
+    // period (cfg + env), which is what "the device is on" means for this sim instance.
+    public long PeriodicRerouteCount => _engine.PeriodicRerouteCount;
+    private readonly double _reroutePeriodResolved;
+
     private void ReportMidLaneStuck()
     {
         _midLaneWitnessOn ??= Environment.GetEnvironmentVariable("LIVECITY_WITNESS") == "1";
@@ -1393,6 +1428,12 @@ public sealed class LiveCitySim : IDisposable
         }
 
         _lastMidLaneReport = _now;
+        // LIVECITY-REROUTING T3: make the device VISIBLE when enabled -- reroutes total so far.
+        if (_reroutePeriodResolved > 0.0)
+        {
+            Console.Error.WriteLine($"LIVECITY-REROUTES: t={_now:F0} total={_engine.PeriodicRerouteCount}");
+        }
+
         var w = WitnessAuthoritative();
         string[] binderNames = { "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane",
             "deadLaneMerge", "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield",

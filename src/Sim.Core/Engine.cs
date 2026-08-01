@@ -121,7 +121,16 @@ public sealed partial class Engine : IEngine
         var routeId = $"__periodicReroute{v.EntityIndex}";
         _routesById[routeId] = new Route(routeId, new List<string>(fullEdges));
         _effectiveRouteIdByEntity[v.EntityIndex] = routeId;
+        // LIVECITY-REROUTING T2/T3 (diagnostic-only): lifetime count of ACTUAL periodic route
+        // installs (identical-list short-circuits never reach here). Both call sites are the
+        // SERIAL apply passes after the batch A*, so a plain increment is order-stable. Read-only
+        // consumers (the LiveCity determinism test's non-vacuity guard and the LIVECITY-REROUTES
+        // witness line); nothing in the sim reads it, so it cannot change a trajectory.
+        PeriodicRerouteCount++;
     }
+
+    // See RegisterPeriodicReroute -- diagnostic-only install counter, reset per load.
+    public long PeriodicRerouteCount { get; private set; }
 
     // P1E-4 (§1B): the vehicle's remaining route as a distinct, in-order edge list -- currentEdge
     // followed by every FUTURE normal edge still left in its lane-sequence pool slice, deduplicated
@@ -1307,6 +1316,7 @@ public sealed partial class Engine : IEngine
         _parkingAreasById.Clear();
         _parkingLotOccupied.Clear();
         _deadLaneRerouteCount.Clear();   // GAP-1: fresh dead-lane reroute budget per load
+        PeriodicRerouteCount = 0;        // LIVECITY-REROUTING: fresh diagnostic counter per load
         foreach (var (id, pa) in parkingAreas)
         {
             _parkingAreasById[id] = pa;

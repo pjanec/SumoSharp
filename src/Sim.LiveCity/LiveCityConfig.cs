@@ -164,6 +164,17 @@ public sealed class LiveCityConfig
     // Overridable via LIVECITY_TELEPORT. Only the demo could enable it; scenarios/bench always leave it off.
     public double TimeToTeleportSeconds { get; set; } = 0.0;
 
+    // LIVECITY-REROUTING T1 (docs/LIVECITY-REROUTING-DESIGN.md §2.1): SUMO's device.rerouting,
+    // passed through to the engine's ALREADY-PORTED, golden-pinned P1E device via the spliced
+    // config XML. 0.0 = OFF (the default -- no splice, byte-identical engine config, which is the
+    // opt-in rollout the owner chose). When ReroutePeriodSeconds > 0, every equipped car
+    // (RerouteProbability, per-entity seeded equip) re-shortest-paths on live smoothed edge
+    // travel times every period (per-entity jitter phase). Env overrides in the LiveCitySim ctor:
+    // LIVECITY_REROUTE=1 (period 60 s, probability 1.0), LIVECITY_REROUTE_PERIOD,
+    // LIVECITY_REROUTE_PROB -- see docs/ENV-GATES.md.
+    public double ReroutePeriodSeconds { get; set; } = 0.0;
+    public double RerouteProbability { get; set; } = 1.0;
+
     // docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md: never let a dead-ended car freeze forever --
     // free-flow-reroute or drive through on any forward connection instead. RE-MEASURED after the
     // lane-change-straddles-junction CURE (docs/LIVE-CITY-15-LANECHANGE-JUNCTION-FIX-DESIGN.md): with the

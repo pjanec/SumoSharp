@@ -3252,3 +3252,22 @@ speed, binder) — enough to name the holding mechanism and its target on the ow
 run. Suites re-verified green (print-only change; 782/5 + 90/90).
 
 **Next:** owner pastes HEADSTUCK/MIDLANE lines from a Geneva session → trace the named mechanism.
+
+## Entry 44 (BEFORE) — LIVECITY rerouting wired behind the gate (owner go: "implement the rerouting behind a gate")
+
+**What is being landed (T1-T2 of docs/LIVECITY-REROUTING-TASKS.md, design signed via the owner's
+go):** `LiveCityConfig.ReroutePeriodSeconds/RerouteProbability` + env overrides
+(`LIVECITY_REROUTE`, `LIVECITY_REROUTE_PERIOD`, `LIVECITY_REROUTE_PROB`, ENV-GATES rows) splicing
+`device.rerouting.*` into the LiveCitySim engine config ONLY when enabled; the engine's P1E
+device is untouched except one diagnostic-only counter (`Engine.PeriodicRerouteCount`, serial
+increment, no reader in the sim). Witness line `LIVECITY-REROUTES: t=.. total=N`.
+`LiveCityReroutingTests`: off ⇒ 0 installs over 240 steps; on ⇒ byte-identical streams across two
+runs AND installs > 0 (both green first run).
+
+**T3 A/B predictions (closed-loop demand, 800 cars, gate + witness + ignore-blocker set
+identically in both arms, only LIVECITY_REROUTE differing):**
+1. OFF arm: GRIDLOCK/witness stream byte-identical to the Entry-43 build's run (inertness).
+2. ON arm: `LIVECITY-REROUTES` total grows into the hundreds+ over 1200 s; arrivals ≥ OFF − 2%,
+   plausibly BETTER (demand spreads off the saturated arteries); no GRIDLOCK; stoppedFrac not
+   worse; MIDLANE/HEADSTUCK not worse.
+3. Full sln suite green; goldens untouched (engine defaults unchanged; the counter is unread).
