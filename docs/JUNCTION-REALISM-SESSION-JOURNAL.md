@@ -2808,3 +2808,54 @@ tie-break, the foes-based reach), leaving it gated is itself a divergence — th
 was carrying a deadlock and a blindness SUMO never had, and it took an hour-horizon surface to
 see it. The remaining gate-scoped pieces (crossing physical occupancy, bay arm) are genuinely
 beyond-SUMO and stay opt-in pending the F3.1 ladder.
+
+## Entry 39 (BEFORE) — F1.1: conflict geometry for non-foes internal-lane pairs
+
+**The class (measured, Entry 38 AFTER + resume doc §1; NOT a gate regression — present in both
+gate states):** a STOPPED vehicle on a plain (non-bay) internal lane is driven through by movers
+whose links netconvert never put in each other's foes rows. ~15 of L2's 18 gate-ON
+`crossLane|stopXmove` pair-steps. Recurring sites: j=1150 `:1150_2_0`×`:1150_0_1` (4 episodes),
+j=123 `:123_11_0`×`:123_9_1` (4), j=1021, j=428 (two pairs), j=301 (two pairs), j=271, j=717,
+j=12, j=23, j=993. Honest SUMO on the same net: 0 such pair-steps — but SUMO 1.20 itself drives
+through these too (its conflict model is foes-row-driven and these pairs are foes-blind), so the
+fix is the SAME sanctioned beyond-SUMO honesty deviation as the bay work
+(`docs/CONSTRAINT-high-realism-artefact-ladder.md`: target the flow, never the method).
+
+**Design (generalize Entry 36, invent nothing):** extend the `BayConflict` ingest pass
+(`NetworkParser.cs`, `F2.1b`) to emit rows for EVERY ordered internal-lane pair (i,j), i≠j, of a
+junction where `!request_i.FoeWith(j)` — the same `TryCorridorOverlap` proximity sampling
+(2.0 m centerline threshold), the same NON-NEGOTIABLE `minEgoOverlapLen=1.0` brush filter
+(the 0.27 m junction-359 brush row wedged the whole net; do not relitigate). Foe side of a row is
+the foe link's internal lane ID; ego arcs stay in the ego stage-lane frame the engine already
+uses. The engine bay arm (jyArm 7) is expected to need ZERO changes: `_physOnLaneFirst/Second`
+indexes ALL internal lanes (verified at `BuildFoeApproachIndex`, Engine.cs:10117), the arm
+resolves any `BayLaneId` via `LaneHandleById`, and all four guards (speed≤2.0 hold predicate,
+back-bumper exiting test, Entry-37 patience escape, Entry-36 entry-order backstop inside the
+junction) are generic over the foe lane. Rows stay consumed ONLY under
+`JunctionPhysicalOccupancyGate` — F1.1 completes F3.1; the default flip (F3.2) remains a separate
+owner decision. Ingest is O(links²) per junction — measure parse wall-time on city-15000 once.
+
+**Predictions (each falsifiable; a miss is a finding, not an embarrassment):**
+1. L2 gate-ON classifier: `stopXmove` 18 → ≤5. The ~15 non-foes pair-steps collapse; the 2
+   lane-sequence-mismatch clips (t=543/544 class) and the ~1 late-stop transient (t=468 class)
+   survive — they are named residuals no geometry row can fix.
+2. L2 gate-ON: landings ≈ unchanged, bothSlow does NOT explode (the brush filter plus the
+   stopped-only hold predicate are what prevented that in Entry 36; same machinery, same
+   argument), DRAINED end state everywhere.
+3. Gate-OFF L2 hash stays `e94b88b7534c21b5fd3bf8657dbb1666` BYTE-IDENTICAL (rows have no
+   gate-off reader), determinism 3/3 + `--max-parallelism 1` in both states.
+4. Battery gate-ON vs `net-regression-entry38-mergefix.txt`: stuckDwell 0 everywhere, arrivals in
+   noise. Risk to watch: symmetric row pairs (both (i,j) and (j,i) non-foes) mutually holding —
+   the entry-order backstop must interleave them exactly as it did the sibling bays.
+5. Live-city smoke `LIVECITY_CARS=400` gate-ON: drained, arrivals ≈830+, INTERNALSTUCK transient
+   only (the surface that caught Entry 37's collapse).
+6. Full sln suite green (781/5/0 + 90/90 + the rest); parity goldens untouched (2–5-vehicle
+   scenarios have no non-foes stopped-occupant configurations, and gate-off inertness covers them
+   twice over).
+7. Mixed-1k gate-ON: stopXmove improves in the same proportion (37 at defaults; the gate-ON
+   number should land clearly below its Entry-38 value).
+
+**Fail conditions declared up front:** if bothSlow explodes or any battery net gridlocks, the
+first suspect is symmetric-pair mutual holding (check `[bay]` traces for a two-cycle before
+touching any dial); if stopXmove does NOT collapse, the class was mis-attributed and the next
+step is ONE traced vehicle at j=1150, not a redesign.
