@@ -2619,3 +2619,61 @@ predicate (`Speed <= 2.0`, non-exiting) is NOT touched (resume doc §3: three di
 
 If prediction 3's stopXmove does NOT drop below the OFF baseline, the residual is the transient-
 mover class the hold predicate deliberately ignores — measure before touching that dial.
+
+## Entry 36 (AFTER) — both fixes landed, both surfaces measured; two traced episodes, two mechanisms
+
+**What shipped (all gate-scoped under `SUMOSHARP_PHYSOCCUPANCY`; gate OFF byte-identical,
+`c768d7f6dd8535f46f170956737a2921` re-verified with the final binary):**
+
+1. **Bay-piece ingest rows** (`NetworkParser`): for a cont ego link, its FIRST-stage bay shape is
+   compared against foe bays, ego arcs emitted relative to the stage-2 start (negative), so the
+   engine's unchanged `egoDistToEntry + EgoArcStart` lands the hold at the stop line.
+2. **Entry-order backstop in the bay arm** (`Engine`): an ego already inside the junction skips the
+   jyArm-7 hold when it is the EARLIER entrant (`IsLeaderByEntryOrder`, antisymmetric) — mutual
+   jy7-jy7 two-cycles resolve; an approaching ego always holds (that IS the entry wait).
+3. **Back-bumper exiting test** (`Engine`): the "occupant is exiting" skip now tests the BACK, not
+   the front (a parked car's tail can block a short interval its front has left). Measured inert on
+   L2 (full-bay intervals); kept as a correctness guard for short intervals.
+4. **Brush filter** (`NetworkParser`, `minEgoOverlapLen = 1.0`): found by the gate-ON battery, which
+   caught two NEW wedges (city-organic stuckDwell 0→477, city-3000 13→556). Traced (binder log,
+   junction 359): links 5/8's corridors brush for 0.27 m at ~1.9 m centerline distance — the 2.0 m
+   proximity threshold exceeds the 1.8 m body-touch distance, so the row held veh 461 forever
+   0.1 m before a conflict where bodies never meet (t_end OBB scan: NOT touching), deadlocked
+   CROSS-ARM against the bay occupant (jy7 one way, SUMO-faithful inTheWay follow the other — no
+   tie-break can span two arms; and SUMO's non-foes verdict was geometrically RIGHT there). Genuine
+   shared corridors measure 4–8 m; 1.0 m separates the classes with margin both ways.
+5. **Instruments committed**: `[bay]` per-row trace (SUMOSHARP_TRACEVEH), `--examples` on the
+   classifier, `JunctionBayConflictIngestTests` pinning BOTH traced witness sites on committed nets.
+
+**Predictions vs measured (city-organic-L2, 1000 steps, gate ON):** DRAINED ✓ (0 stuck, was 41);
+dwell 19 ✓ (predicted ≤30, was 634; OFF baseline 16); bothSlow 15 ✓ (predicted ≈23 not 652);
+landings 6 ✓; bothMove 124 ✓; stopXmove 18 vs predicted ≤17 — one over, and the decomposition
+explains it (below). Prediction 1's "198 exits within ~5 steps of 97 clearing" verified in the
+binder log.
+
+**The full gate-ON scoreboard after all four pieces:**
+
+| surface | gate OFF | gate ON | SUMO |
+|---|---|---|---|
+| L2 flow | drained, dwell 16 | drained, dwell 19 | — |
+| L2 bothMove / bothSlow / stopXmove / landings | 145 / 23 / 17 / 12 | 124 / 15 / 18 / 6 | 4 / 0 / 0 / 0 |
+| mixed-1k stopXmove / landings | 54 / 10 | 30 / 5 | — |
+| battery | reference | stuckDwell 0 everywhere (city-3000 13 = baseline); city-organic arrived 494 > 491; junction-realism-L2 INCONCLUSIVE→DRAINED; two mild flags: junction-realism-L1 arrived 362→355, willpass-saturation overlaps 3→4 | — |
+
+Suite 781/5/0 (779 + 2 new pins); determinism 3/3 identical + `--max-parallelism 1` == default
+(Sim.Sumo); goldens untouched.
+
+**The L2 stopXmove residual (18), decomposed:** ~15 pair-steps are shared with gate OFF at the same
+sites (j=1150, 123, 1021, 428, 271, 717, 301-straights) — stopped turners on PLAIN internal lanes
+vs movers netconvert never made foes: the F1.1 class (geometric conflict ingest beyond bays), a
+separate tracker item. The 3 bay-class remnants: t=468 is the structural transient (occupant
+stopped AFTER the mover committed at 12.8 m/s — unstoppable); t=543/544 is a NAMED residual class:
+the mover's LANE SEQUENCE pointed through the sibling lane's link (pending strategic lane change),
+so every yield arm watched the wrong link's rows on approach — a pre-existing upcoming-link
+resolution limitation shared by all arms (same site clips gate-OFF at t=372), out of F2.1c scope.
+
+**What the two traces bought (measurement lessons, again):** the resume doc's designed fix
+(admission-side wait-point relocation for degenerate bays) was NOT built — the trace showed the
+admission hold was correct and the defect was in the bay machinery itself; and the second trace
+showed the first fix's geometry was too EAGER (proximity ≠ contact), which only the cross-net
+battery caught. Neither conclusion was reachable by reading code.

@@ -1,129 +1,121 @@
-# JUNCTION-FOE-LANE — resume here (the Geneva overlap/pass-through fix, mid-implementation)
+# JUNCTION-FOE-LANE — resume here (the Geneva overlap/pass-through fix)
 
-**Read this first, cold. It is self-contained.** Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**,
-handoff at `90dbb98`. Suite: `dotnet test tests/Sim.ParityTests -c Release` = **779 / 5 / 0**.
-Everything in this workstream is gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`**
-(`Engine.JunctionPhysicalOccupancyGate`, default **OFF**); gate-off is **byte-identical** to the
-pre-workstream engine (city-organic-L2 FCD hash `c768d7f6dd8535f46f170956737a2921`, re-verify after
-any edit). Trail: journal **Entries 35, 35b** (evidence + the six-step measurement ladder), design
-`JUNCTION-FOE-LANE-DESIGN.md`, live state `JUNCTION-FOE-LANE-TRACKER.md`. Owner sign-off: given
-("go autonomously").
+**Read this first, cold. It is self-contained.** Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**.
+Suite: `dotnet test tests/Sim.ParityTests -c Release` = **781 / 5 / 0**. Everything in this
+workstream is gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`** (`Engine.JunctionPhysicalOccupancyGate`,
+default **OFF**); gate-off is **byte-identical** to the pre-workstream engine (city-organic-L2 FCD
+hash `c768d7f6dd8535f46f170956737a2921`, re-verify after any edit; gate-ON L2 hash for the current
+code: `0c9bad719a22ba1a56615ab246316a3c`). Trail: journal **Entries 35, 35b, 36** (36 has the two
+episode traces and the full scorecard), design `JUNCTION-FOE-LANE-DESIGN.md`, live state
+`JUNCTION-FOE-LANE-TRACKER.md`. Owner sign-off: given ("go autonomously").
 
-## 1. The task
+## 1. Where this stands (post-Entry-36)
 
-The owner's two Geneva-terrain reports, reproduced offline (Entry 35): **(a)** queue-tail
-stacking = same-junction DOUBLE-LANDINGS (two movements exit one junction the same step onto the
-shared arrival lane) — **FIXED under the gate** (F2.2: onsets 12 → 5, deadlock-free);
-**(b)** pass-through of a car blocked mid-junction — decomposed: the dominant sub-class (26–34 of
-~37 stopXmove pair-steps) is a turner WAITING in a first-stage cont **bay** whose corridor
-netconvert draws on top of sibling movements, and which appears in NO foes row. **The bay half is
-the open work**: its geometry, physical index, and constraint arm are committed, but the HOLD
-TIMING is unresolved. That is what this doc hands off.
+Both Geneva reports have working gate-scoped fixes, measured on both surfaces:
+
+- **(a) queue-tail stacking** (same-junction double-landings): F2.2 — foes-based merge reachability
+  + `IsLeaderByEntryOrder` PHASE-1 tie-break. L2 landings 12 → 6, mixed-1k 10 → 5.
+- **(b) pass-through of a blocked turner** — the BAY half is DONE (Entry 36): bay-piece ingest rows
+  (ego's first-stage bay vs foe bays, ego arcs stage-2-relative/negative), entry-order backstop in
+  the jyArm-7 bay arm, back-bumper exiting test, and the `minEgoOverlapLen=1.0` brush filter.
+  The Entry-35b "hold-timing trade-off" **dissolved** — it was never a timing dial, it was missing
+  geometry (the wedge) plus over-eager geometry (the brush): L2 gate ON went GRIDLOCK/41-stuck/
+  dwell-634 → DRAINED/dwell-19 with bothSlow BELOW the OFF baseline (15 vs 23).
+
+**Scoreboard (city-organic-L2, 1000 steps; classifier pair-steps / landing onsets):**
+
+| arm state | bothMove | bothSlow | stopXmove | landings | flow |
+|---|---|---|---|---|---|
+| gate OFF (= shipped default) | 145 | 23 | 17 | 12 | drained, dwell 16 |
+| gate ON (current code) | 124 | 15 | 18 | 6 | drained, dwell 19 |
+| honest SUMO (same net) | 4 | 0 | 0 | 0 | drained |
+
+Battery gate ON vs `docs/reports/net-regression-entry34-stays.txt`: stuckDwell 0 everywhere
+(city-3000 13 = its baseline 13), city-organic arrived 494 > 491, junction-realism-L2
+INCONCLUSIVE → DRAINED; two mild flags — junction-realism-L1 arrived 362→355 (entry-hold
+throughput cost, no wedge), willpass-saturation overlaps 3→4.
 
 ## 2. The instrument loop (run these, exactly)
 
 ```bash
 # builds -- Sim.Run/Sim.Sumo are NOT in Traffic.sln (measure stale code otherwise):
-dotnet build -c Release src/Sim.Core/Sim.Core.csproj src/Sim.Run/Sim.Run.csproj
+dotnet build -c Release src/Sim.Core/Sim.Core.csproj && dotnet build -c Release src/Sim.Run/Sim.Run.csproj
 # A/B on the workhorse net (deterministic engine -- identical cmd => identical FCD):
 dotnet run --project src/Sim.Run -c Release --no-build -- \
   scenarios/_bench/city-organic-L2 --steps 1000 --fcd-out /tmp/off.fcd.xml
 SUMOSHARP_PHYSOCCUPANCY=1 dotnet run --project src/Sim.Run -c Release --no-build -- \
   scenarios/_bench/city-organic-L2 --steps 1000 --fcd-out /tmp/on.fcd.xml
-python3 scripts/classify-junction-overlaps.py /tmp/on.fcd.xml     # the Entry 35 classifier
-python3 scripts/analyze-junction-realism-fcd.py /tmp/on.fcd.xml   # DRAINED-vs-GRIDLOCK + dwell
+python3 scripts/classify-junction-overlaps.py /tmp/on.fcd.xml --examples 40
+python3 scripts/analyze-junction-realism-fcd.py /tmp/on.fcd.xml   # DRAINED-vs-GRIDLOCK + dwell + wedge row
+# cross-net wedge guard (the thing that caught the Entry-36 brush wedge):
+SUMOSHARP_PHYSOCCUPANCY=1 python3 scripts/run-net-regression.py --exclude city-15000 \
+  --out /tmp/battery-on.txt --compare docs/reports/net-regression-entry34-stays.txt
+# per-vehicle episode trace (binder log names the arm; [bay] names the row):
+SUMOSHARP_PHYSOCCUPANCY=1 dotnet run --project src/Sim.Run -c Release --no-build -- \
+  scenarios/_bench/city-organic-L2 --steps 1000 --fcd-out /dev/null --binder-log /tmp/b.csv
+SUMOSHARP_PHYSOCCUPANCY=1 SUMOSHARP_TRACEVEH=<id> dotnet run --project src/Sim.Run -c Release --no-build -- \
+  scenarios/_bench/city-organic-L2 --steps 1000 --fcd-out /dev/null 2>/tmp/trace.txt
 ```
 
-**The scoreboard** (city-organic-L2, 1000 steps, classifier pair-steps / landing onsets):
+## 3. What remains before a default flip (F3.1 → F3.2)
 
-| arm state | bothMove | bothSlow | stopXmove | landings | flow |
-|---|---|---|---|---|---|
-| gate OFF (= shipped default) | 145 | 23 | 17 | 12 | drained |
-| honest SUMO (same net) | 4 | 0 | 0 | 0 | drained |
-| ON, committed code as-is | ~121–130 | blows up | 19–35 | 4–6 | **GRIDLOCKS** (see §3) |
-| ON, stopped-only hold variant | 130 | 17 | 35 | 6 | drained (holds too late) |
-| ON, any-body hold variant | 119 | 652 | 13 | 4 | GRIDLOCK (dwell 634) |
+1. **F1.1 — the now-dominant residual.** ~15 of L2's 18 gate-ON stopXmove pair-steps are stopped
+   turners on PLAIN internal lanes vs movers netconvert never made foes (recurring sites: j=1150
+   `:1150_2_0`×`:1150_0_1`, j=123 `:123_11_0`×`:123_9_1`, j=1021, j=428, j=301 straights). Same
+   sites clip gate-OFF — this class predates the bay work. Design question: extend the corridor-
+   geometry pass to ALL internal-lane pairs absent from the foes matrix (with the brush filter,
+   which is what makes that safe now), or port SUMO's `myConflicts` geometry wholesale (F1.1's
+   original framing). The classifier target "stopXmove → ~0" is unreachable without this.
+2. **Live-city demo smoke** (overlaps 0, no gridlock, dead-stop ≈ 9–12%) — untested under the gate.
+3. **Owner Geneva re-check** — the report that started this is the final gate.
+4. Optional: F0.1 TraCI probe half; junction-realism-L1's −7 arrivals deserves one look (no wedge,
+   dwell unchanged — likely honest entry-wait cost, but label it before the flip).
 
-## 3. ⚠ THE COMMITTED HOLD PREDICATE IS THE GRIDLOCKING VARIANT
+## 4. Where the code is (search anchors)
 
-The bay arm as committed holds for occupants with `Speed <= 2.0` not past `BayArcEnd + 1.0` —
-the last-measured variant, which **gridlocks city-organic-L2 with the gate ON** (41 stuck,
-dwell 634). This is deliberate: the gate is OFF so it is inert, and the variant is kept so the
-gridlock episode can be traced. **Do not tune the threshold further** — three points on that dial
-are already measured (Entry 35b's ladder); the trade-off is structural: any hold early enough to
-prevent the overlap collapses saturated throughput, any hold late enough to preserve flow misses
-occupants that stop one step after ego commits.
-
-## 4. Where the code is (search anchors in `src/`)
-
-- **Bay arm**: `Engine.cs`, search `F2.1b` — inside `JunctionYieldConstraint` after the IntLanes
-  foe loop, `jyArm = 7`. The hold predicate to be replaced is the `cand.Kinematics.Speed > 2.0`
-  block.
-- **Physical occupancy index**: `_physOnLaneFirst/Second`, filled in `BuildFoeApproachIndex`
-  (the route-pool indexes first-mask bay occupants behind distant approaching vehicles — measured;
-  never revert to `FindFoeVehicle` for physical questions).
-- **Bay geometry**: `BayConflict` (NetworkModel + the parser pass, search `F2.1b`),
-  `PolylineGeometry.TryCorridorOverlap` (proximity-sampled — centerline crossing CANNOT see
-  near-parallel bay corridors; threshold 2.0 m). Bay lane id = cont link's
-  `Connection.From + "_" + FromLane` (the JunctionLink.Connection of a cont link is the
-  second-hop INTERNAL connection).
-- **F2.2 (done)**: merge reachability `!respondsTo && !physicalFoe` + `arbitration:` param on
-  `SameTargetMergeConstraint` (PHASE 0 stays RespondsTo-only) + `IsLeaderByEntryOrder` PHASE-1
-  tie-break (antisymmetric ⇒ deadlock-free). Do not touch.
+- **Bay arm**: `Engine.cs`, search `F2.1b` / `Entry 36` — inside `JunctionYieldConstraint` after the
+  IntLanes foe loop, `jyArm = 7`. Contains the entry-order backstop (`egoInsideJunction &&
+  !IsLeaderByEntryOrder(...) -> skip`), the back-bumper exiting test, and the `[bay]` trace
+  (SUMOSHARP_TRACEVEH-gated).
+- **Ingest**: `NetworkParser.cs`, search `F2.1b` / `Entry 36` — stage-lane rows, bay-piece rows
+  (negative ego arcs), `minEgoOverlapLen`. `PolylineGeometry.TryCorridorOverlap` is proximity-
+  sampled (threshold 2.0 m CENTERLINE distance — REMEMBER: that exceeds the 1.8 m body-touch
+  distance, which is exactly why the brush filter exists).
+- **Physical occupancy index**: `_physOnLaneFirst/Second`, filled in `BuildFoeApproachIndex` (the
+  route-pool indexes first-mask bay occupants — measured; never use `FindFoeVehicle` for physical
+  questions).
+- **Pins**: `JunctionBayConflictIngestTests` (both traced witness sites: 301 sibling-bay pieces
+  kept, 359 brush dropped, long rows kept). Instruments: `--examples` on the classifier.
+- **F2.2 (done)**: merge reachability `!respondsTo && !physicalFoe` + `arbitration:` param +
+  PHASE-1 `IsLeaderByEntryOrder` skip. Do not touch.
 - **Env plumbing**: `SUMOSHARP_PHYSOCCUPANCY` in `Sim.Run/Program.cs` + `SumoShim.cs`,
-  `docs/ENV-GATES.md` row, completeness test green.
+  `docs/ENV-GATES.md` row.
 
-## 5. The designed next step — F2.1c, wait-point relocation (NOT attempted yet)
+## 5. Named residual classes (so nobody re-traces them)
 
-Stop treating the symptom (ego braking for a stopped bay body) and remove the cause (a stopped
-body in a shared corridor): **when a bay cannot physically shelter a waiting car, the turner must
-wait BEFORE the junction, not in the bay.**
+- **Lane-sequence link mismatch** (L2 t=543/544, gate OFF t=372, same site): a mover with a PENDING
+  strategic lane change resolves its upcoming junction link through the OTHER lane's connection, so
+  EVERY yield arm watches the wrong link's rows on approach; by the time the link corrects, ego is
+  mid-overlap (COMMITTED-skip, correctly non-wedging). Pre-existing, shared by all arms, out of
+  bay-work scope.
+- **Late-stop transient** (L2 t=468): the bay occupant stopped AFTER the mover committed at
+  12.8 m/s — physically unstoppable at any hold timing. Structural; do not chase with dials.
+- **jyArm-5 (inTheWay) vs jyArm-7 cross-arm pairs cannot be tie-broken** — arm 5 is SUMO-faithful
+  and follows a physically-in-the-way foe regardless of entry order. The Entry-36 answer is to make
+  the GEOMETRY honest (a brush is not a conflict) so the pair never forms; if a future net wedges
+  cross-arm on a GENUINE shared corridor, that is a new problem — trace it, don't tune it.
 
-1. **Ingest**: flag each bay lane whose WAIT REGION (`[bayLen − carLen − margin, bayLen]`,
-   carLen ≈ 5, margin ≈ 0.5) intersects the bay-side interval `[BayArcStart, BayArcEnd]` of any
-   `BayConflict` referencing it → `degenerate bay` (per-lane bool or set on the Junction).
-   On city-organic-L2 expect most bays to qualify (they are 3.6–7.8 m and overlap from arc 0).
-2. **Engine**: `InternalJunctionAdmissionConstraint` (binder 14 — the arm that today holds a cont
-   vehicle IN the bay when stage 2 is not clear; search `InternalJunctionAdmissionConstraint` /
-   `prePass ? !foe.WillPassPrev : !foe.WillPass`): for a DEGENERATE bay, apply the SAME
-   stage-2-clear test but hold at the **junction entry** (approach-lane stop line — the same
-   `StopSpeedFor(... egoDistToEntry ...)` form the yield arms use), so the turner never enters
-   the bay until it can traverse both stages. Gate-scoped under the same
-   `JunctionPhysicalOccupancyGate`.
-3. Then the bay arm's residual job shrinks to transient movers; re-measure the whole classifier —
-   the hold-timing dial may become irrelevant.
-4. **Before any of that**: ONE episode trace of the recurring gridlock — reproduce with the gate
-   ON (`--steps 1000`, deterministic), find the dwell-634 vehicle (analyzer prints it), trace it
-   (`SUMOSHARP_TRACEVEH`) and its blocker chain (`[lccommit]`/binder diags) to name the cycle.
-   The same site wedged in BOTH gridlocking variants — it may be one specific junction shape, and
-   knowing the cycle validates (or falsifies) the F2.1c interleave argument before it is built.
-
-Risks to watch (measured hazards, not hypotheticals): entry-holds feed back into willPass/
-admission dynamics (the L2 collapse class of Entry 26's naive flag); battery stuckDwell is the
-standing wedge gate; `city-3000`'s closed-loop is the capacity canary.
-
-## 6. Acceptance gates (F3.1, before any default flip)
-
-1. Classifier, city-organic-L2 + city-mixed-1k, gate ON: stopXmove → ~0 (SUMO 0), landings ≤ 2,
-   bothMove materially toward SUMO's 4, bothSlow ≈ OFF-baseline (no capacity collapse).
-2. Flow: DRAINED on both nets, dwell ≤ OFF-baseline (16), battery vs
-   `docs/reports/net-regression-entry34-stays.txt` — stuckDwell 0 everywhere, arrivals in noise.
-3. Gate-off byte-identical (hash above) + suite 779/5/0 + goldens untouched.
-4. Determinism repeat-hash (≥4 runs + `--max-parallelism 1` via `src/Sim.Sumo`), both gate states.
-5. Live-city demo smoke (overlaps 0, no gridlock, dead-stop ≈ 9–12%).
-6. Owner Geneva re-check — the report that started this is the final gate.
-
-## 7. Traps (each already cost time THIS workstream)
+## 6. Traps (each already cost time THIS workstream)
 
 - `Sim.Run`/`Sim.Sumo`/`Sim.Viewer` are NOT in `Traffic.sln` — build csproj explicitly.
 - Env gates are process-global; `env | grep SUMOSHARP` before any A/B; set the gate explicitly in
   BOTH arms.
-- The F3-era "JunctionPhysicalOccupancyGate measured counterproductive, do not retry" verdicts
-  predate the sibling gates shipping default-ON and the Entry-30 determinism fix — re-measure,
-  don't inherit them; but ALSO don't inherit this session's numbers after any engine edit.
-- The pool-based foe indexes answer "who is ROUTED through", not "who is STANDING ON" — use
-  `_physOnLane*` for physical questions.
-- Scratch FCDs die with the VM; the engine is deterministic — regenerate with the exact commands
-  in §2 rather than trusting stale files.
-- Reasoned mechanism hypotheses are ~0-for-20 in this workstream. The classifier + analyzer pair
-  is the ground truth; when a number disagrees with your reading of the code, trust the number.
+- **"L2 green" is not "battery green"**: Entry 36's brush wedge was INVISIBLE on both classifier
+  nets and appeared only in the cross-net battery. Run the battery for ANY ingest/arm change.
+- Corridor PROXIMITY is not body CONTACT (2.0 m threshold vs 1.8 m touch distance) — a row is a
+  claim that bodies can meet; the brush filter enforces it, don't bypass it.
+- The pool-based foe indexes answer "who is ROUTED through", not "who is STANDING ON".
+- Scratch FCDs die with the VM; the engine is deterministic — regenerate with §2's exact commands.
+- Reasoned mechanism hypotheses are ~0-for-20 here. Entry 36 both ways: the resume-doc's own
+  designed fix (admission-side relocation) was falsified by the first trace, and the first fix's
+  geometry was corrected by the second. Trace first.

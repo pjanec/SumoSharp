@@ -1,14 +1,14 @@
 # JUNCTION-FOE-LANE — tracker
 
 Design: `JUNCTION-FOE-LANE-DESIGN.md` · Tasks: `JUNCTION-FOE-LANE-TASKS.md` · Evidence: journal
-Entry 35. **Operational hand-off page: `JUNCTION-FOE-LANE-RESUME.md` — a cold start begins THERE.** A box is ticked only when the reviewer has confirmed the task's success conditions
+Entries 35–36. **Operational hand-off page: `JUNCTION-FOE-LANE-RESUME.md` — a cold start begins THERE.** A box is ticked only when the reviewer has confirmed the task's success conditions
 first-hand (CLAUDE.md orchestration loop).
 
 - [x] **OWNER SIGN-OFF on the design** — "go autonomously", July 31 (owner session)
 - [ ] F0.1 foes-vs-response source verification (+ TraCI probe) — **source half DONE, answers in design §2** (foes bitstring, not response; cited); TraCI probe pending
-- [ ] F1.1 conflict geometry at ingest (parity-inert, all-nets sweep)
-- [~] F2.1 foe-lane occupancy arm — the F3 workstream had ALREADY built it (`JunctionPhysicalOccupancyGate`); re-plumbed as `SUMOSHARP_PHYSOCCUPANCY` (both drivers + ENV-GATES). Crossing half live under the gate; bay half partial (Entry 35b): `BayConflict` ingest geometry ✓, `_physOnLane*` physical index ✓, bay arm ✓ but hold-timing unresolved (early → gridlock, late → misses)
-- [ ] **F2.1c (NEW, next session): degenerate-bay WAIT-POINT relocation** — when a bay's waiting position lies inside a BayConflict interval, `InternalJunctionAdmissionConstraint` holds the turner at the junction ENTRY instead of in the bay; plus one episode trace of the recurring dwell-634 gridlock site before any threshold tuning
-- [x] F2.2 same-target merge half — foes-based reachability + `IsLeaderByEntryOrder` PHASE-1 tie-break (Entry 35b): landing onsets 12→5 deadlock-free, gate-off byte-identical, suite 779/5/0. Full ≤2 target re-checked at the F3.1 gate ladder
-- [ ] F3.1 full gate ladder, both states, predictions-first
-- [ ] F3.2 default flip + docs
+- [ ] F1.1 conflict geometry at ingest (parity-inert, all-nets sweep) — **NOW THE DOMINANT residual**: ~15 of L2's 18 gate-ON stopXmove pair-steps are stopped turners on PLAIN internal lanes vs movers netconvert never made foes (j=1150/123/1021/428/…, same sites gate-OFF)
+- [x] F2.1 foe-lane occupancy arm — crossing half live under `SUMOSHARP_PHYSOCCUPANCY`; **bay half DONE (Entry 36)**: `BayConflict` ingest ✓, bay-piece rows (stage-2-relative negative arcs) ✓, `_physOnLane*` index ✓, bay arm + entry-order backstop + back-bumper exiting ✓, brush filter (`minEgoOverlapLen=1.0`) ✓. The Entry-35b "hold-timing trade-off" dissolved: with the fixed geometry the committed `Speed<=2.0` predicate drains everywhere (L2 GRIDLOCK/dwell-634 → DRAINED/dwell-19)
+- [x] **F2.1c — SUPERSEDED by Entry 36** (the admission-side wait-point relocation was FALSIFIED by the episode trace: the admission hold was correct; the defects were missing bay-vs-bay geometry + no tie-break + a proximity-vs-contact false positive). Pinned by `JunctionBayConflictIngestTests` on both traced witness sites
+- [x] F2.2 same-target merge half — foes-based reachability + `IsLeaderByEntryOrder` PHASE-1 tie-break (Entry 35b): landing onsets 12→5 deadlock-free (Entry 36 re-measure: 6 vs OFF 12), gate-off byte-identical
+- [~] F3.1 full gate ladder — battery gate ON: stuckDwell 0 everywhere (city-3000 13 = baseline), city-organic arrived 494>491, junction-realism-L2 INCONCLUSIVE→DRAINED; two mild flags (junction-realism-L1 arrived 362→355; willpass-saturation overlaps 3→4); suite 781/5/0; determinism both states; gate-off hash `c768d7f6…` byte-identical. **Remaining**: classifier stopXmove→~0 needs F1.1; live-city demo smoke; owner Geneva re-check
+- [ ] F3.2 default flip + docs — blocked on F3.1's remaining items
