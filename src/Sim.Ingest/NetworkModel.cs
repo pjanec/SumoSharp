@@ -199,7 +199,27 @@ public sealed record Junction(
     IReadOnlyList<JunctionRequest> Requests,
     IReadOnlyList<JunctionConflict> Conflicts,
     IReadOnlyList<MergeConflict> Merges,
-    IReadOnlyList<(double X, double Y)> Shape);
+    IReadOnlyList<(double X, double Y)> Shape,
+    IReadOnlyList<BayConflict> BayConflicts);
+
+// JUNCTION-FOE-LANE F2.1b (docs/JUNCTION-FOE-LANE-DESIGN.md; journal Entry 35b): the corridor
+// overlap between a link's internal lane and a FIRST-STAGE CONT BAY lane. Bay lanes appear in NO
+// request row (netconvert's foes matrix covers `intLanes`, which for a cont link is the SECOND
+// stage), yet their physical corridors overlap other links' internal lanes -- measured as 34 of 37
+// stopped-x-mover junction overlaps with the physical-occupancy gate ON (a turner WAITING in its
+// bay, driven through by a conflicting mover). This is a DOCUMENTED BEYOND-SUMO DEVIATION: SUMO
+// 1.20 drives through these too (`MSRightOfWayJunction.cpp:129-137` appends the bay only for
+// response/indirect/bidi links) as part of its junction-interpenetration dishonesty
+// (`collision.check-junctions=false` by default), and the high-realism artefact ladder forbids
+// copying the cheat. Unlike JunctionConflict (a centerline CROSSING), this is a PROXIMITY interval:
+// near-parallel corridors (a bay hugging its sibling straight movement) never cross centerlines, so
+// the parser samples the bay polyline and records the arc ranges (lane-position frame, both sides)
+// where the corridors come within body-overlap distance. Consumed only by the gate-scoped
+// bay-occupancy arm; no reader when the gate is off.
+public sealed record BayConflict(
+    int EgoLink, string BayLaneId,
+    double EgoArcStart, double EgoArcEnd,
+    double BayArcStart, double BayArcEnd);
 
 // C2-i: one lane's route-continuity data for STRATEGIC lane-change planning -- a scoped port of
 // `struct LaneQ` (sumo/src/microsim/MSVehicle.h:865-886), the per-lane record

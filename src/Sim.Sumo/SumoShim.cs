@@ -277,6 +277,9 @@ public static class SumoShim
         // because the behavioural regression test drives THIS path, and its forced-OFF arm must be
         // the same engine configuration as its shipped-default arm. Unset => the ENGINE DEFAULT.
         engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
+        // JUNCTION-FOE-LANE F2.1: measurement gate for the F3 physical-occupancy arm -- see
+        // Sim.Run's twin line and docs/JUNCTION-FOE-LANE-DESIGN.md. Engine default OFF.
+        engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCCUPANCY", engine.JunctionPhysicalOccupancyGate);
         // DIAGNOSTIC, not behavioural (see Engine.DiagTraceVehicleId): dumps KeepClearConstraint's
         // downstream available-space walk to stderr for ONE vehicle id. Read here as well as in
         // Sim.Run because the two load-bearing gridlock diagnostics (LowDensityTeleportTests,

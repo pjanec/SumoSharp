@@ -617,7 +617,7 @@ public static class NetworkParser
         if (intLanes.Count == 0 || requestEls.Count == 0)
         {
             return new Junction(id, type, intLanes, Array.Empty<JunctionLink>(), Array.Empty<JunctionRequest>(),
-                Array.Empty<JunctionConflict>(), Array.Empty<MergeConflict>(), shape);
+                Array.Empty<JunctionConflict>(), Array.Empty<MergeConflict>(), shape, Array.Empty<BayConflict>());
         }
 
         // Links: for each link index i, the top-level <connection> whose `via` equals
@@ -749,7 +749,64 @@ public static class NetworkParser
             }
         }
 
-        return new Junction(id, type, intLanes, links, requests, conflicts, merges, shape);
+        // JUNCTION-FOE-LANE F2.1b: bay-corridor conflicts -- see BayConflict's own doc comment for
+        // the full WHY (beyond-SUMO honesty deviation; bay lanes are in no foes row). For each cont
+        // link, its FIRST-stage bay lane is the FROM lane of the link's (second-hop, internal)
+        // connection. Corridor overlap is PROXIMITY-sampled, not centerline-crossed: a bay hugging
+        // its sibling movement (shared source lane, shapes departing from the same point) never
+        // crosses centerlines, which is exactly why TryIntersect cannot see this class. The
+        // threshold is body-overlap distance for two default-width (1.8 m) vehicles plus a small
+        // margin -- corridors closer than this can hold physically-overlapping bodies.
+        var bayConflicts = new List<BayConflict>();
+        const double bodyOverlapThreshold = 2.0;
+        foreach (var request in requests)
+        {
+            if (!request.Cont || !linksByIndex.TryGetValue(request.Index, out var contLink))
+            {
+                continue;
+            }
+
+            // The cont link's JunctionLink.Connection is the INTERNAL second-hop connection
+            // (via == intLanes[index]); its From edge/lane is the first-stage bay.
+            if (contLink.Connection.From.Length == 0 || contLink.Connection.From[0] != ':')
+            {
+                continue;
+            }
+
+            var bayLaneId = contLink.Connection.From + "_" + contLink.Connection.FromLane.ToString(CultureInfo.InvariantCulture);
+            if (!lanesById.TryGetValue(bayLaneId, out var bayLane) || bayLane.Shape.Count < 2)
+            {
+                continue;
+            }
+
+            foreach (var egoLink in links)
+            {
+                if (egoLink.Index == request.Index)
+                {
+                    continue;
+                }
+
+                if (!lanesById.TryGetValue(egoLink.InternalLaneId, out var egoLane) || egoLane.Shape.Count < 2)
+                {
+                    continue;
+                }
+
+                if (PolylineGeometry.TryCorridorOverlap(
+                        egoLane.Shape, bayLane.Shape, bodyOverlapThreshold,
+                        out var egoGeomStart, out var egoGeomEnd, out var bayGeomStart, out var bayGeomEnd))
+                {
+                    // Geometry-arc -> lane-position frame (InterpolateGeometryPosToLanePos).
+                    var egoScale = egoLane.Length / PolylineGeometry.PolylineLength(egoLane.Shape);
+                    var bayScale = bayLane.Length / PolylineGeometry.PolylineLength(bayLane.Shape);
+                    bayConflicts.Add(new BayConflict(
+                        egoLink.Index, bayLaneId,
+                        egoGeomStart * egoScale, egoGeomEnd * egoScale,
+                        bayGeomStart * bayScale, bayGeomEnd * bayScale));
+                }
+            }
+        }
+
+        return new Junction(id, type, intLanes, links, requests, conflicts, merges, shape, bayConflicts);
     }
 
     // Rung 9b-ii: a straight 2-point internal lane's travel direction, normalized -- ported

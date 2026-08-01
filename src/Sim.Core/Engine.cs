@@ -484,6 +484,15 @@ public sealed partial class Engine : IEngine
     private VehicleRuntime?[] _foeCrossFirst = Array.Empty<VehicleRuntime?>();
     private VehicleRuntime?[] _foeCrossSecond = Array.Empty<VehicleRuntime?>();
 
+    // JUNCTION-FOE-LANE F2.1b: PHYSICAL occupancy index for internal lanes -- the first two
+    // vehicles whose CURRENT LaneHandle is that internal lane, filled in the same
+    // BuildFoeApproachIndex pass. The two route-pool indexes above answer "who is ROUTED through
+    // this lane"; the bay-occupancy arm needs "who is STANDING ON it right now" (a bay occupant
+    // that is first-masked in the pool index by a distant approaching vehicle would otherwise be
+    // invisible -- measured, Entry 35b). No reader when JunctionPhysicalOccupancyGate is off.
+    private VehicleRuntime?[] _physOnLaneFirst = Array.Empty<VehicleRuntime?>();
+    private VehicleRuntime?[] _physOnLaneSecond = Array.Empty<VehicleRuntime?>();
+
     // Perf (Export-phase parallelism): a reusable, index-keyed buffer for the parallel EmitTrajectory
     // branch. Emit's per-vehicle cost is the LaneGeometry.PositionAtOffset trig, which reads only
     // immutable geometry + the vehicle's OWN settled Kinematics -- independent per vehicle, so it is
@@ -1612,6 +1621,8 @@ public sealed partial class Engine : IEngine
         _foeApproachSecond = new VehicleRuntime?[laneCount];
         _foeCrossFirst = new VehicleRuntime?[laneCount];
         _foeCrossSecond = new VehicleRuntime?[laneCount];
+        _physOnLaneFirst = new VehicleRuntime?[laneCount];
+        _physOnLaneSecond = new VehicleRuntime?[laneCount];
         for (var h = 0; h < laneCount; h++)
         {
             _isInternalLane[h] = _network.LanesByHandle[h].Id.StartsWith(':');
@@ -7517,10 +7528,23 @@ public sealed partial class Engine : IEngine
 
             if (conflict is null)
             {
-                // F3: ARBITRATION arm -- RespondsTo-gated, so its reachability is unchanged by the
-                // FoeWith widening above (a FoeWith-only foe must not invent a merge yield SUMO does
-                // not perform; that would deepen the NEED-multilane-junction-passage over-yield).
-                if (!respondsTo)
+                // JUNCTION-FOE-LANE F2.2 (docs/JUNCTION-FOE-LANE-DESIGN.md; journal Entry 35): the
+                // merge arm's REACHABILITY is widened from RespondsTo-only to RespondsTo-or-FoeWith,
+                // because SUMO's sameTarget link-leaders are FOES-based (getLeaderInfo walks
+                // myFoeLanes, built from SUMO_ATTR_FOES -- MSRightOfWayJunction.cpp:129-137 -- and
+                // MSLink.cpp:302-332 records the merge conflict for foes regardless of response).
+                // Entry 35 measured the miss: 22 of 22 deep queue-landing overlaps were SAME-JUNCTION
+                // double-landings whose FOLLOWER side held the non-responding link (junction 301:
+                // FoeWith(13,6) both ways but RespondsTo only 6->13), so the link-13 car was blind to
+                // the link-6 car converging onto the shared arrival lane. Only the CAR-FOLLOWING
+                // phases (1/2) are widened -- `arbitration: respondsTo` keeps PHASE 0's stop-line
+                // arrival yield RespondsTo-only, exactly the crossing arm's ARBITRATION-vs-OCCUPANCY
+                // split above (a FoeWith-only foe must not invent a stop-line yield SUMO does not
+                // perform; that would deepen the NEED-multilane-junction-passage over-yield).
+                // Behind JunctionPhysicalOccupancyGate: OFF => physicalFoe is always false =>
+                // reachability and arbitration both reduce to the pre-F2.2 RespondsTo path,
+                // byte-identical by construction.
+                if (!respondsTo && !physicalFoe)
                 {
                     continue;
                 }
@@ -7534,7 +7558,7 @@ public sealed partial class Engine : IEngine
                     SameTargetMergeConstraint(
                         v, junction, egoLink, egoInternalLaneId, egoOnInternal, approachLane, egoDistToEntry,
                         j, allVehicles, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed, egoHasSignalPriority,
-                        prePass, egoInsideJunction));
+                        prePass, egoInsideJunction, arbitration: respondsTo));
                 if (constraint < jyBest) { jyBest = constraint; jyArm = 3; blockerIdx = -1; } // diag: sameTargetMerge, foe not exposed by SameTargetMergeConstraint
                 continue;
             }
@@ -7878,6 +7902,87 @@ public sealed partial class Engine : IEngine
             constraint = Math.Min(constraint, thisConstraint);
             // T1.8: foe speed recorded on BOTH passes (see the JunctionYieldFoeSpeed reset comment).
             if (constraint < jyBest) { jyBest = constraint; jyArm = thisArm; v.JunctionYieldFoeSpeed = (float)foe.Kinematics.Speed; blockerIdx = foe.EntityIndex; } // diag: on-junction / approaching + foe speed + blocker
+        }
+
+        // JUNCTION-FOE-LANE F2.1b (docs/JUNCTION-FOE-LANE-DESIGN.md; BayConflict's doc comment for
+        // the full WHY): bay-corridor occupancy. A vehicle WAITING in a first-stage cont bay is in
+        // no foes row, so the loop above cannot see it -- measured (Entry 35b) as 34 of 37
+        // stopped-x-mover junction overlaps with this gate ON (the owner's "cars pass through a
+        // blocked left-turner"). Documented BEYOND-SUMO deviation (SUMO drives through these too;
+        // the artefact ladder forbids copying that cheat). Ego is held BEFORE its corridor's
+        // overlap start while a foe BODY intersects the bay-side overlap interval; once ego's
+        // front has passed the overlap start it is committed and never braked (the same
+        // wedge-averse rule as the isLeader clause-1 gate above). Deadlock argument: the held ego
+        // stops on its approach (WillPass false), so it cannot block the bay occupant's own
+        // stage-2 admission -- the pair interleaves instead of wedging; the battery's stuckDwell
+        // column is the standing gate on that claim.
+        if (JunctionPhysicalOccupancyGate && junction.BayConflicts.Count > 0)
+        {
+            foreach (var bc in junction.BayConflicts)
+            {
+                if (bc.EgoLink != egoLink.Index || v.LaneId == bc.BayLaneId)
+                {
+                    continue;
+                }
+
+                if (!_network.LaneHandleById.TryGetValue(bc.BayLaneId, out var bayHandle))
+                {
+                    continue;
+                }
+
+                // PHYSICAL occupancy (the pool-based FindFoeVehicle can first-mask the actual
+                // occupant behind a distant approaching vehicle -- measured, Entry 35b).
+                VehicleRuntime? bayFoe = null;
+                var occ1 = _physOnLaneFirst[bayHandle];
+                var occ2 = _physOnLaneSecond[bayHandle];
+                for (var oc = 0; oc < 2; oc++)
+                {
+                    var cand = oc == 0 ? occ1 : occ2;
+                    if (cand is null || ReferenceEquals(cand, v))
+                    {
+                        continue;
+                    }
+
+                    // Hold only for an occupant that will REMAIN in the overlap: slow-or-stopped
+                    // (<= 2 m/s -- a bay-held turner creeps or stands; its stage-2 admission caps it)
+                    // AND not already exiting (front past the interval end). Holding for every
+                    // transiting body was measured to collapse the net (bothSlow pair-steps
+                    // 16 -> 652, GRIDLOCK 42 stuck / 634-step dwell); holding only for fully-stopped
+                    // ones was measured too late (the occupant often stops one step AFTER ego
+                    // commits: stopXmove 35). The stopped/creeping occupant is the owner's reported
+                    // ghost (a turner held mid-junction by its stage-2).
+                    if (cand.Kinematics.Speed > 2.0 || cand.Kinematics.Pos > bc.BayArcEnd + 1.0)
+                    {
+                        continue;
+                    }
+
+                    var candBack = cand.Kinematics.Pos - cand.VType.Length;
+                    if (cand.Kinematics.Pos >= bc.BayArcStart && candBack <= bc.BayArcEnd)
+                    {
+                        bayFoe = cand;
+                        break;
+                    }
+                }
+
+                if (bayFoe is null)
+                {
+                    continue; // no body inside the overlap interval
+                }
+
+                var egoDistToOverlap = egoOnInternal
+                    ? bc.EgoArcStart - v.Kinematics.Pos
+                    : egoDistToEntry + bc.EgoArcStart;
+                if (egoDistToOverlap <= 0.0)
+                {
+                    continue; // committed past the overlap start -- clear, never wedge
+                }
+
+                var bayConstraint = StopSpeedFor(
+                    v.VType, v.Kinematics.Speed, egoDistToOverlap - PositionEps,
+                    laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
+                constraint = Math.Min(constraint, bayConstraint);
+                if (constraint < jyBest) { jyBest = constraint; jyArm = 7; v.JunctionYieldFoeSpeed = (float)bayFoe.Kinematics.Speed; blockerIdx = bayFoe.EntityIndex; } // diag: bayOccupancy
+            }
         }
 
         // T1.8: written on BOTH passes so a ReuseIntent vehicle reports the arm that actually bound this
@@ -8787,7 +8892,12 @@ public sealed partial class Engine : IEngine
         // PHASE 0 commitment GATE below. `egoOnInternal` is deliberately still used for the lane-relative
         // `distToMerge` arithmetic, which is expressed in `egoInternalLane`'s frame and would mix lanes if
         // widened. Defaults to egoOnInternal's old meaning at the single call site when the flag is off.
-        bool egoInsideJunction = false)
+        bool egoInsideJunction = false,
+        // JUNCTION-FOE-LANE F2.2: true when ego's link RESPONDS to the foe link (the pre-F2.2 sole
+        // reachability). PHASE 0 -- the stop-line arrival-time yield, an ARBITRATION behavior -- runs
+        // only then; a FoeWith-only caller gets the car-following phases (1/2) alone, mirroring
+        // SUMO's foes-based sameTarget link-leaders (see the call site's comment).
+        bool arbitration = true)
     {
         if (approachLane is null && !egoOnInternal)
         {
@@ -8869,7 +8979,8 @@ public sealed partial class Engine : IEngine
         // blanket yield so it can compute each vNext (hence WillPass) without reading the refinement --
         // the one approximation that breaks the setApproaching-before-opened() circularity. A pre-pass
         // yield sets CrossingYieldTaken below so PlanMovements RECOMPUTES rather than reusing the Intent.
-        if (!egoInsideJunction
+        if (arbitration
+            && !egoInsideJunction
             && !egoHasSignalPriority
             && foeMerging is not null
             && foeMerging.LaneId != foeInternalLaneId
@@ -8931,6 +9042,28 @@ public sealed partial class Engine : IEngine
 
         if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId)
         {
+            // JUNCTION-FOE-LANE F2.2: with the FoeWith widening, a mutual-foes merge pair reaches
+            // this arm from BOTH sides (the foes matrix is symmetric), and an unconditional mutual
+            // follow is a structural DEADLOCK -- measured immediately: city-organic-L2 wedged
+            // (53 stuck at end, longest dwell 873 steps, bothSlow pair-steps 23 -> 591). SUMO breaks
+            // exactly this with isLeader's entry-time ordering applied to every link leader
+            // (MSVehicle.cpp:3429); the ported tie-break (F3 T2.3, antisymmetric by construction)
+            // decides: ego FOLLOWS the foe only when ego is the LATER entrant (an approaching ego's
+            // ET is MaxValue, so it always yields to an on-junction foe -- SUMO's clause 1); the
+            // EARLIER entrant skips the follow and clears while the later one's own PHASE 1 holds it
+            // before the merge point. Gate-scoped: OFF keeps the pre-F2.2 unconditional follow
+            // byte-for-byte (only the respondsTo side ever reached here then, and mutual reach was
+            // impossible).
+            if (JunctionPhysicalOccupancyGate
+                && !IsLeaderByEntryOrder(
+                    ego.JunctionEntryTime, foeMerging.JunctionEntryTime,
+                    ego.Kinematics.Speed, foeMerging.Kinematics.Speed,
+                    ego.Def.Id, foeMerging.Def.Id))
+            {
+                TraceMerge(ego, "PHASE1-egoIsLeader-skip", foeMerging.Def.Id, 0.0);
+            }
+            else
+            {
             var foeInternalLane = _network.LanesByHandle[foeInternalLaneHandle];
             var leaderBack = foeMerging.Kinematics.Pos - foeMerging.VType.Length;
 
@@ -8973,6 +9106,7 @@ public sealed partial class Engine : IEngine
             return StopSpeedFor(
                 ego.VType, ego.Kinematics.Speed, distToMerge - egoInternalLane.Length - PositionEps,
                 laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+            } // F2.2 leader-skip else-scope
         }
 
         // PHASE 2: the foe has moved onto the shared target lane while ego is still upstream.
@@ -9879,6 +10013,8 @@ public sealed partial class Engine : IEngine
         Array.Clear(_foeApproachSecond, 0, _foeApproachSecond.Length);
         Array.Clear(_foeCrossFirst, 0, _foeCrossFirst.Length);
         Array.Clear(_foeCrossSecond, 0, _foeCrossSecond.Length);
+        Array.Clear(_physOnLaneFirst, 0, _physOnLaneFirst.Length);
+        Array.Clear(_physOnLaneSecond, 0, _physOnLaneSecond.Length);
         foreach (var v in ActiveVehicles())
         {
             // GAP-3 follow-up (ISSUE2-JUNCTION-KEEPCLEAR-DESIGN.md): a parked (park-and-stay) vehicle
@@ -9891,6 +10027,22 @@ public sealed partial class Engine : IEngine
             if (v.IsParked)
             {
                 continue;
+            }
+
+            // F2.1b physical-occupancy index (see _physOnLaneFirst's field comment): the vehicle's
+            // ACTUAL current lane, when internal -- independent of its route pool, so an off-pool or
+            // pool-masked bay occupant still registers.
+            var curHandle = v.LaneHandle;
+            if (curHandle >= 0 && curHandle < _isInternalLane.Length && _isInternalLane[curHandle])
+            {
+                if (_physOnLaneFirst[curHandle] is null)
+                {
+                    _physOnLaneFirst[curHandle] = v;
+                }
+                else if (_physOnLaneSecond[curHandle] is null && !ReferenceEquals(_physOnLaneFirst[curHandle], v))
+                {
+                    _physOnLaneSecond[curHandle] = v;
+                }
             }
 
             for (var i = 0; i < v.LaneSeqLen; i++)

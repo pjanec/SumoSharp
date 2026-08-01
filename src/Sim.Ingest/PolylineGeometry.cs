@@ -144,6 +144,120 @@ public static class PolylineGeometry
         return Math.Sqrt(ex * ex + ey * ey);
     }
 
+    // JUNCTION-FOE-LANE F2.1b (docs/JUNCTION-FOE-LANE-DESIGN.md; BayConflict's doc comment): the
+    // PROXIMITY-overlap interval of two corridors, for conflicts a centerline crossing cannot see
+    // (a cont BAY lane hugging a sibling movement from the same source lane: the shapes depart from
+    // the same point and never cross, yet vehicle bodies on them physically overlap). Samples
+    // `shapeB` (the bay -- short) every 0.25 m of geometric arc; wherever the sample point is
+    // closer than `threshold` to `shapeA`, the interval grows on BOTH sides: B's side by the sample
+    // arc, A's side by the arc of the nearest point on A. Returns false when the corridors never
+    // come within `threshold`. Arcs are GEOMETRY arcs -- the caller converts to lane positions via
+    // the lane-length/shape-length factor (InterpolateGeometryPosToLanePos), exactly like
+    // ComputeDistToDivergence's callers.
+    public static bool TryCorridorOverlap(
+        IReadOnlyList<(double X, double Y)> shapeA, IReadOnlyList<(double X, double Y)> shapeB,
+        double threshold,
+        out double aStart, out double aEnd, out double bStart, out double bEnd)
+    {
+        const double sampleStep = 0.25;
+        aStart = aEnd = bStart = bEnd = 0.0;
+        var found = false;
+        var lenB = PolylineLength(shapeB);
+        if (lenB <= 0.0)
+        {
+            return false;
+        }
+
+        var samples = Math.Max(2, (int)Math.Ceiling(lenB / sampleStep) + 1);
+        for (var i = 0; i < samples; i++)
+        {
+            var arcB = lenB * i / (samples - 1);
+            var p = PointAtArc(shapeB, arcB);
+            var (dist, arcA) = NearestOnPolyline(shapeA, p);
+            if (dist >= threshold)
+            {
+                continue;
+            }
+
+            if (!found)
+            {
+                aStart = aEnd = arcA;
+                bStart = bEnd = arcB;
+                found = true;
+            }
+            else
+            {
+                aStart = Math.Min(aStart, arcA);
+                aEnd = Math.Max(aEnd, arcA);
+                bStart = Math.Min(bStart, arcB);
+                bEnd = Math.Max(bEnd, arcB);
+            }
+        }
+
+        return found;
+    }
+
+    private static (double X, double Y) PointAtArc(IReadOnlyList<(double X, double Y)> shape, double arc)
+    {
+        var remaining = arc;
+        for (var i = 0; i < shape.Count - 1; i++)
+        {
+            var segLen = Distance(shape[i], shape[i + 1]);
+            if (remaining <= segLen || i == shape.Count - 2)
+            {
+                if (segLen <= 0.0)
+                {
+                    return shape[i];
+                }
+
+                var t = Math.Max(0.0, Math.Min(1.0, remaining / segLen));
+                return (shape[i].X + t * (shape[i + 1].X - shape[i].X),
+                        shape[i].Y + t * (shape[i + 1].Y - shape[i].Y));
+            }
+
+            remaining -= segLen;
+        }
+
+        return shape[^1];
+    }
+
+    // Like PointToPolylineDistance, but also returns the geometric ARC of the nearest point.
+    private static (double Dist, double Arc) NearestOnPolyline(IReadOnlyList<(double X, double Y)> poly, (double X, double Y) p)
+    {
+        var best = double.PositiveInfinity;
+        var bestArc = 0.0;
+        var arcBase = 0.0;
+        for (var i = 0; i < poly.Count - 1; i++)
+        {
+            var a = poly[i];
+            var b = poly[i + 1];
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var lenSq = (dx * dx) + (dy * dy);
+            var segLen = Math.Sqrt(lenSq);
+            double t = 0.0;
+            if (lenSq > 0.0)
+            {
+                t = Math.Max(0.0, Math.Min(1.0, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq));
+            }
+
+            var fx = a.X + t * dx;
+            var fy = a.Y + t * dy;
+            var ex = p.X - fx;
+            var ey = p.Y - fy;
+            var d = Math.Sqrt((ex * ex) + (ey * ey));
+            if (d < best)
+            {
+                best = d;
+                bestArc = arcBase + t * segLen;
+            }
+
+            arcBase += segLen;
+        }
+
+        return (best, bestArc);
+    }
+
     // C4-v (TASKS.md sameTarget-merge conflict geometry): the distance-to-divergence for a
     // sameTarget MERGE, ported VERBATIM from MSLink::computeDistToDivergence
     // (sumo/src/microsim/MSLink.cpp:561-620, the `sameSource=false` arm). Two internal lanes that

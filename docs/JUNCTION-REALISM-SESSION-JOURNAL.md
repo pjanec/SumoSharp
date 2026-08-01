@@ -2512,3 +2512,57 @@ section: mutual crossing-yield must be broken by the response matrix + the F3 ET
 and whether SUMO's prioritized links also brake for foes physically inside the conflict zone
 (myFoeLanes built from the geometric `foes` bitstring vs the `response` yield matrix) is a
 MUST-VERIFY-IN-SOURCE item, not an assumption.
+
+## Entry 35b — F2.x implementation session: two classes measurably improved, one hard trade-off found, all gate-scoped
+
+Owner signed off ("go autonomously"). Discovery first: **the F3-JUNCTION-OVERLAP workstream had
+already built most of the design** — the RespondsTo/FoeWith split, `AdaptToJunctionLeader`, the
+`isLeader() || inTheWay()` disjunction — parked behind `JunctionPhysicalOccupancyGate`
+(default OFF, "measured counterproductive three times", F3-SESSION-LOG). Those verdicts predate
+BOTH the sibling gates shipping default-ON (isLeader, admission, entry-order, arrival
+arbitration…) and the Entry-30 determinism fix, so this session re-measured instead of re-porting.
+Everything below is behind `SUMOSHARP_PHYSOCCUPANCY` (new EnvGate in both drivers, ENV-GATES row,
+completeness test green); gate-off is **byte-identical** (FCD hash `c768d7f6…` = pre-change
+baseline) and the suite is **779/5/0**.
+
+The measurement ladder (city-organic-L2, 1000 steps, the Entry 35 classifier; OFF baseline:
+145 bothMove / 23 bothSlow / 17 stopXmove / 12 landing onsets; honest SUMO: 4 / 0 / 0 / 0):
+
+| step | stopXmove | landing onsets | flow |
+|---|---|---|---|
+| gate ON, as parked by F3 | 37 (worse!) | 5 | drained |
+| + F2.2 merge FoeWith widening | — | — | **GRIDLOCK** (mutual follow; bothSlow 591) |
+| + IsLeaderByEntryOrder in merge PHASE 1 | 37 | 5 | drained ✓ (the F3 tie-break breaks the wedge) |
+| + bay conflicts (ingest) + bay arm, any-body hold | 13 | 4 | **GRIDLOCK** (throughput collapse, bothSlow 652) |
+| + waiting-only (≤0.5 m/s) hold | 35 | 6 | drained (holds too LATE — occupant stops after ego commits) |
+| + slow-or-stopped (≤2 m/s) non-exiting hold | 19 | 6 | **GRIDLOCK** (dwell 634, same signature) |
+
+**What is solidly established:**
+- **F2.2 (same-target merge, the 22/22 double-landing class): WORKS.** The merge arm's
+  reachability is now foes-based (SUMO's own semantics — `MSRightOfWayJunction.cpp` builds
+  `myLinkFoeInternalLanes` from `SUMO_ATTR_FOES`; arbitration PHASE 0 stays RespondsTo-only), and
+  the F3 `IsLeaderByEntryOrder` tie-break in PHASE 1 makes mutual-foe merges deadlock-free by
+  antisymmetry. Landing onsets 12 → 5 with flow intact. The measured L2 witness: junction 301's
+  (13,6) pair is FoeWith both ways but RespondsTo only 6→13 — the link-13 car was blind.
+- **The bay class is now fully characterized** (26-34 of the stopXmove pair-steps): a turner
+  WAITING in a first-stage cont bay — in NO foes row (`intLanes` carries the SECOND stage;
+  netconvert's bay corridors physically overlap sibling movements, e.g. `:123_3_0` vs `:123_1_1`
+  share their start point) — is driven through by same/adjacent-corridor movers. SUMO 1.20 drives
+  through these too (bay-append `:129-137` is response-gated); fixing it is a sanctioned
+  beyond-SUMO honesty deviation. SHIPPED toward it (all parity-inert or gate-scoped):
+  `BayConflict` corridor-proximity geometry at ingest (`PolylineGeometry.TryCorridorOverlap` —
+  crossing detection cannot see near-parallel corridors), the `_physOnLaneFirst/Second` PHYSICAL
+  occupancy index (the pool-based foe index first-masks a bay occupant behind a distant
+  approaching vehicle — measured), and the gate-scoped bay-occupancy arm (jyArm 7).
+- **The bay HOLD-TIMING trade-off is the open problem**: hold for any/slow body → capacity
+  collapse into gridlock on the saturated net (every transiting turner passes through its bay);
+  hold for stopped-only → one step too late (the occupant stops AFTER ego commits). The
+  designed next step (NOT attempted, needs fresh context): move the WAIT POINT — when a bay's
+  waiting position itself lies inside a BayConflict interval (a degenerate bay that cannot
+  shelter a car), `InternalJunctionAdmissionConstraint` should hold the turner at the junction
+  ENTRY instead of in the bay, so no stopped body ever sits in a shared corridor; the gridlock
+  signature (dwell 634, same site both times) also deserves one targeted episode trace before
+  any further threshold tuning.
+
+Default behaviour is unchanged and verified; the gate stays OFF. Tracker updated (F2.2 done
+pending gate ladder; F2.1 partial; F2.1c = the wait-point relocation, new).

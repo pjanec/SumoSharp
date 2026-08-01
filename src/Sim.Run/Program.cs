@@ -159,6 +159,11 @@ internal static class Program
         // Entry 24/25 probe gate: the informLeader urgent-strategic leader-follow coupling. Same
         // EnvGate semantics as every gate above (unset => engine default, currently OFF).
         engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
+        // JUNCTION-FOE-LANE F2.1 (docs/JUNCTION-FOE-LANE-DESIGN.md): measurement gate for the F3
+        // physical-occupancy arm (FoeWith-widened AdaptToJunctionLeader). Engine default OFF; the
+        // F3-era "counterproductive alone" verdict predates its sibling gates shipping default-ON
+        // and the Entry-30 determinism fix, so it is re-measured through this gate.
+        engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCCUPANCY", engine.JunctionPhysicalOccupancyGate);
         // P0-A: a cfg with an <input> section (net-file/route-files) is SUMO-faithful and self-
         // describing -- drive it off the new 1-arg LoadScenario(cfgPath) overload, which resolves
         // <input> paths against the cfg's own directory. Otherwise (every pre-P0-A scenario dir)
