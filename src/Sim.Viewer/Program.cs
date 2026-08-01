@@ -48,10 +48,11 @@ using Sim.Viewer.Raylib;
 // reproduce without going one tick stale) -- structurally a trimmed `RunLoopback`: LiveCitySim IS the
 // in-process replication source (its own `VehicleSource`/`LocalLanes`), reconstructed through the exact
 // same `KinematicReconstructor`/`RenderHelpers.PumpAndBuildVehicleDraws` path loopback uses, with a
-// `LiveCityOverlay` drawing the pedestrian crowd + click-selected vehicle on top. No scenario arg needed
-// (the dataset is fixed at `scenarios/_ped/demo_city/box` via `LiveCityConfig.ForRepoRoot`), so it
-// dispatches before the `inputPath is null` guard, like `ped-publish`. `--smoke` runs the same LiveCitySim
-// loop headlessly (no window) for the Stage B gating check.
+// `LiveCityOverlay` drawing the pedestrian crowd + click-selected vehicle on top. No positional scenario
+// arg needed (default dataset `scenarios/_ped/demo_city/box` via `LiveCityConfig.ForRepoRoot`; `--sumocfg
+// <file>` swaps in an external net via `ForSumocfg`), so it dispatches before the `inputPath is null`
+// guard, like `ped-publish`. `--smoke` runs the same LiveCitySim loop headlessly (no window) for the
+// Stage B gating check.
 
 // Interactive viewer: prefer short, non-blocking GC pauses over throughput. SustainedLowLatency defers
 // blocking gen2 collections (trading some memory) so a background gen2 doesn't stall a render frame -- one
@@ -290,9 +291,11 @@ if (mode == "ped-publish")
     return RunPedPublish(secondsCap);
 }
 
-// docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B: `--mode live-city` -- no scenario
-// arg (the dataset is fixed via `LiveCityConfig.ForRepoRoot`), so dispatched before the `inputPath is
-// null` guard, exactly like `ped-publish` above. `--smoke` diverts to the headless gating check.
+// docs/LIVE-CITY-VIEWERS-DESIGN.md §1/§5-adjacent, -TASKS.md Stage B: `--mode live-city` -- no
+// positional scenario arg (default dataset via `LiveCityConfig.ForRepoRoot`; `--sumocfg <file>`
+// swaps in an external net via `ForSumocfg`, docs/GENEVA-HEADLESS-HARNESS.md §0), so dispatched
+// before the `inputPath is null` guard, exactly like `ped-publish` above. `--smoke` diverts to the
+// headless gating check.
 // Stage C: `--replay <file>` swaps the whole LIVE half (LiveCitySim + its real-time step pacing) for a
 // `.simrec` file source + PlaybackClock -- RunLiveCityReplay/RunLiveCityReplaySmoke, never RunLiveCity.
 // `--record <file>` stays a modifier of the LIVE path (RunLiveCity/RunLiveCitySmoke both accept it).
@@ -311,8 +314,8 @@ if (mode == "live-city")
     }
 
     return liveCitySmoke
-        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath, resolvedSimHz)
-        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz, showZones, hideBuildings, hidePois, screenshotWidth, screenshotHeight);
+        ? RunLiveCitySmoke(Math.Max(frames, 120), recordPath, resolvedSimHz, sumocfgFlag)
+        : RunLiveCity(screenshotPath, frames, delaySeconds, simRate, recordPath, resolvedSimHz, resolvedRenderHz, showZones, hideBuildings, hidePois, screenshotWidth, screenshotHeight, sumocfgFlag);
 }
 
 // docs/SUMOSHARP-VIEWER-DEMO-EVAC-DESIGN.md §5: `--mode local --demo "<name>"` needs NO <path> at all --
@@ -1031,10 +1034,13 @@ static int RunPedPublish(double? secondsCap)
 // from ValidateSimHz/ValidateRenderHz -- simHz sets cfg.SimHz (=> cfg.Dt, which both the engine's
 // step-length AND the ped-publish Dt derive from, keeping the live-city coupling invariant); renderHz
 // seeds the window's initial target FPS and the runtime-adjustable slider in the diagnostics panel below.
-static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz, bool showZones, bool hideBuildings, bool hidePois, int? screenshotWidth = null, int? screenshotHeight = null)
+static int RunLiveCity(string? screenshotPath, int frames, float delaySeconds, double? speedFactor, string? recordPath, int simHz, int renderHz, bool showZones, bool hideBuildings, bool hidePois, int? screenshotWidth = null, int? screenshotHeight = null, string? sumocfgPath = null)
 {
-    var repoRoot = DemoCatalog.RepoRoot();
-    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    // docs/GENEVA-HEADLESS-HARNESS.md §0: `--sumocfg` selects an external net (the seam
+    // Sim.BenchLiveCity already uses); without it the demo grid stays the default.
+    var cfg = sumocfgPath is not null
+        ? LiveCityConfig.ForSumocfg(sumocfgPath)
+        : LiveCityConfig.ForRepoRoot(DemoCatalog.RepoRoot());
     cfg.SimHz = simHz;
 
     RecordingReplicationSink? recorder = recordPath is not null
@@ -1301,10 +1307,14 @@ static Dictionary<int, Renderer.LaneRenderMeta> BuildLaneRenderMeta(NetworkModel
 // Dt so a scripted run can confirm the cadence actually changed (a finer Dt means `steps` covers less
 // sim-time, or -- held constant via `Math.Max(frames,120)` steps -- the SAME step count now spans a
 // different amount of sim-time; either is visible in the reported `dt=`/`simTime=`).
-static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
+static int RunLiveCitySmoke(int steps, string? recordPath, int simHz, string? sumocfgPath = null)
 {
-    var repoRoot = DemoCatalog.RepoRoot();
-    var cfg = LiveCityConfig.ForRepoRoot(repoRoot);
+    // docs/GENEVA-HEADLESS-HARNESS.md §0: `--sumocfg` was previously parsed but silently ignored on
+    // this path -- every headless Geneva round measured the demo grid instead. Thread it through so
+    // the witness-rich smoke instruments run on an external net.
+    var cfg = sumocfgPath is not null
+        ? LiveCityConfig.ForSumocfg(sumocfgPath)
+        : LiveCityConfig.ForRepoRoot(DemoCatalog.RepoRoot());
     cfg.SimHz = simHz;
 
     RecordingReplicationSink? recorder = recordPath is not null
