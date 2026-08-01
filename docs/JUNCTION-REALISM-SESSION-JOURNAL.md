@@ -2566,3 +2566,56 @@ The measurement ladder (city-organic-L2, 1000 steps, the Entry 35 classifier; OF
 
 Default behaviour is unchanged and verified; the gate stays OFF. Tracker updated (F2.2 done
 pending gate ladder; F2.1 partial; F2.1c = the wait-point relocation, new).
+
+## Entry 36 (BEFORE) — the dwell-634 gridlock episode traced: a mutual jyArm-7 two-cycle, and what it falsifies
+
+**The trace (instrument, not reasoning).** Gate ON, city-organic-L2, 1000 steps, deterministic;
+`--binder-log` + the analyzer. The wedge is junction 301, and the analyzer's one wedge row and one
+t_end OBB pair are the same two vehicles:
+
+- Links 24 (`-336_1 → -302`, bay `:301_24_0`, 5.05 m) and 25 (`-336_1 → 316`, bay `:301_25_0`,
+  4.29 m) are sibling left turns from the SAME approach lane; their bays share a start point and
+  both are SHORTER than a car. netconvert does not put them in each other's foes rows
+  (foes(24)/foes(25) decoded: neither contains the other).
+- t=361: veh 198 enters bay 25; t=363-365 it is held at the bay end by binder 14
+  (internalJunctionAdmission) for veh 97 crossing link 14 — a LEGITIMATE stage-2 wait.
+- t=364: veh 235 follows into bay 24 (its own stage-2 looked clear). Its bay-arm hold point sat
+  too DEEP because ingest has no bay-vs-bay row (see below), so it fully entered and stopped
+  interpenetrated with 198 (1.80 m OBB at rest).
+- t=365: 235 holds for 198's body (jyArm 7). t=366: 97 clears, 198's admission releases — and
+  198 now holds for 235's body (jyArm 7). From t=366 to t=999: `198 →7→ 235` and `235 →7→ 198`,
+  a pure two-vehicle mutual bay-occupancy hold. The 41-stuck end state is the queue cascading
+  behind this single pair. (Transient third parties — e.g. veh 370 at t=396 — come and go; the
+  cycle never breaks.)
+
+**What the trace falsifies (measurement discipline lesson 2, again).** The F2.1c design sketch
+(resume doc §5) proposed relocating the ADMISSION hold to the junction entry for degenerate bays.
+The trace shows the admission hold was never the defect — 198's bay-end wait for 97 is exactly
+right. The defects are two, both in the F2.1b bay machinery itself:
+
+1. **Ingest compares only ego's STAGE-2 lane against foe bays.** The earliest physical conflict
+   for 235 is its OWN BAY vs 198's bay (shared start point) — not ingested, so 235's hold point
+   landed at the far end of its bay, inside the overlap. Fix: for a cont ego link, ALSO compare
+   its first-stage bay shape against foe bays, emitting ego arcs RELATIVE TO THE STAGE-2 START
+   (negative values). The engine's existing `egoDistToEntry + EgoArcStart` then lands the hold at
+   the stop line with no engine frame change (`egoDistToEntry` already walks the pool through the
+   bay).
+2. **The bay arm has no antisymmetric tie-break** — the exact F2.2 lesson, unapplied: a mutual
+   jyArm-7 hold has no resolution. Fix: when ego is already INSIDE the junction, skip the hold if
+   ego is the EARLIER entrant (`!IsLeaderByEntryOrder(...)` — antisymmetric, so exactly one of a
+   mutual pair yields; the earlier entrant clears and the pair interleaves). An approaching ego
+   (not yet inside) always holds — that IS the wanted entry wait.
+
+The admission-side wait-point relocation is therefore NOT built (no degenerate-bay flag, no new
+entry-hold — one less arm feeding the willPass dynamics that collapsed Entry 26). The hold
+predicate (`Speed <= 2.0`, non-exiting) is NOT touched (resume doc §3: three dial points measured).
+
+**Predictions (gate ON, city-organic-L2, 1000 steps, both changes in):**
+1. DRAINED — no 41-stuck end state; longest dwell <= 30 (from 634; OFF baseline is 16).
+2. Junction 301: 198 exits within ~5 steps of 97 clearing; no stopped OBB pair at t_end.
+3. Classifier: bothSlow stays near the OFF baseline 23 (NOT 652); stopXmove <= 17 (the ON
+   variants measured 19-35); landings <= 6; bothMove in 120-145.
+4. Gate OFF byte-identical (`c768d7f6dd8535f46f170956737a2921`); suite 779/5/0.
+
+If prediction 3's stopXmove does NOT drop below the OFF baseline, the residual is the transient-
+mover class the hold predicate deliberately ignores — measure before touching that dial.
