@@ -1,16 +1,17 @@
-# JUNCTION-FOE-LANE — resume here (post-Entry-38; next task: F1.1)
+# JUNCTION-FOE-LANE — resume here (post-Entry-40; next task: the congestion-rerouting DESIGN DOC)
 
 **Read this first, cold. It is self-contained.** Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**,
 all work committed and pushed. Owner sign-off for this workstream's design: given ("go
-autonomously"); latest owner instruction: **"then as you recommend" = do F1.1 first, then the
-congestion-rerouting DESIGN DOC** (design only — owner reviews before code; see §6).
+autonomously"); latest owner instruction: **"then as you recommend" = F1.1 (DONE — Entries
+39–40), then the congestion-rerouting DESIGN DOC** (design only — owner reviews before any code;
+see §6). That design doc is the CURRENT task.
 
 ## 0. Current verified state (re-verify before believing anything else)
 
 - **Full sln suite** (`dotnet test -c Release`, from the repo root — this IS the iron law; running
   only ParityTests is how a red hour-horizon test once shipped for five entries): ParityTests
-  **781/5/0**, LiveCity.Tests **90/90**, Pedestrians **324/324**, Viewer.Motion 19, Host 6,
-  DotRecast 2 — all green at head.
+  **782/5/0** (the +1 over Entry 38 is the F1.1 ingest pin test), LiveCity.Tests **90/90**,
+  Pedestrians **324/324**, Viewer.Motion 19, Host 6, DotRecast 2 — all green at head.
 - **Default L2 FCD hash `5ac89389889a3e80056fce9f4c4ec158`** (city-organic-L2, 1000 steps,
   Sim.Run, no env vars). Entry 39 (A) made the ACTUAL-LANE link resolution in the junction-yield
   pass DEFAULT (`MSLane::succLinkSec` parity — the pool's sibling-lane link mis-resolution was a
@@ -26,8 +27,11 @@ congestion-rerouting DESIGN DOC** (design only — owner reviews before code; se
   overrides; engine default −1 = SUMO parity).
 - Battery references: defaults → `docs/reports/net-regression-entry38-mergefix.txt` (current);
   gate-ON comparisons in Entry 36/37 journal entries.
-- Trail: journal Entries 34–38 in `docs/JUNCTION-REALISM-SESSION-JOURNAL.md` (each has
-  BEFORE-predictions and AFTER-measurements; 38 also records two attribution corrections).
+- Battery gate-ON reference: the Entry-40 AFTER numbers (willpass-saturation DRAINED 412/0;
+  stuckDwell 0 everywhere; city-3000 13 = baseline).
+- Trail: journal Entries 34–40 in `docs/JUNCTION-REALISM-SESSION-JOURNAL.md` (each has
+  BEFORE-predictions and AFTER-measurements; 39 MID records a falsified prediction and the
+  three-mechanism decomposition; 40 records the exposed latent arm-5 deadlock).
   Live state: `JUNCTION-FOE-LANE-TRACKER.md`.
 
 **Owner's Aug-1 3D re-check:** "standing without obvious reason heavily reduced; junctions
@@ -35,7 +39,11 @@ saturate but drain" (Entry 38 confirmed on terrain). Remaining complaints, mappe
 turners passed through + (b) queue half-stacking → **the F1.1 class, below**; (c) "cars blindly
 wait in queues, not seeking alternative trips" → rerouting design item (§6).
 
-## 1. THE NEXT TASK — F1.1 mechanism (B): corridor-follow for the late-stop race
+## 1. F1.1 — done through Entries 39–40; the ledger and what remains named
+
+**Gate-ON L2 ledger vs Entry 38: stopXmove 18 → 6, bothSlow 15 → 11; defaults stopXmove 17 → 13,
+landings 10 → 6. Remaining 6 gate-ON pair-steps are ALL named residual classes (see (C) and the
+Entry-40 AFTER decomposition) — do not re-trace them as if unknown.**
 
 **Where F1.1 stands (journal Entry 39 BEFORE/MID/AFTER-A — read those first).** The original
 "~15 non-foes pair-steps need ingest rows" characterization was FALSIFIED by five traces; the
