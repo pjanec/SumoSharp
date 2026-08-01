@@ -1400,30 +1400,72 @@ public sealed class LiveCitySim : IDisposable
             "crowdYield", "internalJunctionApproachArm", "urgentStrategicFollow", "urgentFollowerYield" };
         string[] armNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge",
             "externalAgent", "adaptToJxnLeader", "approachingCross", "bayOccupancy", "corridorFollow" };
+        var byEntity = new Dictionary<int, int>(w.Count);
+        for (var i = 0; i < w.Count; i++)
+        {
+            byEntity[w[i].EntityIndex] = i;
+        }
+
+        string Describe(in CarAuthWitness c)
+        {
+            var bn = c.Binder < binderNames.Length ? binderNames[c.Binder] : c.Binder.ToString();
+            var an = (c.JyArm & 0x0F) < armNames.Length ? armNames[c.JyArm & 0x0F] : "?";
+            return $"{c.DefId} {c.LaneId}@{c.Pos:F1} v={c.Speed:F1} bind={bn}/{an}";
+        }
+
         var printed = 0;
+        var printedHead = 0;
         foreach (var c in w)
         {
-            if (c.Speed >= 0.1 || c.LaneId.Length == 0 || c.LaneId[0] == ':' || c.GapAhead <= 25.0)
+            if (c.Speed >= 0.1 || c.LaneId.Length == 0 || c.LaneId[0] == ':')
             {
                 continue;
             }
 
-            if (!Network.LanesById.TryGetValue(c.LaneId, out var lane) || c.Pos >= lane.Length - 25.0)
+            if (!Network.LanesById.TryGetValue(c.LaneId, out var lane))
             {
-                continue; // at/near the stop line -- a normal queue head, not the mid-lane class
+                continue;
             }
 
-            if (printed++ >= 12)
-            {
-                break;
-            }
+            var blockerText = c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var bi)
+                ? " -> " + Describe(w[bi])
+                : (c.BlockerEntity >= 0 ? $" -> ent{c.BlockerEntity}(gone)" : "");
 
-            var bn = c.Binder < binderNames.Length ? binderNames[c.Binder] : c.Binder.ToString();
-            var an = (c.JyArm & 0x0F) < armNames.Length ? armNames[c.JyArm & 0x0F] : "?";
-            Console.Error.WriteLine(
-                $"LIVECITY-MIDLANE-STUCK: t={_now:F0} {c.DefId} {c.LaneId}@{c.Pos:F1}/{lane.Length:F0} "
-                + $"bind={bn}/{an} gap={(double.IsInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0"))} "
-                + $"tl={(c.Tl == '\0' ? '-' : c.Tl)} blockerEnt={c.BlockerEntity}");
+            if (c.Pos < lane.Length - 25.0 && c.GapAhead > 25.0)
+            {
+                if (printed++ >= 12)
+                {
+                    continue;
+                }
+
+                var bn = c.Binder < binderNames.Length ? binderNames[c.Binder] : c.Binder.ToString();
+                var an = (c.JyArm & 0x0F) < armNames.Length ? armNames[c.JyArm & 0x0F] : "?";
+                Console.Error.WriteLine(
+                    $"LIVECITY-MIDLANE-STUCK: t={_now:F0} {c.DefId} {c.LaneId}@{c.Pos:F1}/{lane.Length:F0} "
+                    + $"bind={bn}/{an} gap={(double.IsInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0"))} "
+                    + $"tl={(c.Tl == '\0' ? '-' : c.Tl)} blockerEnt={c.BlockerEntity}{blockerText}");
+            }
+            // Entry 43 instrument (owner's unsignalled-junction standoff: a queue HEAD standing at a
+            // stop line with the junction and its own exit visibly free): stopped at the lane END,
+            // NOT held by a red ('r'/'y' excluded -- unsignalled lanes have no tl char at all), with
+            // no same-lane car ahead. Reports binder/arm and one blocker hop so the mechanism that
+            // "does not want to enter" is named by the 3D host itself.
+            else if (c.Pos >= lane.Length - 15.0 && c.GapAhead > 25.0
+                && c.Tl is not ('r' or 'y') && c.NextMouthGap > 10.0)
+            {
+                if (printedHead++ >= 12)
+                {
+                    continue;
+                }
+
+                var bn = c.Binder < binderNames.Length ? binderNames[c.Binder] : c.Binder.ToString();
+                var an = (c.JyArm & 0x0F) < armNames.Length ? armNames[c.JyArm & 0x0F] : "?";
+                Console.Error.WriteLine(
+                    $"LIVECITY-HEADSTUCK: t={_now:F0} {c.DefId} {c.LaneId}@{c.Pos:F1}/{lane.Length:F0} "
+                    + $"bind={bn}/{an} tl={(c.Tl == '\0' ? '-' : c.Tl)} "
+                    + $"mouth={(double.IsInfinity(c.NextMouthGap) ? "inf" : c.NextMouthGap.ToString("F0"))} "
+                    + $"foeSpd={c.JyFoeSpeed:F1} blockerEnt={c.BlockerEntity}{blockerText}");
+            }
         }
     }
 

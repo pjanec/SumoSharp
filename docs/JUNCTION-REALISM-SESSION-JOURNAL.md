@@ -3228,3 +3228,27 @@ traffic: stopXmove 5, landings 4 — both best-measured. This is direct evidence
 default-flip discussion with the owner, not a regression to chase.
 
 **Gate-ON L2 ledger vs Entry 38: stopXmove 18 → 5, landings ~6 → 4, bothSlow 15 → 11.**
+
+## Entry 43 (BEFORE) — owner: unsignalled-junction standoff (free direction's head won't enter an empty junction); instrument shipped, awaiting Geneva witness data
+
+**Owner report (screenshot):** at an unsignalled junction, the left-right direction is jam-blocked
+downstream and correctly holds short of the junction; the down-up direction is FREE (junction
+empty, exit clear) yet its queue head never enters. Half-overlaps also visible in the queues.
+
+**Offline reproduction FAILED, honestly:** city-3000's 918 late-sim arm-6 stop-line yields all
+trace to genuinely-approaching free-flow foes (veh 2113: 13.9 m/s, crossing for real) — normal
+minor-road yielding, not the standoff. The demo grid's saturated 800-car run shows stop-line
+heads held by `junctionYield/corridorFollow` on admission-held interior occupants — honest
+queueing that drains (arrivals 960 @ t=600, best measured). The owner's class does not occur on
+any offline surface available here; the mechanism guards that SHOULD release a head at an empty
+junction (`!foe.WillPass`, `FoeKeepClearBlocked`, reservation distance, impatience ramp) all
+exist — which one fails on Geneva's topology cannot be determined remotely (the reasoned-guess
+track record stands at ~0-for-20).
+
+**Instrument shipped instead (`LIVECITY-HEADSTUCK`, committed, LIVECITY_WITNESS=1):** every 20 s,
+stopped queue HEADS at a lane end that are NOT red-held, with no car ahead and a clear next-lane
+mouth, printed with binder/arm, the bound foe's speed, and ONE blocker hop (def id, lane@pos,
+speed, binder) — enough to name the holding mechanism and its target on the owner's own Geneva
+run. Suites re-verified green (print-only change; 782/5 + 90/90).
+
+**Next:** owner pastes HEADSTUCK/MIDLANE lines from a Geneva session → trace the named mechanism.
