@@ -5,9 +5,9 @@ sessions edit the same mechanism. Keep this short; update it when a boundary mov
 
 **Shared iron law (all sessions), post-PR#13 baseline:** `dotnet test tests/Sim.ParityTests -c Release` =
 **755 pass / 4 skip (759 total)** with all **661 goldens byte-identical**; `Sim.Bench` hash
-**`BF3794A4704BCD79`** (par==single — moved from `D96213B7BB4021A7` when the seven junction gates defaulted ON,
-PR#13; re-pinned tripwire, no SUMO reference); `dotnet test tests/Sim.LiveCity.Tests` all green (run WITHOUT
-`--no-build` — it is not in `Traffic.sln`; **50/50** post-PR#13, **53/53** once car-yields-ped merges);
+**`A134ED3716DDE7BC`** (par==single — moved at journal Entry 34 (`05653f4`, speedGain-RIGHT default-ON), before
+that `BF3794A4704BCD79` from PR#13; re-pinned tripwire, no SUMO reference); `dotnet test tests/Sim.LiveCity.Tests`
+all green (it IS in `Traffic.sln` since `f4f39a4`; **90/90** on the traffic-bugs branch);
 `tests/Sim.ParityTests` becomes **775/4** once car-yields-ped merges (+20 tests, none of main's perturbed);
 `tests/Sim.Pedestrians.Tests` all green (277
 on the ped-LOD-lifecycle branch); no `System.Random`; demo/goldens byte-identical (new behaviour gated on

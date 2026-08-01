@@ -32,9 +32,10 @@ Then the area you are actually working in: `docs/PEDESTRIANS.md` (pedestrian fro
 `docs/F3-SESSION-LOG.md` (junctions), `docs/SUMOSHARP-API.md` (the public library API).
 
 **Three traps that have each cost a session.** They are in §Measurement discipline in full, but they catch
-people on day one, so: `dotnet build -c Release` does **not** build `tests/Sim.LiveCity.Tests` or
-`demos/City3D/CityLib.Tests` (not in `Traffic.sln`) — build those csproj files explicitly or you will test
-stale code. `demos/City3D/build.sh --pack-only` always writes version `0.1.0`, so clear
+people on day one, so: `tests/Sim.LiveCity.Tests` **IS in `Traffic.sln`** (since `f4f39a4`) — plain
+`dotnet test -c Release` runs it, and it is the only hour-horizon surface, so run the FULL sln suite (not
+just `tests/Sim.ParityTests`) before pushing any default-behaviour change. `demos/City3D/CityLib.Tests` is
+still NOT in the sln — build that csproj explicitly or you will test stale code. `demos/City3D/build.sh --pack-only` always writes version `0.1.0`, so clear
 `~/.nuget/packages/sumosharp.*` before repacking or the demo builds against a stale engine. And every
 `LIVECITY_*`/`SUMOSHARP_*` gate is process-global — set every one you care about **explicitly, in both arms**
 of any comparison.
@@ -225,8 +226,10 @@ confident conclusion that turned out to be wrong. Full narrative and numbers in
 8. **Commit the instrument, not just the conclusion.** A probe that is run once and reverted makes its own
    number unfalsifiable and poisons every later comparison — cross-instrument numbers are never comparable.
 
-9. **`dotnet build -c Release` does NOT build `tests/Sim.LiveCity.Tests`** (not in `Traffic.sln`). Build
-   that csproj explicitly or you will measure stale code. This has produced contradictory numbers for the
+9. **Run the FULL sln suite (`dotnet test -c Release`), not only `tests/Sim.ParityTests`, before pushing.**
+   `tests/Sim.LiveCity.Tests` IS in `Traffic.sln` (the old "not in the sln" version of this trap is stale) and
+   is the only hour-horizon surface: a default-behaviour regression (Entry 34b's latent merge deadlock, 129
+   hour-long stalls) shipped red for five entries because only ParityTests was being run.
    same configuration more than once.
 
 10. **`LIVECITY_*` / `SUMOSHARP_*` env gates are PROCESS-GLOBAL.** Set **every** one explicitly in **both**

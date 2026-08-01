@@ -85,6 +85,17 @@ taken after.
 
 ## 5. Remaining backlog, in owner priority order
 
+0-NEW. **⚠ OWNER-REQUESTED (Aug 1 re-check) — congestion-aware REROUTING.** "Cars seem to blindly
+   wait in queues as if not looking for alternative trip when the city is already congested."
+   Cars keep their assigned route regardless of downstream congestion. SUMO's answer is the
+   rerouting device (`--device.rerouting.*`: periodic shortest-path on time-averaged edge travel
+   times); LiveCity already has reroute machinery (`SetDestination`/`RegisterRerouted`, the
+   wrong-lane reroute path) so the missing piece is the periodic congestion-weighted trigger.
+   DESIGN-FIRST item (needs its own design/tasks/tracker docs before code): determinism (per-entity
+   seeded period offsets, no `System.Random`), edge-weight aggregation, and the parity argument
+   (device off = byte-identical; goldens never enable it). Not started.
+
+
 0. **⚠ OWNER-REPORTED (July 31, Geneva-terrain 3D viewer) — NEXT HIGH PRIORITY. Now REPRODUCED
    OFFLINE, DECOMPOSED, AND DESIGNED (journal Entry 35): both reports reduce to ONE missing SUMO
    mechanism — `MSLink` foe-lane link-leaders (`getLeaderInfo` over `myFoeLanes`/`myConflicts`).**

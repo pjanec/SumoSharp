@@ -76,9 +76,9 @@ Entry 38 (CORRECTED — the "pre-existing" claim above was wrong; the 3D-test se
 bisect refuted it): the long-horizon failure was a LATENT mutual PHASE-1 merge deadlock surfaced by
 Entry 34b's lane redistribution. Fixed AT DEFAULTS by un-gating the merge tie-break + foes-based
 reachability (SUMO's unconditional semantics). `LongHorizonGridlockDiagTests` green (stalls 129→0
-both arms); run `dotnet test tests/Sim.LiveCity.Tests -c Release` (NOT in Traffic.sln) for ANY
-default-behaviour change — it is the only hour-horizon surface and it caught what everything else
-missed.
+both arms). CORRECTION (3D-test session): `Sim.LiveCity.Tests` IS in `Traffic.sln` — the right
+lesson is "run the FULL sln suite (`dotnet test -c Release`) before pushing", not a special-case
+command; it is the only hour-horizon surface and it caught what everything else missed.
 
 ## 3. What remains before a default flip (F3.1 → F3.2)
 

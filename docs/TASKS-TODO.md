@@ -4,11 +4,11 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **775/4** with all 661 goldens byte-identical
-(755/4 before the car-yields-ped branch, which adds exactly 20 tests and perturbs none);
-`Sim.Bench` hash **`BF3794A4704BCD79`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
-(⚠ **NOT in `Traffic.sln`** — `dotnet build -c Release` does not build it; build that csproj explicitly or
-you will test stale code). `Sim.Pedestrians.Tests` = **324/324**. `demos/City3D/CityLib.Tests` (also not in
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **781/5** with all 661 goldens byte-identical
+(775/4 before the traffic-bugs branch, which adds tests and perturbs none);
+`Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
+(**IS in `Traffic.sln`** since `f4f39a4` — plain `dotnet test -c Release` from the root runs it; the old
+"not in the sln, build explicitly" warning is stale and cost a session a wrong process lesson). `Sim.Pedestrians.Tests` = **324/324**. `demos/City3D/CityLib.Tests` (also not in
 the sln) = **186 pass / 4 skip** in ~45 s. The four skips are `[RealTimeFact]`s — render-loop tests that
 cost ~1 s of wall clock per simulated second because `DrClock` tracks wall time and the scenarios are
 `step-length = 1`. **Run them (2 m 20 s, then 190/190) after any change to `Sim.Viewer.Motion`,
@@ -17,6 +17,13 @@ Reasoning + why a `--filter` alone cannot enable them: `demos/City3D/CityLib.Tes
 ⚠ Also **clear `~/.nuget/packages/sumosharp.*` before repacking City3D**, or the version-pinned local feed
 serves a stale engine and you measure code you are not looking at.
 
+> **The bench hash moved AGAIN at journal Entry 34** (`BF3794A4704BCD79` → `A134ED3716DDE7BC`, commit
+> `05653f4`, the speedGain-RIGHT lane-change arm shipping default-ON) — attributed by the 3D-test
+> session's two-point bisect (`45a2214` old / `05653f4` new) and reproduced at `fa6a865`; par == single
+> holds and all 661 goldens stayed byte-identical, same re-pinned-tripwire status as the move below. It
+> went UNDOCUMENTED for five entries — when the bench hash moves, re-pin it in THIS block in the same
+> commit.
+>
 > **The bench hash moved with PR #13** (`D96213B7BB4021A7` → `BF3794A4704BCD79`) because the seven
 > junction/overlap gates now default **ON**. Verified attributable by stashing only the `Engine` defaults and
 > reproducing the old hash; determinism itself is unaffected (par == single). `Sim.Bench` runs
