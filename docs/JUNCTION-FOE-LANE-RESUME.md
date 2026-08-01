@@ -15,7 +15,8 @@ congestion-rerouting DESIGN DOC** (design only — owner reviews before code; se
   Sim.Run, no env vars). Entry 39 (A) made the ACTUAL-LANE link resolution in the junction-yield
   pass DEFAULT (`MSLane::succLinkSec` parity — the pool's sibling-lane link mis-resolution was a
   parity divergence); `e94b88b7…` (Entry 38) and `c768d7f6…` (pre-38) are obsolete baselines.
-  **Gate-ON L2 hash `fd6363810091905d784c600cb1211403`** (`0c9bad71…` obsolete, same cause).
+  **Gate-ON L2 hash `f7d432524bd1e96bda740cac2b0eec6a`** (Entry 40: corridor-follow jyArm 8 +
+  the gate-scoped mutual on-junction tie-break; `fd636381…`/`0c9bad71…` obsolete).
 - `Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single; moved at Entry 34, re-pinned in
   TASKS-TODO's iron-law block — when it moves again, re-pin in the same commit).
 - Everything ELSE in this workstream stays gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`**
@@ -48,7 +49,10 @@ stopXmove class decomposed into three mechanisms:
 - **(A-residual, unmeasured)**: the SYMMETRIC half — `BuildFoeApproachIndex` still registers an
   approaching mismatched vehicle on its POOL lanes, so OTHER vehicles' crossing arms can see it on
   the wrong approach row. The physical index (`_physOnLane*`) is immune. Measure before fixing.
-- **(B) OPEN — the next task** — the late-stop race (~6 of the remaining 9 gate-ON stopXmove):
+- **(B) DONE, gate-scoped (Entry 40)** — corridor-follow (jyArm 8) + the mutual on-junction
+  arm-5 tie-break its timing perturbation exposed (willpass-saturation latch; see Entry 40 AFTER
+  for the full story and the JunctionIsLeaderGate default-fix flag). Below is the original spec
+  kept for reference — the late-stop race (~6 of the then-remaining 9 gate-ON stopXmove):
   the correct row is consulted, but the occupant enters the shared NEAR-PARALLEL corridor at
   4–5 m/s (correctly skipped by the `Speed<=2.0` hold predicate — do NOT touch that dial:
   hold-everything measured bothSlow 16→652 GRIDLOCK in Entry 36) and decelerates through 2.0 m/s
