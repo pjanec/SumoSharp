@@ -7511,16 +7511,15 @@ public sealed partial class Engine : IEngine
             // and every downstream `respondsTo`/`physicalFoe` branch takes its original path --
             // byte-identical by construction.
             var respondsTo = request.RespondsTo(j);
-            var physicalFoe = JunctionPhysicalOccupancyGate && request.FoeWith(j);
-            if (!respondsTo && !physicalFoe)
-            {
-                continue;
-            }
+            var foeWith = request.FoeWith(j);
+            var physicalFoe = JunctionPhysicalOccupancyGate && foeWith;
 
             // D4: manual loop instead of `.FirstOrDefault(c => c.EgoLink == ... && c.FoeLink ==
             // j)` -- that lambda captured both `egoLink` and `j`, allocating a closure every
             // call inside this per-vehicle, per-foe-link loop; junction.Conflicts is small, so a
             // plain scan is the "simplest" zero-alloc form.
+            // Entry 38: hoisted ABOVE the reachability gate -- the MERGE branch's reachability is
+            // now foeWith-based UNGATED (see its comment), so the branch split must happen first.
             JunctionConflict? conflict = null;
             foreach (var c in junction.Conflicts)
             {
@@ -7529,6 +7528,11 @@ public sealed partial class Engine : IEngine
                     conflict = c;
                     break;
                 }
+            }
+
+            if (conflict is not null && !respondsTo && !physicalFoe)
+            {
+                continue; // crossing arms: reachability unchanged (RespondsTo, FoeWith gate-scoped)
             }
 
             if (conflict is null)
@@ -7546,10 +7550,15 @@ public sealed partial class Engine : IEngine
                 // arrival yield RespondsTo-only, exactly the crossing arm's ARBITRATION-vs-OCCUPANCY
                 // split above (a FoeWith-only foe must not invent a stop-line yield SUMO does not
                 // perform; that would deepen the NEED-multilane-junction-passage over-yield).
-                // Behind JunctionPhysicalOccupancyGate: OFF => physicalFoe is always false =>
-                // reachability and arbitration both reduce to the pre-F2.2 RespondsTo path,
-                // byte-identical by construction.
-                if (!respondsTo && !physicalFoe)
+                //
+                // Entry 38: reachability UNGATED (foeWith, not physicalFoe). The gate-scoping left
+                // the DEFAULT engine blind exactly like SUMO is not: the long-horizon run showed
+                // movers at 11-13 m/s passing THROUGH a stopped merge foe on the non-responding
+                // side (veh2821/2883 x veh2899, junction d_3_3) -- the same asymmetric-response
+                // shape as Entry 35's junction-301 witness, surfacing at defaults once Entry 34b's
+                // lane redistribution parked cars in merge zones. SUMO's sameTarget link-leaders
+                // are foes-based unconditionally; so are ours now. Arbitration stays RespondsTo.
+                if (!respondsTo && !foeWith)
                 {
                     continue;
                 }
@@ -9120,11 +9129,18 @@ public sealed partial class Engine : IEngine
             // decides: ego FOLLOWS the foe only when ego is the LATER entrant (an approaching ego's
             // ET is MaxValue, so it always yields to an on-junction foe -- SUMO's clause 1); the
             // EARLIER entrant skips the follow and clears while the later one's own PHASE 1 holds it
-            // before the merge point. Gate-scoped: OFF keeps the pre-F2.2 unconditional follow
-            // byte-for-byte (only the respondsTo side ever reached here then, and mutual reach was
-            // impossible).
-            if (JunctionPhysicalOccupancyGate
-                && !IsLeaderByEntryOrder(
+            // before the merge point.
+            //
+            // Entry 38: UNGATED. This was scoped under JunctionPhysicalOccupancyGate on the claim
+            // that mutual reach was impossible gate-off (RespondsTo-only). FALSIFIED by trace:
+            // netconvert's response matrix CAN be mutual for multilane-interior sub-links, and the
+            // live-city long-horizon run wedged exactly here with the gate OFF -- __veh1967 and
+            // __veh1931 in PHASE1-stop against EACH OTHER (negative gaps, both stopped from
+            // t=2790 to the horizon; 129 >300-step stalls cascaded behind them; bisect landed on
+            // Entry 34b only because its lane redistribution made the latent configuration occur).
+            // SUMO applies isLeader's entry-time ordering to EVERY link leader unconditionally, so
+            // the ungated tie-break is the SUMO-faithful default, not an opt-in.
+            if (!IsLeaderByEntryOrder(
                     ego.JunctionEntryTime, foeMerging.JunctionEntryTime,
                     ego.Kinematics.Speed, foeMerging.Kinematics.Speed,
                     ego.Def.Id, foeMerging.Def.Id))

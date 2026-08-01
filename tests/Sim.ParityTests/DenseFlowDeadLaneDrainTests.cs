@@ -119,10 +119,23 @@ public class DenseFlowDeadLaneDrainTests
             // The floor stays a HARD FAIL: it still separates "healthy" from the gridlock signature
             // (275 arrivals with ~45 frozen). It is now pinned to a measured, shipped-configuration
             // number instead of an aspirational one.
+            //
+            // ⚠ RE-BASELINED AGAIN (Entry 38), same procedure, counted not assumed. Un-gating the
+            // merge-arm entry-order tie-break + foes-based reachability (the latent mutual PHASE-1
+            // merge deadlock, journal Entry 38) changed this torture scenario 287 -> 286, and the
+            // END-STATE ACCOUNTING is the point: the two previously-wedged junction-interior cars
+            // AND the documented dead-lane pair 122/256 on `30_1` now ALL ARRIVE; the non-arrivals
+            // are 35 parked + veh 208 (`484_0`, binder successiveLane from t=267) + veh 241
+            // (`101_0`, same class from t=388) -- the PRE-EXISTING dead-lane stranding this test is
+            // named for, redistributed by the changed junction interleave. No junction-wedge class
+            // remains in the end state. Accepted because the same change takes the live-city
+            // long-horizon run from 129 >300-step stalls to 0 (LongHorizonGridlockDiagTests, which
+            // gates it) and drops this scenario's default-arm yield teleports 1 -> 0
+            // (IgnoreJunctionBlockerTests' table).
             Assert.True(
-                arrivals >= 287,
+                arrivals >= 286,
                 $"dense synthetic arrived {arrivals} vehicles (< the measured shipped-configuration " +
-                "floor of 287): FULL DRAINAGE regressed -- this is the gridlock signature (pre-fix was " +
+                "floor of 286): FULL DRAINAGE regressed -- this is the gridlock signature (pre-fix was " +
                 "275 with ~45 stuck). This is the hard invariant.");
 
             // Teleports: was <= 2, measured 5 with the gates pinned and the Entry 17 fixes in. These are
