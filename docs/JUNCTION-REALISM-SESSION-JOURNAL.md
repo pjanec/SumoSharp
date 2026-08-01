@@ -3119,3 +3119,40 @@ immediate approach lane of a non-cont link this is arithmetically IDENTICAL to t
    stoppedFrac off the 0.97 ceiling); the `bind=keepClear gap=inf` witness class disappears.
 4. Smoke 400 both arms: unchanged-or-better arrivals; hour-horizon suite stays green.
 5. Battery both arms: no new stuckDwell; willpass-saturation stays DRAINED 412/0.
+
+## Entry 41 (AFTER) — the keepClear cont-turn frame fix landed at DEFAULTS; the 800-car gridlock breaks; predictions vs measured
+
+**What shipped:** the `KeepClearConstraint` stop-line distance is now walked along ego's own
+continuation — `(currentLane.Length − pos) + Σ normal pool lanes strictly before the junction's
+first internal lane − 1.0` (`Engine.cs`, search `Entry 41`). Plus instruments (all committed):
+`[keepclear]` VERDICT now prints seqIdx/pos/stopDist/constraint; `CarAuthWitness` carries
+`DefId` so LIVECITY-CHAIN lines print the traceable id next to the handle.
+
+**Predictions vs measured:**
+1. Goldens byte-identical: **CONFIRMED** — full sln green (ParityTests 782/5 including the
+   34-keepclear anchor, LiveCity 90/90, all others), exactly per the identical-arithmetic
+   argument for immediate-approach binds.
+2. Default hashes move: **CONFIRMED** — L2 defaults `9599b795e2aa212d894eff1f727a3444`, gate-ON
+   `16aa1edad766b530178cca4fc6e65067`; determinism 3/3 per arm; shim par == single both arms;
+   `Sim.Bench` UNCHANGED (`A134ED3716DDE7BC`).
+3. 800-car gridlock breaks: **CONFIRMED, decisively** — same closed-loop smoke, gate ON:
+   stoppedFrac 0.97 → ~0.5, meanSpd 0.2 → ~2.9 m/s, arrivals at t=1200 ~950 → **2028** (2.1×);
+   the `bind=keepClear gap=inf` class is GONE (STUCKCLEAR keepClear 17 → 0-3 transient; the
+   remaining clear-stuck are redLight, i.e. legitimate).
+4. Smoke 400 both arms: **CONFIRMED, improved** — gate-ON arrivals 852 @ t=600 (best measured;
+   823 at Entry 39A, 786/1765 at Entry 40), gate-OFF 834.
+5. Battery both arms: **CONFIRMED** — stuckDwell 0 everywhere both arms (city-3000 13 =
+   baseline; its arrivals IMPROVED 3430 → 3449/3448); willpass-saturation DRAINED 412/0;
+   junction-realism-L2 DRAINED with maxDwell 68 → 15 (gate-ON). Noise-band flags only
+   (mixed −5 arrivals defaults, ±1 overlap events; mixed-OFF classifier stopXmove wobbled
+   34 → 40 within its measured 34–40 band across recent trajectory reshuffles — noted, not
+   chased).
+
+**Why this one mattered:** the bug punished exactly the high-realism configuration — cont-turn
+(left-turn-bay) routes at saturation — freezing cars mid-lane wherever they stood when a
+downstream jam verdict flipped. Every signature the owner reported on Geneva (inner-lane queue
+gaps, stopping short of the queue tail, standing on green with a clear gap, "cautious cars" just
+past the junction seeding the gridlock) is this one frame bug. It was invisible to goldens
+(no saturated cont-turn + downstream jam in any small scenario) and to the L2 classifier (which
+measures overlaps, not conservatism) — it took the owner's eyes plus the STUCKCLEAR/CHAIN
+witness to corner it.

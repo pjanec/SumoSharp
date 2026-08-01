@@ -8367,19 +8367,42 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
-        // Blocked box: brake to the junction-entry stop line (approach-lane end minus the 1.0
-        // priority stop offset -- DIST_TO_STOPLINE_EXPECT_PRIORITY).
+        // Blocked box: brake to the junction-entry stop line (minus the 1.0 priority stop offset --
+        // DIST_TO_STOPLINE_EXPECT_PRIORITY).
+        //
+        // Entry 41 (the owner's "too-cautious" gridlock, traced on __veh412): the stop line must be
+        // measured along EGO'S OWN CONTINUATION -- current lane's remaining length plus every NORMAL
+        // pool lane strictly before the junction's first internal lane. The old form read
+        // `pool[egoLinkSeqIndex - 1].Length - v.Kinematics.Pos`, and on a CONT-turn route that slot
+        // is the FIRST-STAGE BAY (it is not link-controlling, so the egoInternalLaneId scan skips
+        // past it): a 7.27 m bay length minus a position measured on a 226 m normal lane gave
+        // stopDist 0.00 -- the car braked to zero AT ITS CURRENT POSITION and stood forever
+        // (mid-lane queue gaps on left-turn routes; `bind=keepClear gap=inf` on green; the 800-car
+        // gridlock's chain roots). Same C4-vii-a frame-mixing class the merge arm was cured of.
+        // For a vehicle on the immediate approach lane of a non-cont link the loop body never runs
+        // and the arithmetic is IDENTICAL to the old form (the committed 34-keepclear anchor's
+        // configuration), which is the byte-identity argument for the goldens.
         const double distToStopLine = 1.0;
-        var approachLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex - 1]];
-        var stopDist = approachLane.Length - v.Kinematics.Pos - distToStopLine;
+        var stopDist = _network.LanesByHandle[v.LaneHandle].Length - v.Kinematics.Pos - distToStopLine;
+        for (var i = v.LaneSeqIndex + 1; i < egoLinkSeqIndex; i++)
+        {
+            var betweenLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+            if (betweenLane.Id.Length > 0 && betweenLane.Id[0] == ':')
+            {
+                break; // junction entry reached (a first-stage cont lane precedes the link lane)
+            }
+
+            stopDist += betweenLane.Length;
+        }
+
         var kcConstraint = StopSpeedFor(v.VType, v.Kinematics.Speed, stopDist, laneVehicleMaxSpeed, dt, actionStepLengthSecs, v.LevelOfService);
         if (trace)
         {
             Console.Error.WriteLine(
                 $"[keepclear] t={CurrentTime:F1} veh={v.Def.Id} VERDICT seenSpace={seenSpace:F2} "
                 + $"required={v.VType.Length + v.VType.MinGap:F2} foundStopped={foundStopped} binds=YES "
-                + $"approachLane={approachLane.Id} len={approachLane.Length:F2} seqIdx={v.LaneSeqIndex}/{egoLinkSeqIndex} "
-                + $"pos={v.Kinematics.Pos:F2} stopDist={stopDist:F2} constraint={kcConstraint:F2}");
+                + $"seqIdx={v.LaneSeqIndex}/{egoLinkSeqIndex} pos={v.Kinematics.Pos:F2} "
+                + $"stopDist={stopDist:F2} constraint={kcConstraint:F2}");
         }
 
         return kcConstraint;

@@ -12,12 +12,14 @@ see §6). That design doc is the CURRENT task.
   only ParityTests is how a red hour-horizon test once shipped for five entries): ParityTests
   **782/5/0** (the +1 over Entry 38 is the F1.1 ingest pin test), LiveCity.Tests **90/90**,
   Pedestrians **324/324**, Viewer.Motion 19, Host 6, DotRecast 2 — all green at head.
-- **Default L2 FCD hash `5ac89389889a3e80056fce9f4c4ec158`** (city-organic-L2, 1000 steps,
-  Sim.Run, no env vars). Entry 39 (A) made the ACTUAL-LANE link resolution in the junction-yield
-  pass DEFAULT (`MSLane::succLinkSec` parity — the pool's sibling-lane link mis-resolution was a
-  parity divergence); `e94b88b7…` (Entry 38) and `c768d7f6…` (pre-38) are obsolete baselines.
-  **Gate-ON L2 hash `f7d432524bd1e96bda740cac2b0eec6a`** (Entry 40: corridor-follow jyArm 8 +
-  the gate-scoped mutual on-junction tie-break; `fd636381…`/`0c9bad71…` obsolete).
+- **Default L2 FCD hash `9599b795e2aa212d894eff1f727a3444`** (city-organic-L2, 1000 steps,
+  Sim.Run, no env vars). Entry 41 fixed the `KeepClearConstraint` cont-turn FRAME BUG at
+  defaults (stop-line distance walked along ego's own continuation; the old form froze cars at
+  their current position on cont-turn routes — the owner's "too-cautious" gridlock). Entry 39 (A)
+  made actual-lane link resolution default. Obsolete default baselines: `5ac89389…` (E39-40),
+  `e94b88b7…` (E38), `c768d7f6…` (pre-38).
+  **Gate-ON L2 hash `16aa1edad766b530178cca4fc6e65067`** (obsolete: `f7d43252…`, `fd636381…`,
+  `0c9bad71…`).
 - `Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single; moved at Entry 34, re-pinned in
   TASKS-TODO's iron-law block — when it moves again, re-pin in the same commit).
 - Everything ELSE in this workstream stays gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`**
