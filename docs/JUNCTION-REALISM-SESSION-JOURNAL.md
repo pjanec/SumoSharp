@@ -3044,3 +3044,33 @@ story repeating one arm over: a mutual pair with no total order.
 bothMove ~145 → 103; defaults stopXmove 17 → 13, landings 10 → 6. Remaining named residuals:
 straddling-tail (C), threshold-marginal contact, foes-pair crossing late-stop, double-landing
 class, A-residual (foe-approach index registration on pool lanes).
+
+## Entry 41 (BEFORE) — owner 3D re-check of Entries 39-40: overlaps down, but a "too-cautious" standing class now dominates the gridlock
+
+**Owner report (Aug 1, Geneva 3D, gate ON), decomposed:**
+1. CONFIRMED IMPROVED: "half-stuck overlap seems much less frequent; passing-through cars
+   blocked within junctions seems very reduced; the jams look believable (less overlaps)."
+   (F1.1's target classes, matching the offline ledger 18 → 6.)
+2. NEW DOMINANT class — "too cautious" standing, three signatures:
+   a. Two same-direction lanes at a red: outer lane packed tight, INNER lane with BIG GAPS
+      between standing cars, and approaching cars stopping WAY BEFORE the queue tail.
+   b. Cars on GREEN not moving despite a long clear gap to the cars standing at the junction
+      ahead — no blocker, no side-road traffic (side roads exist but are empty).
+   c. Cars at a junction stopped because one or two "cautious cars" stand just PAST the
+      junction — i.e. the cascade roots sit downstream of the junction exit.
+3. NET RESULT: "almost total gridlock" persists at saturation, now apparently driven by the
+   cautious-standing class rather than by overlap/pass-through wedges.
+
+**Discipline note:** no mechanism hypothesis until a trace (the workstream is ~0-for-20+ on
+reasoned attributions). Candidate space is wide — keepClear cascades, jyArm 7/8 holds, the
+urgent-strategic-change brake (queue-gap signature 2a is also classic pending-lane-change
+behaviour), crossJxnLeader spans — and 2a/2b/2c may be three different mechanisms again, as
+Entry 39's decomposition was.
+
+**Plan:** reproduce at saturating density offline (closed-loop smoke, LIVECITY_CARS raised
+until the city stops draining, gate ON exactly as the owner runs), read the INTERNALSTUCK
+heads histogram + LIVECITY-CHAIN roots, then trace ONE root vehicle per distinct signature.
+Then decide fixes with predictions in a fresh entry. Rerouting stays parked until this is
+characterized (the 3D session's argument is accepted: rerouting would confound this exact
+validation, and the reroute design's own T3 already requires hour-horizon runs in BOTH gate
+arms before any default flip).
