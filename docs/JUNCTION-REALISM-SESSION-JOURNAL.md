@@ -2732,3 +2732,43 @@ Traffic.sln, so nobody had run it since the config regressed. Separate item.
 **Remaining from the owner's report:** residual queue-stacking overlaps (the F1.1 non-foes class +
 double-landing residue) and the green-light standers under gate-OFF configs — F1.1 and the
 long-horizon item respectively. The terminal-gridlock and no-unblock halves are closed.
+
+## Entry 38 (BEFORE) — the 34b long-horizon regression traced: a latent UNGATED mutual merge deadlock; and a correction to Entry 37
+
+**Correction first (credit: the 3D-test session's bisect).** Entry 37 called the
+`LongHorizonGridlockDiagTests` failure "pre-existing". That was WRONG: the check was run at
+`bcd6813` — a BRANCH commit — which only proved it predates Entry 36. The other session tested
+`origin/main` (test file byte-identical): it PASSES there, and bisects to `bc381db` (Entry 34b,
+the strategic stay complex) — an ungated, default-ON change. The branch's DEFAULT configuration
+had 129 >300-step stalls where main has 0.
+
+**The trace (LIVECITY_TRACEVEH plumbing added; smoke reproduces the test's exact vehicles —
+deterministic).** The 129 stalls cascade from ONE seed pair at junction d_3_3, t≈2790:
+
+    [merge] __veh1967 on=:d_3_3_27_0@18.6  PHASE1-stop foe=__veh1931 x=-30.6   (forever)
+    [merge] __veh1931 on=:d_3_3_11_2@26.1  PHASE1-stop foe=__veh1967 x=-6.7    (forever)
+
+A PURE MUTUAL PHASE-1 merge hold — each following the other as its merge leader with a NEGATIVE
+gap — with the F3 gate OFF. The F2.2 tie-break resolves exactly this class, but it was scoped
+under `JunctionPhysicalOccupancyGate` on the claim that "mutual reach was impossible" gate-off
+(only the RespondsTo side reached the arm). **That claim is falsified**: netconvert's response
+matrix CAN be mutual (multilane interior sub-links), so the deadlock was latent in the merge arm
+since it was built. Entry 34b did not create it — 34b's lane redistribution (cars staying in
+lanes they previously left) made the mutual configuration OCCUR on the live-city net. That is why
+the bisect lands on 34b while the defect lives in the merge arm.
+
+**The fix**: un-scope the PHASE-1 `IsLeaderByEntryOrder` tie-break from the gate. SUMO applies
+isLeader's entry-time ordering to EVERY link leader (MSVehicle.cpp:3429) unconditionally — the
+gate-scoping was measurement hygiene, not semantics, and it left the default engine with a
+deadlock SUMO does not have. This is a DEFAULT-behaviour change: the c768d7f6 gate-off L2 hash is
+expected to change and will be re-baselined if all gates pass.
+
+**Predictions:**
+1. Long-horizon test: gates-ON arm 129 → ≤20 (likely ~0); the OFF arm improves similarly; main's
+   0-stall behaviour restored or bettered.
+2. Parity suite stays 781/5/0 (goldens are 2–5 vehicles; a mutual same-target merge pair inside a
+   multilane junction interior does not occur there). Any golden that DOES move is a stop-ship.
+3. Battery at defaults vs the Entry-34 reference: no stuckDwell anywhere, arrivals in noise.
+4. L2/mixed classifier at defaults: unchanged or slightly better (the tie-break only fires on
+   mutual pairs, which previously never resolved).
+5. Smoke at 400 cars: healthy in BOTH gate states.

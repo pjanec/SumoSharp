@@ -405,6 +405,9 @@ public sealed class LiveCitySim : IDisposable
         // when the F3 gate is ON (a foe standing a minute inside a junction is a wedge, not a
         // transient), -1 (SUMO parity, never ignore) when it is OFF -- so the gate-off demo is
         // untouched. LIVECITY_IGNOREBLOCKER=<seconds> overrides either way (-1 disables).
+        // Entry 38 diag: per-vehicle constraint tracing in the live-city host (same engine hook the
+        // Sim.Run drivers expose as SUMOSHARP_TRACEVEH). Diagnostic only -- changes no trajectory.
+        _engine.DiagTraceVehicleId = Environment.GetEnvironmentVariable("LIVECITY_TRACEVEH");
         var ignoreBlockerRaw = Environment.GetEnvironmentVariable("LIVECITY_IGNOREBLOCKER");
         _engine.IgnoreJunctionBlockerSeconds = ignoreBlockerRaw is not null
             && double.TryParse(ignoreBlockerRaw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ignoreBlockerSecs)
