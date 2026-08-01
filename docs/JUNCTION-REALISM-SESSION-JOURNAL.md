@@ -3281,7 +3281,7 @@ identically in both arms, only LIVECITY_REROUTE differing):**
    **2069 → 2810 (+36%)**, live population 691 → 534 (the city drains), stoppedFrac 0.44 → 0.37,
    meanSpd 3.6 → 5.6 m/s, 1972 periodic reroutes installed. `LIVECITY-REROUTES` line makes the
    device visible in any host.
-3. Suite: full sln run pending at commit time — LiveCity (incl. the two new rerouting tests) and
-   ParityTests + EnvGateDocumentation verified green standalone; goldens structurally untouched
-   (no engine default changed; the counter has no sim reader). DEMAND-MODEL LABEL: closed-loop —
-   these arrival gains are drain-rate gains, not capacity claims (measurement lesson 4).
+3. Suite: **CONFIRMED** — full sln green (LiveCity 92/92 incl. the two new rerouting tests,
+   ParityTests 782/5 goldens byte-identical, Pedestrians 324, Viewer.Motion 19, Host 6,
+   DotRecast 2). DEMAND-MODEL LABEL: closed-loop — these arrival gains are drain-rate gains, not
+   capacity claims (measurement lesson 4).
