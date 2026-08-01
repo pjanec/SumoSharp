@@ -2904,3 +2904,45 @@ re-measure everything; then design (B) on that baseline; (C) stays a named resid
    scenarios complete long before junctions; any golden that moves is a stop-ship).
 3. Battery at defaults: no new stuckDwell; hour-horizon LiveCity suite stays 90/90.
 4. Gate-ON smoke 400 stays drained (arrivals ≈830+).
+
+### Entry 39 (AFTER, part A) — actual-lane link resolution landed at DEFAULTS; every gate green; predictions vs measured
+
+**What shipped:**
+1. The F1.1 non-foes ingest rows (Entry 39 BEFORE item; landed with the MID commit): the
+   `BayConflict` pass now also emits rows for every ordered non-foes internal-lane pair with a
+   genuine (≥1.0 m after the brush filter) corridor overlap. city-15000: 22 704 rows across 2 776
+   junctions, full net parse 2.0 s — the O(links²) pass is a non-issue at scale. Pinned by
+   `NonFoesPairs_GetCorridorRows_StraddlingTailPairsDoNot` (j=301 pair both directions, j=271
+   pair, and the j=1021 straddling-tail pair asserted ABSENT).
+2. **Mechanism (A) fixed at DEFAULTS** (`Engine.cs`, `JunctionYieldConstraint` Step 1, search
+   `Entry 39 mechanism (A)`): when ego is on a normal lane feeding the resolved junction and the
+   pool's link belongs to a SIBLING lane of ego's edge, the yield pass re-resolves ego's link
+   through the ACTUAL lane's own connection to the same next route edge — `MSLane::succLinkSec`
+   (MSLane.cpp:2573) semantics, the same connection the boundary crossing takes. `egoLane` follows
+   the re-resolved id. A lane with no such connection keeps the pool resolution (dead-lane
+   machinery unchanged). UNGATED: this is SUMO's own resolution rule, and the pool-based
+   resolution was a parity divergence (Entry 38's standing lesson applies).
+
+**Predictions vs measured:**
+1. j=1150/j=123 episodes convert; L2 gate-ON stopXmove 19 → ≤12: **CONFIRMED, beaten** — 19 → 9
+   (bothSlow 11, landings 6, bothMove 108). The traced j=1150 episode DISSOLVED (veh 29 clears its
+   bay without stalling; veh 127 even completes the lane change its pool wanted). Defaults L2
+   improved too: stopXmove 17 → 13, landings 10 → 6, vs Entry 38. Mixed-1k: defaults stopXmove
+   37 → 34, landings 5; gate-ON 12/5.
+2. Default hash moves, goldens do NOT: **CONFIRMED** — full sln suite green (ParityTests 781/5/0
+   with all goldens byte-identical, LiveCity 90/90, Pedestrians 324, Viewer.Motion 19, Host 6,
+   DotRecast 2). New L2 hashes: default `5ac89389889a3e80056fce9f4c4ec158`, gate-ON
+   `fd6363810091905d784c600cb1211403` (both moved — the fix is default-scope). Determinism 3/3
+   identical per arm; shim par == `--max-parallelism 1` in both arms. `Sim.Bench` hash UNCHANGED
+   (`A134ED3716DDE7BC`, par==single) — no re-pin needed.
+3. Battery at defaults vs `net-regression-entry38-mergefix.txt`: **CONFIRMED** — stuckDwell 0
+   everywhere (city-3000 13 = its longstanding baseline); two noise-level flags (mixed-1k arrivals
+   1014→1009, city-organic-L2 overlap events 7→8) against a classifier that shows both nets
+   IMPROVED on the stopped-vehicle classes.
+4. Smoke 400 gate ON: **CONFIRMED** — draining throughout, arrivals 823 @ t=600 (≈830 baseline,
+   noise), INTERNALSTUCK transient membership only.
+
+**Remaining stopXmove 9 (gate ON) decomposes as predicted in the MID entry:** the late-stop race
+(B) sites and the straddling-tail (C) sites. (B) — car-following along a shared near-parallel
+corridor instead of the binary hold-or-commit — is the next design, gate-scoped, with its own
+BEFORE predictions. (C) stays a named residual.

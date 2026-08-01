@@ -7175,6 +7175,32 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        // Entry 39 mechanism (A) -- SUMO-faithful ACTUAL-LANE link resolution (MSLane::succLinkSec,
+        // MSLane.cpp:2573: the upcoming link is chosen among the CURRENT lane's own links toward the
+        // next route edge; getBestLanesContinuation() is the current lane's continuation,
+        // MSVehicle.cpp:6236). The pool's strategic chain can carry the SIBLING lane's connection
+        // for the whole approach when a planned lane change has not happened yet (traced: veh 127 on
+        // -1259_1 resolving link 0 `:1150_0_0` for 10 straight steps, then physically driving link 1
+        // -- every yield arm consulted rows for a link it never drove, and the stopped bay occupant
+        // it then clipped was invisible). When ego is on a normal lane that feeds this junction and
+        // that lane has its OWN connection to the same next route edge, resolve THAT link -- the one
+        // the boundary crossing (TryReResolveFromActualLane) will actually take. A lane with no such
+        // connection keeps the pool resolution (the dead-lane machinery owns that case).
+        if (v.LaneId.Length > 0 && v.LaneId[0] != ':')
+        {
+            var (_, poolLink) = _network!.LinkByInternalLane[egoInternalLaneId];
+            var actualLane = _network.LanesByHandle[v.LaneHandle];
+            if (poolLink.Connection.From == actualLane.EdgeId
+                && poolLink.Connection.FromLane != actualLane.Index
+                && _network.ConnectionsByFromLaneTo.TryGetValue(
+                    (actualLane.EdgeId, actualLane.Index, poolLink.Connection.To), out var actualConn)
+                && actualConn.Via is { } actualVia
+                && _network.LinkByInternalLane.ContainsKey(actualVia))
+            {
+                egoInternalLaneId = actualVia;
+            }
+        }
+
         var (junction, egoLink) = _network!.LinkByInternalLane[egoInternalLaneId];
 
         // Entry 39 instrument ([bay]/[merge]-style, committed): WHICH link the yield pass resolved
@@ -7221,7 +7247,11 @@ public sealed partial class Engine : IEngine
 
         // D3: the pool slice at position egoLinkSeqIndex -- index it directly instead of
         // re-hashing the string already looked up above.
-        var egoLane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + egoLinkSeqIndex]];
+        // Entry 39 (A): when the actual-lane re-resolution above re-pointed egoInternalLaneId, the
+        // pool slot still holds the sibling's lane -- resolve by id so every lane-relative
+        // computation below uses the lane ego will actually drive. Identical object when the
+        // re-resolution did not fire (pool slot id == egoInternalLaneId).
+        var egoLane = _network.LanesById[egoInternalLaneId];
         // The lane immediately before ego's internal lane in its route. Null only if the
         // internal lane is the very first element of the sequence -- which cannot happen for a
         // vehicle inserted on a normal lane (egoLinkSeqIndex >= 1 then), so it is used only in

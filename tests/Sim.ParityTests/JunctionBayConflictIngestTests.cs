@@ -64,6 +64,42 @@ public class JunctionBayConflictIngestTests
             bc => bc.EgoLink == 24 && bc.BayLaneId == ":301_25_0" && bc.EgoArcStart >= 0.0);
     }
 
+    // Entry 39 (F1.1): NON-FOES internal-lane pair rows -- the generalized pass that emits a row
+    // for every ordered pair (i, j) of a junction where !foes(i, j) and the corridors genuinely
+    // overlap. Pinned on the two traced sites where a stopped vehicle on a plain internal lane was
+    // driven through: j=301 links 7 (:301_6_1) x 8 (:301_8_0) (non-foes per the request matrix,
+    // near-parallel for ~12 m) and j=271 links 9 (:271_9_0) x 10 (:271_10_0) (same shape). Both
+    // directions of the 301 pair are asserted so the ordered-pair emission can't silently become
+    // one-sided. Negative control: j=1021 link 12 (:1021_12_0) vs the cont bay :1021_15_0 -- their
+    // centerlines never come within 3.2 m (measured profile; the traced t=184 body contact there is
+    // the STRADDLING-TAIL class, a foe hanging behind its lane start, which no lane-pair corridor
+    // row can or should represent), so no row may exist for that pair.
+    [Fact]
+    public void NonFoesPairs_GetCorridorRows_StraddlingTailPairsDoNot()
+    {
+        var junction301 = LoadJunction("city-organic-L2", "301");
+
+        var row78 = junction301.BayConflicts.Single(
+            bc => bc.EgoLink == 7 && bc.BayLaneId == ":301_8_0");
+        Assert.True(row78.EgoArcEnd - row78.EgoArcStart > 3.0,
+            $"expected a metres-long non-foes shared corridor, got {row78.EgoArcEnd - row78.EgoArcStart:F2} m");
+
+        var row87 = junction301.BayConflicts.Single(
+            bc => bc.EgoLink == 8 && bc.BayLaneId == ":301_6_1");
+        Assert.True(row87.EgoArcEnd - row87.EgoArcStart > 3.0,
+            $"expected the symmetric row to survive too, got {row87.EgoArcEnd - row87.EgoArcStart:F2} m");
+
+        var junction271 = LoadJunction("city-organic-L2", "271");
+        var row910 = junction271.BayConflicts.Single(
+            bc => bc.EgoLink == 9 && bc.BayLaneId == ":271_10_0");
+        Assert.True(row910.EgoArcEnd - row910.EgoArcStart > 3.0,
+            $"expected a metres-long non-foes shared corridor, got {row910.EgoArcEnd - row910.EgoArcStart:F2} m");
+
+        var junction1021 = LoadJunction("city-organic-L2", "1021");
+        Assert.DoesNotContain(junction1021.BayConflicts,
+            bc => bc.EgoLink == 12 && bc.BayLaneId == ":1021_15_0");
+    }
+
     [Fact]
     public void BrushSlivers_AreDropped_GenuineSharedCorridorsAreKept()
     {
