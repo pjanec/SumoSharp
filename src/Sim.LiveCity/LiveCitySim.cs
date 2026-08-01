@@ -447,6 +447,14 @@ public sealed class LiveCitySim : IDisposable
         // (see the Engine property comment). LIVECITY_CONTTURNFIX=1 enables it for A/B measurement of the
         // mid-junction freeze it removes.
         _engine.ContTurnInsideJunctionGate = EnvGate("LIVECITY_CONTTURNFIX", _engine.ContTurnInsideJunctionGate);
+        // Entry 45 (3D-session A/B): the Entry-31 urgent-strategic-follow arm measured as the
+        // DOMINANT mid-lane stall class on saturated Geneva (14 vs 1 mid-lane stalls at matched
+        // windows, 12 of them urgentStrategicFollow-bound, one on green with an infinite gap).
+        // The arm shipped default-ON for its own measured wins (Engine.cs's flag comment: 26-net
+        // battery clean), and the Sim.Run/SumoShim hosts already expose SUMOSHARP_URGENTFOLLOW --
+        // this mirrors that A/B switch into the live-city hosts so the trade can be judged on the
+        // 3D surface too. Default: engine default (ON), same as every other mirrored gate.
+        _engine.UrgentStrategicLeaderFollow = EnvGate("LIVECITY_URGENTFOLLOW", _engine.UrgentStrategicLeaderFollow);
         // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
         // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
         // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
@@ -1491,8 +1499,13 @@ public sealed class LiveCitySim : IDisposable
             // NOT held by a red ('r'/'y' excluded -- unsignalled lanes have no tl char at all), with
             // no same-lane car ahead. Reports binder/arm and one blocker hop so the mechanism that
             // "does not want to enter" is named by the 3D host itself.
-            else if (c.Pos >= lane.Length - 15.0 && c.GapAhead > 25.0
-                && c.Tl is not ('r' or 'y') && c.NextMouthGap > 10.0)
+            // Entry 45 predicate fixes (3D-session artifact report): binder freeFlow means NOTHING
+            // binds (a car momentarily at 0 that accelerates next step -- 25 of 160 Geneva lines),
+            // and a "head" at the end of a sub-25 m connector stub is just a car transiting a short
+            // lane between junctions (40 deadLaneMerge lines at pos 0.8/1, 8.2/8...). Both were
+            // noise in the owner's capture; drop them so the report reads as defects only.
+            else if (c.Pos >= lane.Length - 15.0 && c.GapAhead > 25.0 && lane.Length >= 25.0
+                && c.Binder != 3 && c.Tl is not ('r' or 'y') && c.NextMouthGap > 10.0)
             {
                 if (printedHead++ >= 12)
                 {

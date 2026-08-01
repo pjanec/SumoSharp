@@ -3285,3 +3285,35 @@ identically in both arms, only LIVECITY_REROUTE differing):**
    ParityTests 782/5 goldens byte-identical, Pedestrians 324, Viewer.Motion 19, Host 6,
    DotRecast 2). DEMAND-MODEL LABEL: closed-loop — these arrival gains are drain-rate gains, not
    capacity claims (measurement lesson 4).
+
+## Entry 45 — the 3D session's Geneva HEADSTUCK capture, triaged; LIVECITY_URGENTFOLLOW gate added
+
+**Inputs (3D session, 4000 cars gate-ON Geneva, 160 HEADSTUCK lines + a measured A/B):**
+1. `UrgentStrategicLeaderFollow` A/B at matched windows: ON = 14 mid-lane stalls (12
+   urgentStrategicFollow, one on green with gap=inf); OFF = 1 (0). The Entry-42 attribution of
+   the REMAINING mid-lane class to the frame family was therefore incomplete — the Entry-31 arm
+   is the dominant residual mid-lane mechanism on Geneva.
+2. Their "seventh frame site" hypothesis (`usableDist = curr.Length − pos` at the arm's core):
+   **CHECKED, NOT the frame family** — `curr` is the LaneQ continuation record MATCHED TO EGO'S
+   OWN LANE and `curr.Length` is the continuation length; the formula is SUMO's own `myLeftSpace`
+   (MSLCM_LC2013). The stalls are the ARM'S SEMANTICS (brake toward the merge point while the
+   strategic change is pending), not a frame mix. The measured trade stands regardless; the arm
+   keeps its default (its own 26-net battery wins, Engine.cs flag comment) and the judgment moves
+   to the 3D surface: **`LIVECITY_URGENTFOLLOW` now mirrors `SUMOSHARP_URGENTFOLLOW` into the
+   live-city hosts** (the A/B switch the 3D session lacked). ENV-GATES row added.
+3. keepClear = 59/160, all `mouth=inf`: **TRACED LOCALLY (__veh362), LEGITIMATE** — the exit
+   lane held 26 cars with seenSpace 5.29 < 7.50 required; `mouth` is a ONE-HOP proxy (the empty
+   internal lane) that cannot see the packed exit lane. Don't-block-the-box working as designed
+   at saturation; NOT the hold-with-nothing family.
+4. freeFlow (25) + short-stub deadLaneMerge (40) lines: instrument artifacts as the 3D session
+   suspected — HEADSTUCK now excludes binder freeFlow and lanes < 25 m.
+5. The REAL standoff class (6 chains): stopped cars ON INTERNAL LANES held by
+   leaderFollow/crossJxnLeader/crowd (queues extending through junction interiors at saturation),
+   with heads on other approaches yielding to them; one durable pair (t=40..60+), one held by
+   PEDESTRIANS (the backlog-4 ped amplifier, now witnessed with a chain for the first time).
+   These are saturation-queue physics plus the ped coupling — the pressure-relief lever is
+   rerouting (Entry 44, +36% drain), and the interior-queue pair
+   (`__veh1206 → __veh2292 crossJxnLeader`) is the next trace target if the owner's rerouting
+   verdict still shows durable standoffs. Named, not yet chased.
+
+Suites: LiveCity 92/92, EnvGateDocumentation green (gate + print-only changes; engine untouched).
