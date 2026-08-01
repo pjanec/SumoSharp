@@ -3374,3 +3374,15 @@ prefixes), so future bench runs print every gate they observed.
    creep — never through bodies; honest LIVECITY-RING-STUCK report when geometry is truly
    wedged), D3 = the standard four-surface ladder + ring-age distributions. No code before
    sign-off.
+
+### Entry 47 addendum — ring design signed off in principle; on-site Geneva analysis session commissioned
+
+Owner: "deadlock ring design sounds ok" + commissioned a NEW session on the physical machine
+holding the real Geneva data, to (a) reproduce and root-cause the remaining problematic
+situations there, and (b) compare against vanilla SUMO on the same data (junction clearance,
+throughput). Brief written: **`docs/GENEVA-ANALYSIS-RESUME.md`** — engine state, the full gate/
+instrument table (incl. the REROUTE-default-ON A/B trap), the three open classes with their
+evidence, the honest-SUMO comparison playbook, method discipline, and the expected deliverables.
+The 3D session supplies the companion dataset/launch doc. DEADLOCK-RING D1 (detection witness)
+is cleared for implementation by that session when needed; D2 (the break) still needs D1 numbers
+before code.
