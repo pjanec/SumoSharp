@@ -2677,3 +2677,58 @@ resolution limitation shared by all arms (same site clips gate-OFF at t=372), ou
 admission hold was correct and the defect was in the bay machinery itself; and the second trace
 showed the first fix's geometry was too EAGER (proximity ≠ contact), which only the cross-net
 battery caught. Neither conclusion was reachable by reading code.
+
+## Entry 37 — the owner's Geneva gridlock: reproduced, traced to a 3-mechanism ring, cut with SUMO's own knob
+
+**The report (owner, Geneva terrain, 3D viewer, F3 gate on):** near-total gridlock where junctions
+previously drained; much fewer overlaps but cars locked; cars standing on green with nothing ahead;
+cars stopped mid-lane ~5 car lengths before a junction with a long queue behind; "no mechanism that
+detects this and unblocks after some time".
+
+**Reproduction (offline, committed box scene):** the LiveCity smoke at default density 160 is
+healthy in BOTH gate states — but at `LIVECITY_CARS=400`, gate ON collapses (stoppedFrac 0.86–0.93,
+arrivals 443 vs 829 gate-off, movement ×¼) while gate OFF still flows. The gate-ON battery and both
+classifier nets had been green: **the collapse is density-dependent and only the live-city surface
+reaches it.** (Also fixed en route: the correct env var for the owner's viewer is
+`LIVECITY_F3OCCUPANCY`, not `SUMOSHARP_PHYSOCCUPANCY` — LiveCitySim has its own plumbing.)
+
+**The trace (new committed instruments: `BlockerEntity` exported through the read buffer,
+`LIVECITY-INTERNALSTUCK` head histogram + `LIVECITY-CHAIN` wedge-chain printer in the smoke
+witness):** the stuck population is queue shadow behind ~27 persistent internal heads, and the seed
+is a 5-vehicle ring spanning THREE mechanisms at one junction:
+
+    94 (head of the queue on :d_3_2_15_0) --jy7 bay-hold--> 163 (in bay :d_3_2_9_0)
+    163 --admission (binder 14, lane-foe)--> 332 (TAIL of the same queue 94 heads)
+    332 --leaderFollow--> 65 --leaderFollow--> 111 --leaderFollow--> 94
+
+The Entry-36 tie-break is CORRECT here (94 entered later, so 94 yields) — but the earlier entrant's
+dependency loops back through the queue. No pairwise tie-break can break a cycle that spans three
+arms. The d_3_3 cluster (arm-5 chains, incl. a car stopped on a NORMAL connecting lane ~5 car
+lengths before the junction — the owner's "stopped mid-lane with nothing in front", it was adapting
+to a wedged car INSIDE the junction ahead) hung off this ring transitively.
+
+**The fix — SUMO's own escape, extended:** `Engine.IgnoreJunctionBlockerSeconds`
+(`--ignore-junction-blocker`, already ported at the crossing-foe loop head) now also cuts the bay
+arm: a foe body that has ALREADY stood >= the threshold is a wedge, not a transient, and holding for
+it converts one stuck car into a citywide gridlock. This is precisely the "detect and unblock after
+some time" mechanism the owner asked for, and it is SUMO's, not an invented dial.
+- Engine default stays **-1** (never ignore, SUMO parity): every golden, every battery number, and
+  the gate-off hash (`c768d7f6…`) are untouched; suite 781/5/0.
+- **LiveCitySim defaults it to 60 s whenever its F3 gate is ON** (off-gate demo untouched);
+  `LIVECITY_IGNOREBLOCKER=<secs>` overrides, `SUMOSHARP_IGNOREBLOCKER` is Sim.Run plumbing.
+  ENV-GATES rows added (completeness test green).
+
+**Measured (smoke, 400 cars, gate ON + 60 s):** arrivals 443 → **838** (gate-off 829 — the honest
+arm now slightly OUTPERFORMS the pass-through baseline), stoppedFrac back to ~0.35 (signal-cycle
+oscillation), persistent stuck-internal 27 → 3–12 transient. L2/mixed classifier and the battery are
+IDENTICAL with the knob (nothing on those nets ever waits 60 s — the escape fires only in true
+wedges).
+
+**Known pre-existing failure, logged not chased:** `LongHorizonGridlockDiagTests`'s
+all-nine-sibling-gates-ON configuration reports 129 >300-step stalls — byte-identically at
+`bcd6813`, BEFORE this session's work (verified in a worktree). Sim.LiveCity.Tests is not in
+Traffic.sln, so nobody had run it since the config regressed. Separate item.
+
+**Remaining from the owner's report:** residual queue-stacking overlaps (the F1.1 non-foes class +
+double-landing residue) and the green-light standers under gate-OFF configs — F1.1 and the
+long-horizon item respectively. The terminal-gridlock and no-unblock halves are closed.

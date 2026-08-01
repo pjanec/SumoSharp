@@ -57,6 +57,24 @@ SUMOSHARP_PHYSOCCUPANCY=1 SUMOSHARP_TRACEVEH=<id> dotnet run --project src/Sim.R
   scenarios/_bench/city-organic-L2 --steps 1000 --fcd-out /dev/null 2>/tmp/trace.txt
 ```
 
+## 2b. Entry 37 (READ THIS before judging the gate on any DENSE surface)
+
+The classifier nets and the battery CANNOT see the density-dependent collapse — only the live-city
+smoke at `LIVECITY_CARS=400` reached it. A 5-vehicle ring spanning jy7 -> admission -> leaderFollow
+wedged one junction and cascaded citywide; the cut is `Engine.IgnoreJunctionBlockerSeconds` (SUMO's
+`--ignore-junction-blocker`, now also applied to the bay arm), defaulted to 60 s by LiveCitySim when
+its F3 gate is on. The owner-viewer gate var is **`LIVECITY_F3OCCUPANCY`** (LiveCity path), NOT
+`SUMOSHARP_PHYSOCCUPANCY` (Sim.Run/Sim.Sumo path). Smoke A/B loop:
+
+```bash
+dotnet build -c Release src/Sim.Viewer/Sim.Viewer.csproj
+LIVECITY_CARS=400 LIVECITY_WITNESS=1 LIVECITY_F3OCCUPANCY=1 dotnet run --project src/Sim.Viewer \
+  -c Release --no-build -- --mode live-city --smoke --frames 1200 | grep -E "GRIDLOCK|INTERNALSTUCK|CHAIN"
+```
+
+Pre-existing, separate: LongHorizonGridlockDiagTests' all-sibling-gates-ON config fails (129 long
+stalls) at bcd6813 already — Sim.LiveCity.Tests is not in Traffic.sln, nobody had run it.
+
 ## 3. What remains before a default flip (F3.1 → F3.2)
 
 1. **F1.1 — the now-dominant residual.** ~15 of L2's 18 gate-ON stopXmove pair-steps are stopped
