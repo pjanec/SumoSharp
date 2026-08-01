@@ -91,9 +91,12 @@ taken after.
    rerouting device (`--device.rerouting.*`: periodic shortest-path on time-averaged edge travel
    times); LiveCity already has reroute machinery (`SetDestination`/`RegisterRerouted`, the
    wrong-lane reroute path) so the missing piece is the periodic congestion-weighted trigger.
-   DESIGN-FIRST item (needs its own design/tasks/tracker docs before code): determinism (per-entity
-   seeded period offsets, no `System.Random`), edge-weight aggregation, and the parity argument
-   (device off = byte-identical; goldens never enable it). Not started.
+   **DESIGN TRIO WRITTEN, AWAITING OWNER REVIEW** (`LIVECITY-REROUTING-DESIGN.md` /
+   `-TASKS.md` / `-TRACKER.md`). Key discovery while writing it: the SUMO device is ALREADY fully
+   ported and golden-pinned in the engine (P1E-1..5, `[x]` in HIGH-DENSITY-PLAN.md —
+   `RerouteEdgeWeights`, A* on live efforts, seeded periodic trigger); LiveCity simply never sets
+   `device.rerouting.*` in its spliced config XML (LiveCitySim.cs:378). The design is pure host
+   wiring + validation; determinism/parity constraints are discharged by the existing P1E port.
 
 
 0. **⚠ OWNER-REPORTED (July 31, Geneva-terrain 3D viewer) — NEXT HIGH PRIORITY. Now REPRODUCED

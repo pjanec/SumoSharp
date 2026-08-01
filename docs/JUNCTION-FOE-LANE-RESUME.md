@@ -164,14 +164,13 @@ LIVECITY_CARS=400 LIVECITY_WITNESS=1 LIVECITY_F3OCCUPANCY=1 dotnet run --project
 
 ## 6. After F1.1 — the queue, in order
 
-1. **Congestion-aware rerouting DESIGN DOC** (owner-requested Aug 1: "cars blindly wait in queues
-   as if not looking for alternative trip"). DESIGN ONLY, then owner review. Shape: SUMO's
-   rerouting device (`--device.rerouting.*` — periodic per-vehicle shortest-path on time-averaged
-   edge travel times); LiveCity already has `SetDestination`/`RegisterRerouted` + the wrong-lane
-   reroute path, so the new piece is the periodic congestion-weighted trigger. Constraints:
-   deterministic (per-entity seeded period offsets, no `System.Random`), off-by-default +
-   goldens-inert, three docs (design / tasks with success conditions / tracker) per CLAUDE.md.
-   Backlog entry: `docs/JUNCTION-REALISM-RESUME.md` §5 item 0-NEW.
+1. **Congestion-aware rerouting — DESIGN TRIO WRITTEN, AWAITING OWNER REVIEW**
+   (`LIVECITY-REROUTING-DESIGN.md` / `-TASKS.md` / `-TRACKER.md`). Discovery: the SUMO
+   `device.rerouting` port ALREADY EXISTS complete and golden-pinned in the engine (P1E-1..5);
+   LiveCity never enables it (no `device.rerouting.*` in its spliced config XML,
+   LiveCitySim.cs:378). The design is host wiring + validation only; the one owner decision is
+   rollout posture (opt-in `LIVECITY_REROUTE=1` first — recommended — vs default-ON). Do NOT
+   start T1..T4 before the owner signs off the design doc.
 2. Remaining F3.1 ladder: live-city demo smoke under the gate; owner Geneva re-check; then the
    F3.2 default-flip decision WITH the owner.
 3. Parked: F0.1 TraCI probe; junction-realism-L1 −7 arrivals labelling; ped-on-RED (Entry 33);
