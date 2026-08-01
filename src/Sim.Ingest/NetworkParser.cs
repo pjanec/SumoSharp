@@ -759,6 +759,18 @@ public static class NetworkParser
         // margin -- corridors closer than this can hold physically-overlapping bodies.
         var bayConflicts = new List<BayConflict>();
         const double bodyOverlapThreshold = 2.0;
+        // Entry 36 (the traced city-organic junction-359 wedge): a row is emitted only when the
+        // ego-side overlap is at least a metre. The threshold above is CENTERLINE proximity, and
+        // 2.0 m exceeds the 1.8 m at which two default-width bodies actually touch -- so two
+        // corridors that merely BRUSH in passing (opposite-arm left turns whose tips pass within
+        // ~1.9 m: ego-side sliver 0.27 m at junction 359, where SUMO's non-foes verdict is
+        // geometrically CORRECT) produced a row that parked a vehicle 0.1 m before the sliver
+        // forever, deadlocked cross-arm against the bay occupant it was "yielding" to (jy7 one way,
+        // the SUMO-faithful inTheWay follow the other -- no tie-break can span those two arms). A
+        // genuine shared corridor measures metres of overlap (4-8 m for the sibling-bay pairs and
+        // along-bay movements; ~4 m even for a perpendicular true crossing at this threshold), so
+        // one metre separates the classes with margin on both sides.
+        const double minEgoOverlapLen = 1.0;
         foreach (var request in requests)
         {
             if (!request.Cont || !linksByIndex.TryGetValue(request.Index, out var contLink))
@@ -793,7 +805,8 @@ public static class NetworkParser
 
                 if (PolylineGeometry.TryCorridorOverlap(
                         egoLane.Shape, bayLane.Shape, bodyOverlapThreshold,
-                        out var egoGeomStart, out var egoGeomEnd, out var bayGeomStart, out var bayGeomEnd))
+                        out var egoGeomStart, out var egoGeomEnd, out var bayGeomStart, out var bayGeomEnd)
+                    && egoGeomEnd - egoGeomStart >= minEgoOverlapLen)
                 {
                     // Geometry-arc -> lane-position frame (InterpolateGeometryPosToLanePos).
                     var egoScale = egoLane.Length / PolylineGeometry.PolylineLength(egoLane.Shape);
@@ -838,7 +851,8 @@ public static class NetworkParser
 
                 if (PolylineGeometry.TryCorridorOverlap(
                         egoBayLane.Shape, bayLane.Shape, bodyOverlapThreshold,
-                        out var egoBayGeomStart, out var egoBayGeomEnd, out var bayGeomStart2, out var bayGeomEnd2))
+                        out var egoBayGeomStart, out var egoBayGeomEnd, out var bayGeomStart2, out var bayGeomEnd2)
+                    && egoBayGeomEnd - egoBayGeomStart >= minEgoOverlapLen)
                 {
                     var egoBayScale = egoBayLane.Length / PolylineGeometry.PolylineLength(egoBayLane.Shape);
                     var bayScale2 = bayLane.Length / PolylineGeometry.PolylineLength(bayLane.Shape);
