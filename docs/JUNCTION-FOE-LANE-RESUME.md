@@ -11,10 +11,11 @@ congestion-rerouting DESIGN DOC** (design only — owner reviews before code; se
   only ParityTests is how a red hour-horizon test once shipped for five entries): ParityTests
   **781/5/0**, LiveCity.Tests **90/90**, Pedestrians **324/324**, Viewer.Motion 19, Host 6,
   DotRecast 2 — all green at head.
-- **Default L2 FCD hash `e94b88b7534c21b5fd3bf8657dbb1666`** (city-organic-L2, 1000 steps,
-  Sim.Run, no env vars). Entry 38 made the merge-arm entry-order tie-break + foes-based merge
-  reachability DEFAULT (they fix a latent mutual PHASE-1 merge deadlock SUMO never had);
-  `c768d7f6…` is the obsolete pre-38 baseline. **Gate-ON L2 hash `0c9bad719a22ba1a56615ab246316a3c`.**
+- **Default L2 FCD hash `5ac89389889a3e80056fce9f4c4ec158`** (city-organic-L2, 1000 steps,
+  Sim.Run, no env vars). Entry 39 (A) made the ACTUAL-LANE link resolution in the junction-yield
+  pass DEFAULT (`MSLane::succLinkSec` parity — the pool's sibling-lane link mis-resolution was a
+  parity divergence); `e94b88b7…` (Entry 38) and `c768d7f6…` (pre-38) are obsolete baselines.
+  **Gate-ON L2 hash `fd6363810091905d784c600cb1211403`** (`0c9bad71…` obsolete, same cause).
 - `Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single; moved at Entry 34, re-pinned in
   TASKS-TODO's iron-law block — when it moves again, re-pin in the same commit).
 - Everything ELSE in this workstream stays gate-scoped under **`SUMOSHARP_PHYSOCCUPANCY`**
@@ -33,53 +34,52 @@ saturate but drain" (Entry 38 confirmed on terrain). Remaining complaints, mappe
 turners passed through + (b) queue half-stacking → **the F1.1 class, below**; (c) "cars blindly
 wait in queues, not seeking alternative trips" → rerouting design item (§6).
 
-## 1. THE NEXT TASK — F1.1: conflict geometry for non-foes internal-lane pairs
+## 1. THE NEXT TASK — F1.1 mechanism (B): corridor-follow for the late-stop race
 
-**The class (measured, both gate states, this is NOT gate regression):** a STOPPED vehicle on a
-plain (non-bay) internal lane is driven through by movers whose links netconvert never put in each
-other's foes rows. ~15 of L2's 18 gate-ON `crossLane|stopXmove` pair-steps; recurring sites:
+**Where F1.1 stands (journal Entry 39 BEFORE/MID/AFTER-A — read those first).** The original
+"~15 non-foes pair-steps need ingest rows" characterization was FALSIFIED by five traces; the
+stopXmove class decomposed into three mechanisms:
 
-- j=1150 `:1150_2_0` × `:1150_0_1` (4 episodes), j=123 `:123_11_0` × `:123_9_1` (4),
-  j=1021 `:1021_15_0` × `:1021_12_0`, j=428 `:428_7_0` × `:428_5_1` and `:428_13_1` × `:428_15_0`,
-  j=301 `:301_6_1` × `:301_8_0` and `:301_6_0` × `:301_13_0`, j=271, j=717, j=12, j=23, j=993.
-- Honest SUMO on the same net: 0. SUMO 1.20 also drives through these (foes-blind) — fixing it is
-  the SAME sanctioned beyond-SUMO honesty deviation as the bay work
-  (`docs/CONSTRAINT-high-realism-artefact-ladder.md` binding: target SUMO's flow, not its method).
+- **(A) DONE, DEFAULT** — actual-lane link resolution (`MSLane::succLinkSec` parity): the pool's
+  strategic chain resolved the SIBLING lane's connection for the whole approach whenever a planned
+  lane change had not happened yet, so every yield arm consulted rows for a link the vehicle never
+  drove. Fixed in `JunctionYieldConstraint` Step 1 (search `Entry 39 mechanism (A)`), ungated.
+  Result: L2 gate-ON stopXmove 19 → 9, defaults 17 → 13, landings 10 → 6; every gate green.
+- **(A-residual, unmeasured)**: the SYMMETRIC half — `BuildFoeApproachIndex` still registers an
+  approaching mismatched vehicle on its POOL lanes, so OTHER vehicles' crossing arms can see it on
+  the wrong approach row. The physical index (`_physOnLane*`) is immune. Measure before fixing.
+- **(B) OPEN — the next task** — the late-stop race (~6 of the remaining 9 gate-ON stopXmove):
+  the correct row is consulted, but the occupant enters the shared NEAR-PARALLEL corridor at
+  4–5 m/s (correctly skipped by the `Speed<=2.0` hold predicate — do NOT touch that dial:
+  hold-everything measured bothSlow 16→652 GRIDLOCK in Entry 36) and decelerates through 2.0 m/s
+  in exactly the step ego commits past the overlap start. Binary hold-or-commit cannot win this
+  race. The honest shape: CAR-FOLLOWING along the shared corridor — map the occupant's back
+  bumper through the row's arc intervals into ego's frame
+  (`egoArcOfFoeBack = EgoArcStart + (foeBack − BayArcStart) · (EgoArcEnd−EgoArcStart)/(BayArcEnd−BayArcStart)`)
+  and constrain ego to stop a follow-gap short of it, at ANY occupant speed — i.e.
+  adaptToJunctionLeader semantics applied to bay-row occupants, replacing both the speed skip and
+  the committed skip for NEAR-PARALLEL rows (a sensible parallelism test: ego and foe interval
+  each covering most of both lanes, or direction dot-product — decide from the traced sites
+  j=301 (7,8), j=271 (9,10) first). Gate-scoped under `JunctionPhysicalOccupancyGate`. Risks to
+  measure: follower chains through junctions (bothSlow), and mutual-follow cycles (the entry-order
+  backstop must stay upstream of the follow constraint). Journal Entry 40 BEFORE with predictions
+  FIRST: expected L2 gate-ON stopXmove 9 → ≤4, bothSlow not exploding past ~15, DRAINED
+  everywhere, smoke 400 arrivals ≥ 800.
+- **(C) NAMED RESIDUAL** — straddling-tail corner-cut (~2 pair-steps, j=1021 t=184 witness): the
+  stopped foe's tail hangs BEHIND its lane start into the approach mouth ego's turn sweeps;
+  centerlines never within 3.2 m, so no lane-pair corridor row can honestly represent it. Needs
+  foe-approach-mouth geometry if ever fixed; do not force it into corridor rows.
 
-**The design shape (recommended): generalize the Entry-36 bay machinery, don't invent new.**
-Every piece F1.1 needs already exists and is measured:
-
-1. **Ingest**: extend the `BayConflict` pass (`NetworkParser.cs`, search `F2.1b`/`Entry 36`) to
-   emit rows for EVERY ordered internal-lane pair of a junction where `!foes(i,j)` — not just cont
-   bays. Same `TryCorridorOverlap` (proximity-sampled, 2.0 m centerline threshold), same
-   **`minEgoOverlapLen=1.0` brush filter** (NON-NEGOTIABLE — a 0.27 m brush row wedged
-   city-organic at junction 359; proximity ≠ contact, 2.0 m > the 1.8 m body-touch distance).
-   Watch ingest cost: pairs are O(links²) per junction — fine at these sizes, but measure parse
-   time on city-15000 once.
-2. **Engine**: the bay arm (`Engine.cs`, `F2.1b` in `JunctionYieldConstraint`, jyArm 7) already
-   consumes rows via `_physOnLaneFirst/Second` (PHYSICAL occupancy — never `FindFoeVehicle` for
-   physical questions, it first-masks), with the entry-order backstop (earlier entrant inside the
-   junction skips), the back-bumper exiting test, the `Speed<=2.0` hold predicate (three dial
-   points measured — do NOT tune), and the `IgnoreJunctionBlockerSeconds` patience escape. If the
-   generalized rows keep the same record shape, the arm may need ZERO changes — decide whether to
-   rename `BayConflict` → something like `PhantomConflict` (doc-comment honesty) or keep the name.
-3. **Gate-scoped as before** under `JunctionPhysicalOccupancyGate` — F1.1 completes the F3.1
-   ladder; the default flip (F3.2) is a separate later decision with the owner.
-4. **Journal Entry 39 BEFORE with predictions FIRST** (the rules): expected L2 gate-ON stopXmove
-   18 → ≤5 (the ~15 non-foes class should collapse; the 2 lane-sequence-mismatch clips and the
-   1 unstoppable transient remain — §5 named residuals), landings unchanged, bothSlow not
-   exploding, DRAINED everywhere.
-
-**Acceptance gates for F1.1 (run ALL — each one has caught a real wedge this workstream):**
+**Acceptance gates for any (B) change (run ALL — each has caught a real wedge):**
 - Classifier + analyzer, L2 AND mixed-1k, BOTH gate states (`--examples 40`).
-- Battery gate ON vs `net-regression-entry38-mergefix.txt`: stuckDwell 0, arrivals in noise.
-- Live-city smoke at `LIVECITY_CARS=400`, gate ON (the ONLY surface that saw the Entry-37
-  density collapse): drained, arrivals ≈ 830+, INTERNALSTUCK transient only.
-- Long-horizon: full `dotnet test -c Release` (LiveCity's hour-horizon test is in the sln).
-- Gate-off L2 hash still `e94b88b7…` byte-identical; determinism ≥3 runs + `--max-parallelism 1`
-  (via Sim.Sumo) both states.
-- Ingest pin test extended (like `JunctionBayConflictIngestTests`): at least one named non-foes
-  site row present with sane arcs + one brush-dropped pair asserted absent.
+- Battery (defaults AND gate-ON arms) vs `net-regression-entry38-mergefix.txt` + the Entry-39A
+  numbers in the journal: stuckDwell 0, arrivals in noise.
+- Live-city smoke at `LIVECITY_CARS=400`, gate ON: drained, arrivals ≈ 820+, INTERNALSTUCK
+  transient only.
+- Full `dotnet test -c Release` (goldens byte-identical is the stop-ship check).
+- Gate-off L2 hash still `5ac89389…` byte-identical (a gate-scoped (B) must not move defaults);
+  determinism ≥3 runs + `--max-parallelism 1` (via Sim.Sumo) both states.
+- Ingest pin tests (`JunctionBayConflictIngestTests`, 3 tests) stay green.
 
 ## 2. The instrument loop (exact commands)
 
@@ -123,11 +123,13 @@ LIVECITY_CARS=400 LIVECITY_WITNESS=1 LIVECITY_F3OCCUPANCY=1 dotnet run --project
 
 ## 4. Named residual classes (do NOT re-trace)
 
-- **Lane-sequence link mismatch** (L2 t=543/544 site): a mover with a pending strategic lane
-  change resolves its upcoming link through the other lane's connection — all yield arms watch the
-  wrong rows on approach. Pre-existing, out of F1.1 scope; survives F1.1 (~2 pair-steps).
-- **Late-stop transient** (L2 t=468): occupant stops AFTER the mover commits at speed — no hold
-  timing can stop physics; survives F1.1 (~1 pair-step).
+- **Lane-sequence link mismatch — FIXED at defaults (Entry 39 A)**: it was not a ~2-pair-step
+  tail but the largest stopXmove mechanism (~7/19). The remaining unmeasured piece is the
+  A-residual in §1 (foe-approach index registration).
+- **Late-stop race** (j=301 (7,8), j=271 (9,10) witnesses): occupant decelerates through the
+  2.0 m/s hold dial in the step ego commits — this is §1's OPEN mechanism (B), not unfixable
+  physics; the unstoppable version (foe stops AFTER ego is fully committed at speed) is only the
+  tail of it.
 - **Dead-lane stranding** (`successiveLane`/`deadLaneMerge` binders): cars on a lane with no
   connection to their next route edge — the class behind BOTH Entry-38 floor re-anchors. Distinct
   problem, partially mitigated in LiveCity by its reroute machinery; untouched in the bare engine.
