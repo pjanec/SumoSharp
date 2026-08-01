@@ -5324,7 +5324,7 @@ public sealed partial class Engine : IEngine
         byte binder = 0;
         double dc;
         // DIAGNOSTIC ONLY: the EntityIndex of the blocking foe/leader the CURRENT winning binder
-        // selected -- captured only at the three fold sites (2/10/14/17) below that identify a single
+        // selected -- captured only at the fold sites (1/2/10/14/17) below that identify a single
         // vehicle, and only when that site's `dc` becomes the new minimum, so it always describes the
         // binder actually recorded in `binder`/`v.BindingConstraint`, never a stale value from an arm
         // that lost the fold. -1 (VehicleRuntime.BlockerEntityIndex's default) everywhere else.
@@ -5348,7 +5348,10 @@ public sealed partial class Engine : IEngine
         // C11-i: for an IDM-resolved vType this dispatches to IdmModel.FollowSpeed
         // (MSCFModel_IDM.cpp:104-107) instead -- see FollowSpeedFor's own header comment; the
         // Krauss arm is the SAME KraussModel.FollowSpeed call this line always made.
-        dc = LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, packedEgoSlot); if (dc < vPos) { binder = 1; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
+        // Geneva standoff instrument: the same-lane leader's EntityIndex is captured like cjlFoeIdx
+        // below, so the LIVECITY-HEADSTUCK two-hop chain can follow THROUGH a leaderFollow link --
+        // every durable Geneva chain root so far bound on leaderFollow and dead-ended the reporter.
+        dc = LeaderFollowSpeedConstraint(v, neighbors, dt, time, laneVehicleMaxSpeed, out var lfLeaderIdx, packedEgoSlot); if (dc < vPos) { binder = 1; blockerIdx = lfLeaderIdx; } vPos = Math.Min(vPos, dc);
 
         // Cross-junction leader following: car-follow a slow leader that has already crossed onto a
         // downstream lane, while ego is still on its approach (the same-lane constraint above cannot
@@ -10433,8 +10436,12 @@ public sealed partial class Engine : IEngine
     // C8-iii: instance (was static) only so it can read the immutable `_config.Ballistic` flag for
     // the FollowSpeedFor call below -- a read of load-time-constant config, safe under UseParallelPlan
     // (the parallel-plan invariant forbids WRITING shared state during planning, not reading it).
-    private double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed, int packedEgoSlot = -1)
+    private double LeaderFollowSpeedConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed, out int leaderIdx, int packedEgoSlot = -1)
     {
+        // DIAGNOSTIC ONLY (blocker-chain capture): the EntityIndex of the leader this constraint
+        // followed, -1 when non-binding (+infinity returns). Read at the fold site only when this
+        // arm wins, mirroring CrossJunctionLeaderConstraint's cjlFoeIdx.
+        leaderIdx = -1;
         // SPATIAL-OPT probe: when the plan takes the spatial branch, the same-lane leader is the
         // adjacent packed slot (sequential/prefetched) instead of a random foe-object deref. The
         // packed leader is byte-identically the same vehicle GetLeader returns (nearest strictly-
@@ -10455,6 +10462,7 @@ public sealed partial class Engine : IEngine
                 return double.PositiveInfinity;
             }
 
+            leaderIdx = lp.EntityIndex;
             var gapP = (lp.Pos - lp.Length) - ego.VType.MinGap - ego.Kinematics.Pos;
             return FollowSpeedFor(
                 ego.VType,
@@ -10495,6 +10503,7 @@ public sealed partial class Engine : IEngine
             return double.PositiveInfinity;
         }
 
+        leaderIdx = leader.EntityIndex;
         var leaderBackPos = leader.Kinematics.Pos - leader.VType.Length;
         var gap = leaderBackPos - ego.VType.MinGap - ego.Kinematics.Pos;
 
