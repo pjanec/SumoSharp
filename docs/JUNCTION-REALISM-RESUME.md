@@ -94,8 +94,12 @@ taken after.
    across two nets are SAME-JUNCTION DOUBLE-LANDINGS (two movements exiting the same junction the
    same step onto the shared arrival lane — the jammed form is the owner's queue-tail stacking).
    Traced example: veh 122 through stopped veh 15 at j=123 t=234 — no constraint reads
-   crossing-internal-lane occupancy. **Design-first docs are written and WAIT FOR OWNER SIGN-OFF:
-   `docs/JUNCTION-FOE-LANE-DESIGN.md` (+ -TASKS / -TRACKER). START THERE.** The F3/isLeader ports
+   crossing-internal-lane occupancy. **Signed off and PARTIALLY IMPLEMENTED (Entry 35b,
+   all gate-scoped under `SUMOSHARP_PHYSOCCUPANCY`, default OFF, byte-identical off): the
+   same-target merge half WORKS (landing onsets 12→5, deadlock-free); the bay half has its
+   geometry, physical index, and arm shipped but an unresolved HOLD-TIMING trade-off — next
+   session starts at tracker item F2.1c (degenerate-bay wait-point relocation) and the dwell-634
+   gridlock episode trace. `docs/JUNCTION-FOE-LANE-TRACKER.md` is the live state. START THERE.** The F3/isLeader ports
    (link indices, ET/CET, IsLeader) are the prerequisites and are already in the engine; the good
    news from the same owner session — no gridlock, no pure-lateral changes — confirms the shipped
    fixes hold on the coupled terrain.
