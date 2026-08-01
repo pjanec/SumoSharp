@@ -1469,6 +1469,103 @@ public sealed class LiveCitySim : IDisposable
             return $"{c.DefId} {c.LaneId}@{c.Pos:F1} v={c.Speed:F1} bind={bn}/{an}";
         }
 
+        // DEADLOCK-RING-DESIGN §1 (D1, diagnostic only -- owner-approved instrument): blocker-graph
+        // cycle scan over this witness snapshot. Nodes = stopped cars (speed < 0.1) whose recorded
+        // blocker is itself present and stopped; edge i -> blocker. Colour-marking walk visits each
+        // node once (white 0 / gray 1 = on current path / black 2 = done); a gray hit closes a cycle.
+        // AGE = min member WaitingTime (consecutive-stop seconds -- a member that only just halted
+        // proves the ring is younger than the report cadence). Printed at age >= 10 s per the design;
+        // the photographed interlock becomes a named, counted, aged object. Runs at the existing 20 s
+        // witness cadence, so cost is negligible; purely a read of the snapshot, no engine mutation.
+        var succ = new int[w.Count];
+        for (var i = 0; i < w.Count; i++)
+        {
+            succ[i] = -1;
+            var c = w[i];
+            if (c.Speed < 0.1 && c.BlockerEntity >= 0
+                && byEntity.TryGetValue(c.BlockerEntity, out var bi) && w[bi].Speed < 0.1)
+            {
+                succ[i] = bi;
+            }
+        }
+
+        var colour = new byte[w.Count];
+        var path = new List<int>(64);
+        var ringsPrinted = 0;
+        var rootsPrinted = 0;
+        for (var s = 0; s < w.Count; s++)
+        {
+            if (colour[s] != 0)
+            {
+                continue;
+            }
+
+            path.Clear();
+            var cur = s;
+            while (cur >= 0 && colour[cur] == 0)
+            {
+                colour[cur] = 1;
+                path.Add(cur);
+                cur = succ[cur];
+            }
+
+            if (cur >= 0 && colour[cur] == 1 && ringsPrinted < 6)
+            {
+                var start = path.IndexOf(cur);
+                var age = double.PositiveInfinity;
+                for (var k = start; k < path.Count; k++)
+                {
+                    age = Math.Min(age, w[path[k]].WaitingTime);
+                }
+
+                if (age >= 10.0)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append($"LIVECITY-RING: t={_now:F0} age={age:F0} size={path.Count - start} members=[");
+                    for (var k = start; k < path.Count && k - start < 12; k++)
+                    {
+                        if (k > start)
+                        {
+                            sb.Append(" | ");
+                        }
+
+                        sb.Append(Describe(w[path[k]]));
+                    }
+
+                    if (path.Count - start > 12)
+                    {
+                        sb.Append(" | ...");
+                    }
+
+                    sb.Append(']');
+                    Console.Error.WriteLine(sb.ToString());
+                    ringsPrinted++;
+                }
+            }
+            else if (cur < 0 && path.Count >= 5 && rootsPrinted < 6)
+            {
+                // ACYCLIC chain root (D1 companion report): the walk fell off the graph -- the last
+                // node's blocker is unrecorded, moving, or absent. For a LONG stopped queue (>= 5
+                // members, >= 60 s at the root) that terminal IS the standoff root the two-hop
+                // HEADSTUCK trace kept falling short of, and its binder/arm names the pinning
+                // constraint (blockerEnt=-1 here means the binder never captures one -- e.g. a
+                // junction-yield arm with no single foe, bay occupancy, red light).
+                var root = w[path[^1]];
+                if (root.WaitingTime >= 60.0 && root.Speed < 0.1)
+                {
+                    Console.Error.WriteLine(
+                        $"LIVECITY-CHAINROOT: t={_now:F0} len={path.Count} wait={root.WaitingTime:F0} "
+                        + $"head={w[path[0]].DefId} root={Describe(root)} rootBlockerEnt={root.BlockerEntity}");
+                    rootsPrinted++;
+                }
+            }
+
+            foreach (var n in path)
+            {
+                colour[n] = 2;
+            }
+        }
+
         var printed = 0;
         var printedHead = 0;
         foreach (var c in w)
@@ -1659,7 +1756,11 @@ public sealed class LiveCitySim : IDisposable
         // Entry 41: the engine Def.Id ("__vehN") -- the ONLY key LIVECITY_TRACEVEH accepts, and the
         // chain printer previously showed only the handle, so a stuck head could be SEEN but not
         // TRACED without this.
-        string DefId);
+        string DefId,
+        // DEADLOCK-RING D1: consecutive-stop seconds (engine WaitingTime) -- a blocker-graph
+        // cycle's age is the min over its members. Defaulted so existing positional constructions
+        // stay valid.
+        float WaitingTime = 0f);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -1678,6 +1779,7 @@ public sealed class LiveCitySim : IDisposable
         var entityIdx = _engine.EntityIndexes;       // Entry 37: chain diag (who waits on whom)
         var blockerIdx = _engine.BlockerEntityIndexes;
         var defIds = _engine.VehicleIds;             // Entry 41: trace key for LIVECITY_TRACEVEH
+        var waiting = _engine.WaitingTimes;          // DEADLOCK-RING D1: ring age = min member value
         var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
@@ -1731,7 +1833,8 @@ public sealed class LiveCitySim : IDisposable
                 i < jyFoeSpd.Length ? jyFoeSpd[i] : -1f,
                 i < entityIdx.Length ? entityIdx[i] : -1,
                 i < blockerIdx.Length ? blockerIdx[i] : -1,
-                i < defIds.Length ? defIds[i] : string.Empty));
+                i < defIds.Length ? defIds[i] : string.Empty,
+                i < waiting.Length ? waiting[i] : 0f));
         }
 
         return outList;

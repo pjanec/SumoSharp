@@ -56,6 +56,7 @@ internal sealed class VehicleReadBuffer
     public byte[] JunctionYieldArm = new byte[InitialCapacity]; // #15 diag: which junction-yield arm bound (+0x80 priority)
     public float[] JunctionYieldFoeSpeed = new float[InitialCapacity]; // #15 diag: bound junction foe's speed (-1 none)
     public int[] BlockerEntity = new int[InitialCapacity]; // Entry 37 diag: EntityIndex of the vehicle the binder blocked on (-1 none)
+    public float[] WaitingTime = new float[InitialCapacity]; // DEADLOCK-RING D1 diag: consecutive-stop seconds (ring age = min member value)
 
     // EntityIndex -> dense slot, frame-stamped so BeginFrame never has to clear it: a slot is current
     // only if its stamp equals the live frame counter.
@@ -76,7 +77,7 @@ internal sealed class VehicleReadBuffer
         int laneHandle, int nextLane, int prevLane, ReadOnlySpan<int> laneWindow,
         string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle, float length, float width,
-        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f, int blockerEntityIndex = -1)
+        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f, int blockerEntityIndex = -1, float waitingTime = 0f)
     {
         EnsureColumnCapacity(Count + 1);
 
@@ -111,6 +112,7 @@ internal sealed class VehicleReadBuffer
         JunctionYieldArm[i] = junctionYieldArm;
         JunctionYieldFoeSpeed[i] = junctionYieldFoeSpeed;
         BlockerEntity[i] = blockerEntityIndex;
+        WaitingTime[i] = waitingTime;
 
         _slotByEntity[entityIndex] = i;
         _frameOfEntity[entityIndex] = _frame;
@@ -169,6 +171,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref JunctionYieldArm, newCap);
         Array.Resize(ref JunctionYieldFoeSpeed, newCap);
         Array.Resize(ref BlockerEntity, newCap);
+        Array.Resize(ref WaitingTime, newCap);
     }
 
     private void EnsureEntityCapacity(int needed)

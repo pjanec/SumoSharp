@@ -45,7 +45,8 @@ namespace Sim.Harness;
 /// BLOCKER COLUMN: <see cref="VehicleExportSnapshot.BlockerEntityIndex"/>, the EntityIndex of the
 /// foe/leader vehicle that the winning binder actually selected -- populated only for tags 1
 /// (leaderFollow -- Geneva standoff-chain instrument, so a blocker chain can be followed THROUGH a
-/// queue link), 2 (crossJxnLeader), 10 (junctionYield) and 14/17 (internalJunctionAdmission), the
+/// queue link), 2 (crossJxnLeader), 10 (junctionYield), 11 (keepClear -- the first stopped vehicle
+/// its downstream space-walk found) and 14/17 (internalJunctionAdmission), the
 /// constraints that identify a single blocking vehicle at their <c>Engine.ComputeMoveIntent</c> fold
 /// call sites; -1 (VehicleRuntime.BlockerEntityIndex's default) for every other binder, and for any
 /// of those three arms that itself has no single identifiable foe (e.g. JunctionYieldConstraint's

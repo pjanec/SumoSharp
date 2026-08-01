@@ -2179,6 +2179,10 @@ public sealed partial class Engine : IEngine
     // Entry 37 diag: EntityIndex of the vehicle each car's binding constraint blocked on (-1 none) --
     // the LiveCity witness uses it to print wedge CHAINS (who waits on whom) without a binder-log file.
     public ReadOnlySpan<int> BlockerEntityIndexes => _readBuffer.BlockerEntity.AsSpan(0, _readBuffer.Count);
+
+    // DEADLOCK-RING D1 diag: consecutive-stop seconds per vehicle (VehicleRuntime.WaitingTime),
+    // published so the host-side ring scan can age a blocker-graph cycle (age = min member value).
+    public ReadOnlySpan<float> WaitingTimes => _readBuffer.WaitingTime.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<int> EntityIndexes => _readBuffer.EntityIndex.AsSpan(0, _readBuffer.Count);
 
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
@@ -2440,7 +2444,7 @@ public sealed partial class Engine : IEngine
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime);
         }
 
         DetectLifecycleEvents();
@@ -5324,7 +5328,7 @@ public sealed partial class Engine : IEngine
         byte binder = 0;
         double dc;
         // DIAGNOSTIC ONLY: the EntityIndex of the blocking foe/leader the CURRENT winning binder
-        // selected -- captured only at the fold sites (1/2/10/14/17) below that identify a single
+        // selected -- captured only at the fold sites (1/2/10/11/14/17) below that identify a single
         // vehicle, and only when that site's `dc` becomes the new minimum, so it always describes the
         // binder actually recorded in `binder`/`v.BindingConstraint`, never a stale value from an arm
         // that lost the fold. -1 (VehicleRuntime.BlockerEntityIndex's default) everywhere else.
@@ -5442,7 +5446,7 @@ public sealed partial class Engine : IEngine
         // creep onto the internal lane and block cross traffic. +infinity (non-binding) unless a
         // stopped vehicle is found on ego's downstream exit chain with leftSpace < 0 -- so every
         // existing (jam-free) scenario is untouched.
-        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed); if (dc < vPos) { binder = 11; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
+        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var kcBlockerIdx); if (dc < vPos) { binder = 11; blockerIdx = kcBlockerIdx; } vPos = Math.Min(vPos, dc);
 
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
@@ -8277,8 +8281,10 @@ public sealed partial class Engine : IEngine
     // accumulating `seenSpace` straight through and stopping at the first stopped vehicle); the
     // stop-line offset uses the priority-link `DIST_TO_STOPLINE_EXPECT_PRIORITY` (1.0), not the
     // foe-visibility-limited general form.
-    private double KeepClearConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed)
+    private double KeepClearConstraint(VehicleRuntime v, ActiveVehicleQuery allVehicles, double dt, double actionStepLengthSecs, double laneVehicleMaxSpeed, out int blockerEntityIdx)
     {
+        // DEADLOCK-RING D1 diag: the stopped vehicle the downstream space-walk found (-1 none).
+        blockerEntityIdx = -1;
         // Ego's upcoming junction ENTRY link -- the first internal lane at/after LaneSeqIndex (the
         // same forward scan JunctionYieldConstraint uses).
         var egoLinkSeqIndex = -1;
@@ -8361,7 +8367,8 @@ public sealed partial class Engine : IEngine
             }
             else
             {
-                contribution = LaneSpaceTillLastStanding(lane, v, dt, out foundStopped);
+                contribution = LaneSpaceTillLastStanding(lane, v, dt, out foundStopped, out var stoppedIdx);
+                if (foundStopped) { blockerEntityIdx = stoppedIdx; }
                 seenSpace += contribution;
             }
 
@@ -8870,7 +8877,7 @@ public sealed partial class Engine : IEngine
     {
         var foeLane = _network!.LanesByHandle[foe.LaneHandle];
         var foeLaneMaxV = KraussModel.LaneVehicleMaxSpeed(foeLane.Speed, foe.SpeedFactor, foe.VType);
-        return KeepClearConstraint(foe, allVehicles, dt, actionStepLengthSecs, foeLaneMaxV) < double.PositiveInfinity;
+        return KeepClearConstraint(foe, allVehicles, dt, actionStepLengthSecs, foeLaneMaxV, out _) < double.PositiveInfinity;
     }
 
     // C5 helper: MSLane::getBruttoVehLenSum -- the sum of lengthWithGap (length + minGap) over the
@@ -8921,9 +8928,12 @@ public sealed partial class Engine : IEngine
     // comment at :152) instead of scanning every active vehicle and re-sorting. That bucket order IS
     // `myVehicles`' order, so the walk is a straight forward iteration. Ego is skipped inline exactly
     // as the old LaneId filter excluded it.
-    private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, double dt, out bool foundStopped)
+    private double LaneSpaceTillLastStanding(Lane lane, VehicleRuntime ego, double dt, out bool foundStopped, out int stoppedEntityIdx)
     {
         foundStopped = false;
+        // DEADLOCK-RING D1 diag: the EntityIndex of the first stopped/held vehicle the walk found
+        // (-1 none) -- the keepClear blocker, captured for the blocker-graph chain like site 1/2.
+        stoppedEntityIdx = -1;
         var onLane = _neighborQuery!.OnLane(lane.Handle);
 
         var lengths = 0.0;
@@ -8959,6 +8969,7 @@ public sealed partial class Engine : IEngine
             if (last.Kinematics.Speed < KraussModel.HaltingSpeed || cannotProceed)
             {
                 foundStopped = true;
+                stoppedEntityIdx = last.EntityIndex;
                 var lastBrakeGap = KraussModel.BrakeGap(last.Kinematics.Speed, last.VType.Decel, headwayTime: 0.0, dt);
                 return (last.Kinematics.Pos - last.VType.Length) + lastBrakeGap - lengths;
             }
