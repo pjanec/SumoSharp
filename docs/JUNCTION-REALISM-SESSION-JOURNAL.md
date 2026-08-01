@@ -2993,3 +2993,54 @@ follow-chain cascade or a mutual follow-stop pair — trace `[bay]` at j=301 FIR
 branch logs its gap), before touching any dial; stopXmove NOT dropping ⇒ the late-stop
 attribution was wrong for the untraced sites — trace one of them (j=1258 t=318 or j=428 t=503)
 before redesigning.
+
+## Entry 40 (AFTER) — corridor-follow + the arm-5 mutual-pair tie-break it exposed; every gate green
+
+**What shipped (both gate-scoped under `JunctionPhysicalOccupancyGate`):**
+1. **Corridor-follow in the bay arm** (`Engine.cs`, search `Entry 40 (corridor-follow)`): the
+   occupant's back is mapped through the row's arc intervals into ego's frame; `followGap >= 0`
+   (foe unambiguously ahead) car-follows it at any foe speed via `FollowSpeedFor` (jyArm 8,
+   `corridorFollow`); `followGap < 0` keeps the measured hold semantics with every guard
+   unchanged. No new ingest field, no angle dial.
+2. **Mutual on-junction tie-break in the crossing arm** (search `Entry 40: mutual on-junction
+   tie-break`): the flag-off RespondsTo path brakes ego for an on-junction foe even when ego is
+   ALSO on the junction — a LATENT mutual adaptToJunctionLeader deadlock SUMO does not have
+   (isLeader entry-time ordering, MSVehicle.cpp:7348-7483; the full port sits behind the
+   default-OFF `JunctionIsLeaderGate`). Under the gate, the earlier entrant of a mutual
+   on-junction pair skips the foe (same `IsLeaderByEntryOrder` chain as the merge/bay arms).
+   Defaults keep the latent behaviour bit-for-bit — **flag for the future: the proper DEFAULT fix
+   is the `JunctionIsLeaderGate` flip, which needs its known saturated-grid regression re-examined.**
+
+**The exposure story (the reason 2 exists):** the first corridor-follow build wedged
+willpass-saturation gate-ON (412 → 301 arrivals, stuckDwell 966). Traced: veh 155's follow
+constraint (jyArm 8, t=232) slowed its junction entry from ~14 to ~12 m/s — slow enough that it
+and veh 139 latched the mutual arm-5 stop at t=234 (`139 →5→ 155`, `155 →5→ 139`, both v=0
+forever, four queues cascading behind). The deadlock was never (B)'s — it was latent in the
+crossing arm; (B)'s timing perturbation is what let it latch. This is Entry 38's merge-deadlock
+story repeating one arm over: a mutual pair with no total order.
+
+**Predictions vs measured:**
+1. L2 gate-ON stopXmove 9 → ≤4: **6** (miss by 2, decomposed and accepted): 2 straddling-tail (C),
+   3 threshold-marginal contacts (bodies touch at >2.0 m centerline separation at curves — rows
+   for the mover's link correctly absent at 2.0 m; widening would relitigate the junction-359
+   brush wedge, refused), 1 foes-pair crossing analogue (j=301 6×13, separate class). The
+   TARGETED late-stop sites (j=301 (7,8), j=271 (9,10), j=428, j=23) all converted. Mixed-1k
+   stopXmove 12 → 8 (≤8: met). bothSlow: L2 11 (no explosion; Entry-36 signature was 652).
+   Landings wobble ±2-3 at known pre-existing double-landing sites (L2 6→8, mixed 5→8; traced
+   veh 508: its follow branch never fired — butterfly of the reshuffle, class untouched by (B)).
+2. Defaults byte-identical: **CONFIRMED** — L2 `5ac89389…` unchanged through BOTH changes; shim
+   gate-off par==single `9f947460…` unchanged; goldens byte-identical (suite 782/5, LiveCity
+   90/90, all green).
+3. Battery gate-ON: **CONFIRMED after the tie-break** — willpass-saturation DRAINED 412/0
+   (overlaps 4 → 3), stuckDwell 0 everywhere, junction-realism-L2 DRAINED, L2 overlaps 8 → 4.
+4. Smoke 400 gate-ON arrivals ≥ 800 @ t=600: **MISSED then resolved** — 786 at t=600 (−4.7% vs
+   823); extended to t=1200: **1765 arrivals with the drain rate ACCELERATING** (1.31/s first
+   half, 1.63/s second), population stable ~330, INTERNALSTUCK transient admission holds only,
+   zero jyArm-7/8 stuck heads. A closed-loop phase shift, not degradation.
+5. Determinism: **CONFIRMED** — 3/3 identical per arm; shim par == `--max-parallelism 1` both
+   arms. Gate-ON L2 hash (Sim.Run) is now `f7d432524bd1e96bda740cac2b0eec6a`.
+
+**F1.1 ledger vs Entry 38's baseline (all gate-ON L2):** stopXmove 18 → 6, bothSlow 15 → 11,
+bothMove ~145 → 103; defaults stopXmove 17 → 13, landings 10 → 6. Remaining named residuals:
+straddling-tail (C), threshold-marginal contact, foes-pair crossing late-stop, double-landing
+class, A-residual (foe-approach index registration on pool lanes).

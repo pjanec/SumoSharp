@@ -7780,6 +7780,29 @@ public sealed partial class Engine : IEngine
                     continue;
                 }
 
+                // Entry 40: mutual on-junction tie-break, GATE-SCOPED. The flag-off RespondsTo path
+                // above deliberately brakes ego for an on-junction foe even when ego is ALSO on the
+                // junction (pre-F3 parity, bit-for-bit) -- which leaves a LATENT mutual deadlock:
+                // two on-junction RespondsTo foes each adaptToJunctionLeader-stop for the other
+                // forever. SUMO does not have it (isLeader's entry-time ordering, MSVehicle.cpp:
+                // 7348-7483: the earlier entrant does not yield); the full port exists behind
+                // `JunctionIsLeaderGate` (default OFF, known saturated-grid regression). The
+                // corridor-follow arm below EXPOSED the latch on willpass-saturation (veh 139/155,
+                // t=234..1199: follow-slowing let both enter slow and square off nose-to-nose,
+                // 412 -> 301 arrivals / 966 stuckDwell). Under the physical-occupancy gate, the
+                // EARLIER entrant of a mutual on-junction pair skips this foe (the same
+                // IsLeaderByEntryOrder chain the merge/bay arms already use -- total order, so
+                // exactly one of the pair yields and the pair interleaves). Defaults keep the
+                // pre-existing (latent) behaviour bit-for-bit until the isLeader port flips on.
+                if (JunctionPhysicalOccupancyGate && egoInsideJunction
+                    && IsLeaderByEntryOrder(
+                        v.JunctionEntryTime, foe.JunctionEntryTime,
+                        v.Kinematics.Speed, foe.Kinematics.Speed,
+                        v.Def.Id, foe.Def.Id))
+                {
+                    continue;
+                }
+
                 // On-junction: MSVehicle::adaptToJunctionLeader.
                 // Rung ER2: an emergency vehicle with jmIgnoreJunctionFoeProb IGNORES the
                 // on-junction link-leader (MSVehicle.cpp:3430 -- checkLinkLeaderCurrentAndParallel's
@@ -8003,14 +8026,6 @@ public sealed partial class Engine : IEngine
                         continue;
                     }
 
-                    // Hold only for an occupant that will REMAIN in the overlap: slow-or-stopped
-                    // (<= 2 m/s -- a bay-held turner creeps or stands; its stage-2 admission caps it)
-                    // AND not already exiting (front past the interval end). Holding for every
-                    // transiting body was measured to collapse the net (bothSlow pair-steps
-                    // 16 -> 652, GRIDLOCK 42 stuck / 634-step dwell); holding only for fully-stopped
-                    // ones was measured too late (the occupant often stops one step AFTER ego
-                    // commits: stopXmove 35). The stopped/creeping occupant is the owner's reported
-                    // ghost (a turner held mid-junction by its stage-2).
                     // Entry 36: the exiting test is the BACK bumper, not the front. The body test
                     // below spans [back, front], so a car parked just past a SHORT overlap interval
                     // (straight-vs-bay rows overlap only the first metre or two of the bay) has its
@@ -8018,8 +8033,8 @@ public sealed partial class Engine : IEngine
                     // front-based, it was skipped as "exiting" and the straight was never held
                     // (veh 431 clipped the parked 448 at t=543 with 5 m of stopping room in hand).
                     // A genuinely transiting car's back clears the interval within a step or two.
-                    if (cand.Kinematics.Speed > 2.0
-                        || cand.Kinematics.Pos - cand.VType.Length > bc.BayArcEnd + 1.0)
+                    var candBack = cand.Kinematics.Pos - cand.VType.Length;
+                    if (candBack > bc.BayArcEnd + 1.0)
                     {
                         continue;
                     }
@@ -8033,6 +8048,64 @@ public sealed partial class Engine : IEngine
                     // >= the threshold is a wedge, not a transient, and holding for it converts one
                     // stuck car into a citywide gridlock. Inert at the -1 default (SUMO parity).
                     if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    {
+                        continue;
+                    }
+
+                    // Body inside the overlap interval?
+                    if (!(cand.Kinematics.Pos >= bc.BayArcStart && candBack <= bc.BayArcEnd))
+                    {
+                        continue;
+                    }
+
+                    // Entry 40 (corridor-follow): map the occupant's BACK through the row's own arc
+                    // intervals into ego's frame -- linear, sound within the proximity region (the
+                    // overlap only exists where the corridors run near-parallel; measured 1.5-10 deg
+                    // over every witness row, so there is no angle classification to get wrong).
+                    // When the mapped back sits a MinGap ahead of ego (`followGap >= 0`), the foe is
+                    // unambiguously AHEAD in the shared corridor and ego CAR-FOLLOWS it at any foe
+                    // speed -- the merge arm's own PHASE-1 pattern. This dissolves the late-stop
+                    // race the binary hold-or-commit loses (traced: the occupant decelerates through
+                    // the 2.0 m/s hold predicate in exactly the step ego commits past the overlap
+                    // start -- veh 179x122 j=301 t=346, veh 385x502 j=271 t=490), and it lets ego
+                    // keep following INSIDE the corridor instead of going blind past the commit
+                    // point. `followGap < 0` (side-by-side / wedged / foe behind) keeps the
+                    // measured hold semantics below, guards untouched.
+                    var mappedFoeBack = bc.EgoArcStart
+                        + ((candBack - bc.BayArcStart) * (bc.EgoArcEnd - bc.EgoArcStart) / (bc.BayArcEnd - bc.BayArcStart));
+                    var egoDistToFoeBack = egoOnInternal
+                        ? mappedFoeBack - v.Kinematics.Pos
+                        : egoDistToEntry + mappedFoeBack;
+                    var followGap = egoDistToFoeBack - v.VType.MinGap;
+                    if (followGap >= 0.0)
+                    {
+                        var followConstraint = FollowSpeedFor(
+                            v.VType, v.Kinematics.Speed, followGap, cand.Kinematics.Speed, cand.VType.Decel,
+                            laneVehicleMaxSpeed, dt, time: time,
+                            accControlMode: ref v.AccControlMode, accLastUpdateTime: ref v.AccLastUpdateTime,
+                            caccControlMode: ref v.CaccControlMode, egoAcceleration: v.Acceleration,
+                            hasPred: true, predIsCacc: cand.VType.CarFollowModel == "CACC",
+                            levelOfService: v.LevelOfService, ballistic: _config!.Ballistic);
+                        if (bayTrace)
+                        {
+                            Console.Error.WriteLine(
+                                $"[bay] t={CurrentTime:F1} veh={v.Def.Id} bay={bc.BayLaneId} FOLLOW foe={cand.Def.Id} "
+                                + $"gap={followGap:F2} foeSpeed={cand.Kinematics.Speed:F2} constraint={followConstraint:F2}");
+                        }
+
+                        constraint = Math.Min(constraint, followConstraint);
+                        if (constraint < jyBest) { jyBest = constraint; jyArm = 8; v.JunctionYieldFoeSpeed = (float)cand.Kinematics.Speed; blockerIdx = cand.EntityIndex; } // diag: corridorFollow
+                        continue;
+                    }
+
+                    // Hold only for an occupant that will REMAIN in the overlap: slow-or-stopped
+                    // (<= 2 m/s -- a bay-held turner creeps or stands; its stage-2 admission caps it).
+                    // Holding for every transiting body was measured to collapse the net (bothSlow
+                    // pair-steps 16 -> 652, GRIDLOCK 42 stuck / 634-step dwell); holding only for
+                    // fully-stopped ones was measured too late (the occupant often stops one step
+                    // AFTER ego commits: stopXmove 35). The stopped/creeping occupant is the owner's
+                    // reported ghost (a turner held mid-junction by its stage-2).
+                    if (cand.Kinematics.Speed > 2.0)
                     {
                         continue;
                     }
@@ -8056,12 +8129,8 @@ public sealed partial class Engine : IEngine
                         continue;
                     }
 
-                    var candBack = cand.Kinematics.Pos - cand.VType.Length;
-                    if (cand.Kinematics.Pos >= bc.BayArcStart && candBack <= bc.BayArcEnd)
-                    {
-                        bayFoe = cand;
-                        break;
-                    }
+                    bayFoe = cand;
+                    break;
                 }
 
                 if (bayTrace)

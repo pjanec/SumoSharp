@@ -1429,7 +1429,7 @@ static int RunLiveCitySmoke(int steps, string? recordPath, int simHz)
                             "keepClear", "obstacle", "crowd", "internalJunctionAdmission", "colocationSymmetryBreak",
                             "crowdYield", "internalJunctionApproachArm", "urgentStrategicFollow", "urgentFollowerYield" };
                         string[] fullArmNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge",
-                            "externalAgent", "adaptToJxnLeader", "approachingCross", "bayOccupancy" };
+                            "externalAgent", "adaptToJxnLeader", "approachingCross", "bayOccupancy", "corridorFollow" };
                         var intBinder = new int[fullBinderNames.Length];
                         var intJyArm = new int[fullArmNames.Length];
                         foreach (var c in w)
