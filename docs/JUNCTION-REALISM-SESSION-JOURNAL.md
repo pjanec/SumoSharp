@@ -3348,3 +3348,29 @@ prefixes), so future bench runs print every gate they observed.
    measurement) to ~16% (2562 vs 3042) across Entries 37-42, with long stalls 0 both ways and the
    overlap/pass-through honesty it buys. Evidence trending toward ON; the decision remains WITH
    the owner.
+
+## Entry 47 — rerouting DEFAULT-ON (owner decision); two-hop chains; the ring-deadlock design for review
+
+1. **Rerouting default flipped ON** (owner: "all drivers can 'have navigation' if it helps
+   filling the city and reduce gridlocks"): `LiveCityConfig.ReroutePeriodSeconds` 0 → 60,
+   probability 1.0; `LIVECITY_REROUTE=0` is the kill switch (`1` still force-enables an
+   explicit-0 host). Full sln suite GREEN with the device on by default (LiveCity 92/92 incl.
+   hour-horizon; goldens untouched — engine defaults unchanged, this is host config). Verified in
+   the host: default run emits REROUTES (130+ by t=260 at 400 cars) without any env var;
+   kill-switch run emits none. ENV-GATES row updated — every future A/B or SUMO comparison must
+   set LIVECITY_REROUTE explicitly in both arms.
+2. **HEADSTUCK follows TWO blocker hops** (3D-session request: 3 of their 5 durable Geneva
+   chains ended at a leaderFollow-bound blocker — root one hop further). Their 187 freeFlow/
+   deadLaneMerge artifact lines came from a pre-Entry-45 build; the current predicate already
+   excludes both.
+3. **Rerouting-off masking measured** (3D session): 280 HEADSTUCK lines by t=580 without the
+   device vs 160 by t=2138 with it — roughly an order of magnitude per unit sim-time. The device
+   suppresses standoff FORMATION; the residue (7 chains, all blockers stopped on internal lanes,
+   two provably durable) is the ring class.
+4. **`DEADLOCK-RING-DESIGN.md` written for owner review** (the photographed crossing-streams
+   interlock): D1 = blocker-graph cycle detection + LIVECITY-RING witness (diagnostic only; also
+   closes the blocker-attribution gaps in leaderFollow/crossJxnLeader/keepClear), D2 = gated
+   break (elect ONE member by the entry-order total order, relax its ring edge to corridor-follow
+   creep — never through bodies; honest LIVECITY-RING-STUCK report when geometry is truly
+   wedged), D3 = the standard four-surface ladder + ring-age distributions. No code before
+   sign-off.

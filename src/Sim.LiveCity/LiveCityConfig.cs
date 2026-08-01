@@ -172,7 +172,13 @@ public sealed class LiveCityConfig
     // travel times every period (per-entity jitter phase). Env overrides in the LiveCitySim ctor:
     // LIVECITY_REROUTE=1 (period 60 s, probability 1.0), LIVECITY_REROUTE_PERIOD,
     // LIVECITY_REROUTE_PROB -- see docs/ENV-GATES.md.
-    public double ReroutePeriodSeconds { get; set; } = 0.0;
+    // Entry 47: DEFAULT ON at probability 1.0 -- the owner's decision after the T4 validation
+    // ("all drivers can 'have navigation' if it helps filling the city and reduce gridlocks";
+    // measured +4-5% arrivals on realistic topology, 0 long stalls, and the owner's "prolongs
+    // time to the gridlock, city seems more alive"). LIVECITY_REROUTE=0 is the kill switch; any
+    // A/B or SUMO-comparison run must set it EXPLICITLY in both arms (process-global, CLAUDE.md
+    // rule 10) since the device now changes default LiveCity behaviour.
+    public double ReroutePeriodSeconds { get; set; } = 60.0;
     public double RerouteProbability { get; set; } = 1.0;
 
     // docs/LIVE-CITY-15-DEADLANE-DRIVETHROUGH-DESIGN.md: never let a dead-ended car freeze forever --

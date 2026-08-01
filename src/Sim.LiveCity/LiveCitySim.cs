@@ -382,7 +382,14 @@ public sealed class LiveCitySim : IDisposable
         // pre-rerouting build (the T1.1 inertness condition).
         var reroutePeriod = cfg.ReroutePeriodSeconds;
         var rerouteProb = cfg.RerouteProbability;
-        if (Environment.GetEnvironmentVariable("LIVECITY_REROUTE") == "1" && reroutePeriod <= 0.0)
+        // Entry 47: the cfg default is now ON (60 s / prob 1.0, the owner's decision) -- "0" is
+        // the kill switch, "1" still force-enables a host that constructed with an explicit 0.
+        var rerouteEnv = Environment.GetEnvironmentVariable("LIVECITY_REROUTE");
+        if (rerouteEnv == "0")
+        {
+            reroutePeriod = 0.0;
+        }
+        else if (rerouteEnv == "1" && reroutePeriod <= 0.0)
         {
             reroutePeriod = 60.0;
         }
@@ -1476,9 +1483,27 @@ public sealed class LiveCitySim : IDisposable
                 continue;
             }
 
-            var blockerText = c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var bi)
-                ? " -> " + Describe(w[bi])
-                : (c.BlockerEntity >= 0 ? $" -> ent{c.BlockerEntity}(gone)" : "");
+            // Entry 47 (3D-session request): TWO blocker hops -- 3 of their 5 durable Geneva
+            // standoff chains ended at a blocker whose own binder was leaderFollow, i.e. the root
+            // sat one more hop downstream and the one-hop trace stopped just short of it.
+            var blockerText = string.Empty;
+            if (c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var bi))
+            {
+                blockerText = " -> " + Describe(w[bi]);
+                var b2 = w[bi];
+                if (b2.BlockerEntity >= 0 && byEntity.TryGetValue(b2.BlockerEntity, out var bj))
+                {
+                    blockerText += " ->> " + Describe(w[bj]);
+                }
+                else if (b2.BlockerEntity >= 0)
+                {
+                    blockerText += $" ->> ent{b2.BlockerEntity}(gone)";
+                }
+            }
+            else if (c.BlockerEntity >= 0)
+            {
+                blockerText = $" -> ent{c.BlockerEntity}(gone)";
+            }
 
             if (c.Pos < lane.Length - 25.0 && c.GapAhead > 25.0)
             {
