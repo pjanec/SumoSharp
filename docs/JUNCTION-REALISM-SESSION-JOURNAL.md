@@ -2946,3 +2946,50 @@ re-measure everything; then design (B) on that baseline; (C) stays a named resid
 (B) sites and the straddling-tail (C) sites. (B) — car-following along a shared near-parallel
 corridor instead of the binary hold-or-commit — is the next design, gate-scoped, with its own
 BEFORE predictions. (C) stays a named residual.
+
+## Entry 40 (BEFORE) — F1.1 mechanism (B): corridor-follow in the bay arm
+
+**The defect (traced, Entry 39 MID):** the bay arm's binary hold-or-commit loses the late-stop
+race — the occupant enters the shared corridor at 4–5 m/s (skipped by the `Speed<=2.0` predicate,
+whose dial is measured and stays untouched), decelerates through the threshold in the step ego
+commits past the overlap start, and ego drives through its tail (veh 179×122 at j=301 t=346, veh
+385×502 at j=271 t=490). ~6 of the 9 remaining L2 gate-ON stopXmove pair-steps.
+
+**Measured design input:** an angle threshold CANNOT discriminate "follow-appropriate" rows —
+proximity-overlap regions are near-parallel by construction (measured over the overlap intervals:
+j=301 (7,8) 9.5° mean, j=271 (9,10) 9.4°, the j=1150 straight-vs-bay hug 9.7°, and the Entry-36
+sibling bays are the MOST parallel at 1.5°). So there is no new ingest field and no
+classification dial. Instead the follow/hold split falls out of the GAP SIGN:
+
+- Map the occupant's back through the row's own arc intervals into ego's frame
+  (`mapped = EgoArcStart + (candBack − BayArcStart) · (EgoArcEnd−EgoArcStart)/(BayArcEnd−BayArcStart)`;
+  linear, sound within the proximity region, same `egoDistToEntry`/on-internal frame arithmetic
+  the hold already uses — bay-piece negative-arc rows included).
+- `gap = distToFoeBack − ego.MinGap ≥ 0` (foe unambiguously AHEAD in the corridor): CAR-FOLLOW it
+  — `FollowSpeedFor(gap, foeSpeed, foeDecel)`, the merge arm's own PHASE-1 pattern
+  (MSVehicle.cpp:3218's adaptToLeader shape), at ANY foe speed. The 2.0 m/s cliff and the
+  committed-skip both dissolve in this branch: a fast foe ahead yields a mild constraint, a
+  decelerating foe is tracked continuously, and ego can follow INSIDE the corridor.
+- `gap < 0` (side-by-side / wedged / foe behind): exactly today's hold semantics with ALL guards
+  — speed skip, back-bumper exiting skip, Entry-37 patience, Entry-36 entry-order backstop, hold
+  at overlap start when approaching, committed skip when past it. The dwell-634 mutual-wedge
+  protection is untouched in the configuration that produced it (standing foes, negative gaps).
+- Patience + exiting skips stay upstream of BOTH branches. jyArm 8 = corridorFollow (new diag
+  code; Sim.Viewer witness arm-name array extended).
+
+Gate-scoped under `JunctionPhysicalOccupancyGate` — no default-path reader.
+
+**Predictions:**
+1. L2 gate-ON stopXmove 9 → ≤4 (the late-stop sites convert; the ~2 straddling-tail (C)
+   pair-steps and any unclassified tail remain). Mixed-1k gate-ON stopXmove 12 → ≤8.
+2. bothSlow rises at most mildly (followers now creep behind corridor occupants instead of
+   driving through) — L2 gate-ON bothSlow stays ≤ 20 (Entry-36's collapse signature was 652).
+3. Defaults BYTE-IDENTICAL: L2 hash `5ac89389…` unchanged, goldens unchanged, full sln green.
+4. Battery gate-ON: stuckDwell 0 everywhere; smoke 400 gate-ON drained with arrivals ≥ 800.
+5. Determinism 3/3 + par==single, both states.
+
+**Declared fail conditions:** smoke arrivals cratering or any battery gridlock ⇒ suspect a
+follow-chain cascade or a mutual follow-stop pair — trace `[bay]` at j=301 FIRST (the follow
+branch logs its gap), before touching any dial; stopXmove NOT dropping ⇒ the late-stop
+attribution was wrong for the untraced sites — trace one of them (j=1258 t=318 or j=428 t=503)
+before redesigning.
