@@ -1368,6 +1368,63 @@ public sealed class LiveCitySim : IDisposable
         LastPedEventBatchCount = _pedEventBatch.Count;
         _pedPublisher.ClearEvents();
         PhaseEnd("publishPeds", tPublishPeds);
+
+        ReportMidLaneStuck();
+    }
+
+    // Entry 42 instrument (owner's Geneva "stopped mid-lane with a long free segment ahead" class,
+    // which the demo grid does NOT reproduce -- one crowd event in a 2400-frame saturated smoke):
+    // a periodic stderr report of clear-stuck cars that are STOPPED far from their lane end with a
+    // large same-lane gap ahead, naming binder + jyArm + blocker, so the 3D host itself (City3D
+    // consumes this class through the packed library) can tell us WHICH mechanism holds them --
+    // remote guessing has been ~0-for-20 in this workstream. Runs only under LIVECITY_WITNESS=1;
+    // read once (env reads per step would be silly), throttled to one report per 20 sim-seconds,
+    // capped lines. Diagnostic only: reads the same authoritative witness surface the smoke uses,
+    // never mutates state.
+    private bool? _midLaneWitnessOn;
+    private double _lastMidLaneReport = double.NegativeInfinity;
+
+    private void ReportMidLaneStuck()
+    {
+        _midLaneWitnessOn ??= Environment.GetEnvironmentVariable("LIVECITY_WITNESS") == "1";
+        if (!_midLaneWitnessOn.Value || _now - _lastMidLaneReport < 20.0)
+        {
+            return;
+        }
+
+        _lastMidLaneReport = _now;
+        var w = WitnessAuthoritative();
+        string[] binderNames = { "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane",
+            "deadLaneMerge", "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield",
+            "keepClear", "obstacle", "crowd", "internalJunctionAdmission", "colocationSymmetryBreak",
+            "crowdYield", "internalJunctionApproachArm", "urgentStrategicFollow", "urgentFollowerYield" };
+        string[] armNames = { "none", "cycleHold", "cautiousApproach", "sameTargetMerge",
+            "externalAgent", "adaptToJxnLeader", "approachingCross", "bayOccupancy", "corridorFollow" };
+        var printed = 0;
+        foreach (var c in w)
+        {
+            if (c.Speed >= 0.1 || c.LaneId.Length == 0 || c.LaneId[0] == ':' || c.GapAhead <= 25.0)
+            {
+                continue;
+            }
+
+            if (!Network.LanesById.TryGetValue(c.LaneId, out var lane) || c.Pos >= lane.Length - 25.0)
+            {
+                continue; // at/near the stop line -- a normal queue head, not the mid-lane class
+            }
+
+            if (printed++ >= 12)
+            {
+                break;
+            }
+
+            var bn = c.Binder < binderNames.Length ? binderNames[c.Binder] : c.Binder.ToString();
+            var an = (c.JyArm & 0x0F) < armNames.Length ? armNames[c.JyArm & 0x0F] : "?";
+            Console.Error.WriteLine(
+                $"LIVECITY-MIDLANE-STUCK: t={_now:F0} {c.DefId} {c.LaneId}@{c.Pos:F1}/{lane.Length:F0} "
+                + $"bind={bn}/{an} gap={(double.IsInfinity(c.GapAhead) ? "inf" : c.GapAhead.ToString("F0"))} "
+                + $"tl={(c.Tl == '\0' ? '-' : c.Tl)} blockerEnt={c.BlockerEntity}");
+        }
     }
 
     // Stage 3: the reused per-step ped-event batch (see the publishPeds block). Grows once to the peak

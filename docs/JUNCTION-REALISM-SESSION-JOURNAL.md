@@ -3156,3 +3156,45 @@ past the junction seeding the gridlock) is this one frame bug. It was invisible 
 (no saturated cont-turn + downstream jam in any small scenario) and to the L2 classifier (which
 measures overlaps, not conservatism) — it took the owner's eyes plus the STUCKCLEAR/CHAIN
 witness to corner it.
+
+## Entry 42 (BEFORE) — the owner's mid-lane pulsing stalls: the C4-vii-a frame-bug family was only PARTIALLY cured; six raw sites remain
+
+**Owner clarification (with screenshot):** the stopped-with-free-road cars are on STRAIGHT
+lanes, stop MID-LANE with nothing ahead, and PULSE (unblock occasionally, mostly stand). Not
+merge-waiters.
+
+**Instrument (committed):** `LIVECITY-MIDLANE-STUCK` in `LiveCitySim.Step()` (under
+`LIVECITY_WITNESS=1`, so the City3D host reports it too): stopped cars far from their lane end
+with >25 m clear ahead, with binder/arm/blocker names. On the 800-car demo smoke it caught the
+class immediately:
+
+    LIVECITY-MIDLANE-STUCK: t=200 __veh382 e_d_3_3_d_3_4_2@9.1/223 bind=junctionYield/adaptToJxnLeader gap=140 tl=G blockerEnt=161
+
+A car at pos 9 of a 223 m lane, GREEN, 140 m clear, full-stopped by jyArm 5 for the junction
+210 m away. Cause (same class as Entry 41, THIRD instance): `AdaptToJunctionLeader`'s
+`seen = (approachLane.Length − pos) + egoLane.Length` where `approachLane` on a cont-turn route
+is the first-stage BAY — 7 m minus a position measured on a 223 m lane → hugely negative gap →
+stop at current position. It re-binds whenever ANY foe stands on the far junction and releases
+when it clears: the owner's PULSING. Audit of `approachLane.Length − pos` finds the C4-vii-a fix
+was applied to the merge arm, the cautious-approach block, and (Entry 41) keepClear — but SIX
+raw sites remain: the external-agent hold (jyArm 4), the approaching-cross stop line (jyArm 6),
+the isLeader gap derivation (gate path), `AllwayStopConstraint`, `FoeIsInTheWay`, and
+`AdaptToJunctionLeader` (jyArm 5 — the traced one).
+
+**Fix (DEFAULT-scope, one sweep):** thread the ALREADY-HOISTED `egoDistToEntry` (the C4-vii-a
+pool walk at the top of `JunctionYieldConstraint`) into all six sites: stop-line sites use
+`egoDistToEntry`, seen-to-lane-end sites use `egoDistToEntry + egoLane.Length`. For a vehicle on
+the immediate normal approach lane of a non-cont link every replacement is arithmetically
+IDENTICAL to the old expression (the goldens' configuration — byte-identity argument).
+
+**Predictions:**
+1. Demo 800-car smoke: the `junctionYield/adaptToJxnLeader` MIDLANE-STUCK entries vanish
+   (residual mid-lane entries only crowd/ped yields); saturated flow improves again (arrivals at
+   t=1200 ≥ 2028's baseline).
+2. Goldens byte-identical (full sln suite green); bench hash unchanged.
+3. Default + gate-ON L2 hashes move (re-baseline with the ladder); batteries both arms
+   stuckDwell 0; smoke 400 both arms not worse.
+4. On Geneva: the mid-lane pulsing stall class should be strongly reduced — cars on cont-turn
+   (and any bay-carrying) routes no longer freeze mid-lane for far-junction foes. Owner re-check
+   is the acceptance gate; the residual "rotten" saturation behaviour beyond this is the
+   rerouting question (design awaiting owner sign-off).
