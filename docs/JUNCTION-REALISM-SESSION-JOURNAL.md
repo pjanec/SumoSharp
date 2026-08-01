@@ -3507,3 +3507,34 @@ construction.
 reviewed intent, trace-proven cure, overlaps improve, everything green). The class-2
 `internalJunctionAdmission` mutual structure is now the top open item, with D1 giving exact
 counts/ages to hunt it — trace target: the `:35479` pair of stream heads.
+
+## Entry 50 — class-2 admission ring ROOT-CAUSED (`:35479` traced): two SUMO-faithful edges + the honesty edge close the cycle; D2 is the designed remedy
+
+Trace (`LIVECITY_TRACEVEH=__veh2526`, deterministic, seed forms t≈360): junction 35479 is
+`type="traffic_light"` with the conflicting links in TL-off state `'o'`; link 14 is a cont turn
+with a ~60 m stage-1 bay (`:35479_14_0` → stage-2 `:35479_20_0`). `__veh2526` rolls to the bay
+end @55.30 by t=315.5 and stands. The 3-member seed cycle, edge by edge:
+
+1. `__veh2526` (bay 14_0) —`internalJunctionAdmission` (tag 14, lane-foe half)→ `__veh2572`
+   STANDING on foe lane `:35479_0_0@3.8`. **SUMO-faithful**: `myFoeLanes` standing-foe hold
+   (the arm's own doc: a foe on a plain internal lane keeps the unconditional block — it is
+   genuinely occupied).
+2. `__veh2572` (0_0) —`adaptToJxnLeader`→ `__veh2317` (`:35479_3_0@18.8`). **SUMO-faithful**
+   (checkLinkLeader car-following; post-Entry-49 entry order is correct, veh2317 is earlier).
+3. `__veh2317` (3_0) —`corridorFollow`→ the 14_0 queue's bodies. **DELIBERATE BEYOND-SUMO
+   honesty edge**: SUMO drives THROUGH this bay-corridor overlap (`collision.check-junctions`
+   defaults FALSE — the interpenetration is not even detected; honest SUMO warns and still
+   proceeds). The artefact ladder forbids copying that, so the engine holds — and the hold is
+   what closes the cycle.
+
+The ring then accretes followers on 14_0/3_0 to the locked 12-member, 300+ s form. **This IS the
+localized "why SUMO clears junctions more easily" mechanism for this junction class**: SUMO's
+clearance is bought with junction interpenetration our F3/honesty gates refuse. Post-Entry-49
+this class is dominant (200 of 273 ring reports involve the admission arm).
+
+**Remedy:** exactly DEADLOCK-RING-DESIGN **D2** — a ring confirmed for ≥ RingBreakSeconds elects
+ONE member by the entry-order total order and relaxes its ring edge to corridor-follow CREEP
+(through gaps, never bodies), escalating honestly to `LIVECITY-RING-STUCK` when geometry is truly
+wedged. D1 now supplies the justifying numbers the design required before D2 code. Per the
+design's own gate ("no code before sign-off"), D2 implementation awaits the owner's go on these
+numbers.
