@@ -38,7 +38,7 @@ Restated as testable criteria:
 | # | criterion |
 | --- | --- |
 | **C1** | a car never passes through, or close-and-fast past, a pedestrian |
-| **C2** | pedestrians do not interpenetrate, except in genuinely dense crowds |
+| **C2** | pedestrians do not interpenetrate, except in genuinely dense crowds — ⚠ **weak criterion**: the owner has since said overlaps at density are acceptable, so this is *not* an argument against either option. Recorded so it is not re-used as one. |
 | **C3** | a ped waits at the kerb rather than stepping in front of a car |
 | **C4** | a car sees a ped *intending* to cross, early enough to yield smoothly |
 | **C5** | a car sees a ped who stepped out *without* waiting |
@@ -170,7 +170,7 @@ place to spend months.
 | criterion | ORCA today | ORCA + the additions in §5 | faithful SUMO port |
 | --- | --- | --- | --- |
 | **C1** car never hits / close-fast-passes a ped | **guaranteed** (binder 16) | guaranteed | **fails at density** (80 collisions, by design) |
-| **C2** peds don't interpenetrate | reciprocal avoidance | reciprocal avoidance | worse — jammed peds are mutually invisible |
+| **C2** peds don't interpenetrate | reciprocal avoidance | reciprocal avoidance | worse — but **acceptable per the owner**; not a deciding factor |
 | **C3** ped waits at kerb for a gap | ❌ inexpressible | ✅ new `ICrossingSignal` impl | ✅ native |
 | **C4** car sees intent to cross | **built** (anticipatory corridor) | built | `blockedAtDist` + `jmCrossingGap` |
 | **C5** car sees a ped who jumped out | **built** | built | yes |
@@ -212,6 +212,109 @@ one policy change — plus calibration. Weeks.
   steps to the kerb edge and the **car** yields — which binder 16 already guarantees. That is arguably
   *more* believable than SUMO's answer, but it is design work, not porting.
 - **R-A3 — no oracle, so calibration is judgement.** Mitigated by §7.
+
+---
+
+## 5b. Option D — junction-scoped ORCA islands (the owner's proposal, and the current front-runner)
+
+Proposed by the owner, 2026-08-02:
+
+> *"switching from sidewalk low-power non-orca peds to junction-scoped orca peds for each junction that
+> falls into the high realism zone(s) and keeping low-power peds and low-ped-lockable-crosswalks
+> everywhere else; sidewalks do not really need ORCA, junctions only in high realism zones, and
+> low-power peds should never be hit by car as long as they cross the street on crosswalk only."*
+
+This is structurally stronger than Option A as written above, for a reason worth spelling out.
+
+### 5b.1 It shrinks the containment problem from a city to a polygon
+
+A low-power ped's pose is `PathArcMotion.PositionAt(path, startTime, speed, now)` — **a pure function**.
+Arc length is `speed · max(0, now − startTime)`, clamped at the final vertex. There is no solver, no
+force, no velocity negotiation. **A low-power ped cannot run away**: there is no mechanism by which it
+could leave its path.
+
+So C6 is not a property to be enforced over the whole city — it is automatically true everywhere except
+*inside the ORCA islands*. And an island is one junction: a walkingarea plus its crossings. Small,
+closed, and roughly convex — which is where RVO2's static-obstacle handling is at its most reliable, and
+where feeding the boundary via `AddObstacle` is a handful of vertices rather than a city's worth of
+sidewalk edges.
+
+That reframes §2.3's finding. The question is no longer "can ORCA be kept on the pavement in general"
+but the much narrower "can ORCA be kept inside one junction polygon" — and Q1 gets correspondingly
+cheaper and more likely to succeed.
+
+### 5b.2 Gap acceptance belongs on the LOW-POWER tier, where it is a schedule, not a steering decision
+
+This is the part that makes the architecture cheap, and it is the opposite of where Option A put it.
+
+`ActivityTimeline` already has a **`Pause`** segment kind: *"Stop in place for `Dur` seconds… Pause
+carries NO position of its own — it holds at wherever the timeline reached when it started."*
+
+So "wait at the kerb" on the low-power tier is **a pause inserted in a precomputed timeline** — a
+time-warp on a pure function. No solver, no reciprocal shove, no containment risk, and the ped's
+position while waiting is exactly the kerb point rather than "wherever the velocity solve left it".
+Compare with doing the same thing inside ORCA, where `CrossingGate`'s header documents a measured
+0.6–0.7 m overshoot that needed per-agent slots and a two-slot buffer to tame.
+
+⚠ **One real wire implication.** `ActivitySegment` durations are *"fixed at construction time"*, and the
+timeline replicates through `ActivityTimelineWire`. A traffic-conditioned kerb wait is **not known in
+advance**, so it needs either a re-issued/extended timeline at hold time, or a new open-ended
+"hold-until-released" segment kind that the wire and `PedRemoteReconstructor` understand. Small, but it
+touches the replication protocol and is exactly the sort of thing that is cheap now and awkward later.
+
+### 5b.3 Paused kerb-waiters can be static obstacles rather than ORCA agents
+
+Follows from 5b.2 and is worth stating on its own, because it removes the failure mode the repo already
+measured.
+
+Inside an island, the waiting cluster is a set of peds **paused at fixed positions**. They do not need to
+be solver agents at all — they can be static obstacles (or fixed discs). Two consequences:
+
+- **The reciprocal-shove problem disappears for the waiting cluster.** `CrossingGate`'s overshoot exists
+  because ORCA splits separating velocity between *both* parties, so an agent that has "arrived" is
+  still a negotiating party. A static obstacle is not. The front waiter cannot be pushed into the road
+  by the people behind it, structurally rather than by tuning `queueSpacing`.
+- **Only the movers cost solver time** — the ped threading through the crowd, and the streams on the
+  crossing. That is precisely the subset the owner says needs ORCA.
+
+Care needed in two places: a released waiter must convert back to an agent cleanly (the same
+adopt/release churn discussed for the hybrid, so the O(1) add/remove property matters), and a fully
+static waiting cluster must not wall off the crossing entrance for the movers — obstacle *lines* would;
+fixed discs would not. Prefer discs.
+
+### 5b.4 The safety claim reduces to one checkable routing property
+
+> *"low-power peds should never be hit by car as long as they cross the street on crosswalk only"*
+
+The reasoning is sound and its load is carried entirely by the qualifier. A low-power ped on a crossing
+becomes a virtual disc via `CrossingOccupancySource`, so cars brake (binder 13), and binder 16's
+anticipatory corridor plus proximity cap make a close-fast pass impossible. That is C1 for low-power peds
+**provided the ped is on a crossing when it is in the road**.
+
+So the whole safety argument rests on: **does the baked low-power route graph only ever cross a road
+inside a crossing polygon?** If the navmesh ever bakes a sidewalk-to-sidewalk shortcut across a
+carriageway, a scripted ped walks into traffic on a pure-function path and no lock fires. That is a
+checkable invariant, not an assumption — see **Q5**.
+
+Note also that even with correct routing, a ped that *steps onto* the crossing in front of a car already
+too close to stop is unsafe by physics. So the low-power tier needs the 5b.2 kerb pause conditioned on
+traffic, not merely a crossing-only route. The two are complementary: routing keeps the ped out of the
+carriageway, the pause keeps it off the crossing at the wrong moment.
+
+### 5b.5 One crowd or one per junction?
+
+Not required for correctness either way: `OrcaCrowd`'s spatial hash already means peds at different
+junctions are not neighbours, so a single crowd with every island's boundary added is functionally
+equivalent and simpler. Per-junction crowds buy **bounded cost per island, natural parallelism, and a
+smaller obstacle set per solve**. Treat it as an optimisation decision after Q1/Q2, not an architectural
+one.
+
+### 5b.6 What this option still needs from the SUMO analysis
+
+The gap-acceptance *policy* — what gap is acceptable, how impatience grows, when a ped gives up and
+forces the car to yield — is exactly what `SUMOPED-ALGORITHM.md` and §7's calibration-oracle approach
+supply. This option does not avoid that work; it relocates it from a steering model to a scheduling
+model, where it is much easier to implement and to verify.
 
 ---
 
@@ -263,11 +366,44 @@ Nothing below should be argued; all four are measurable in days.
 | **Q2** | Can an ORCA ped abort mid-crossing without the reciprocal shove throwing it into traffic? | Bridge-crossing fixture; ped commits, car appears, move the goal back to the kerb. Measure max excursion and whether it re-enters the lane. | **R-A1**, the biggest unknown in Option A |
 | **Q3** | Does a gap-acceptance signal produce believable kerb behaviour at flow density? | Prototype `GapAcceptanceSignal`, render it, look. Compare kerb-wait distribution against a SUMO run on the same net (§7). | **C3**, and whether Option A is finishable |
 | **Q4** | Does ORCA hold up in the two places it is actually needed — threading a waiting crowd, and bi-directional streams on one crossing? | The two scenarios the SUMO work already identified as hard, run against ORCA. Render both. | whether the lattice is needed *anywhere* |
+| **Q5** | Does the baked low-power route graph **only ever cross a carriageway inside a crossing polygon**? | Enumerate every baked low-power path; intersect each segment with the road polygons; assert every road-crossing segment lies inside a crossing polygon. A standing test, not a one-off probe. | the entire safety argument of Option D (§5b.4) — if it fails, scripted peds walk into traffic and no lock fires |
+| **Q6** | Can a kerb hold be expressed on the low-power tier and survive replication? | Insert an `ActivityTimeline.Pause` at the kerb whose duration is decided on arrival; check `ActivityTimelineWire` / `PedRemoteReconstructor` reproduce it, and measure the extra wire traffic | whether §5b.2 is as cheap as it looks, or needs a new open-ended segment kind |
+
+**Q5 and Q1 first, in that order.** Q5 because it is a pure static analysis of committed data — no
+simulation, no tuning — and it is load-bearing for Option D's entire safety story: if scripted peds can
+route across a carriageway outside a crossing, nothing downstream saves them. Q1 second because it is
+one wiring call following an existing precedent and it targets the loudest symptom.
+
+Q2 remains the biggest *unknown* — but note §5b.3 changes it: if kerb waiters are static rather than
+agents, the reciprocal-shove failure mode that makes Q2 worrying is largely removed, and Q2 narrows to
+"can a ped already mid-crossing retreat cleanly", which is a smaller question.
 
 **Q1 first.** It is the cheapest, it targets the owner's loudest complaint, and its answer moves the
 decision more than any other single fact. If containment turns out to be one wiring call, Option A gets
 much stronger. If it does not, Option B's structural argument becomes decisive and the rest of the
 questions matter less.
+
+---
+
+## 8b. Current standing (2026-08-02)
+
+**Option D is the front-runner.** Not because ORCA beats the lattice on merit, but because it changes
+what has to be true:
+
+- containment (C6) becomes automatic everywhere except inside small junction polygons, since a
+  low-power ped is a pure function of its path and *cannot* run away;
+- kerb waiting (C3) becomes a **pause in a precomputed timeline** rather than a steering behaviour, so
+  the one genuinely missing criterion is implemented in the tier where it is easiest and safest;
+- the waiting cluster becomes static, which removes the measured reciprocal-shove overshoot by
+  construction rather than by tuning;
+- C1/C4/C5 are already built and are stronger than SUMO's.
+
+What remains genuinely uncertain: Q5 (is the low-power routing actually crossing-only?), Q2 (mid-crossing
+retreat), and how ORCA behaves in a dense island. None of these is settled by argument.
+
+**Nothing here retires the SUMO port.** If Q1/Q2/Q4 come back badly — if ORCA cannot be kept inside a
+junction polygon under pressure, or cannot thread a dense waiting crowd believably — the lattice's
+structural containment becomes the decisive argument and `SUMOPED-*` is ready to execute.
 
 ---
 
