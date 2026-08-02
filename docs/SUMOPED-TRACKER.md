@@ -8,7 +8,8 @@ on an implementor's report (CLAUDE.md §Subagents).
 
 Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-COVERAGE.md` (coverage
 plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-ALGORITHM.md` (what the
-model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **API decisions D19–D27: `SUMOPED-DESIGN.md` §10.0**, mirrored into
+model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method (ladders, stage gate, divergence protocol): `SUMOPED-PROCESS.md`.**
+**API decisions D19–D27: `SUMOPED-DESIGN.md` §10.0**, mirrored into
 `docs/SUMOSHARP-API.md` §12 + §12b (the API doc of record).
 
 ---
@@ -35,6 +36,8 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **API dec
 - [ ] **SP-2.1** person FCD parser + comparator + tolerance extension
 - [ ] **SP-2.1b** the other six comparators (person-summary, personinfo, statistic, collisions, netstate, warnings)
 - [ ] **SP-2.1c** stripe-projection helper (x/y → pos/posLat/stripe), cross-checked against FCD `pos`
+- [ ] **SP-2.1d** ⭐ single-step replay harness (L2) — reconstruction self-checks + replayable-step count
+- [ ] **SP-2.1e** fail-loudly staging: every unported branch throws, naming its inventory ID
 - [ ] **SP-2.2** one parity test per scenario, all failing honestly ("no persons produced")
 - [ ] **SP-2.3** person trajectory hash; value recorded below
 - [ ] **SP-2.4** coverage counters + `AllBranchesCoveredTest` + `PerScenarioClaimTest` (failing honestly)
@@ -89,6 +92,18 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **API dec
 | branch IDs covered / admitted holes (SP-0.6, SP-7.4b) | _(not yet)_ |
 | added golden bytes (SP-0.3) | _(not yet)_ — budget context: existing FCD goldens total 5.1 MB, largest single 1.26 MB |
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
+
+### Replayable step count — the stage-gate metric (`SUMOPED-PROCESS.md` §5.1)
+
+Must rise monotonically; a stage that adds code without adding replayable steps has not been shown to
+do anything. Denominator = total person-steps across the committed goldens.
+
+| stage | replayable / total person-steps | branch IDs covered / 148 |
+| --- | --- | --- |
+| S3 straight sidewalk | _(not yet)_ | _(not yet)_ |
+| S4 junctions | _(not yet)_ | _(not yet)_ |
+| S5 vehicle coupling | _(not yet)_ | _(not yet)_ |
+| S6 traffic lights | _(not yet)_ — **must reach 100%** | _(not yet)_ |
 
 ### Collision baseline (R5b) — the denominator for the later R5c improvement
 

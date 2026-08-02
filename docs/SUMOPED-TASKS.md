@@ -3,8 +3,9 @@
 **Status: PROPOSAL — awaiting owner sign-off.**
 
 Work breakdown for the SUMO pedestrian port. The WHAT is `SUMOPED-REQUIREMENTS.md`; the HOW is
-`SUMOPED-DESIGN.md` — tasks **reference** design sections, they do not restate them. Checklist:
-`SUMOPED-TRACKER.md`.
+`SUMOPED-DESIGN.md`; **the method — the four verification ladders, the stage gate and the divergence
+protocol — is `SUMOPED-PROCESS.md`, and every stage below is closed against its §5 gate.** Tasks
+**reference** these docs, they do not restate them. Checklist: `SUMOPED-TRACKER.md`.
 
 **Every task below states success conditions that are specific, measurable, and first-hand verifiable.**
 Per CLAUDE.md §Subagents, a task is closed only when the reviewer has confirmed its success conditions
@@ -201,6 +202,30 @@ saturated scenario its maximum equals **0.6401 m/s** (the `stripeWidth` clamp) w
 **0.5556 m/s** (`vMax * 0.4`) — both measured this session, so a regression in the inversion is caught
 by a number, not by inspection. Used by **both** arms of every derived assertion, so a bug in it cannot
 create a false pass.
+
+### SP-2.1d — ⭐ The single-step replay harness (L2)
+`SUMOPED-PROCESS.md` §3. **This is what makes staged porting possible** — it gives a green signal on
+the step function long before any scenario can run end-to-end, and it localises a divergence to one
+pedestrian on one lane with one obstacle array instead of "diverged at step 340".
+Reconstruct the full per-lane `PState` population at step `t` from the goldens (§3.1 recovery table),
+run exactly ONE step, compare against `t+1`, then discard our state and re-seed from the golden.
+**Success:** (a) the reconstruction self-checks pass — derived `pos` agrees with the FCD's own `pos`
+to 1e-6, and the two independent `myAmJammed` recoveries (the stderr `is jammed` event and the exact
+`vMax/4 = 0.3472` speed signature, measured at 1983 samples in the counterflow-jam golden) **agree with
+each other**; (b) replaying a ped's whole trajectory re-seeded each step reproduces `myWaitingTime`
+exactly; (c) the harness reports a **replayable step count** and it is written to the tracker — this is
+the stage-gate metric (§5.1); (d) at this stage every step throws `NotPortedInThisStage`, so the count
+is 0 and the harness fails honestly.
+
+### SP-2.1e — Fail-loudly staging
+`SUMOPED-PROCESS.md` §4. Every not-yet-ported branch throws
+`NotPortedInThisStageException(branchId)` naming its `SUMOPED-BRANCH-INVENTORY.md` ID — never a
+fallback, a default, or a `TODO` comment.
+**Success:** a test enumerates the inventory and asserts every unimplemented ID has a throwing site;
+running the `_sumoped` suite at any stage produces, for each scenario, either a result or an exception
+naming the exact branch that put it out of scope — so "which scenarios are in scope at stage N" is
+answered by running the suite, not by judgment. A `NotPortedInThisStage` surviving to SP-7.5 is a
+release blocker.
 
 ### SP-2.2 — One failing parity test per scenario
 One test class per scenario, following the `Rung1ParityTests.cs` pattern.
