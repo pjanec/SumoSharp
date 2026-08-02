@@ -70,6 +70,22 @@ internal sealed class VehicleRuntime
     public int LcStepsElapsed;
     public int LcStepsTotal;
 
+    // LIVECITY-DIAGSTOP diagnostic (journal Entry 64): how the LAST maneuver ended and how recently.
+    // Stamped when a continuous maneuver ends (completed at full LcStepsTotal, or aborted by
+    // ClearLaneChangeManeuver), decayed one per step in AdvanceLaneChanges. While > 0 the read-buffer
+    // projection publishes phase "just-completed"/"just-aborted", the engine proxy of the owner's
+    // "standing-car orientation vs lane direction" metric (the IG renders the lateral slide, so a car
+    // that stops during or right after a maneuver stands diagonal on screen). Never read by any
+    // behavioral path; always 0 on duration==0 scenarios (no maneuver ever starts) -> byte-identical.
+    public int LcEndedCooldownSteps;
+    public bool LcEndedByCompletion;
+
+    // Entry 65 refinement: the ego speed at the maneuver-end step. A completion at driving speed
+    // followed by a stop leaves the car ALIGNED (the slide finished before the stop) -- only an end
+    // at (near-)standstill is the diagonal-stand candidate. The projection splits the ended phases
+    // on this so the DIAGSTOP count does not launder aligned stoppers into the owner's metric.
+    public float LcEndSpeed;
+
     // D3: this vehicle's lane-sequence is now a SLICE `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`
     // into Engine's shared `_laneSeqPool` (a single `List<int>` of lane HANDLES, blob-style) --
     // replacing the old per-vehicle `IReadOnlyList<string> LaneSequence`/`int[]

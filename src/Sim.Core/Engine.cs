@@ -2099,16 +2099,25 @@ public sealed partial class Engine : IEngine
     // semantics as every other veto, so the wish retries and fires the moment the queue
     // creeps open runway. Instant-snap (duration 0, every golden/bench) never reaches the
     // guard -> byte-identical by construction.
+    // Entry 64 widening (the owner's residual class): the < 1.0 m/s leader cutoff let a commit through
+    // behind a CREEPING leader (queue pulse) that then stopped mid-sweep -- same diagonal stop, one
+    // queue-position later. Closure form instead: assume the leader stops NOW, so the room ego can ever
+    // get is the current gap plus the leader's own brake gap (v^2/2b -- ~0 for a creeper, large for a
+    // genuinely moving leader, which therefore still commits exactly as before). Veto when that room
+    // does not cover ego's whole-maneuver travel. The red-light pure-lateral slide is the same
+    // mechanism with a zero-speed "leader" horizon at the stop line -- covered by the creeper term.
     private bool ManeuverLacksRunway(VehicleRuntime v, VehicleRuntime? sameLaneLeader)
     {
-        if (sameLaneLeader is null || LaneChangeSteps() <= 1 || sameLaneLeader.Kinematics.Speed >= 1.0)
+        if (sameLaneLeader is null || LaneChangeSteps() <= 1)
         {
             return false;
         }
 
+        var leaderSpeed = sameLaneLeader.Kinematics.Speed;
+        var leaderBrakeGap = (leaderSpeed * leaderSpeed) / (2.0 * Math.Max(0.1, sameLaneLeader.VType.Decel));
         var gap = (sameLaneLeader.Kinematics.Pos - sameLaneLeader.VType.Length) - v.Kinematics.Pos;
         var runway = (v.Kinematics.Speed * _config!.LaneChangeDuration * 0.5) + v.VType.MinGap;
-        return gap < runway;
+        return gap + leaderBrakeGap < runway;
     }
 
     private void RecordLateQueueTailChange(VehicleRuntime v, VehicleRuntime? sameLaneLeader, string tag, double neighDist = double.NaN)
@@ -2228,6 +2237,13 @@ public sealed partial class Engine : IEngine
     // published so the host-side ring scan can age a blocker-graph cycle (age = min member value).
     public ReadOnlySpan<float> WaitingTimes => _readBuffer.WaitingTime.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<int> EntityIndexes => _readBuffer.EntityIndex.AsSpan(0, _readBuffer.Count);
+
+    // LIVECITY-DIAGSTOP diag (Entry 64/65): discrete lane-change maneuver phase per vehicle -- 0 none,
+    // 1 in-progress pre-midpoint, 2 in-progress post-midpoint, then ended-within-one-maneuver-duration
+    // split by end-step speed (< 1.0 m/s = diagonal-stand candidate): 3 completed-at-standstill,
+    // 4 aborted-at-standstill, 5 completed-at-speed, 6 aborted-at-speed. Always 0 when
+    // lanechange.duration == 0.
+    public ReadOnlySpan<byte> LcPhases => _readBuffer.LcPhase.AsSpan(0, _readBuffer.Count);
 
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
@@ -2485,10 +2501,30 @@ public sealed partial class Engine : IEngine
             // byte-identical; for a <vTypeDistribution> id, this publishes the drawn MEMBER's id
             // (matching real SUMO, which exposes the concrete resolved vType, never the
             // distribution name, once a vehicle is built).
+            // LIVECITY-DIAGSTOP (Entry 64/65): the discrete lane-change maneuver phase (DISTINCT from
+            // the `Manoeuvring` RVO/steer bit). 0 none, 1 in-progress pre-midpoint, 2 in-progress
+            // post-midpoint; ended phases (held one maneuver-duration) split on the END-STEP speed --
+            // an end at driving speed left the car ALIGNED (slide finished before any stop), only an
+            // end at (near-)standstill (< 1.0 m/s) is a diagonal-stand candidate: 3 completed-at-
+            // standstill, 4 aborted-at-standstill, 5 completed-at-speed, 6 aborted-at-speed. The
+            // witness crosses this with speed < 0.5 to count cars standing diagonal on screen.
+            byte lcPhase = 0;
+            if (v.LcTargetHandle >= 0)
+            {
+                lcPhase = (2 * v.LcStepsElapsed) <= v.LcStepsTotal ? (byte)1 : (byte)2;
+            }
+            else if (v.LcEndedCooldownSteps > 0)
+            {
+                var endedSlow = v.LcEndSpeed < 1.0f;
+                lcPhase = v.LcEndedByCompletion
+                    ? (endedSlow ? (byte)3 : (byte)5)
+                    : (endedSlow ? (byte)4 : (byte)6);
+            }
+
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime, lcPhase);
 
             // Entry 52 instrument: the traced vehicle's PER-STEP settled state -- lane/pos/speed and
             // the winning binder/arm/blocker the fold recorded. The constraint-internal traces
@@ -15762,6 +15798,13 @@ public sealed partial class Engine : IEngine
     // on every golden.
     private static void ClearLaneChangeManeuver(VehicleRuntime v)
     {
+        // LIVECITY-DIAGSTOP (Entry 64): an abort ends a maneuver mid-slide -- hold the "just-aborted"
+        // phase for one maneuver-duration so the witness can catch the car if it stands diagonal.
+        // Diagnostic-only fields; every call site guards LcTargetHandle >= 0, so this never fires on
+        // a duration==0 scenario.
+        v.LcEndedCooldownSteps = Math.Max(1, v.LcStepsTotal);
+        v.LcEndedByCompletion = false;
+        v.LcEndSpeed = (float)v.Kinematics.Speed;
         v.LcTargetHandle = -1;
         v.LcTargetId = string.Empty;
         v.LcStepsElapsed = 0;
@@ -15774,6 +15817,12 @@ public sealed partial class Engine : IEngine
         {
             if (v.LcTargetHandle < 0)
             {
+                // LIVECITY-DIAGSTOP (Entry 64): decay the just-ended hold window (diagnostic only).
+                if (v.LcEndedCooldownSteps > 0)
+                {
+                    v.LcEndedCooldownSteps--;
+                }
+
                 continue;
             }
 
@@ -15824,6 +15873,11 @@ public sealed partial class Engine : IEngine
 
             if (v.LcStepsElapsed >= v.LcStepsTotal)
             {
+                // LIVECITY-DIAGSTOP (Entry 64): completed at full duration -- hold "just-completed"
+                // for one maneuver-duration (diagnostic only, see ClearLaneChangeManeuver).
+                v.LcEndedCooldownSteps = Math.Max(1, v.LcStepsTotal);
+                v.LcEndedByCompletion = true;
+                v.LcEndSpeed = (float)v.Kinematics.Speed;
                 v.LcTargetHandle = -1;
                 v.LcTargetId = string.Empty;
                 v.LcStepsElapsed = 0;

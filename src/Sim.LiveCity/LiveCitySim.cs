@@ -1520,6 +1520,56 @@ public sealed class LiveCitySim : IDisposable
             }
         }
 
+        // Entry 64/65 (LIVECITY-DIAGSTOP): stopped cars mid- or just-after a lane-change maneuver --
+        // the engine proxy of the owner's metric ("compare standing-car orientation vs lane direction
+        // as the IG renders it"): the IG lateral-interpolates the discrete flip, so exactly these cars
+        // stand diagonal on screen. Entry 65 honesty split: an end AT SPEED left the car aligned before
+        // it stopped (doneMove/abortMove -- NOT diagonal, reported separately so they cannot launder
+        // the headline), only in-progress-at-stop and ended-at-standstill are diagonal exposure:
+        // diag = pre + post + doneStop + abortStop. Aggregate counts per phase every report (the
+        // BEFORE/AFTER number), plus capped exemplar lines (diagonal classes only) for tracing.
+        {
+            string[] lcPhaseNames = { "none", "pre", "post", "doneStop", "abortStop", "doneMove", "abortMove" };
+            int pre = 0, post = 0, doneStop = 0, abortStop = 0, doneMove = 0, abortMove = 0, diagPrinted = 0;
+            for (var i = 0; i < w.Count; i++)
+            {
+                var c = w[i];
+                if (c.Speed >= 0.5 || c.LcPhase == 0)
+                {
+                    continue;
+                }
+
+                switch (c.LcPhase)
+                {
+                    case 1: pre++; break;
+                    case 2: post++; break;
+                    case 3: doneStop++; break;
+                    case 4: abortStop++; break;
+                    case 5: doneMove++; break;
+                    default: abortMove++; break;
+                }
+
+                if (c.LcPhase <= 4 && diagPrinted < 8)
+                {
+                    var pn = c.LcPhase < lcPhaseNames.Length ? lcPhaseNames[c.LcPhase] : "?";
+                    var blockerDesc = c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var dbi)
+                        ? Describe(w[dbi])
+                        : (c.BlockerEntity >= 0 ? $"ent{c.BlockerEntity}(not-in-witness)" : "none");
+                    Console.Error.WriteLine(
+                        $"LIVECITY-DIAGSTOP: t={_now:F0} {Describe(c)} lc={pn} wait={c.WaitingTime:F0} -> {blockerDesc}");
+                    diagPrinted++;
+                }
+            }
+
+            if (pre + post + doneStop + abortStop + doneMove + abortMove > 0)
+            {
+                Console.Error.WriteLine(
+                    $"LIVECITY-DIAGSTOP-TOTALS: t={_now:F0} diag={pre + post + doneStop + abortStop} "
+                    + $"pre={pre} post={post} doneStop={doneStop} abortStop={abortStop} "
+                    + $"doneMove={doneMove} abortMove={abortMove}");
+            }
+        }
+
         // DEADLOCK-RING-DESIGN §1 (D1, diagnostic only -- owner-approved instrument): blocker-graph
         // cycle scan over this witness snapshot. Nodes = stopped cars (speed < 0.1) whose recorded
         // blocker is itself present and stopped; edge i -> blocker. Colour-marking walk visits each
@@ -1994,7 +2044,13 @@ public sealed class LiveCitySim : IDisposable
         // DEADLOCK-RING D1: consecutive-stop seconds (engine WaitingTime) -- a blocker-graph
         // cycle's age is the min over its members. Defaulted so existing positional constructions
         // stay valid.
-        float WaitingTime = 0f);
+        float WaitingTime = 0f,
+        // LIVECITY-DIAGSTOP (Entry 64/65): discrete lane-change maneuver phase -- 0 none, 1 in-progress
+        // pre-midpoint, 2 in-progress post-midpoint, 3 completed-at-standstill, 4 aborted-at-
+        // standstill, 5 completed-at-speed, 6 aborted-at-speed (ended phases held one maneuver-
+        // duration; standstill = end-step speed < 1.0). Crossed with Speed < 0.5 = the engine proxy
+        // of the owner's "standing-car orientation vs lane direction" metric.
+        byte LcPhase = 0);
 
     public IReadOnlyList<CarAuthWitness> WitnessAuthoritative()
     {
@@ -2014,6 +2070,7 @@ public sealed class LiveCitySim : IDisposable
         var blockerIdx = _engine.BlockerEntityIndexes;
         var defIds = _engine.VehicleIds;             // Entry 41: trace key for LIVECITY_TRACEVEH
         var waiting = _engine.WaitingTimes;          // DEADLOCK-RING D1: ring age = min member value
+        var lcPhases = _engine.LcPhases;             // LIVECITY-DIAGSTOP: lane-change maneuver phase
         var wireTl = _vehBus.Source.TlStateByLane; // what the viewer renders
         var n = handles.Length;
 
@@ -2068,7 +2125,8 @@ public sealed class LiveCitySim : IDisposable
                 i < entityIdx.Length ? entityIdx[i] : -1,
                 i < blockerIdx.Length ? blockerIdx[i] : -1,
                 i < defIds.Length ? defIds[i] : string.Empty,
-                i < waiting.Length ? waiting[i] : 0f));
+                i < waiting.Length ? waiting[i] : 0f,
+                i < lcPhases.Length ? lcPhases[i] : (byte)0));
         }
 
         return outList;

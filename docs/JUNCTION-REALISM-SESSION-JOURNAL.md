@@ -4254,3 +4254,69 @@ in-progress or just-completed maneuver — the engine-side proxy of the owner's
 orientation-vs-lane metric, so the count is measurable headless before/after.
 
 Owner overall: "better than before, we are converging."
+
+## Entry 65 (BEFORE) — DIAGSTOP witness landed; E1 closure widening staged
+
+**Instrument (committed):** `LIVECITY-DIAGSTOP` — the engine proxy of the owner's
+orientation-vs-lane metric. New diagnostic plumbing: `VehicleRuntime.LcEndedCooldownSteps`/
+`LcEndedByCompletion` (stamped at both maneuver-end sites — full-duration completion and
+every `ClearLaneChangeManeuver` abort — held for one maneuver-duration, decayed in
+`AdvanceLaneChanges`), an `LcPhase` read-buffer column (0 none / 1 pre-midpoint / 2
+post-midpoint / 3 just-completed / 4 just-aborted), `Engine.LcPhases` span, and a witness
+block crossing phase != 0 with speed < 0.5: per-report `LIVECITY-DIAGSTOP-TOTALS: pre= post=
+done= abort=` plus ≤8 exemplar lines with binder/blocker. All diagnostic-only; duration==0
+(every golden/bench) never sets any of it — byte-identical by construction (gates re-run
+below anyway).
+
+**Fix staged (E1 closure widening, per Entry 64's hypothesis):** `ManeuverLacksRunway` drops
+the `< 1.0 m/s` leader cutoff; instead the leader is assumed to stop NOW, contributing only
+its brake gap (v²/2b) of extra room: veto when `gap + leaderBrakeGap < egoSpeed*duration/2 +
+MinGap`. A creeping leader's brake gap is ~0 (≈ the old stopped case → veto engages — the
+residual class); a genuinely moving leader's brake gap is large (→ commits exactly as
+before). The red-light pure-lateral slide is the same mechanism (zero-speed horizon).
+
+**Predictions (BEFORE the numbers, per discipline):**
+- P1: the BEFORE capture shows a NONZERO steady DIAGSTOP population on the standard arm —
+  if it reads 0, the witness is wrong, not the world (the owner photographed three at once).
+- P2: post+done (past-midpoint completions at standstill — the E2 complete-the-wedge arm on
+  cars that committed behind a creep pulse) dominate over abort.
+- P3: AFTER the widening, summed stopped-diagonal exposure (pre+post+done) drops ≥ 50% on
+  the standard arm; abort may RISE (E2 pre-midpoint recenters) — that is the veto working.
+- P4: arrivals stay within ±3%, overlaps within ±10% (the veto defers, never denies).
+
+## Entry 65 (AFTER) — the honest four-cell A/B; widening shipped; predictions scored
+
+**Instrument refinement first (v2, forced by the data):** v1's `done` phase counted any car
+stopped within one maneuver-duration of completing — including completions AT SPEED that then
+braked, which stand ALIGNED (the slide finished before the stop). v2 stamps the end-step speed
+(`LcEndSpeed`) and splits ended phases: doneStop/abortStop (end < 1.0 m/s = diagonal
+candidates) vs doneMove/abortMove (aligned, reported separately, excluded from the headline).
+Headline `diag = pre + post + doneStop + abortStop`. v2 relabeling verified pure: both
+v2-BEFORE runs byte-reproduce their v1 arms (arrivals 3031/2823, aggMove identical).
+
+**Four-cell result (both arms × cutoff/closure, SAME v2 instrument, 3600 frames, envs per
+RESUME-4; summed snapshot counts over ~50 reports at 20 s cadence):**
+
+| arm | diag BEFORE | diag AFTER | components (B→A) | arrivals | overlaps |
+| --- | --- | --- | --- | --- | --- |
+| standard (2 000 peds) | 67 | **39 (−42%)** | pre 11→9, post 10→4, doneStop 21→11, abortStop 25→15; doneMove 16→25 (the intended shift: completions moved to at-speed) | 3031→2964 (−2.2%) | 10→9 |
+| ped-heavy (15 000 peds) | 51 | 54 (flat/noise) | pre 14→13, post 5→7, doneStop 15→13, abortStop 17→21 | 2823→2846 (+0.8%) | 12→9 |
+
+**Predictions scored:** P1 CONFIRMED (nonzero steady population, 51/90 reports). P2 WRONG in
+the detail that matters — v1 "done" dominance was partly instrument overcount (aligned
+stoppers); after the honest split the largest single diagonal class on the standard arm is
+**abortStop** (E2 pre-midpoint recenters caught mid-settle), not completions. P3 NEAR-MISS:
+−42% on the standard arm (predicted ≥50%); ped-heavy FLAT — at 0.88 stoppedFrac a car's stop
+cause is mostly NOT its same-lane leader's creep (crowd/keepClear/redLight/crossJxnLeader),
+so a leader-closure cannot see it. P4 CONFIRMED (arrivals ±3%, overlaps improved both arms).
+
+**Shipped:** E1 closure widening (`ManeuverLacksRunway`: leader assumed to stop NOW,
+contributes only brakeGap v²/2b; veto when gap + leaderBrakeGap < egoSpeed·duration/2 +
+MinGap) + the v2 DIAGSTOP witness. Gates at this tree: full sln green (ParityTests 782/5
+byte-identical, LiveCity 92/92, Peds 324, Host 6, Viewer.Motion 19, DotRecast 2), bench hash
+`A134ED3716DDE7BC` par==single unchanged. The 1306 s `__veh56 -> __veh1762` keepClear wedge
+persists untouched in every cell — queue item 4 (trace veh1762's chain to its root first).
+
+**Round closure:** owner 3D verdict is the closing surface (RESUME-4 §2 item 3). Residual for
+the next iteration, now NAMED by the instrument: saturated-arm diagonal stands whose stop
+cause is not the leader (ped-heavy flat cell), and the standard arm's abortStop class.
