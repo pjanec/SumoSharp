@@ -4005,3 +4005,40 @@ same-link parallel lanes (`:36315_1_0 × :36315_1_1`), edge-vs-internal boundary
 (`gen_road_6272_0 × :36315_4_0`), and same-source diverge fans (`:30268` bikes). The MERGE
 class (Entry 55's FindFoeVehicle first-match in SameTargetMergeConstraint) is now the
 biggest single named defect still open.
+
+## Entry 58 (BEFORE) — the merge mask measured on a LANDED pair; PHASE 1 goes physical (occPhase1 fold)
+
+**Fresh exemplar (post-57 world; the old veh411 repro is invalidated because the 57 fix is
+gate-scoped under F3):** `__veh1375 × __veh1762`, gen_road_7261_1, depth 3.1 m, landed t≈231
+and NEVER resolved through t=1780 (76 witness samples ≈ 25 minutes; colocationSymmetryBreak
+does not untangle it). Junction 34994 — three links feed gen_road_7261_1; veh1375 came via
+`:34994_11_1` (major), veh1762 via `:34994_6_1` (minor).
+
+**The trace (both members, frames 500):** both follow the SAME leader (`__veh968`) toward the
+shared target — Entry 55's lockstep-release shape. They cross onto gen_road_7261_1 in the
+same step (t=230.0/230.5); veh1375 brakes under keepClear (downstream queue, blocker 248) and
+stops at @2.63; veh1762, at 7.39 m/s one step from the merge, first sees veh1375 via
+PHASE2-targetFollow at gap **−6.74** — one emergency-decel step (9 m/s²) leaves it at @0.75,
+3.1 m inside veh1375's body. `[jyrow]` shows veh1762's foe row for `:34994_11_1` (foeLink=12,
+respondsTo+foeWith, conflict=none → merge branch) evaluated EVERY step of the approach, yet
+neither vehicle ever emitted a PHASE 0/1 line about the other — TraceMerge prints on every
+PHASE-1 outcome, so the silence is the proof: **FindFoeVehicle's slot-order first-match never
+returned the on-lane merger** (Entry 55's suspect, now measured as the landing mechanism on a
+second junction).
+
+**Fix (this entry, gate-scoped under `JunctionPhysicalOccupancyGate`):** `occPhase1` — PHASE 1
+evaluated per PHYSICAL occupant of the foe internal lane (`_physOnLaneFirst/Second`), with the
+same entry-order tie-break and C4-v merge-point geometry as the pick-based PHASE 1, and the
+ignore-junction-blocker applied PER OCCUPANT — folded into every downstream return via
+`Math.Min`. Gate OFF: occPhase1 = +infinity, every return bit-for-bit pre-existing. The pick
+keeps PHASE 0 (arbitration; SUMO's blockedByFoe walks APPROACHING foes — route match is the
+right contract there). Trace tags: `PHASE1occ-follow/stop/egoIsLeader-skip`.
+
+**Predictions (before measurement):**
+- P1: fix replay (veh1762, frames 600): PHASE1occ lines name veh1375 during the approach
+  (t≈227–230); veh1762 stops before the merge point or follows at a non-negative gap; the
+  landed pair is GONE at t=240–280.
+- P2: full 3600-frame capture (RINGBREAK=0 arm): merge EX lines 91 → <20 (the 76-sample pair
+  was the bulk); junction class within ±10% of fix57; arrivals within ±3% of 2832.
+- P3: goldens byte-identical + bench hash unchanged (gate-off is Math.Min(x, +inf) by
+  construction); full sln green.
