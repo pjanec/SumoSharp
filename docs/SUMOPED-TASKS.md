@@ -335,10 +335,28 @@ ped's release step matching to the tick.
 ## Stage 7 — API, visualization, production regime, final gate
 
 ### SP-7.1 — Public API
-Design §10, Requirement R7.
+Design §10 (readiness assessment + the exact 8-item delta), Requirement R7.
+Add `PersonHandle`, `PersonState`, `PersonEvent`, `PersonReadBuffer` + `Engine` person spans,
+`SimulationSnapshot` person columns, `SimulationRunner.TryInterpolatePerson`, the spawn/despawn/lifecycle
+methods, and the replication decision from §10.3. Persons go on the concrete `Engine`, not `IEngine`
+(matching where the vehicle API actually lives).
 **Success:** a sample in `docs/TUTORIAL-SUMO-PEDESTRIANS.md` compiles as part of `Traffic.sln` and drives
 `xwalk-priority-1v1` end-to-end through public API only — verified by the sample project having no
-`InternalsVisibleTo`. `docs/SUMOSHARP-API.md` gains a person section in the same style as the vehicle one.
+`InternalsVisibleTo`. `docs/SUMOSHARP-API.md` gains a person section in the same style as §5/§9/§10.
+**And three invariants that must hold by construction, each with its own assertion:**
+(a) **no existing vehicle type is edited** — `VehicleHandle`, `VehicleState`, `SimEvent` and the vehicle
+columns of `SimulationSnapshot` are byte-identical in the diff, so the vehicle gate cannot move;
+(b) `SimulationSnapshot.Count` still means **vehicle** count (a test asserts it against
+`engine.VehicleCount` with persons present) — `PersonCount` is the new field, `Count` is never repurposed;
+(c) `PersonHandle` and `VehicleHandle` are **not interchangeable** — a test asserts a `PersonHandle` with
+the same `(Index, Generation)` as a live `VehicleHandle` resolves to a different entity.
+
+### SP-7.1b — Person dead-reckoning for the runner
+Design §10.2 item 6.
+**Success:** `TryInterpolatePerson` does **not** reuse the vehicle extrapolator. On a walkingarea the
+interpolated path follows the `WalkingAreaPath` Bezier, not a straight chord: assert that a person
+interpolated at alpha=0.5 across a walkingarea is within 5 cm of the true mid-step position from a
+half-step-length golden, where a straight-chord interpolation is measurably worse.
 
 ### SP-7.2 — Coordinate contract (the Phase 2 hinge)
 Design §9.

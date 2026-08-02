@@ -455,28 +455,99 @@ Nothing else about Phase 2 is decided here.
 
 ---
 
-## 10. Public API
+## 10. Public API — readiness assessment and the exact delta
 
-Mirrors the vehicle API exactly (`docs/SUMOSHARP-API.md`), in its **own handle id space**:
+**Verdict: the API is well prepared for a second agent type on the `Engine`, and not at all prepared
+for unifying with the ORCA pedestrian layer.** Nothing blocks the port. The work is ~6 new small types
+plus additive edits to 3 existing files, and **no edit to any existing vehicle type** — so the 782-test
+gate structurally cannot move. There is exactly one real design decision (§10.3).
+
+### 10.1 What already has the right shape (reuse the pattern, change nothing)
+
+| existing | why it transfers |
+| --- | --- |
+| `VehicleHandle` (`VehicleHandle.cs`) | 32-bit index + 16-bit generation. Its own header already establishes the precedent: *"Same 32+16 shape as `ObstacleHandle`, but a DISTINCT id space; never interchange them."* `PersonHandle` is a mechanical third instance of a pattern the repo already runs twice. |
+| `VehicleState` (`VehicleState.cs`) | Structurally **exactly** what a person needs: `LaneHandle`, `Pos`, `Speed`, `PosLat` as parity-exact doubles, plus derived render-facing `X/Y/Z/Angle` floats. The D7 precision split (double = what the sim computed, float = where to draw it) is right for persons unchanged. |
+| `VehicleReadBuffer` (`VehicleReadBuffer.cs`) | A struct-of-arrays **projection** refreshed each `Step` from the live entities, explicitly *not* the source of truth. That is precisely the relationship a `PersonReadBuffer` needs to `_activeLanes`. |
+| `DefineVType(VTypeParams)` → `VTypeHandle` | Runtime type definition with a handle. `DefinePersonType(PersonTypeParams)` is the same shape (width, length, minGap, desiredMaxSpeed, speedDev, jmCrossingGap — the knobs in `SUMOPED-ALGORITHM.md` §4.2). |
+| `SpawnVehicle` ×4 overloads, `GetLifecycle` → `Pending/Active/Arrived`, `RecycleVehicleSlots` + generation bump | **SUMO-parity queued insertion**: a spawn returns a handle immediately in `Pending` and transitions on successful insertion. Persons need exactly this — a person also waits for its depart time and for room on the sidewalk. |
+| `SimulationRunner` (`SimulationRunner.cs`) | Agent-agnostic already: thread-safe `Post`/`Invoke` command queue, `Start/Pause/Resume/Stop`, snapshot double-buffer, `InterpolationAlpha`. Needs one new method, nothing restructured. |
+| `ISimExportObserver` | Zero-alloc, read-only per-frame hook. Add `OnPersonExported`; the interface already uses default-implemented methods so this is source-compatible. |
+| `Engine.CrowdSource` (`Engine.cs:783`) | The **template** for attaching the person model: a nullable property whose null case skips the code path entirely, with the inertness argument written in its own comment. `Engine.Persons` copies that discipline. |
+
+### 10.2 What must be added (all additive)
+
+| # | change | file | note |
+| --- | --- | --- | --- |
+| 1 | `PersonHandle` | new | copy of `VehicleHandle`, own id space, `ToString` → `Person#i.g` |
+| 2 | `PersonState` | new | mirror of `VehicleState`, but carries **both** `EdgeHandle` and `LaneHandle` — SUMO person FCD reports `edge`, and it takes **internal** ids (`:c_c1`, `:c_w1`), which is the whole reason the curb wait is a checkable golden fact (§2.3). Add `Stripe` and `SpeedLat`. |
+| 3 | `PersonEvent` / `PersonEventKind` | new | ⚠ **`SimEvent` is `VehicleHandle`-typed** (`SimEvent.cs`) — it cannot carry a person. A *parallel* type keeps `SimEvent` byte-identical; generalising it would touch every existing consumer for no gain. |
+| 4 | `PersonReadBuffer` + `Engine` person spans | new + edit | `PersonHandles`, `PersonPosX/Y/Z`, `PersonAngle`, `PersonSpeed`, `PersonEdgeHandles`, `PersonPos`, `PersonPosLat`, `PersonIds`, `PersonCount`, `TryGetPerson` |
+| 5 | `SimulationSnapshot` person columns | edit | ⚠ **`Count` currently means *vehicle* count** and is read that way by every consumer — it must **not** be repurposed. Add `PersonCount` + parallel columns + `TryGetPerson`; extend `Capture(Engine)`. |
+| 6 | `SimulationRunner.TryInterpolatePerson` | edit | Persons need their **own** DR model: they do not follow a lane arc the way a vehicle does, and on a walkingarea they follow a Bezier `WalkingAreaPath` (§3.2). Do not reuse `TryInterpolateVehicle`'s extrapolator. |
+| 7 | `Sim.Host/ReplicationPublisher` | edit or route | ⚠ It has **zero** occurrences of "person"/"ped" — it is vehicle-only. See §10.3. |
+| 8 | `DefinePersonType`, `SpawnPerson`, `SpawnPersonAt`, `Despawn(PersonHandle)`, `ActivePersons()` | edit `Engine` | `SpawnPersonAt(type, edge, pos, posLat, speed, rest)` is the Phase-2 hinge (§9.2) |
+
+Note `IEngine` (`IEngine.cs`, 48 lines) carries only `LoadScenario`/`Run`/the obstacle API — the entire
+rich vehicle API lives on the concrete `Engine`, and `docs/SUMOSHARP-API.md` documents it there.
+**Follow that precedent**: persons go on `Engine`, not on `IEngine`.
+
+### 10.3 The one real decision: there are two unrelated agent APIs today
+
+| | cars | ORCA pedestrians |
+| --- | --- | --- |
+| entry point | `Engine` | `PedestrianWorld` (`src/Sim.Pedestrians/PedestrianWorld.cs`) |
+| identity | `VehicleHandle` (32+16, generational) | plain `int id` |
+| position | `Pos`/`PosLat` on a lane + derived world | `Vec2 PositionOf(id, now)` — pure world space |
+| per-frame read | `SimulationSnapshot` (SoA columns) | `PositionOf` per agent, or `PedPublisher` |
+| replication | `Sim.Host/ReplicationPublisher` | `Sim.Pedestrians/Lod/PedReplicationPublisher` + its own codecs |
+
+They share **nothing** — no common handle, no common snapshot, no common publisher. A host today drives
+cars and ORCA peds through two entirely separate APIs.
+
+**Decision: put SUMO persons on the `Engine` API, mirroring vehicles. Leave `PedestrianWorld` alone.**
+
+Rationale: SUMO persons are lane-based (`edge`, `pos`, `posLat`) — the same shape as vehicles and
+*structurally unlike* the ORCA layer's continuous world-space agents (§1). Putting them on `Engine` is
+not a convenience, it is where they actually belong. It also matches R-N3 (the two tiers coexist).
+
+Alternative considered and rejected: unify now behind a generic `AgentHandle`/`AgentState`. That would
+touch `SimEvent`, `SimulationSnapshot`, `ReplicationPublisher` and every consumer of `Count`, risking
+the vehicle gate for zero parity gain — the same reasoning as R-N4 for the net readers.
+
+**The cost of this decision, named up front:** Phase 2's LOD hybrid becomes a bridge between two
+*different* APIs (`PersonHandle`/lane-relative ↔ `int id`/`Vec2`), not a promotion within one. §9's
+coordinate contract is exactly that bridge, which is why Phase 1 must build it even though Phase 1 does
+not use it.
+
+### 10.4 The resulting surface
 
 ```csharp
 public readonly struct PersonHandle { public uint Index; public ushort Generation; }
 
-PersonTypeHandle DefinePersonType(in PersonTypeParams p);   // width, length, maxSpeed, speedDev, jmCrossingGap
-PersonHandle SpawnPerson(PersonTypeHandle t, ReadOnlySpan<int> routeEdges, double departPos, double departPosLat);
-PersonHandle SpawnPersonAt(PersonTypeHandle t, int edge, double pos, double posLat, double speed, ReadOnlySpan<int> rest); // §9.2
+PersonTypeHandle DefinePersonType(in PersonTypeParams p);   // width, length, minGap, desiredMaxSpeed,
+                                                            // speedDev, jmCrossingGap, impatience
+PersonHandle SpawnPerson(PersonTypeHandle t, ReadOnlySpan<int> routeEdges,
+                         double departPos, double departPosLat);
+PersonHandle SpawnPersonAt(PersonTypeHandle t, int edge, double pos, double posLat,
+                           double speed, ReadOnlySpan<int> rest);      // Phase-2 hinge, SS9.2
 void         Despawn(PersonHandle p);
-ActivePersonQuery ActivePersons();                          // zero-alloc struct enumerator
-bool TryGetPerson(PersonHandle p, out PersonState s);       // edge, pos, posLat, x, y, angle, speed, stripe
-ReadOnlySpan<SimEvent> PersonEvents { get; }                // Departed / Arrived
-(double X, double Y) WorldOf(int edge, double pos, double posLat);   // §9.1
-bool TryResolveToEdge(double x, double y, out int edge, out double pos, out double posLat);
+PersonLifecycle GetLifecycle(PersonHandle p);                          // Pending / Active / Arrived
+ActivePersonQuery ActivePersons();                                     // zero-alloc struct enumerator
+bool TryGetPerson(PersonHandle p, out PersonState s);
+
+ReadOnlySpan<PersonHandle> PersonHandles { get; }                      // SoA read projection,
+ReadOnlySpan<float> PersonPosX { get; } /* ...Y, Z, Angle, Speed */    //   populated by Step()
+ReadOnlySpan<int>   PersonEdgeHandles { get; }
+ReadOnlySpan<double> PersonPos { get; }  ReadOnlySpan<double> PersonPosLat { get; }
+ReadOnlySpan<PersonEvent> PersonEvents { get; }
+
+(double X, double Y) WorldOf(int edge, double pos, double posLat);                          // SS9.1
+bool TryResolveToEdge(double x, double y, out int edge, out double pos, out double posLat); // SS9.1
 ```
 
-Read projections are populated by `Step()` (not `Run()`) and valid until the next `Step()`, matching the
-vehicle read surface. Documented in `docs/SUMOSHARP-API.md` in the same section style.
-
----
+Documented in `docs/SUMOSHARP-API.md` as a new section in the same style as §5 (read API), §9 (runtime
+spawn) and §10 (lifecycle events).
 
 ## 11. Visualization — extend `Sim.Viz`, no new renderer
 
