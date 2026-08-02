@@ -4106,3 +4106,253 @@ binder (crowdYield?) and the crosser's window vs the 60 s threshold.
 **Merge note:** owner decision — this branch (Entries 48–58 state: partials ON, ring break
 ON, rerouting ON, Entry 49/57/58 fixes) becomes the new main. Gates at merge: full sln
 green, bench hash `A134ED3716DDE7BC` par==single, goldens byte-identical.
+
+## Entry 60 — Class A traced end-to-end: the three-stage chain; design doc written (awaiting owner)
+
+Instruments this entry (committed): `[lclate]` (executed/wished late queue-tail changes with
+neighDist), `[sg]` (per-step speed-gain accumulator/gates/stay-rules for TRACEVEH).
+
+**The chain (exemplar `__veh320`, deterministic t=243–250):** (1) wish forms EARLY —
+accumulator crosses 0.2 at 11 m/s, 27 m upstream; (2) commit deferred by SUMO's own
+`neighDist/speed > 20` usability gate — the left lane is TURN-ONLY (continuation ~100 m), so
+the gate opens only at crawl (~2.3 m/s); (3) the committed 2 s continuous maneuver freezes
+under the `LaneChangeMinSpeed` hold one step later, resumes on queue-creep in body contact,
+and re-freezes past midpoint = the misaligned half-lane stop.
+
+**The design-deciding measurement:** 187/208 executed late swerves (90%) target
+short-continuation (<150 m) lanes — vanilla SUMO's identical gate would commit those at crawl
+too (instantly, hence artifact-free). Decision side is SUMO-faithful; the artifact is wholly
+owned by the beyond-SUMO continuous-maneuver mechanism. Prevalence: 208 executed (~1/6 s),
+842 distinct standing wishers.
+
+Also checked and rejected: `REACT_TO_STOPPED_DISTANCE` (MSLCM_LC2013.cpp:1378) reacts to
+SCHEDULED stops (`isStopped()`), not queue tails — porting it would not touch this class.
+
+**Design: `docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md`** — two execution guards (E1 runway at
+start, E2 abort-or-complete instead of frozen poses), no decision change, everything inside
+the `LaneChangeDuration>0` realism gate (goldens byte-identical by construction). AWAITING
+OWNER REVIEW before implementation.
+
+## Entry 60 (AFTER) — E1/E2 landed (owner approved the design): executed queue-tail swerves −88%, zero sweep-throughs
+
+Owner approved `docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md`; implemented as designed:
+**E1** `ManeuverLacksRunway` — a continuous maneuver may not START against a near-stopped
+(<1 m/s) same-lane leader without runway (`speed*duration/2 + MinGap`); wired as one more
+VETO (no accumulator reset) into the sgLeft chain and `TryStrategicLaneChange`
+(`LcStrategicOutcome=5`). **E2** — the below-min-speed hold in `AdvanceLaneChanges` now
+aborts cleanly before the midpoint (`ClearLaneChangeManeuver`) and COMPLETES past it,
+never freezing a diagonal pose.
+
+**Measured (A/B vs the Entry 60 BEFORE arm, same env/frames):** executed late swerves
+208 → **24 (−88%)**, and all 24 residuals have leadGap 4.5–8 m — every one clears the runway
+guard legitimately; **sweep-throughs (gap < forward travel) = 0** (success condition 1
+exactly). Overlap classes: junction 177 → 183 (+3.4%, within ±10%), queue 71 → 67, merge
+17 → 17. Arrivals 2018 → 2020 (±0.1%). Full sln green; bench hash `A134ED3716DDE7BC`
+par==single (E1 unreachable at duration 0, E2 unreachable at MinSpeed 0 — every golden).
+Remaining surface: the owner's 3D verdict on queue-tail rendering (condition 5).
+
+## Entry 61 — Class B: the ped hypothesis is DEAD; the holds are merge-landing standoff chains; veh282 stopped-under-freeFlow anomaly named
+
+New committed witness `LIVECITY-JXNHOLD` (cars stopped ≥10 s ON internal lanes + binder +
+described blocker — the population HEADSTUCK structurally excludes as <25 m stubs).
+
+**15 000-ped capture (approximating the owner's 30 k 3D density): 416 holds, ZERO
+crowd/crowdYield binders.** Hypothesis (a) of Entry 59 — peds holding the turners — is
+REFUTED at this density headless; the owner's z=0-invisible-peds tie-in is moot (and the
+owner is redesigning the ped layer anyway — decided this session).
+
+What the holds ARE: **merge-landing standoff chains.** Distribution: leaderFollow 57%
+(queue shadow INTO the junction), crossJxnLeader 24%, junctionYield/sameTargetMerge ~8%.
+Exemplar traced end-to-end (`__veh461`, :36022): PHASE1occ + PHASE1 both correctly follow
+`__veh1` at gap 0.00 — a co-located merge landing (the pair is nose-to-nose across two
+merging internal lanes); the entry-order tie-break correctly skips the other member. The
+root of the deepest chain (`:34991`, waits to **1066 s**): `__veh740` leaderFollows
+`__veh282` on the exit lane — and **veh282 stands for MINUTES at v=0 with binder
+freeFlow/none** (the engine believes nothing constrains it). A stopped car the constraint
+fold calls free is self-contradictory — NEXT TRACE TARGET (suspect: a non-binder speed cap
+— CoopSpeedAdvice or maneuver-hold — pinning it outside the binder accounting; UNVERIFIED,
+trace before believing). The drive-through half of the owner's report matches the ≥60 s
+ignore-blocker recovery (holds routinely exceed the window) — working as designed once the
+wedge exists; the wedge itself is the bug.
+
+## Entry 62 — the strand-clamp WaitingTime LIVELOCK: root of the permanent wedges; sibling-snap rescue landed
+
+**The trace (deterministic, `__veh282`, 15 k-ped arm, [exec] seam instrument):** the :34991
+wedge root was NOT a merge/junction defect at all. veh282 crossed `:34991_4_0` at 10.65 m/s
+onto `gen_road_4504_0` — a **1.42 m netconvert stub whose lane 0 has NO outgoing connection**
+(only lane 1 continues). Every step: the plan freeFlow-accelerates (the pool's exit is the
+sibling, so no dead-lane brake binds), the car overshoots the stub end, and the C4-vii-c
+strand clamp resets pos=length/speed=0. **The livelock**: the WaitingTime update runs BEFORE
+the clamp and sees `Intent.NewSpeed=1.30 > HaltingSpeed`, so **WaitingTime reset to 0 every
+step** — starving EVERY recovery at once (dead-lane reroute 5 s/90 s gates, jam teleport,
+and other cars' 60 s IgnoreJunctionBlocker skip). One connection-less 1.42 m stub therefore
+froze a car forever AND made the queue behind it unrecoverable (waits to 1066 s). Ruled out
+on the way (each by instrument): vehicle recycling (same ent/gen), CoopSpeedAdvice ([coop]
+silent), all other Pos/Speed writers (grep-complete).
+
+**Fix (both halves reached only via the strand clamp — a state no committed golden enters):**
+1. The clamp accumulates WaitingTime honestly (`+= dt`) — every WaitingTime-keyed safety net
+   works again.
+2. `RescueStrandedVehicles` (SERIAL post-execute pass — the occupancy scan must not run inside
+   region-parallel execute; par==single by construction): a strand-clamped car whose edge has a
+   sibling lane that connects to the route's next edge and has room at ego's span SNAPS over
+   and re-resolves its pool — mirroring SUMO's outcome (its duration-0 changeLanes phase never
+   freezes on a short stub).
+
+**Measured:** veh282 snaps at t=78.0 and drives off at free flow (13 m/s by t=83).
+Ped-heavy A/B: **:34991 holds 125 → 0**; :34994 87 → 39; max JXNHOLD wait 1066 → 788;
+stoppedFrac 0.65 → 0.60, meanSpd 2.52 → 2.69, aggMove +6.7%, arrivals flat (2062 → 2064).
+Full sln green; bench hash `A134ED3716DDE7BC` par==single unchanged.
+
+**Next named target:** the residual 788 s wedge — `__veh56 :34994_6_0@33.3
+bind=crossJxnLeader/none wait=788 -> __veh1375 gen_road_7261_1@2.6 keepClear/none` (the
+Entry 58 junction; keepClear-rooted chain, likely the landed-standoff family from RESUME-3).
+
+## Entry 63 — merge PHASE 1/2 ignore-junction-blocker parity (the veh903 hold shape); honest mixed result
+
+**Trace:** the residual 788 s wedge head (`__veh903`, `:34991_4_0@16.3`) was
+`PHASE2-targetFollow foe=__veh280@gen_road_4504_0 x=0.00` — following a car STRANDED on the
+dead stub lane (Entry 62's lane, sibling permanently full at that pocket). SUMO's
+`gIgnoreJunctionBlocker` skip (MSLink.cpp:1601) applies to EVERY link leader, but our merge
+arm's PHASE 1 (route-matched pick) and PHASE 2 (shared-target rearmost) never carried it —
+so the 60 s recovery structurally could not fire for merge-held streams. Fix: both phases
+skip a foe whose WaitingTime ≥ IgnoreJunctionBlockerSeconds (inert at the parity default -1;
+verified: full sln green, hash `A134ED3716DDE7BC` par==single).
+
+**Measured (ped-heavy A/B vs fix62):** max JXNHOLD wait 788 → 706; arrivals 2064 → 2074;
+overlaps flat (34 → 36 pairs — no drive-through cost spike); :34994 holds 39 → 38 and
+stoppedFrac 0.60 → 0.64 — i.e. the SPECIFIC hold shape is cured (veh903's own chain), but
+the junction's wider standoff family persists and run-to-run noise dominates the aggregates.
+Honest verdict: a real SUMO-faithfulness gap closed, modest immediate effect. **Next named
+wedge (706 s, CORRECTED — the line below is the measured head, an earlier draft named a
+wrong exemplar): `__veh56 :34994_6_0@33.4 bind=crossJxnLeader/none wait=706 -> __veh1762
+gen_road_7261_1@3.4 keepClear/none`** — the SAME :34994 -> gen_road_7261 keepClear-rooted
+chain as before (now headed by veh1762, the Entry 58 exemplar's partner): the crossJxnLeader
+hold on a keepClear-held exit-lane car has no 60 s recovery either (crossJxnLeader is
+car-following, not a junction arm) — next session should trace veh1762's keepClear chain to
+ITS root before touching any skip.
+
+## Entry 64 (BEFORE) — owner 3D verdict on E1/E2: "greatly reduced, far from eliminated; converging"; the residual mechanism named
+
+Owner observations (3D, fresh engine with Entries 60–63): last-instant turners greatly
+reduced but still not scarce — screenshot shows THREE diagonal half-way stops nearly SYNCED
+in one queue (yellow/red/blue); plus ONE caught pure-lateral change at standstill on red
+(scarce). Owner's quantification idea: **compare standing-car orientation (as the IG renders
+it) against lane direction** — some misalignment is realistic, but near junctions European
+drivers are already aligned; ours are not.
+
+**Residual mechanism (hypothesis from the E1/E2 mechanics — instrument before believing):**
+E1 only vetoes against a NEAR-STOPPED leader (<1 m/s). A car committing at ~2 m/s behind a
+CREEPING leader (queue pulse) still starts the 2 s maneuver; the queue re-compresses, ego
+brakes to a stop mid-sweep, and E2's past-midpoint arm completes the flip at standstill —
+the IG then renders the lateral settle on a stopped car = the diagonal pose (and, at a red
+light, the pure-lateral slide). The "synced" look = one creep pulse triggering several
+commits in the same queue. Candidate fixes for next round: (a) E1 widened to slow leaders
+using closure (gap vs ego travel through the maneuver assuming the leader can stop NOW);
+(b) engine-side witness first: `LIVECITY-DIAGSTOP` = stopped cars (v<0.5) with an
+in-progress or just-completed maneuver — the engine-side proxy of the owner's
+orientation-vs-lane metric, so the count is measurable headless before/after.
+
+Owner overall: "better than before, we are converging."
+
+## Entry 65 (BEFORE) — DIAGSTOP witness landed; E1 closure widening staged
+
+**Instrument (committed):** `LIVECITY-DIAGSTOP` — the engine proxy of the owner's
+orientation-vs-lane metric. New diagnostic plumbing: `VehicleRuntime.LcEndedCooldownSteps`/
+`LcEndedByCompletion` (stamped at both maneuver-end sites — full-duration completion and
+every `ClearLaneChangeManeuver` abort — held for one maneuver-duration, decayed in
+`AdvanceLaneChanges`), an `LcPhase` read-buffer column (0 none / 1 pre-midpoint / 2
+post-midpoint / 3 just-completed / 4 just-aborted), `Engine.LcPhases` span, and a witness
+block crossing phase != 0 with speed < 0.5: per-report `LIVECITY-DIAGSTOP-TOTALS: pre= post=
+done= abort=` plus ≤8 exemplar lines with binder/blocker. All diagnostic-only; duration==0
+(every golden/bench) never sets any of it — byte-identical by construction (gates re-run
+below anyway).
+
+**Fix staged (E1 closure widening, per Entry 64's hypothesis):** `ManeuverLacksRunway` drops
+the `< 1.0 m/s` leader cutoff; instead the leader is assumed to stop NOW, contributing only
+its brake gap (v²/2b) of extra room: veto when `gap + leaderBrakeGap < egoSpeed*duration/2 +
+MinGap`. A creeping leader's brake gap is ~0 (≈ the old stopped case → veto engages — the
+residual class); a genuinely moving leader's brake gap is large (→ commits exactly as
+before). The red-light pure-lateral slide is the same mechanism (zero-speed horizon).
+
+**Predictions (BEFORE the numbers, per discipline):**
+- P1: the BEFORE capture shows a NONZERO steady DIAGSTOP population on the standard arm —
+  if it reads 0, the witness is wrong, not the world (the owner photographed three at once).
+- P2: post+done (past-midpoint completions at standstill — the E2 complete-the-wedge arm on
+  cars that committed behind a creep pulse) dominate over abort.
+- P3: AFTER the widening, summed stopped-diagonal exposure (pre+post+done) drops ≥ 50% on
+  the standard arm; abort may RISE (E2 pre-midpoint recenters) — that is the veto working.
+- P4: arrivals stay within ±3%, overlaps within ±10% (the veto defers, never denies).
+
+## Entry 65 (AFTER) — the honest four-cell A/B; widening shipped; predictions scored
+
+**Instrument refinement first (v2, forced by the data):** v1's `done` phase counted any car
+stopped within one maneuver-duration of completing — including completions AT SPEED that then
+braked, which stand ALIGNED (the slide finished before the stop). v2 stamps the end-step speed
+(`LcEndSpeed`) and splits ended phases: doneStop/abortStop (end < 1.0 m/s = diagonal
+candidates) vs doneMove/abortMove (aligned, reported separately, excluded from the headline).
+Headline `diag = pre + post + doneStop + abortStop`. v2 relabeling verified pure: both
+v2-BEFORE runs byte-reproduce their v1 arms (arrivals 3031/2823, aggMove identical).
+
+**Four-cell result (both arms × cutoff/closure, SAME v2 instrument, 3600 frames, envs per
+RESUME-4; summed snapshot counts over ~50 reports at 20 s cadence):**
+
+| arm | diag BEFORE | diag AFTER | components (B→A) | arrivals | overlaps |
+| --- | --- | --- | --- | --- | --- |
+| standard (2 000 peds) | 67 | **39 (−42%)** | pre 11→9, post 10→4, doneStop 21→11, abortStop 25→15; doneMove 16→25 (the intended shift: completions moved to at-speed) | 3031→2964 (−2.2%) | 10→9 |
+| ped-heavy (15 000 peds) | 51 | 54 (flat/noise) | pre 14→13, post 5→7, doneStop 15→13, abortStop 17→21 | 2823→2846 (+0.8%) | 12→9 |
+
+**Predictions scored:** P1 CONFIRMED (nonzero steady population, 51/90 reports). P2 WRONG in
+the detail that matters — v1 "done" dominance was partly instrument overcount (aligned
+stoppers); after the honest split the largest single diagonal class on the standard arm is
+**abortStop** (E2 pre-midpoint recenters caught mid-settle), not completions. P3 NEAR-MISS:
+−42% on the standard arm (predicted ≥50%); ped-heavy FLAT — at 0.88 stoppedFrac a car's stop
+cause is mostly NOT its same-lane leader's creep (crowd/keepClear/redLight/crossJxnLeader),
+so a leader-closure cannot see it. P4 CONFIRMED (arrivals ±3%, overlaps improved both arms).
+
+**Shipped:** E1 closure widening (`ManeuverLacksRunway`: leader assumed to stop NOW,
+contributes only brakeGap v²/2b; veto when gap + leaderBrakeGap < egoSpeed·duration/2 +
+MinGap) + the v2 DIAGSTOP witness. Gates at this tree: full sln green (ParityTests 782/5
+byte-identical, LiveCity 92/92, Peds 324, Host 6, Viewer.Motion 19, DotRecast 2), bench hash
+`A134ED3716DDE7BC` par==single unchanged. The 1306 s `__veh56 -> __veh1762` keepClear wedge
+persists untouched in every cell — queue item 4 (trace veh1762's chain to its root first).
+
+**Round closure:** owner 3D verdict is the closing surface (RESUME-4 §2 item 3). Residual for
+the next iteration, now NAMED by the instrument: saturated-arm diagonal stands whose stop
+cause is not the leader (ped-heavy flat cell), and the standard arm's abortStop class.
+
+## Entry 66 — HIREALISM pass-through gate SHIPPED (owner-approved design, same-day implement)
+
+Owner (after the Entry 65 3D verdict, "diagonal reduced to acceptable state"): the pass-through
+recovery must never be SEEN — inside camera-FOV high-realism areas, suppress it even at the cost
+of the junction staying blocked; waits keep counting so the recovery fires the moment the camera
+leaves. Design `docs/HIREALISM-PASSTHROUGH-GATE-DESIGN.md`, approved same-day.
+
+**Shipped (T1–T4):** X1 `RealismMask` gains `forbidPassThrough` + `MayPassThrough`; all six
+ignore-junction-blocker skip sites (crossing occupancy, pick rows, bay, PHASE1occ, merge
+PHASE 1/2) now require `PassThroughAllowed(foe)` — tested on the FOE's edge, null-mask
+short-circuit. `LiveCitySim.SetHighRealismRegions(circles)`/`ClearHighRealismRegions` map
+world-space circles → edge ids (lazy per-edge AABB index, internal ':' edges included).
+`LIVECITY_HIREALISM_RADIUS` = headless stand-in (fixed circle at net centre).
+`HighRealismFollowsZone` (sim default OFF — the demo ctor arms a STATIC pocket via
+`SetLcRealismZone`, and silently suppressing recovery there would change hour-horizon-tested
+default behaviour) — the 3D host opts in: `LiveCitySource` ctor sets it ON (`CITY3D_HIREALISM=0`
+kill switch), so the SAME camera zone drives ped ORCA, car→ped yield AND no-drive-through.
+Diagnostic `PassThroughSuppressedCount` + `LIVECITY-HIREALISM`/`-SUPPRESSED` witness lines.
+
+**Measured (ped-heavy arm, 3600 frames, LIVECITY_HIREALISM_RADIUS=800):**
+- OFF arm: byte-reproduces the pre-gate baseline (arrivals 2846, aggMove 73360, zero HIREALISM
+  lines) — the gate is PROVEN inert with no region.
+- ON arm: 3769 edges masked; suppressed skip-evaluations 1 321 126 over 1800 s (device
+  unmistakably live); arrivals 2742 (−3.7% — the honesty cost of an 800 m no-cheating circle at
+  saturation, the trade the owner explicitly accepted); max JXNHOLD wait 1306 → 1396 (holds
+  honest inside the region); overlaps flat (9).
+- Zone-exit immediacy is STRUCTURAL: the skip is a stateless per-step comparison against a
+  WaitingTime that never stops accruing — no code path exists that could delay it.
+
+**Gates:** full sln green — ParityTests **783**/5 (+1: the new `MayPassThrough` unit test),
+LiveCity 92/92, Peds 324, Host 6, Viewer.Motion 19, DotRecast 2; goldens byte-identical; bench
+hash `A134ED3716DDE7BC` par==single unchanged. Also this commit: CI's determinism pin corrected
+BF3794A4704BCD79 → A134ED3716DDE7BC (the workflow copy had rotted at the Entry 54 partials
+default-ON flip; TASKS-TODO carried the true value since — the failed PR check was the pin, not
+the engine).

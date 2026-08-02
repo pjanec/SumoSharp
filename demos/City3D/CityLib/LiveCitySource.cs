@@ -34,6 +34,14 @@ public sealed class LiveCitySource : IDisposable
         _cfg = cfg;
         _sim = new LiveCitySim(cfg);
 
+        // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.3: in the 3D host the camera-driven LC-realism zone
+        // ALSO forbids the ignore-junction-blocker drive-through inside itself (owner: no cars passing
+        // through each other on camera, even at the cost of the junction staying blocked; waits keep
+        // counting, so the recovery fires the moment the camera moves away). Default ON here -- this
+        // ctor runs before the threaded producer starts, so the flag write is safe -- with
+        // CITY3D_HIREALISM=0 as the A/B kill switch (docs/ENV-GATES.md).
+        _sim.HighRealismFollowsZone = Environment.GetEnvironmentVariable("CITY3D_HIREALISM") != "0";
+
         // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1 / -TASKS.md T1: the pinned X0..Y1 crop is the DEMO's
         // hero-block (a ~840x840 m window on a 4750 m synthetic net). An arbitrary net -- a SumoData cut
         // sub-area -- has no such window: the whole cut IS the playable area, and LiveCitySim itself

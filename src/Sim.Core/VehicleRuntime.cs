@@ -70,6 +70,22 @@ internal sealed class VehicleRuntime
     public int LcStepsElapsed;
     public int LcStepsTotal;
 
+    // LIVECITY-DIAGSTOP diagnostic (journal Entry 64): how the LAST maneuver ended and how recently.
+    // Stamped when a continuous maneuver ends (completed at full LcStepsTotal, or aborted by
+    // ClearLaneChangeManeuver), decayed one per step in AdvanceLaneChanges. While > 0 the read-buffer
+    // projection publishes phase "just-completed"/"just-aborted", the engine proxy of the owner's
+    // "standing-car orientation vs lane direction" metric (the IG renders the lateral slide, so a car
+    // that stops during or right after a maneuver stands diagonal on screen). Never read by any
+    // behavioral path; always 0 on duration==0 scenarios (no maneuver ever starts) -> byte-identical.
+    public int LcEndedCooldownSteps;
+    public bool LcEndedByCompletion;
+
+    // Entry 65 refinement: the ego speed at the maneuver-end step. A completion at driving speed
+    // followed by a stop leaves the car ALIGNED (the slide finished before the stop) -- only an end
+    // at (near-)standstill is the diagonal-stand candidate. The projection splits the ended phases
+    // on this so the DIAGSTOP count does not launder aligned stoppers into the owner's metric.
+    public float LcEndSpeed;
+
     // D3: this vehicle's lane-sequence is now a SLICE `[LaneSeqStart, LaneSeqStart+LaneSeqLen)`
     // into Engine's shared `_laneSeqPool` (a single `List<int>` of lane HANDLES, blob-style) --
     // replacing the old per-vehicle `IReadOnlyList<string> LaneSequence`/`int[]
@@ -574,6 +590,12 @@ internal sealed class VehicleRuntime
     // ScenarioConfig.TimeToTeleport>0, so every pre-P1F scenario (time-to-teleport=-1) never
     // touches it and the active-query filters stay byte-identical.
     public bool InTransfer;
+
+    // Entry 62: set by ExecuteMoveVehicle's C4-vii-c strand clamp (wrong-lane dead-end, pos
+    // pinned at the lane end, speed 0); consumed the same step by Engine.RescueStrandedVehicles'
+    // serial sibling-snap pass. Never set on any committed-golden path (the clamp itself is not
+    // reached there).
+    public bool StrandClamped;
 
     // GAP-2 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §2, docs/SERVE-PATH-PLAN.md): SUMO's
     // MSDevice_Tripinfo::myWaitingTime (MSDevice_Tripinfo::notifyMove, MSDevice_Tripinfo.cpp:179-193)

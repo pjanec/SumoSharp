@@ -1067,11 +1067,40 @@ public sealed partial class Engine : IEngine
     // an immutable RealismMask and publishes it with a single volatile assignment. Pass an empty set or
     // call ClearVisibleEdges() to return to fully-permissive. `forbidTeleport`/`forbidPop` choose which
     // cheating actions the visible zone forbids (both default true = strict no-cheating on camera).
-    public void SetVisibleEdges(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true)
-        => _realismMask = new RealismMask(visibleEdgeIds, forbidTeleport, forbidPop);
+    public void SetVisibleEdges(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true, bool forbidPassThrough = true)
+        => _realismMask = new RealismMask(visibleEdgeIds, forbidTeleport, forbidPop, forbidPassThrough);
 
     // X1: clear the mask -> fully permissive (every edge off-camera). Inert-equivalent for the gates.
     public void ClearVisibleEdges() => _realismMask = null;
+
+    // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.1: may the ignore-junction-blocker skip fire against
+    // this foe? Tested on the FOE's edge -- the drive-through the skip produces happens at the foe's
+    // body, so that is what the camera must not see. Null mask (every golden/bench/parity run) short-
+    // circuits to true; with a mask this is one HashSet lookup on the immutable per-step snapshot
+    // (_activeMask, captured once in AdvanceOneStep), so parallel plan-phase reads are safe and
+    // par==single is unaffected. Suppression never resets the foe's WaitingTime -- the comparison
+    // stays satisfied, so the recovery fires the step the foe's edge leaves the visible set.
+    private bool PassThroughAllowed(VehicleRuntime foe)
+    {
+        if (_activeMask is null)
+        {
+            return true;
+        }
+
+        if (_activeMask.MayPassThrough(_network!.LanesByHandle[foe.LaneHandle].EdgeId))
+        {
+            return true;
+        }
+
+        // Diagnostic tally only (witness visibility of the device, LIVECITY-REROUTES style). Never
+        // read by any behavioral path; Interlocked because the plan phase is region-parallel. Rare:
+        // only foes already past IgnoreJunctionBlockerSeconds reach this.
+        System.Threading.Interlocked.Increment(ref _passThroughSuppressed);
+        return false;
+    }
+
+    private long _passThroughSuppressed;
+    public long PassThroughSuppressedCount => System.Threading.Interlocked.Read(ref _passThroughSuppressed);
 
     // X1: aggressive OFF-CAMERA de-jam despawn. A frontmost jam blocker on an off-camera lane whose
     // WaitingTime exceeds this (seconds) is DESPAWNED before it would reach time-to-teleport, so
@@ -2083,6 +2112,59 @@ public sealed partial class Engine : IEngine
     public bool DiagLaneChangeLog { get; set; }
     private readonly long[] _lcByPathChangerSpeed = new long[12];
     private readonly long[] _lcTargetNearStopped = new long[4]; // per path: commits with a target car <20m going <0.5
+    // Entry 59 Class A instrument: a commit made while ego is nearly stopped TIGHT behind its
+    // OWN same-lane stopped leader is the owner's "last-moment swerve at the queue tail" --
+    // the maneuver that should have been decided upstream (SUMO's REACT_TO_STOPPED_DISTANCE
+    // urgent arm, MSLCM_LC2013.cpp:1378, is not ported; this line measures how often that
+    // absence bites and names exemplar vehicles for the [veh]/[sg] trace). Print-only, gated.
+    // Entry 60 E1 (docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md §3): a continuous maneuver
+    // (LaneChangeDuration > 0) must not START when its forward travel cannot clear ego's own
+    // same-lane (near-)stopped leader -- that start is the queue-tail sweep-through the owner
+    // flagged (the IG interpolates the mid-maneuver lane flip straight through the leader's
+    // body). Forward travel over the sweep ~ speed * duration / 2 (braking toward the tail;
+    // end speed ~ 0), plus MinGap margin. Restricted to a near-stopped leader (< 1.0 m/s):
+    // against a MOVING slow leader the closing speed governs and the plain overtake path
+    // stays as it was. Used as one more VETO in the commit gate chains -- same no-reset
+    // semantics as every other veto, so the wish retries and fires the moment the queue
+    // creeps open runway. Instant-snap (duration 0, every golden/bench) never reaches the
+    // guard -> byte-identical by construction.
+    // Entry 64 widening (the owner's residual class): the < 1.0 m/s leader cutoff let a commit through
+    // behind a CREEPING leader (queue pulse) that then stopped mid-sweep -- same diagonal stop, one
+    // queue-position later. Closure form instead: assume the leader stops NOW, so the room ego can ever
+    // get is the current gap plus the leader's own brake gap (v^2/2b -- ~0 for a creeper, large for a
+    // genuinely moving leader, which therefore still commits exactly as before). Veto when that room
+    // does not cover ego's whole-maneuver travel. The red-light pure-lateral slide is the same
+    // mechanism with a zero-speed "leader" horizon at the stop line -- covered by the creeper term.
+    private bool ManeuverLacksRunway(VehicleRuntime v, VehicleRuntime? sameLaneLeader)
+    {
+        if (sameLaneLeader is null || LaneChangeSteps() <= 1)
+        {
+            return false;
+        }
+
+        var leaderSpeed = sameLaneLeader.Kinematics.Speed;
+        var leaderBrakeGap = (leaderSpeed * leaderSpeed) / (2.0 * Math.Max(0.1, sameLaneLeader.VType.Decel));
+        var gap = (sameLaneLeader.Kinematics.Pos - sameLaneLeader.VType.Length) - v.Kinematics.Pos;
+        var runway = (v.Kinematics.Speed * _config!.LaneChangeDuration * 0.5) + v.VType.MinGap;
+        return gap + leaderBrakeGap < runway;
+    }
+
+    private void RecordLateQueueTailChange(VehicleRuntime v, VehicleRuntime? sameLaneLeader, string tag, double neighDist = double.NaN)
+    {
+        if (!DiagLaneChangeLog || sameLaneLeader is null) return;
+        var gap = (sameLaneLeader.Kinematics.Pos - sameLaneLeader.VType.Length) - v.Kinematics.Pos;
+        if (v.Kinematics.Speed < 3.0 && sameLaneLeader.Kinematics.Speed < 0.5 && gap < 8.0)
+        {
+            // neighDist decides the Entry 59 Class A design split: > ~260 m (20 s at urban full
+            // speed) means the 20 s usability gate would have passed during the APPROACH -- the
+            // late commit is a decision bug; short (~turn-lane continuation) means the lateness
+            // matches SUMO's own gate and only the execution artifact needs fixing.
+            Console.Error.WriteLine(
+                $"[lclate] t={CurrentTime:F1} veh={v.Def.Id} {v.LaneId}@{v.Kinematics.Pos:F1} v={v.Kinematics.Speed:F2} "
+                + $"leader={sameLaneLeader.Def.Id} leadGap={gap:F2} neighDist={neighDist:F0} tag={tag}");
+        }
+    }
+
     private void RecordLaneChangeCommit(int path, VehicleRuntime v, VehicleRuntime? nLead, VehicleRuntime? nFollow, bool bypassesMinSpeed, string tag = "")
     {
         if (!DiagLaneChangeLog) return;
@@ -2184,6 +2266,13 @@ public sealed partial class Engine : IEngine
     // published so the host-side ring scan can age a blocker-graph cycle (age = min member value).
     public ReadOnlySpan<float> WaitingTimes => _readBuffer.WaitingTime.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<int> EntityIndexes => _readBuffer.EntityIndex.AsSpan(0, _readBuffer.Count);
+
+    // LIVECITY-DIAGSTOP diag (Entry 64/65): discrete lane-change maneuver phase per vehicle -- 0 none,
+    // 1 in-progress pre-midpoint, 2 in-progress post-midpoint, then ended-within-one-maneuver-duration
+    // split by end-step speed (< 1.0 m/s = diagonal-stand candidate): 3 completed-at-standstill,
+    // 4 aborted-at-standstill, 5 completed-at-speed, 6 aborted-at-speed. Always 0 when
+    // lanechange.duration == 0.
+    public ReadOnlySpan<byte> LcPhases => _readBuffer.LcPhase.AsSpan(0, _readBuffer.Count);
 
     // Per-vehicle generation for VehicleHandle staleness, indexed by EntityIndex. Presently a constant 1
     // (no vehicle slot is recycled yet); grown lazily off the hot creation path. When runtime despawn
@@ -2441,10 +2530,30 @@ public sealed partial class Engine : IEngine
             // byte-identical; for a <vTypeDistribution> id, this publishes the drawn MEMBER's id
             // (matching real SUMO, which exposes the concrete resolved vType, never the
             // distribution name, once a vehicle is built).
+            // LIVECITY-DIAGSTOP (Entry 64/65): the discrete lane-change maneuver phase (DISTINCT from
+            // the `Manoeuvring` RVO/steer bit). 0 none, 1 in-progress pre-midpoint, 2 in-progress
+            // post-midpoint; ended phases (held one maneuver-duration) split on the END-STEP speed --
+            // an end at driving speed left the car ALIGNED (slide finished before any stop), only an
+            // end at (near-)standstill (< 1.0 m/s) is a diagonal-stand candidate: 3 completed-at-
+            // standstill, 4 aborted-at-standstill, 5 completed-at-speed, 6 aborted-at-speed. The
+            // witness crosses this with speed < 0.5 to count cars standing diagonal on screen.
+            byte lcPhase = 0;
+            if (v.LcTargetHandle >= 0)
+            {
+                lcPhase = (2 * v.LcStepsElapsed) <= v.LcStepsTotal ? (byte)1 : (byte)2;
+            }
+            else if (v.LcEndedCooldownSteps > 0)
+            {
+                var endedSlow = v.LcEndSpeed < 1.0f;
+                lcPhase = v.LcEndedByCompletion
+                    ? (endedSlow ? (byte)3 : (byte)5)
+                    : (endedSlow ? (byte)4 : (byte)6);
+            }
+
             _readBuffer.Add(handle, v.EntityIndex, v.Def.Id, v.VType.Id,
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
-                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime);
+                (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime, lcPhase);
 
             // Entry 52 instrument: the traced vehicle's PER-STEP settled state -- lane/pos/speed and
             // the winning binder/arm/blocker the fold recorded. The constraint-internal traces
@@ -3296,6 +3405,11 @@ public sealed partial class Engine : IEngine
             var pExec = PhaseStart();
             ExecuteMoves(time, dt);
             if (DiagSeqDesync) foreach (var dv in ActiveVehicles()) CheckSeqDesync(dv, "postExecute", time);
+            // Entry 62 (sibling-snap strand rescue): SERIAL on purpose -- the rescue reads OTHER
+            // vehicles' just-executed positions (an occupancy scan), which inside the region-
+            // parallel ExecuteMoves would be thread-order dependent. Here every move has settled
+            // and the command buffer flushed, so the scan is deterministic (par == single).
+            RescueStrandedVehicles();
             PhaseEnd("execute", pExec);
 
             // [SystemPhase.PostSimulation] P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1A/§1F, §2): the
@@ -5522,6 +5636,15 @@ public sealed partial class Engine : IEngine
         // as a constraint but must not consume it, or the real PlanMovements call would miss it).
         if (!double.IsPositiveInfinity(v.CoopSpeedAdvice))
         {
+            // Entry 61 instrument: the advice is applied AFTER the binder fold was recorded, so a
+            // car pinned by it every step reports binder=freeFlow blocker=-1 v=0 -- the veh282
+            // stopped-under-freeFlow signature. This line makes the invisible cap visible.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id && v.CoopSpeedAdvice < vPos)
+            {
+                Console.Error.WriteLine(
+                    $"[coop] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} advice={v.CoopSpeedAdvice:F2} vPos={vPos:F2}");
+            }
+
             vPos = Math.Min(vPos, v.CoopSpeedAdvice);
             if (!prePass)
             {
@@ -7767,7 +7890,8 @@ public sealed partial class Engine : IEngine
                         continue;
                     }
 
-                    if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds
+                        && PassThroughAllowed(occ))
                     {
                         continue;
                     }
@@ -7846,7 +7970,8 @@ public sealed partial class Engine : IEngine
             // Port of MSLink.cpp:1601 -- `if (leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker)`.
             // A foe standing at least IgnoreJunctionBlockerSeconds is skipped entirely, so it constrains
             // nobody (SUMO emits no LinkLeader for it). Inert at the default -1, exactly as in SUMO.
-            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds)
+            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds
+                && PassThroughAllowed(foe))
             {
                 continue;
             }
@@ -8267,7 +8392,8 @@ public sealed partial class Engine : IEngine
                     // jy7 ego) whose only cuttable edge was this hold: a bay body that has stood for
                     // >= the threshold is a wedge, not a transient, and holding for it converts one
                     // stuck car into a citywide gridlock. Inert at the -1 default (SUMO parity).
-                    if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds
+                        && PassThroughAllowed(cand))
                     {
                         continue;
                     }
@@ -9421,7 +9547,8 @@ public sealed partial class Engine : IEngine
                     continue;
                 }
 
-                if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds
+                    && PassThroughAllowed(occ))
                 {
                     continue;
                 }
@@ -9572,6 +9699,21 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // Entry 63: SUMO's gIgnoreJunctionBlocker skip (MSLink.cpp:1601) applies to EVERY link
+        // leader -- sameTarget ones included -- but only the crossing arm and PHASE1occ carried
+        // it here. The veh903 wedge (788 s) was PHASE2-targetFollow of a car stranded on the
+        // dead stub lane: without the skip the 60 s recovery NEVER fires for merge holds, so a
+        // single stranded car wedges every merge stream permanently. Inert at the -1 default
+        // (every golden); live-city F3 sets 60 s.
+        var ignoreBlocker = IgnoreJunctionBlockerSeconds >= 0.0;
+
+        if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId
+            && ignoreBlocker && foeMerging.WaitingTime >= IgnoreJunctionBlockerSeconds
+            && PassThroughAllowed(foeMerging))
+        {
+            foeMerging = null; // long-standing on-lane merge foe: constrains nobody (SUMO emits no LinkLeader)
+        }
+
         if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId)
         {
             // JUNCTION-FOE-LANE F2.2: with the FoeWith widening, a mutual-foes merge pair reaches
@@ -9666,8 +9808,12 @@ public sealed partial class Engine : IEngine
         }
 
         var leaderOnTarget = FindRearmostOnLane(ego, allVehicles, targetLane.Id);
-        if (leaderOnTarget is null)
+        if (leaderOnTarget is null
+            || (ignoreBlocker && leaderOnTarget.WaitingTime >= IgnoreJunctionBlockerSeconds
+                && PassThroughAllowed(leaderOnTarget)))
         {
+            // Entry 63: the second (null) arm is the MSLink.cpp:1601 skip for PHASE 2 -- see the
+            // ignoreBlocker comment above. Inert at the -1 default.
             return occPhase1; // Entry 58: +infinity gate-off (pre-existing), occupant fold gate-on
         }
 
@@ -12548,6 +12694,19 @@ public sealed partial class Engine : IEngine
             // comment) -- both halves hold ego at its own link exactly the same way.
             v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14 or 17;
 
+            // Entry 61 instrument: the plan->execute seam for the traced vehicle. The veh282
+            // anomaly showed a 10.65 -> 0.00 speed step ACROSS a lane boundary with binder
+            // freeFlow -- impossible via the constraint fold, so either the Intent itself
+            // carried 0 (plan-tail cap after the binder write) or a later actor zeroed
+            // Kinematics.Speed between this write and the export projection. This line pins
+            // which side of the seam the zero enters on.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                var gen282 = v.EntityIndex >= 0 && v.EntityIndex < _vehicleGeneration.Length ? _vehicleGeneration[v.EntityIndex] : -1;
+                Console.Error.WriteLine(
+                    $"[exec] t={CurrentTime:F1} veh={v.Def.Id} ent={v.EntityIndex} gen={gen282} old={oldSpeed:F2} new={v.Intent.NewSpeed:F2} {v.LaneId}@{v.Kinematics.Pos:F2} seq={v.LaneSeqIndex}/{v.LaneSeqLen}");
+            }
+
             v.Kinematics.Speed = v.Intent.NewSpeed;
 
             // C4-ii: waiting-time accumulation (MSVehicle::updateWaitingTime, MSVehicle.cpp:4081-4088).
@@ -12857,6 +13016,21 @@ public sealed partial class Engine : IEngine
 
                     v.Kinematics.Pos = currentLane.Length;
                     v.Kinematics.Speed = 0.0;
+
+                    // Entry 62 (the strand-clamp WaitingTime LIVELOCK -- traced end-to-end on Geneva,
+                    // __veh282 on the 1.42 m netconvert stub gen_road_4504_0, dead lane 0): each step
+                    // the plan freeFlow-accelerates (the POOL thinks ego exits via a sibling lane, so
+                    // no dead-lane brake binds), this clamp zeroes it back -- and the WaitingTime
+                    // update above already saw Intent.NewSpeed=1.30 > HaltingSpeed and RESET the
+                    // counter. Every stuck-rescue keys on WaitingTime (TryRerouteStuckDeadLane 5 s /
+                    // 90 s, jam teleport, and -- the wedge amplifier -- other cars' 60 s
+                    // IgnoreJunctionBlocker skip), so the clamp cycle STARVED them all: the car froze
+                    // FOREVER and the queue behind it waited 1000+ s with every recovery defeated
+                    // (measured: the :34991 wedge, JXNHOLD waits to 1066 s). A clamped car IS waiting
+                    // -- accumulate honestly. Reached only on the strand path (no committed golden
+                    // reaches it -- the guard's own comment), so goldens/bench are untouched.
+                    v.WaitingTime += dt;
+                    v.StrandClamped = true; // Entry 62: sibling-snap rescue candidate (serial pass)
                     break;
                 }
 
@@ -13097,6 +13271,103 @@ public sealed partial class Engine : IEngine
     // reach boundaries ON their pool lane (every committed golden) never calls this and is
     // byte-identical. Direct v.LaneSeq* writes are safe: this is the execute phase, each vehicle
     // mutates only its own state, and nothing later this step reads another vehicle's LaneSeq*.
+    // Entry 62 (the veh282 stub trap, traced end-to-end): a strand-clamped car sits on a lane with
+    // NO connection to its route's next edge (often none at all -- netconvert's Geneva cut has
+    // 1.42 m stubs whose lane 0 is connection-less), pinned at the lane end at speed 0 while a
+    // SIBLING lane of the same edge continues the route a lane-width away. SUMO never freezes
+    // there: its changeLanes phase runs every step regardless of lane length and snaps the vehicle
+    // over (duration-0 discrete change). Our strategic path cannot converge across a 1.42 m stub
+    // (one step overshoots the whole lane), so mirror SUMO's outcome directly: when the clamped
+    // car's edge has a sibling lane that (a) connects to the route's next edge and (b) has room at
+    // ego's span, snap laterally and re-resolve the pool from it. Serial (see the call site's
+    // determinism comment); flag-scoped to strand-clamped vehicles only, a state no committed
+    // golden reaches -- goldens/bench byte-identical.
+    private void RescueStrandedVehicles()
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (!v.StrandClamped)
+            {
+                continue;
+            }
+
+            v.StrandClamped = false;
+            var lane = _network!.LanesByHandle[v.LaneHandle];
+
+            // The route's next NORMAL edge (same walk TryReResolveFromActualLane does).
+            string? nextEdge = null;
+            for (var k = v.LaneSeqIndex; k < v.LaneSeqLen; k++)
+            {
+                var pl = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]];
+                if (pl.EdgeId.Length > 0 && pl.EdgeId[0] == ':')
+                {
+                    continue;
+                }
+
+                if (pl.EdgeId != lane.EdgeId)
+                {
+                    nextEdge = pl.EdgeId;
+                    break;
+                }
+            }
+
+            if (nextEdge is null || !_network.EdgesById.TryGetValue(lane.EdgeId, out var edge))
+            {
+                continue;
+            }
+
+            foreach (var sib in edge.Lanes)
+            {
+                if (sib.Handle == v.LaneHandle
+                    || !_network.ConnectionsByFromLaneTo.ContainsKey((lane.EdgeId, sib.Index, nextEdge)))
+                {
+                    continue;
+                }
+
+                // Room check at ego's span on the sibling (post-execute settled positions; serial).
+                var egoFront = Math.Min(v.Kinematics.Pos, sib.Length);
+                var egoBack = egoFront - v.VType.Length;
+                var occupied = false;
+                foreach (var other in ActiveVehicles())
+                {
+                    if (ReferenceEquals(other, v) || other.LaneHandle != sib.Handle)
+                    {
+                        continue;
+                    }
+
+                    var oFront = other.Kinematics.Pos + other.VType.MinGap;
+                    var oBack = other.Kinematics.Pos - other.VType.Length - v.VType.MinGap;
+                    if (egoFront > oBack && egoBack < oFront)
+                    {
+                        occupied = true;
+                        break;
+                    }
+                }
+
+                if (occupied)
+                {
+                    continue;
+                }
+
+                v.LaneId = sib.Id;
+                v.LaneHandle = sib.Handle;
+                v.Kinematics.Pos = egoFront;
+                if (TryReResolveFromActualLane(v, sib))
+                {
+                    System.Threading.Interlocked.Increment(ref _strandSiblingSnaps);
+                }
+
+                // Snap performed (even if the re-resolve fell back, the sibling physically connects
+                // onward, so the dead-lane rescue path can now run from a connected lane).
+                break;
+            }
+        }
+    }
+
+    // Entry 62 diagnostic: total sibling-snap rescues (parity-neutral; read by nothing).
+    private long _strandSiblingSnaps;
+    public long StrandSiblingSnaps => System.Threading.Interlocked.Read(ref _strandSiblingSnaps);
+
     private bool TryReResolveFromActualLane(VehicleRuntime v, Lane currentLane)
     {
         // The remaining NORMAL route edges from the current slot onward (skip internal ':'-edge
@@ -13748,12 +14019,25 @@ public sealed partial class Engine : IEngine
                     // :1398 -- for the left direction, !changeToBest is effOffset <= 0.
                     if (neighLeftPlaceLeft / (Math.Abs(effOffsetLeft) + 2.0) < laDistLeft)
                     {
+                        // Entry 59 Class A instrument: which left-stay rule pins an approacher.
+                        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                        {
+                            Console.Error.WriteLine(
+                                $"[sg] t={CurrentTime:F1} {v.Def.Id} STAY1 place={neighLeftPlaceLeft:F1} laDist={laDistLeft:F1} laSpd={v.LookAheadSpeed:F1} v={v.Kinematics.Speed:F2}");
+                        }
+
                         return;
                     }
 
                     // :1411 (rule 2)
                     if (effOffsetLeft == 0 && neighLeftPlaceLeft * 2.0 < laDistLeft)
                     {
+                        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                        {
+                            Console.Error.WriteLine(
+                                $"[sg] t={CurrentTime:F1} {v.Def.Id} STAY2 place={neighLeftPlaceLeft:F1} laDist={laDistLeft:F1} laSpd={v.LookAheadSpeed:F1} v={v.Kinematics.Speed:F2}");
+                        }
+
                         return;
                     }
                 }
@@ -13839,6 +14123,16 @@ public sealed partial class Engine : IEngine
             // parity tolerance and never near a threshold-crossing boundary here).
             speedGainProbability = Math.Ceiling(speedGainProbability * 100000.0) * 0.00001;
 
+            // Entry 59 Class A instrument: the accumulator's whole state each step for the traced
+            // vehicle -- when did the wish START building vs when did it cross the threshold.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[sg] t={CurrentTime:F1} {v.Def.Id} {v.LaneId}@{v.Kinematics.Pos:F1} v={v.Kinematics.Speed:F2} "
+                    + $"thisVSafe={thisLaneVSafe:F2} neighVSafe={neighLaneVSafe:F2} relGain={relativeGain:F4} acc={speedGainProbability:F4} "
+                    + $"currDist={currentDist:F1} neighDist={neighDist:F1} usable={(neighDist / Math.Max(0.1, v.Kinematics.Speed)):F1}");
+            }
+
             string? targetLaneId = null;
             var targetLaneHandle = 0;
             if (speedGainProbability > changeProbThresholdLeft
@@ -13869,9 +14163,11 @@ public sealed partial class Engine : IEngine
                 // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
                     && !LaneChangeSlotContested(v, leftLane.Handle, postMoveNeighbors)
-                    && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
+                    && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt))
+                    && !ManeuverLacksRunway(v, leader))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "sgLeft"); // #15 float analysis (speed-gain left)
+                    RecordLateQueueTailChange(v, leader, "sgLeft", neighDist); // Entry 59 Class A
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
@@ -15537,6 +15833,13 @@ public sealed partial class Engine : IEngine
     // on every golden.
     private static void ClearLaneChangeManeuver(VehicleRuntime v)
     {
+        // LIVECITY-DIAGSTOP (Entry 64): an abort ends a maneuver mid-slide -- hold the "just-aborted"
+        // phase for one maneuver-duration so the witness can catch the car if it stands diagonal.
+        // Diagnostic-only fields; every call site guards LcTargetHandle >= 0, so this never fires on
+        // a duration==0 scenario.
+        v.LcEndedCooldownSteps = Math.Max(1, v.LcStepsTotal);
+        v.LcEndedByCompletion = false;
+        v.LcEndSpeed = (float)v.Kinematics.Speed;
         v.LcTargetHandle = -1;
         v.LcTargetId = string.Empty;
         v.LcStepsElapsed = 0;
@@ -15549,6 +15852,12 @@ public sealed partial class Engine : IEngine
         {
             if (v.LcTargetHandle < 0)
             {
+                // LIVECITY-DIAGSTOP (Entry 64): decay the just-ended hold window (diagnostic only).
+                if (v.LcEndedCooldownSteps > 0)
+                {
+                    v.LcEndedCooldownSteps--;
+                }
+
                 continue;
             }
 
@@ -15563,12 +15872,26 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
-            // Realism (LaneChangeMinSpeed > 0, demo-only; 0 = off = byte-identical): HOLD an in-progress
-            // maneuver while the car is essentially stopped, so the lateral centre-to-centre flip (and its
-            // on-screen sideways step) never happens at a standstill -- it resumes once the car moves.
+            // Realism (LaneChangeMinSpeed > 0, demo-only; 0 = off = byte-identical): a car dropping
+            // (nearly) to a stop mid-maneuver must not FREEZE in a diagonal pose -- Entry 60 measured
+            // the old unconditional hold as the owner's "stopped half in each lane" norm plus the
+            // resume-in-body-contact sweep (E2, docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md §3):
+            //   - BEFORE the midpoint the car is still sorted into its source lane: ABORT cleanly
+            //     (recenter; the wish re-accumulates and retries with E1's runway guard).
+            //   - AT/PAST the midpoint it is already sorted into the target lane: COMPLETE the
+            //     lateral slide while crawling -- a driver halfway into the lane finishes the wedge.
+            // The hold's original purpose (no full-lane sideways step at standstill) is preserved:
+            // E1 means maneuvers only START with runway, and both arms here progress toward a lane
+            // CENTER instead of freezing between two.
             if (LaneChangeMinSpeed > 0.0 && v.Kinematics.Speed < LaneChangeMinSpeed)
             {
-                continue;
+                if ((2 * v.LcStepsElapsed) <= v.LcStepsTotal)
+                {
+                    ClearLaneChangeManeuver(v);
+                    continue;
+                }
+
+                // past midpoint: fall through -- keep advancing to completion.
             }
 
             v.LcStepsElapsed++;
@@ -15585,6 +15908,11 @@ public sealed partial class Engine : IEngine
 
             if (v.LcStepsElapsed >= v.LcStepsTotal)
             {
+                // LIVECITY-DIAGSTOP (Entry 64): completed at full duration -- hold "just-completed"
+                // for one maneuver-duration (diagnostic only, see ClearLaneChangeManeuver).
+                v.LcEndedCooldownSteps = Math.Max(1, v.LcStepsTotal);
+                v.LcEndedByCompletion = true;
+                v.LcEndSpeed = (float)v.Kinematics.Speed;
                 v.LcTargetHandle = -1;
                 v.LcTargetId = string.Empty;
                 v.LcStepsElapsed = 0;
@@ -16026,8 +16354,18 @@ public sealed partial class Engine : IEngine
             return false;
         }
 
+        // Entry 60 E1: same runway veto as the speed-gain site -- a strategic maneuver started
+        // without runway sweeps through the queue tail identically. Deferral, not denial: the
+        // strategic wish re-evaluates every step and commits once the queue creeps open.
+        if (ManeuverLacksRunway(v, neighbors.GetLeader(v)))
+        {
+            v.LcStrategicOutcome = 5;
+            return false;
+        }
+
         v.LcStrategicOutcome = 1;
         RecordLaneChangeCommit(2, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "strategic"); // #15 float analysis (strategic/urgent)
+        RecordLateQueueTailChange(v, neighbors.GetLeader(v), "strategic"); // Entry 59 Class A
         CommitLaneChange(v, neighborLane.Handle, neighborLane.Id);
         // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
         v.SpeedGainProbability = 0.0;

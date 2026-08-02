@@ -57,6 +57,7 @@ internal sealed class VehicleReadBuffer
     public float[] JunctionYieldFoeSpeed = new float[InitialCapacity]; // #15 diag: bound junction foe's speed (-1 none)
     public int[] BlockerEntity = new int[InitialCapacity]; // Entry 37 diag: EntityIndex of the vehicle the binder blocked on (-1 none)
     public float[] WaitingTime = new float[InitialCapacity]; // DEADLOCK-RING D1 diag: consecutive-stop seconds (ring age = min member value)
+    public byte[] LcPhase = new byte[InitialCapacity]; // LIVECITY-DIAGSTOP diag (Entry 64): 0 none / 1 pre-mid / 2 post-mid / 3 just-completed / 4 just-aborted
 
     // EntityIndex -> dense slot, frame-stamped so BeginFrame never has to clear it: a slot is current
     // only if its stamp equals the live frame counter.
@@ -77,7 +78,7 @@ internal sealed class VehicleReadBuffer
         int laneHandle, int nextLane, int prevLane, ReadOnlySpan<int> laneWindow,
         string laneId, double pos, double speed, double accel, double posLat,
         float x, float y, float z, float angle, float length, float width,
-        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f, int blockerEntityIndex = -1, float waitingTime = 0f)
+        byte drModel, bool manoeuvring, byte bindingConstraint = 0, byte junctionYieldArm = 0, float junctionYieldFoeSpeed = -1f, int blockerEntityIndex = -1, float waitingTime = 0f, byte lcPhase = 0)
     {
         EnsureColumnCapacity(Count + 1);
 
@@ -113,6 +114,7 @@ internal sealed class VehicleReadBuffer
         JunctionYieldFoeSpeed[i] = junctionYieldFoeSpeed;
         BlockerEntity[i] = blockerEntityIndex;
         WaitingTime[i] = waitingTime;
+        LcPhase[i] = lcPhase;
 
         _slotByEntity[entityIndex] = i;
         _frameOfEntity[entityIndex] = _frame;
@@ -172,6 +174,7 @@ internal sealed class VehicleReadBuffer
         Array.Resize(ref JunctionYieldFoeSpeed, newCap);
         Array.Resize(ref BlockerEntity, newCap);
         Array.Resize(ref WaitingTime, newCap);
+        Array.Resize(ref LcPhase, newCap);
     }
 
     private void EnsureEntityCapacity(int needed)

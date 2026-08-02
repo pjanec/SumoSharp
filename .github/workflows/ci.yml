@@ -32,7 +32,11 @@ jobs:
       # History: 909605E965BFFE59 -> AA6143E74072CD4C (P2-H era vehicle-side work) ->
       # D96213B7BB4021A7 (the dense multi-lane car-overlap fix, 2b55f16, moved the highway-dense trajectory
       # and the anchor was never refreshed, so main itself was red against this gate) ->
-      # BF3794A4704BCD79 (the seven junction/overlap gates now default ON -- see below).
+      # BF3794A4704BCD79 (the seven junction/overlap gates now default ON -- see below) ->
+      # A134ED3716DDE7BC (PARTIAL-OCCUPANCY myPartialVehicles default ON, Entry 54 41867d1: the
+      # boundary-spanning-tail visibility that cut Geneva overlaps -87%; the anchor was again not
+      # refreshed at flip time -- docs/TASKS-TODO.md has carried A134ED3716DDE7BC as the gate number
+      # since, re-verified par==single at every Entry 55..65 commit, and this pin now matches it).
       # Each value is verified deterministic (par == single) and SUMO-parity-green (Sim.ParityTests pass
       # within tolerance); this is an exact self-consistency anchor, not a parity-vs-SUMO check.
       #
@@ -52,5 +56,5 @@ jobs:
         run: |
           out="$(dotnet run --project src/Sim.Bench -c Release --no-build)"
           echo "$out"
-          echo "$out" | grep -q "hashA=BF3794A4704BCD79" || { echo "::error::single-thread determinism hash moved"; exit 1; }
-          echo "$out" | grep -q "hashPar=BF3794A4704BCD79" || { echo "::error::parallel determinism hash moved"; exit 1; }
+          echo "$out" | grep -q "hashA=A134ED3716DDE7BC" || { echo "::error::single-thread determinism hash moved"; exit 1; }
+          echo "$out" | grep -q "hashPar=A134ED3716DDE7BC" || { echo "::error::parallel determinism hash moved"; exit 1; }
