@@ -3795,3 +3795,21 @@ direction — done; (b) D2's default-ON blocker (the Entry-52 frozen landings) i
 the triangle, recommend flipping `RingBreakGate` default ON as well (the two are complementary:
 honesty + legitimate recovery); (c) the residual 34 junction pairs are phase-2 territory
 (insertion, keepClear space walks, lane-change shadow — T5, own sign-off).
+
+### Entry 54 addendum — owner 3D verdict + residual classification
+
+Owner ran the best configuration in the 3D viewer (fresh pack, partials default-ON +
+`LIVECITY_RINGBREAK=1`): **"the best result I have ever seen with SumoSharp"**; half-stacked
+queue cars CONFIRMED GONE visually; overlaps "greatly reduced although far from eliminated" —
+two named residual classes, both "a regular observation in normal traffic, not just an emergency
+resolution": (1) merging-lane overlaps, (2) passing through a car blocked mid-junction.
+
+Instrument anatomy of the residuals (pv1 capture, OVERLAP-EX dedup):
+
+- The junction class is now dominated by **crossing-internal-lane pairs of one junction**
+  (`:35673_0_0×:35673_1_0`, `:30268_8_0×:30268_5_2`, `:36220_7_0×:36220_9_2`, …) — mid-junction
+  corridor crossings where one body stands on the other's path, NOT the boundary-tail class
+  (which partials cured). This is the owner's class (2), the F3 crossing-geometry family.
+- The merge class's crispest signature: `__veh411 × __veh2209` both at `gen_road_7290_2@1.0`,
+  depth 5.0 — **full co-location at a shared target lane's start**, i.e. two streams landing in
+  (likely) the same step, neither seeing the other mid-flight. Being traced.
