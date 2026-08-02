@@ -3689,3 +3689,48 @@ measure to the wrong frame), yielding exit-boundary junction overlaps, landing-i
 queue overlaps, and merge-landing overlaps as one family (the C4-vii-a frame-bug pattern at a
 site the sweep did not cover). Next: trace `__veh1953` (the RB=1 landing) and `__veh995/__veh471`
 (the RB=0 exit boundary) — deterministic replay + `LIVECITY_TRACEVEH` reach both directly.
+
+## Entry 53 — the junction drive-through class TRACED TO ARITHMETIC: the stopped-lookahead ratchet (a missing myPartialVehicles)
+
+New committed instrument: `[veh]` — per-step settled (lane, pos, speed, WINNING binder/arm/
+blocker) for the `DiagTraceVehicleId` vehicle, printed from the export projection. The
+constraint-internal traces show what an arm SAW; this shows which arm WON — the exact gap the
+Entry-16 lesson (`DiagTraceVehicleId`'s own comment) names.
+
+**The trace (`__veh206` into `__veh3472`, RB=0 arm, t=1235.5–1245):** a strict per-step
+alternation —
+
+```
+bind=2 (crossJxnLeader, blocker=3472)  v -> 0.00      the arm sees the blocker, e-stops
+bind=3 (freeFlow, blocker=-1)          v -> 1.30      NOTHING binds; +0.65 m
+```
+
+ratcheting 5.04 → 6.99 INTO the stopped leader's body, freezing 1.6 m deep. The arithmetic:
+`TryFindCrossJunctionLeader` breaks on `seen > lookahead` where `seen` = distance to the NEXT
+LANE'S START and `lookahead = Speed2Dist(maxV) + BrakeGap(maxV)` with `maxV =
+MaxNextSpeed(egoSpeed)`. For a STOPPED ego lookahead ≈ 2.1 m; the boundary is 3.2 m away →
+the walk never reaches the next lane → the leader (physically ~0 m ahead, its TAIL hanging
+3.2 m back across the boundary) is INVISIBLE → freeFlow. After the blind step ego has speed,
+lookahead ~4.7 m → leader visible at NEGATIVE gap → v=0. Repeat until `seen` itself drops
+inside the stopped-lookahead (pos 6.99: 1.91 < 2.14) — then the pair freezes at depth 1.6 m.
+Every number in the trace is reproduced by this formula.
+
+**Why SUMO cannot have this bug:** `MSLane::myPartialVehicles` (setPartialOccupation) — a
+vehicle whose body spans a boundary stays REGISTERED on the previous lane; getLeaderInfo /
+the same-lane leader query see the hanging tail at any ego speed, no lookahead involved. Our
+engine registers a vehicle only on its front's lane, so a hanging tail is invisible except
+through the lookahead-limited cross-junction walk. This is the structural root of the owner's
+"tolerance to driving through junction blockers" (329 simultaneous pairs at saturation: exits
+of saturated junctions are wall-to-wall hanging tails), and plausibly feeds the merge class
+(second stream blind to the first lander's tail). The `__veh1953` queue case adds the
+mid-lane-change lateral-footprint skip as a second contributor (its leader `__veh441` landed by
+lane change; interpenetration formed during the maneuver window) — to be confirmed separately.
+
+**Fix direction (design-first, owner review before code):** register partial occupancy — the
+faithful `myPartialVehicles` port: a vehicle whose `Pos < Length` is additionally visible on its
+previous lane(s) to the leader queries (neighbor query registration at the boundary hop, cleared
+once `Pos >= Length`). Alternative minimal patch (walk the first downstream lane regardless of
+lookahead) treats only the traced site and leaves the same blindness in every other consumer of
+the neighbor query — the port is the right shape. ⚠ Default-path behavioural change: full
+goldens + both surfaces + the F3 battery are the gate; expect golden-sensitive scenarios (the
+cjl arm is on the parity path).

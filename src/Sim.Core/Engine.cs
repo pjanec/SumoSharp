@@ -2445,6 +2445,17 @@ public sealed partial class Engine : IEngine
                 v.LaneHandle, nextLane, prevLane, laneWindow, v.LaneId, v.Kinematics.Pos, v.Kinematics.Speed, v.Acceleration, v.Kinematics.LatOffset,
                 (float)x, (float)y, (float)z, (float)angle, (float)v.VType.Length, (float)v.VType.Width,
                 (byte)RegimeOf(v), v.LateralManoeuvre, v.BindingConstraint, v.JunctionYieldArm, v.JunctionYieldFoeSpeed, v.BlockerEntityIndex, (float)v.WaitingTime);
+
+            // Entry 52 instrument: the traced vehicle's PER-STEP settled state -- lane/pos/speed and
+            // the winning binder/arm/blocker the fold recorded. The constraint-internal traces
+            // ([cjl]/[bay]/...) show what each arm SAW; without this line the question "which arm
+            // actually WON this step" needed a 20 s witness sample that a moving car slips through.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[veh] t={CurrentTime:F1} {v.Def.Id} {v.LaneId}@{v.Kinematics.Pos:F2} v={v.Kinematics.Speed:F2} "
+                    + $"bind={v.BindingConstraint} arm={v.JunctionYieldArm & 0x0F} blocker={v.BlockerEntityIndex} lat={v.Kinematics.LatOffset:F2}");
+            }
         }
 
         DetectLifecycleEvents();
