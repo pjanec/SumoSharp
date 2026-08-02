@@ -7,6 +7,19 @@ decompositions are measured, not guessed.
 
 ## 0. Engine state (verify before believing)
 
+> **UPDATE (Entries 57–58, pushed through `6e24cbc`):** hunt-queue items 1 and 2 below are
+> DONE. Entry 57: the crossing drive-through root-caused (FindCrossFoeVehicle slot-order mask
+> + pick-level ignore-blocker row-kill) and fixed — crossing arm walks physical occupants
+> (`_physOnLaneFirst/Second`), gate-scoped under F3; deep junction overlaps −62% (rb0) /
+> −45% (rb1); arrivals +7.5% (rb0 — the row-kill was also a throughput bug). Entry 58: the
+> merge mask measured on a landed pair and fixed the same way (occPhase1 fold in
+> SameTargetMergeConstraint); merge EX 91→13. Instruments: `[jyfoe]/[jyarm]/[jyskip]/[jyocc]`
+> + `PHASE1occ` TraceMerge tags. All gates green at every commit; bench hash unchanged.
+> **Top open class now: LANDED crossing standoffs** (e.g. `__veh341 × __veh2514` at
+> `:34564_6_0 × :34564_1_1`, 42 samples in out/geneva-overlap-fix58.log) and the residual
+> shallow-brush transients; also three landed queue pairs (same capture). Journal Entries
+> 57–58 are the trail; the queue below is otherwise historical.
+
 Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**, all pushed through **`796aad1`** (remote
 renamed: `github.com/pjanec/SumoSharp.git`). Full `dotnet test -c Release` green at head:
 ParityTests 782/5 (goldens byte-identical), LiveCity 92/92 (incl. hour-horizon), Peds 324,
