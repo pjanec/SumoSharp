@@ -7738,6 +7738,106 @@ public sealed partial class Engine : IEngine
                     + $"phys={(physOcc is not null ? $"{physOcc.Def.Id}@{physOcc.Kinematics.Pos:F1}v{physOcc.Kinematics.Speed:F1}" : "null")}");
             }
 
+            // Entry 57 (gate-scoped): the on-junction OCCUPANCY arm, evaluated against the foe
+            // lane's PHYSICAL occupants. SUMO's getLeaderInfo walks the vehicles ON each foe lane
+            // (MSLink.cpp's per-foeLane loop) -- never a single route-matched candidate. The
+            // pool-based pick above can first-mask the real occupant behind a distant approaching
+            // vehicle (measured on the :36220 drive-through: __veh242 on gen_road_5195_2 masked
+            // the :36220_9_2 crawler for 13 s while ego crossed through its body at 5.5 m/s --
+            // journal Entry 57; the bay arm measured the same mask in Entry 35b and made the same
+            // physical-index switch). The ignore-junction-blocker skip moves inside, PER OCCUPANT,
+            // matching its SUMO home (MSLink.cpp:1601 skips a long-standing LINK-LEADER); applied
+            // to the pick it discarded the entire foe link -- the second half of the Entry 57 miss
+            // (veh242's 60 s+ distant queue wait row-killed the link every step). The pick-based
+            // on-lane branch below is skipped under this gate (double-eval guard); the APPROACHING
+            // arbitration arm keeps the route-matched pick, matching SUMO's split (myFoeLanes
+            // occupant walk for occupancy vs setApproaching/blockedByFoe for arbitration).
+            if (JunctionPhysicalOccupancyGate)
+            {
+                for (var oc = 0; oc < 2; oc++)
+                {
+                    var occ = oc == 0 ? _physOnLaneFirst[foeInternalLaneHandle] : _physOnLaneSecond[foeInternalLaneHandle];
+                    if (occ is null)
+                    {
+                        break;
+                    }
+
+                    if (ReferenceEquals(occ, v))
+                    {
+                        continue;
+                    }
+
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    {
+                        continue;
+                    }
+
+                    // Same skip structure as the pick-based on-lane branch below (kept in sync
+                    // with it; see that branch's comments for the SUMO line references).
+                    if (JunctionIsLeaderGate)
+                    {
+                        var occLaneForGap = _network!.LanesByHandle[occ.LaneHandle];
+                        var seenForGapOcc = egoOnInternal
+                            ? egoLane.Length - v.Kinematics.Pos
+                            : egoDistToEntry + egoLane.Length;
+                        var distToCrossingForGapOcc = seenForGapOcc - conflict.EgoLengthBehindCrossing;
+                        var occDistToCrossingForGap = occLaneForGap.Length - conflict.FoeLengthBehindCrossing;
+                        var occBackForGap = occ.Kinematics.Pos - occ.VType.Length;
+                        var occBackDistForGap = occDistToCrossingForGap - occBackForGap;
+
+                        var gapForIsLeaderOcc = GapForIsLeader(
+                            _network, egoLane, occLaneForGap,
+                            distToCrossingForGapOcc, occBackDistForGap, conflict.FoeConflictSize, v.VType.MinGap);
+
+                        var egoCandidateOcc = new JunctionLeaderCandidate(
+                            v.LaneId, v.Def.Id, v.Kinematics.Speed,
+                            v.JunctionEntryTime, v.JunctionEntryTimeNeverYield, v.JunctionConflictEntryTime,
+                            v.VType.MinGap, v.VType.Accel, v.VType.Decel, v.VType.Tau, v.VType.Length);
+                        var occCandidate = new JunctionLeaderCandidate(
+                            occ.LaneId, occ.Def.Id, occ.Kinematics.Speed,
+                            occ.JunctionEntryTime, occ.JunctionEntryTimeNeverYield, occ.JunctionConflictEntryTime,
+                            occ.VType.MinGap, occ.VType.Accel, occ.VType.Decel, occ.VType.Tau, occ.VType.Length);
+
+                        var isLeaderOcc = IsLeader(_network!, junction, egoLink, egoCandidateOcc, occCandidate, gapForIsLeaderOcc, dt, time);
+
+                        if (!(isLeaderOcc || FoeIsInTheWay(v, egoLane, egoDistToEntry, egoOnInternal, conflict, occ)))
+                        {
+                            continue;
+                        }
+                    }
+                    else if (!respondsTo
+                        && (egoOnInternal
+                            || !FoeIsInTheWay(v, egoLane, egoDistToEntry, egoOnInternal, conflict, occ)))
+                    {
+                        continue;
+                    }
+
+                    // Entry 40/49 mutual on-junction tie-break (the enclosing gate is already ON).
+                    if (egoInsideJunction
+                        && !IsLeaderByEntryOrder(
+                            v.JunctionEntryTime, occ.JunctionEntryTime,
+                            v.Kinematics.Speed, occ.Kinematics.Speed,
+                            v.Def.Id, occ.Def.Id))
+                    {
+                        continue;
+                    }
+
+                    var occConstraint = IgnoresJunctionFoe(v, time)
+                        ? double.PositiveInfinity
+                        : AdaptToJunctionLeader(v, egoLane, egoDistToEntry, egoOnInternal, conflict, occ, dt, time, actionStepLengthSecs, laneVehicleMaxSpeed);
+
+                    if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                    {
+                        Console.Error.WriteLine(
+                            $"[jyocc] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} foeLink={j} "
+                            + $"occ={occ.Def.Id}@{occ.Kinematics.Pos:F1}v{occ.Kinematics.Speed:F1} c={occConstraint:F2}");
+                    }
+
+                    constraint = Math.Min(constraint, occConstraint);
+                    if (constraint < jyBest) { jyBest = constraint; jyArm = 5; v.JunctionYieldFoeSpeed = (float)occ.Kinematics.Speed; blockerIdx = occ.EntityIndex; }
+                }
+            }
+
             if (foe is null)
             {
                 continue;
@@ -7758,6 +7858,15 @@ public sealed partial class Engine : IEngine
             if (foe.LaneId == foeInternalLaneId)
             {
                 thisArm = 5;
+
+                // Entry 57: under the physical-occupancy gate this occupancy arm has ALREADY run
+                // against the lane's physical occupants (loop above; the route-matched pick is at
+                // best one of them, at worst a distant mask). Skip the pick-based evaluation to
+                // avoid a double fold. Gate OFF keeps the pre-existing path bit-for-bit.
+                if (JunctionPhysicalOccupancyGate)
+                {
+                    continue;
+                }
 
                 // F3 (docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c): for a foe ego merely PHYSICALLY conflicts
                 // with (FoeWith) but does NOT yield to (no RespondsTo bit), SUMO does not brake for the
