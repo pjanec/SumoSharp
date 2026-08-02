@@ -36,6 +36,11 @@ Two consequences that shape everything below:
    fold.** Accumulation, abreast crossing and pass-by avoidance (Requirements R3a/R3b/R3d) come out of
    `walk()`'s ordered penalty sequence with no RNG in the path. Getting §5.3's fold order exactly right
    *is* getting the look right; there is no separate "make it look good" layer to tune.
+   ⚠ And there is no *avoidance* layer either — `SUMOPED-ALGORITHM.md` §2.4 walks the mechanism
+   through: nothing in the model is mutual. Peds are processed leader-first, a follower sees leaders at
+   their post-move positions, `getNeighboringObstacles` supplies the shoulder-to-shoulder case, and the
+   waiting crowd never yields to the ped threading past it. The realism is ordering plus one lopsided
+   penalty ratio (−1 m per stripe against up to +5.56 m for a free one), not negotiation.
 
 ---
 

@@ -66,7 +66,12 @@ lateral-velocity witness and person FCD carries no other. See `SUMOPED-COVERAGE.
 ### R3 — Junction crowd behaviour (the owner's primary quality bar)
 This is the requirement the port exists for. Four distinct behaviours, all of which must **emerge from
 the ported algorithm**, never be scripted, and all of which are *deterministic* in SUMO (they come from
-the stripe-utility computation, not from any RNG — see §3.1):
+the stripe-utility computation, not from any RNG — see §3.1).
+**How SUMO actually produces them is `SUMOPED-ALGORITHM.md` §2.4** — worth reading before judging any
+of the acceptance conditions below, because the mechanism is not what it looks like: there is **no
+mutual avoidance** anywhere in the model. Peds are processed leader-first, each sees the already-moved
+ones as obstacles, and all the accommodation is paid by whoever comes later in sort order. The waiting
+crowd never makes room.
 
 - **R3a — Accumulation without overlap.** Peds waiting at a crossing pack onto the walkingarea and fill
   it *laterally*, and no two ped footprints ever interpenetrate. Mechanism: `getNeighboringObstacles` +

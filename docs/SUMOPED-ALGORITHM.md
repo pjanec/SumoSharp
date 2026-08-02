@@ -125,6 +125,124 @@ solver is right.
 
 ---
 
+### 2.4 How avoidance actually works — there is none, and that is the point
+
+The single most useful thing to understand about this model: **no pedestrian ever avoids another
+pedestrian mutually.** Nothing negotiates, nothing anticipates, nothing reciprocates. What looks like
+two people stepping around each other is one-sided, sequential, greedy stripe selection. The realism
+comes from the **processing order** plus the one lopsided penalty ratio in §2.2 — not from any
+avoidance rule, because there isn't one.
+
+#### 2.4.1 The rolling fold, and who can see whom
+
+Per lane, per direction, per step (`moveInDirectionOnLane`, `Striping.cpp:1160+`):
+
+```
+sort peds by dir·relX DESCENDING     ← index 0 = furthest along = the leader
+                                       ties broken by ordinal person id (Striping.h:452-457)
+obs[] = one Obstacle per stripe      ← rolling, carried ACROSS pedestrians
+for ii = 0 … n:
+    currentObs = obs                 ← snapshot, then merged with neighbours / vehicles /
+                                       next-lane / walls / arrival
+    ped.walk(currentObs, t)          ← the §2.2 fold; the ped moves
+    obs[ped.stripe()]      = Obstacle(ped)      ← its POST-MOVE position…
+    obs[ped.otherStripe()] = Obstacle(ped)      ← …for everyone processed after it
+```
+
+So a follower sees its leader **already moved this step**, and the leader never sees the follower at
+all. `walk()` is a plain argmax over a `double[stripes]` — no lookahead into anyone else's decision, no
+iteration to a fixed point, no joint optimisation.
+
+**Two obstacle sources cover different geometry, and the second one is easy to miss:**
+
+| source | covers | why it is needed |
+| --- | --- | --- |
+| the **rolling `obs`** | peds **ahead** (lower `ii`), at their post-move positions | ordinary following |
+| **`getNeighboringObstacles`** (`Striping.cpp:771-800`) | peds **behind in sort order** — it scans `ii+1 … n` and breaks at the first genuinely-behind one | catches peds that are *longitudinally overlapping*: standing shoulder to shoulder at nearly the same `relX` |
+
+The second scan is what makes a **waiting cluster mutually blocking laterally**. Without it, a curb
+crowd would be invisible to itself, because every member is "behind" every other in sort order while
+none is actually in front.
+
+⚠ **A ped is invisible as an obstacle when `myWaitingToEnter || myAmJammed`** — the guard appears in
+*both* places (`:777` and `:1291`). Peds in either state are walked straight through. This is the same
+constraint that fixes the adoption defaults in `SUMOPED-DESIGN.md` §9.1(c) and the kerbside-hold
+constraint in `SUMOPED-REQUIREMENTS.md` §6b: "standing still on purpose" must be neither of those two
+states, or the ped stops existing for everyone else.
+
+#### 2.4.2 Case A — a ped walking through the crowd waiting to cross (R3d)
+
+The waiters have `xSpeed = 0` but are **not** `waitingToEnter`, and (until `jamTime`) not `amJammed` —
+so they are full obstacles. For the ped threading past them:
+
+- every stripe holding a waiter returns `DIST_OVERLAP` ⇒ §2.2(a)'s `-300000`, applied to that stripe
+  **and every stripe beyond it away from `current`**. That shadow is what prevents sidestepping
+  *through* a person to reach free space on their far side;
+- a free stripe scores §2.2(d)'s `expectedDist`, up to `vMax · LOOKAHEAD_SAMEDIR` = 1.389 × 4.0 ≈
+  **5.56 m**;
+- lateral displacement costs §2.2(f)'s **−1 m per stripe**.
+
+A free stripe three over therefore scores 5.56 − 3 = **2.56** against ~0 for standing blocked.
+Sidestepping outbids queueing by a wide margin, so the walker peels around the cluster — and because
+movement is capped at **one stripe per step**, it drifts around over several steps rather than
+teleporting sideways. That drift *is* the behaviour that reads as realistic threading.
+
+Two details keep it from deadlocking:
+
+1. §2.2(f) is skipped entirely when `myWaitingTime != 0`, so an **already-stalled** ped pays nothing to
+   move sideways. Without that clause stalls would be sticky.
+2. `maxYSpeed = min(max(vMax·0.4, vMax − xSpeed), stripeWidth)` — note `vMax − xSpeed`. A **stopped**
+   ped may shuffle sideways at up to `stripeWidth` = 0.64 m/s. That is the visible shuffling inside a
+   packed curb cluster.
+
+**The asymmetry is total: the waiters do nothing.** They do not make room, notice, or shift. Every bit
+of accommodation is paid by whoever comes later in sort order.
+
+#### 2.4.3 Case B — counterflow on one crossing (R3a/R3b/R3d under head-on pressure)
+
+Four devices, none of them negotiation:
+
+| device | value | `.cpp` |
+| --- | --- | --- |
+| **reserved stripes** on your left, hard-penalised | `-20000` (halved on `current`); fraction `reserve-oncoming` = **0.0** on normal lanes but `reserve-oncoming.junctions` = **0.34** on crossings/walkingareas, capped at `reserve-oncoming.max` = 1.28 m | `:2061-2074` |
+| **oncoming lookahead** — a closing obstacle uses `LOOKAHEAD_ONCOMING` = 10 s, driving `expectedDist` negative | stripe scores `-1000 + distance` instead | `:2085-2094` |
+| **evade-right nudge** on the stripe one further from the oncoming approach side | `-0.5` | `:2078-2084` |
+| **leftmost stripe** if any oncoming present at all | another `-1000` | `:2096-2101` |
+
+Stacked, these push the two streams onto disjoint stripe bands. On a 6-stripe crossing the junction
+factor reserves 2 stripes outright — so the lane split at a junction is **imposed by fiat, not
+emergent**. On a normal sidewalk the factor is 0.0 and the segregation *is* emergent, from the other
+three devices alone; that is why §4.3 finds `reserve-oncoming` inert there.
+
+#### 2.4.4 When it fails, it cheats — and that is where the collisions come from
+
+If `xSpeed == 0` and the ped has waited past `jamTime` (300 s), or `jamTimeCrossing` on a crossing, or
+`jamTimeNarrow` on a 1-stripe lane, it latches `myAmJammed` and walks at `vMax/4` = **0.347 m/s**
+ignoring every constraint above (§3.3). Worse, per §2.4.1 a jammed ped becomes **invisible** to
+everyone else. So jammed peds walk through each other and through vehicles.
+
+That is the deadlock escape hatch, and it is the direct mechanism behind the 80 vehicle↔ped collisions
+measured at jam density (`SUMOPED-COVERAGE.md` §6) — the artefact R5a pins and R5c may later improve
+under the artefact-ladder constraint.
+
+#### 2.4.5 What the model does NOT do
+
+Worth stating, because a reader who knows crowd literature will otherwise assume some of it is in here:
+no anticipation of another ped's intent, no reciprocal yielding, no personal-space or social force, no
+speed matching, no group cohesion, no diagonal path planning, no collision *resolution* of any kind.
+Compared with ORCA or social-force this is crude.
+
+But it is a few hundred lines, arithmetically trivial, fully deterministic at `dawdling = 0`, and it
+produces the look. That is precisely why a faithful port is tractable — and why §2.2's fold order is
+the thing that must be exact, since it is carrying the entire behavioural load.
+
+**Consequence for the port:** everything in §2.2 and §2.4.2–2.4.3 is pure argmax over a
+`double[stripes]`, with no engine state involved. That is what lets `StripingWalk.cs` be engine-free and
+unit-tested against hand-built `Obstacle[]` arrays (task SP-3.3) **before** any scenario can run —
+`SUMOPED-PROCESS.md` §2's L1 rung.
+
+---
+
 ## 3. The three mechanisms that produce the interesting behaviour
 
 ### 3.1 Vehicles yield to pedestrians — `blockedAtDist`
