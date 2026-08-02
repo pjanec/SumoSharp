@@ -4042,3 +4042,24 @@ right contract there). Trace tags: `PHASE1occ-follow/stop/egoIsLeader-skip`.
   was the bulk); junction class within ±10% of fix57; arrivals within ±3% of 2832.
 - P3: goldens byte-identical + bench hash unchanged (gate-off is Math.Min(x, +inf) by
   construction); full sln green.
+
+## Entry 58 (AFTER) — merge PHASE-1 occupant fold landed; the pair interleaves; merge class −86%
+
+**P1 ✓, better than predicted.** Fix replay: `PHASE1occ` names BOTH occupants every step of
+the approach (follow on `__veh968`, `egoIsLeader-skip` on `__veh1375`) — the entry-order
+tie-break declared veh1762 the pair's LEADER, so instead of ego braking (my prediction), the
+pair INTERLEAVED: veh1762 passes the merge at 8.3 m/s and is kilometres downstream by t=236;
+veh1375 yields; the landed overlap never forms (0 EX lines for the pair in the full capture).
+Antisymmetric ordering doing exactly its SUMO job — one clears, one yields.
+
+**P2 ✓ with an honest wobble.** Full capture (RINGBREAK=0, vs the Entry 57 arm): merge EX
+**91 → 13** (predicted <20); steady-state pairs ~53 → 44, junction 36 → 29; arrivals 2824 vs
+2832 (−0.3%, within the ±3% guard). The wobble: queue EX 61 → 157 and deep junction samples
+26 → 98 — BOTH are a handful of landed pairs (deep: `__veh341 × __veh2514` at :34564 alone is
+42 samples; queue: three pairs are 127 of 157), i.e. the pre-existing landed-standoff family
+RELOCATED by the changed world, not a new mechanism: occPhase1 is a pure Math.Min fold — it
+can only make a car brake EARLIER, never proceed where it previously braked. The landed
+crossing-standoff family (Class-2 admission/holds) is now the top open class.
+
+**P3 ✓.** Full sln green; bench hash `A134ED3716DDE7BC` par==single unchanged; gate-off
+bit-for-bit by construction (every return is `Math.Min(pre-existing, +infinity)`).
