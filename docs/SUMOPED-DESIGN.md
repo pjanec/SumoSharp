@@ -282,11 +282,87 @@ Layout claims are worthless unassserted. Three gates, each a number:
    scenario, committed with its number so a regression is visible. Note the existing `Sim.Bench`
    determinism hash covers **vehicles only** and cannot see persons at all.
 
-**The parity constraint over all three.** Layout must never change results. The sort order, the
-ordinal-id tie-break, and the iteration order are *behaviour*; a "faster" layout that reorders them is
-simply wrong. Per CLAUDE.md prime directive 3 and §Measurement discipline item 1, any optimisation is
-accepted only when the goldens stay byte-identical **and** the behavioural surface agrees — neither
+**Zero heap allocation on the person step path is MANDATORY**, not a target — standing rule S-f in
+`SUMOPED-TASKS.md`. Gate 1 is how it is enforced, and it is checked every stage, not once.
+
+**The default build is parity-exact, always.** The sort order, the ordinal-id tie-break and the
+iteration order are *behaviour*, not implementation detail; an optimisation that reorders them has
+changed the model. Per CLAUDE.md prime directive 3 and §Measurement discipline item 1, an optimisation
+is accepted only when the goldens stay byte-identical **and** the behavioural surface agrees — neither
 alone is sufficient.
+
+A behavioural deviation may nonetheless be worth taking when it buys a large enough performance win.
+That is allowed, and §4.4 is the protocol that keeps it honest.
+
+### 4.4 The performance-deviation protocol
+
+A deviation that is measured, gated, communicated and signed off is engineering. An unmeasured one
+that creeps in because it made a benchmark look better is how a faithful port stops being faithful.
+The difference is entirely process, so here is the process.
+
+#### 4.4.1 First: most of the available wins do not require deviating at all
+
+Before invoking this protocol, exhaust the **exact** optimisations. Anticipated candidates, classified:
+
+| optimisation | exact? |
+| --- | --- |
+| lane-bucketed SoA, hot/cold split, denormalised vType scalars (§4.1) | **exact** — pure layout |
+| pooled `Obstacle` scratch instead of per-ped allocation (§4.1d) | **exact** — the single biggest win available |
+| maintaining the per-lane sort incrementally instead of re-sorting every pass | **exact** *if* the resulting order is identical, tie-break included |
+| a spatial index for `blockedAtDist` instead of its O(n) per-lane scan | **exact** *if* it returns the same first blocker — note SUMO short-circuits on the first foe when `collectBlockers == nullptr`, so "same set" is not sufficient, it must be the **same first** |
+| cross-lane parallelism ignoring the live successor read (§4.2) | **deviating** |
+| `float` instead of `double` in the utility fold (SIMD-friendly) | **deviating** |
+| capping the `LOOKAROUND_VEHICLES` 60 m vehicle scan | **deviating** |
+
+The first four are where the order-of-magnitude is, and they cost no faithfulness. Reach for the last
+three only after those are done and measured.
+
+#### 4.4.2 The gate for a deviation
+
+Each one gets an id **PD-n** and is not accepted until all of the following exist, in the tracker:
+
+1. **Default OFF.** An opt-in flag on `Engine`, following the existing `FastMode`/`LanelessRvo`
+   precedent (`Engine.cs:760`, `:771`) — whose own comment already states the standard: *"fully
+   DETERMINISTIC (thread-count-independent), just not trajectory-identical to SUMO; validated
+   BEHAVIORALLY, not byte-identically."* A test asserts **no committed scenario sets it**, so every
+   golden stays on the exact path.
+2. **A measured speedup**, on the Tier C saturated scenario, from `Sim.BenchPed`. The bar is
+   **≥1.3× on the person phase** — below that the deviation is not worth its cost, and "slightly
+   different for a few percent" is exactly what this protocol exists to refuse. The owner may move the
+   bar; nobody else may.
+3. **A measured behavioural delta**, quantified — "slightly different" is not a finding, it is a
+   feeling. Mirroring the vehicle `--fast-gate`, a person deviation reports against the exact build:
+   - per-step position delta: **RMS and max**, and the fraction of person-steps outside 0.1 m;
+   - **collisions must not increase** (the R5b baseline table is the denominator);
+   - the **R3 assertions still hold** — stripe-distinct curb accumulation, ≥3-stripe abreast entry,
+     pass-by no-stall (`SUMOPED-COVERAGE.md` §7);
+   - aggregate `<personinfo>` parity: routeLength / duration / timeLoss within a stated tolerance, plus
+     a KS test on the trip-duration distribution;
+   - the `jammed` count within a stated tolerance.
+4. **Both surfaces.** Measured on the goldens **and** on the saturated/demo surface. CLAUDE.md
+   §Measurement discipline item 1: a change once kept all 661 goldens byte-identical while moving the
+   demo 61 → 94 overlaps, and another transformed the demo while breaking 14 goldens. Neither surface
+   alone can accept a change.
+5. **A visual A/B.** `scripts/render-ped-fcd.py --manifest` emits one multi-scene HTML with the exact
+   and deviating runs as adjacent scenes, same scenario, same camera. This is cheap — the renderer
+   already exists — and it is the check that catches "the numbers moved a little but it now looks
+   wrong", which no aggregate can.
+6. **Owner sign-off, recorded.** Deviations are the owner's call, not the implementor's. The tracker
+   row is not ticked until the sign-off is in it.
+7. **Determinism preserved.** A deviation may trade *fidelity to SUMO*; it may never trade
+   *reproducibility*. Same inputs ⇒ same outputs, and thread-count-independent if it is a parallelism
+   deviation. This is the one property with no exception.
+
+#### 4.4.3 Deviations compose badly
+
+Measure each alone **and** the stack. Two deviations each 0.05 m RMS can interact into something much
+worse, and the stack is what actually ships. The ledger records both columns.
+
+#### 4.4.4 What is not a deviation
+
+Widening a `tolerance.json` to make a scenario pass is **never** a performance deviation — it is
+`SUMOPED-PROCESS.md` §6.1, and the answer there is no. A deviation is an explicit, named, gated
+behaviour change with the numbers above; a widened tolerance is an unexamined one.
 
 ## 5. The per-step algorithm
 

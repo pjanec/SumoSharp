@@ -75,6 +75,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-7.3** `Sim.Viz` scenes + golden ground-truth overlay + stripe lines; in `gen-demos.sh`
 - [ ] **SP-7.4** production regime: measured speed spread; goldens provably unaffected
 - [ ] **SP-7.4c** `Sim.BenchPed` person-steps/s committed; allocation gate still green at the end
+- [ ] **SP-7.4d** performance-deviation ledger closed out (or explicitly recorded as empty)
 - [ ] **SP-7.4b** coverage close-out: `AllBranchesCoveredTest` green or every miss an owner-signed hole
 - [ ] **SP-7.5** final gate: full sln, 782+/661 byte-identical, `A134ED3716DDE7BC`, LiveCity 92, Peds 324
 - [ ] **SP-7.6** doc reconciliation (`PEDESTRIAN-OVERVIEW.md` §3, `PEDESTRIANS.md`, `README.md`, `scenarios/README.md`, `TASKS-TODO.md`)
@@ -96,6 +97,20 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
 | person phase allocation per step, Tier C (SP-3.0d) | _(not yet)_ — **must be 0 bytes** |
 | person-steps/second, Tier C (SP-7.4c) | _(not yet)_ |
+
+### Performance-deviation ledger (design §4.4)
+
+**Empty — no deviation taken.** The default build is parity-exact. A row here means the port
+deliberately differs from SUMO for a measured performance win; it is not accepted until every column is
+filled **and** the owner has signed off. Exhaust the exact optimisations first (§4.4.1): lane-bucketed
+SoA, pooled `Obstacle` scratch, incremental sort maintenance and a same-first-blocker index are all
+**exact**, and are where the order-of-magnitude is.
+
+| PD | what it changes | speedup (≥1.3× req.) | pos RMS / max | collisions vs baseline | R3 assertions | personinfo + KS | both surfaces | visual A/B | determinism | owner sign-off |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| _(none)_ | | | | | | | | | | |
+
+Stack row (all enabled deviations together, §4.4.3): _(n/a — none enabled)_
 
 ### Replayable step count — the stage-gate metric (`SUMOPED-PROCESS.md` §5.1)
 

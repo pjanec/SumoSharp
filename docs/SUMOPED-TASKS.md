@@ -21,6 +21,19 @@ An implementor's report is never sufficient.
   (`dotnet test -c Release`, not just `Sim.ParityTests`) — CLAUDE.md §Measurement discipline item 9.
 - **S-e.** Commit before delegating; end a delegation at "compiles, verified, committed"; never delegate
   *waiting* for a long run (CLAUDE.md §Subagents).
+- **S-f. ZERO HEAP ALLOCATION ON THE PERSON STEP PATH — mandatory, checked every stage.**
+  "Step path" = `AdvancePersons` and everything it calls, after warm-up. Explicitly **not**: scenario
+  load, person spawn (one-off), FCD/output writing (opt-in, off the hot path), and diagnostics behind a
+  gate. Enforced by the design §4.3 gate 1 assertion (`Engine.ProfilePhases` → `PhaseBytes` reports
+  **0 bytes/step**), re-run at every stage gate — not once at SP-3.0 and then forgotten. A stage that
+  regresses it is not closed. The hazard is concrete: SUMO allocates ~6 `std::vector<Obstacle>` per
+  pedestrian per step, which transliterated is ≈180 k allocations per simulated second on Tier C.
+- **S-g. The default build is parity-exact.** Any optimisation that changes behaviour is a
+  **performance deviation** and goes through design §4.4 — named `PD-n`, default OFF, ≥1.3× measured
+  speedup, quantified behavioural delta on **both** surfaces, a visual A/B render, determinism
+  preserved, and **owner sign-off recorded in the tracker**. Exhaust the exact optimisations first
+  (§4.4.1 — the biggest wins available need no deviation at all). Widening a `tolerance.json` is never
+  a deviation; it is `SUMOPED-PROCESS.md` §6.1, and the answer is no.
 
 ---
 
@@ -428,6 +441,15 @@ Requirement R12, coverage §1, §8.
 **Success:** `AllBranchesCoveredTest` is green, or every remaining miss is listed in coverage §8 as an
 admitted hole with a reason and explicit owner sign-off. The number of covered vs. admitted-hole branch
 IDs (out of 149) is recorded in the tracker. `PerScenarioClaimTest` green.
+
+### SP-7.4d — Performance-deviation ledger close-out
+Design §4.4. Only if any `PD-n` was taken.
+**Success:** every `PD-n` in the tracker ledger has all seven gate items filled — default-OFF test,
+measured speedup ≥1.3×, quantified behavioural delta (position RMS/max, collisions not increased, R3
+assertions still holding, `<personinfo>` aggregate + KS, jam count), both surfaces measured, a
+committed visual A/B render, determinism preserved, and owner sign-off. The **stack** of all enabled
+deviations is measured too, not only each in isolation (§4.4.3). If no deviation was taken, the ledger
+says so explicitly — an empty table with no statement is indistinguishable from an unfilled one.
 
 ### SP-7.4c — Person-scale benchmark
 Design §4.3 gate 3. `Sim.Bench`'s determinism hash covers **vehicles only** and cannot see persons.
