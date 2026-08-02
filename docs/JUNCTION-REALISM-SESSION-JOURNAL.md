@@ -3602,3 +3602,21 @@ the +6.2% arrivals and total elimination of locked rings on Geneva vs a −0.3% 
 a small unattributed overlap-proxy rise, proposed next steps: (a) keep `LIVECITY_RINGBREAK`
 opt-in for the 3D session to eyeball the released-breaker motion at the photographed junctions;
 (b) run the overlap attribution pass; (c) defaults decision after (a)+(b).
+
+### Entry 51 addendum — first 3D (ped-coupled) run with RINGBREAK on: breaker healthy; the honest-stuck class exists and is named
+
+Owner ran the Godot viewer on the Geneva cut (fresh pack, both NuGet/Debug traps handled;
+`F3OCCUPANCY=1 RINGBREAK=1 WITNESS=1`, 4000 cars / 2000 peds, **rerouting default ON**, ~21
+sim-minutes). Console-log numbers (camera-following ORCA pocket ⇒ counts are not strictly
+run-comparable; trends only):
+
+- **281 breaks / 5 escalations** over 1264 sim-s — even with rerouting suppressing ring
+  formation ~10×, the breaker fires steadily (~one per 4.5 s at this density). 145 ring reports,
+  every tail-end age 10–19 s: nothing locks.
+- **`stuckSteps` = 108, in two bursts** (t≈300–320: +76; t≈900–1000: +32) — the honest-stuck
+  path engaged for the first time (headless capture had 0). The stuck rings are the
+  **both-members-creep-form class** (e.g. `:36339`: `junctionYield/corridorFollow` ↔
+  `junctionYield/adaptToJxnLeader`, both at gap ≈ 0): no stop-edge to release, bodies genuinely
+  interlocked across corridors — exactly the design's §2.3 "this one is geometric" case, honestly
+  reported instead of broken. Each burst is one ring persisting ~40 s before dissolving on its
+  own. The upstream fix for this class remains the overlap-prevention work, not the breaker.
