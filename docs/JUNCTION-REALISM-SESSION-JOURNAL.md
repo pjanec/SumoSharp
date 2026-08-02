@@ -4320,3 +4320,39 @@ persists untouched in every cell — queue item 4 (trace veh1762's chain to its 
 **Round closure:** owner 3D verdict is the closing surface (RESUME-4 §2 item 3). Residual for
 the next iteration, now NAMED by the instrument: saturated-arm diagonal stands whose stop
 cause is not the leader (ped-heavy flat cell), and the standard arm's abortStop class.
+
+## Entry 66 — HIREALISM pass-through gate SHIPPED (owner-approved design, same-day implement)
+
+Owner (after the Entry 65 3D verdict, "diagonal reduced to acceptable state"): the pass-through
+recovery must never be SEEN — inside camera-FOV high-realism areas, suppress it even at the cost
+of the junction staying blocked; waits keep counting so the recovery fires the moment the camera
+leaves. Design `docs/HIREALISM-PASSTHROUGH-GATE-DESIGN.md`, approved same-day.
+
+**Shipped (T1–T4):** X1 `RealismMask` gains `forbidPassThrough` + `MayPassThrough`; all six
+ignore-junction-blocker skip sites (crossing occupancy, pick rows, bay, PHASE1occ, merge
+PHASE 1/2) now require `PassThroughAllowed(foe)` — tested on the FOE's edge, null-mask
+short-circuit. `LiveCitySim.SetHighRealismRegions(circles)`/`ClearHighRealismRegions` map
+world-space circles → edge ids (lazy per-edge AABB index, internal ':' edges included).
+`LIVECITY_HIREALISM_RADIUS` = headless stand-in (fixed circle at net centre).
+`HighRealismFollowsZone` (sim default OFF — the demo ctor arms a STATIC pocket via
+`SetLcRealismZone`, and silently suppressing recovery there would change hour-horizon-tested
+default behaviour) — the 3D host opts in: `LiveCitySource` ctor sets it ON (`CITY3D_HIREALISM=0`
+kill switch), so the SAME camera zone drives ped ORCA, car→ped yield AND no-drive-through.
+Diagnostic `PassThroughSuppressedCount` + `LIVECITY-HIREALISM`/`-SUPPRESSED` witness lines.
+
+**Measured (ped-heavy arm, 3600 frames, LIVECITY_HIREALISM_RADIUS=800):**
+- OFF arm: byte-reproduces the pre-gate baseline (arrivals 2846, aggMove 73360, zero HIREALISM
+  lines) — the gate is PROVEN inert with no region.
+- ON arm: 3769 edges masked; suppressed skip-evaluations 1 321 126 over 1800 s (device
+  unmistakably live); arrivals 2742 (−3.7% — the honesty cost of an 800 m no-cheating circle at
+  saturation, the trade the owner explicitly accepted); max JXNHOLD wait 1306 → 1396 (holds
+  honest inside the region); overlaps flat (9).
+- Zone-exit immediacy is STRUCTURAL: the skip is a stateless per-step comparison against a
+  WaitingTime that never stops accruing — no code path exists that could delay it.
+
+**Gates:** full sln green — ParityTests **783**/5 (+1: the new `MayPassThrough` unit test),
+LiveCity 92/92, Peds 324, Host 6, Viewer.Motion 19, DotRecast 2; goldens byte-identical; bench
+hash `A134ED3716DDE7BC` par==single unchanged. Also this commit: CI's determinism pin corrected
+BF3794A4704BCD79 → A134ED3716DDE7BC (the workflow copy had rotted at the Entry 54 partials
+default-ON flip; TASKS-TODO carried the true value since — the failed PR check was the pin, not
+the engine).

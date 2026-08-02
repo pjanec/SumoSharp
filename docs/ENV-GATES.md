@@ -104,6 +104,7 @@ default**, and `=0` is the only way to turn one off.
 | `LIVECITY_HELDSWERVE` | `Engine.SuppressHeldCrowdSwerve`. Read with `!= "0"`, so **on unless explicitly `0`** | `true` | behavioural |
 | `LIVECITY_LCMIN` | `Engine.LaneChangeMinSpeed`, m/s. Keep ≤ ~2.0 for deadlock safety | `1.0` in `SceneGen`, `1.5` via `LiveCityConfig` | behavioural |
 | `CITY3D_LCMIN` | the same knob, in the City3D viewer's own `SimSource` | `1.5` | behavioural |
+| `CITY3D_HIREALISM` | `LiveCitySim.HighRealismFollowsZone` in the City3D host (`LiveCitySource` ctor): the camera-driven LC-realism zone also publishes the X1 pass-through mask, so the 60 s ignore-junction-blocker drive-through is SUPPRESSED on camera (waits keep counting; fires the step the camera moves away). Read with `!= "0"`, so **on unless explicitly `0`**. **Behavioural** (3D host only; sim-side default OFF) | `true` (3D host) | behavioural |
 
 ### The two refuted ones, in full — read before touching either
 
@@ -139,6 +140,7 @@ Evidence for both: `docs/TASKS-TODO.md` §"REFUTED — do not re-attempt" and
 | `LIVECITY_TELEPORT` | `LiveCityConfig.TimeToTeleportSeconds` | config default | behavioural |
 | `LIVECITY_MERGEGAP` | `LiveCityConfig.MergeStoppedMinGap`, m | `5.0` | behavioural |
 | `LIVECITY_MERGEDEFER` | `LiveCityConfig.MergeStoppedStrategicDeferDist`, m | `15.0` | behavioural |
+| `LIVECITY_HIREALISM_RADIUS` | headless stand-in for the 3D camera: a fixed high-realism circle of this radius (m) at the net centre, applied at the first step via `LiveCitySim.SetHighRealismRegions` → the X1 `RealismMask` with `forbidPassThrough` — inside it the 60 s ignore-junction-blocker pass-through is SUPPRESSED (waits keep counting; recovery fires the step the foe leaves the region). **Behavioural** where it covers traffic. The 3D host drives the same API from its live camera instead (`docs/HIREALISM-PASSTHROUGH-GATE-DESIGN.md`) | unset = no region | behavioural |
 
 ⚠ **`LIVECITY_CARS` and `LIVECITY_PEDS` are closed-loop.** The host inserts only while
 `live < CarTargetConcurrent`, so inflow is throttled by our own drain and the resident count cannot run

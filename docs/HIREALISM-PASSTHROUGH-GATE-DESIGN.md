@@ -1,6 +1,6 @@
 # HIREALISM-PASSTHROUGH-GATE — camera-zone gating of the ignore-junction-blocker pass-through
 
-**Status: DRAFT — awaiting owner approval.** Small feature: design + tasks folded per CLAUDE.md.
+**Status: IMPLEMENTED (owner-approved; journal Entry 66).** Small feature: design + tasks folded per CLAUDE.md.
 
 ## 1. WHAT (owner request, 2026-08-02)
 
@@ -95,4 +95,4 @@ par==single unchanged. The gate DELAYS a recovery, never invents motion.
 - T3 plumbing: host API surface + `LIVECITY_HIREALISM_RADIUS` + ENV-GATES.md entry.
 - T4 measurement: success-condition 2 A/B, journal entry, gates.
 
-Tracker: [ ] T1  [ ] T2  [ ] T3  [ ] T4
+Tracker: [x] T1  [x] T2  [x] T3  [x] T4 — all success conditions measured in journal Entry 66 (3D verdict = condition 4, pending next owner session).

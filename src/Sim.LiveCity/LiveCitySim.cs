@@ -851,11 +851,45 @@ public sealed class LiveCitySim : IDisposable
     // Set the LC-realism zone (the viewer pushes this once per step BEFORE Step(), for Follow/Locked
     // modes). Demo-only: parity/bench drive Engine directly, never LiveCitySim, so goldens never call this
     // and the classification stays byte-identical (Central mode leaves the zone on the static pocket).
+    // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.3: when ON, the camera-driven LC-realism zone ALSO
+    // publishes the X1 pass-through mask (SetHighRealismRegions) on every real zone movement -- so
+    // "high realism area" means ONE zone for ped ORCA, car->ped yield AND no-drive-through. Default
+    // OFF: the demo ctor arms a STATIC central pocket through SetLcRealismZone, and silently
+    // suppressing the 60 s recovery there would change default (hour-horizon-tested) behaviour --
+    // the 3D host opts in explicitly (LiveCitySource ctor, CITY3D_HIREALISM kill switch). Set this
+    // BEFORE the threaded producer starts; afterwards the zone pushes land on the sim thread.
+    public bool HighRealismFollowsZone { get; set; }
+    private double _hiRealismAppliedX = double.NaN;
+    private double _hiRealismAppliedY = double.NaN;
+    private double _hiRealismAppliedR = double.NaN;
+
     public void SetLcRealismZone(double centreX, double centreY, double radius)
     {
         _lcZoneX = centreX;
         _lcZoneY = centreY;
         _lcZoneR = radius;
+
+        // Recompute the edge mask only on real movement (>10 m centre / >10 m radius change): the
+        // viewer pushes every frame, the AABB walk is per-edge, and the engine snapshots per step
+        // anyway. A zone radius of 0 (zone disarmed) clears the mask.
+        if (HighRealismFollowsZone
+            && (double.IsNaN(_hiRealismAppliedX)
+                || Math.Abs(centreX - _hiRealismAppliedX) > 10.0
+                || Math.Abs(centreY - _hiRealismAppliedY) > 10.0
+                || Math.Abs(radius - _hiRealismAppliedR) > 10.0))
+        {
+            _hiRealismAppliedX = centreX;
+            _hiRealismAppliedY = centreY;
+            _hiRealismAppliedR = radius;
+            if (radius > 0.0)
+            {
+                SetHighRealismRegions(new[] { (centreX, centreY, radius) });
+            }
+            else
+            {
+                ClearHighRealismRegions();
+            }
+        }
 
         // Task B-guard: the car->ped yield region follows the same zone (see the ctor's own comment).
         if (_pedYieldEnabled)
@@ -1177,6 +1211,25 @@ public sealed class LiveCitySim : IDisposable
         // tick-rate change takes effect on the step that observes it rather than the one after.
         ApplyPendingRequests();
 
+        // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.3: the headless testing knob -- a fixed high-realism
+        // circle at the net centre. Applied once, lazily, at the first step (the network is certainly
+        // loaded here; the 3D host instead drives SetHighRealismRegions from its live camera). Unset /
+        // unparsable = no mask = byte-identical default.
+        if (!_hiRealismEnvApplied)
+        {
+            _hiRealismEnvApplied = true;
+            var radiusRaw = Environment.GetEnvironmentVariable("LIVECITY_HIREALISM_RADIUS");
+            if (radiusRaw is not null
+                && double.TryParse(radiusRaw, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var hiRadius)
+                && hiRadius > 0.0)
+            {
+                var centre = ComputeNetAabbCentre(Network);
+                SetHighRealismRegions(new[] { (centre.X, centre.Y, hiRadius) });
+                Console.Error.WriteLine(
+                    $"LIVECITY-HIREALISM: circle=({centre.X:F0},{centre.Y:F0}) r={hiRadius:F0} edges={_hiRealismEdgeCount}");
+            }
+        }
+
         var dt = _cfg.Dt;
 
         // D1: the ped-density knobs are read off the by-reference `_cfg` every tick, exactly as the car
@@ -1462,6 +1515,14 @@ public sealed class LiveCitySim : IDisposable
         if (_reroutePeriodResolved > 0.0)
         {
             Console.Error.WriteLine($"LIVECITY-REROUTES: t={_now:F0} total={_engine.PeriodicRerouteCount}");
+        }
+
+        // HIREALISM-PASSTHROUGH-GATE: make the suppression visible when a region is active -- the
+        // running count of ignore-blocker skips the mask has blocked (0 with no region = device off).
+        if (_engine.PassThroughSuppressedCount > 0)
+        {
+            Console.Error.WriteLine(
+                $"LIVECITY-HIREALISM-SUPPRESSED: t={_now:F0} total={_engine.PassThroughSuppressedCount}");
         }
 
         // DEADLOCK-RING D2: make the breaker visible when enabled -- elections, wedged-breaker
@@ -2190,6 +2251,124 @@ public sealed class LiveCitySim : IDisposable
     {
         var v = Environment.GetEnvironmentVariable(name);
         return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
+    // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.2: the world-space high-realism region API for the 3D
+    // host. The host thinks in camera coordinates; the engine's X1 RealismMask thinks in edge ids --
+    // this maps circles (a conservative FOV bound; multiple cameras = multiple circles) to the edge
+    // set via a lazily-built per-edge AABB index over ALL lanes' centerline shapes, internal ':'
+    // edges included (a junction inside the circle contributes its internal edges -- where a
+    // pass-through foe actually stands). Then publishes the full-strict mask (teleport, pop and
+    // pass-through all forbidden on the visible set). AABBs use centerlines (no lane-width
+    // inflation): the camera circle is itself an approximation, and the caller can pad the radius.
+    // Call cadence is the host's business (every frame is fine: ~1 AABB test per edge per circle);
+    // the engine snapshots the mask once per step.
+    private string[]? _edgeAabbEdgeIds;
+    private double[]? _edgeAabbMinX;
+    private double[]? _edgeAabbMinY;
+    private double[]? _edgeAabbMaxX;
+    private double[]? _edgeAabbMaxY;
+    private bool _hiRealismEnvApplied;
+    private int _hiRealismEdgeCount;
+
+    public void SetHighRealismRegions(IReadOnlyList<(double X, double Y, double Radius)> circles)
+    {
+        if (circles is null)
+        {
+            throw new ArgumentNullException(nameof(circles));
+        }
+
+        if (circles.Count == 0)
+        {
+            ClearHighRealismRegions();
+            return;
+        }
+
+        EnsureEdgeAabbIndex();
+        var visible = new HashSet<string>(StringComparer.Ordinal);
+        var n = _edgeAabbEdgeIds!.Length;
+        for (var i = 0; i < n; i++)
+        {
+            for (var c = 0; c < circles.Count; c++)
+            {
+                var (cx, cy, r) = circles[c];
+                var dx = cx - Math.Clamp(cx, _edgeAabbMinX![i], _edgeAabbMaxX![i]);
+                var dy = cy - Math.Clamp(cy, _edgeAabbMinY![i], _edgeAabbMaxY![i]);
+                if ((dx * dx) + (dy * dy) <= r * r)
+                {
+                    visible.Add(_edgeAabbEdgeIds[i]);
+                    break;
+                }
+            }
+        }
+
+        _hiRealismEdgeCount = visible.Count;
+        _engine.SetVisibleEdges(visible);
+    }
+
+    // Back to fully-permissive (no camera): every recovery behaves as today.
+    public void ClearHighRealismRegions()
+    {
+        _hiRealismEdgeCount = 0;
+        _engine.ClearVisibleEdges();
+    }
+
+    private void EnsureEdgeAabbIndex()
+    {
+        if (_edgeAabbEdgeIds is not null)
+        {
+            return;
+        }
+
+        var acc = new Dictionary<string, (double MinX, double MinY, double MaxX, double MaxY)>(StringComparer.Ordinal);
+        var lanes = Network.LanesByHandle;
+        for (var h = 0; h < lanes.Count; h++)
+        {
+            var lane = lanes[h];
+            var shape = lane.Shape;
+            if (shape.Count == 0)
+            {
+                continue;
+            }
+
+            if (!acc.TryGetValue(lane.EdgeId, out var b))
+            {
+                b = (double.PositiveInfinity, double.PositiveInfinity, double.NegativeInfinity, double.NegativeInfinity);
+            }
+
+            for (var i = 0; i < shape.Count; i++)
+            {
+                var (x, y) = shape[i];
+                if (x < b.MinX) b = (x, b.MinY, b.MaxX, b.MaxY);
+                if (y < b.MinY) b = (b.MinX, y, b.MaxX, b.MaxY);
+                if (x > b.MaxX) b = (b.MinX, b.MinY, x, b.MaxY);
+                if (y > b.MaxY) b = (b.MinX, b.MinY, b.MaxX, y);
+            }
+
+            acc[lane.EdgeId] = b;
+        }
+
+        var ids = new string[acc.Count];
+        var minX = new double[acc.Count];
+        var minY = new double[acc.Count];
+        var maxX = new double[acc.Count];
+        var maxY = new double[acc.Count];
+        var k = 0;
+        foreach (var kv in acc)
+        {
+            ids[k] = kv.Key;
+            minX[k] = kv.Value.MinX;
+            minY[k] = kv.Value.MinY;
+            maxX[k] = kv.Value.MaxX;
+            maxY[k] = kv.Value.MaxY;
+            k++;
+        }
+
+        _edgeAabbMinX = minX;
+        _edgeAabbMinY = minY;
+        _edgeAabbMaxX = maxX;
+        _edgeAabbMaxY = maxY;
+        _edgeAabbEdgeIds = ids;
     }
 
     private static Vec2 ComputeNetAabbCentre(NetworkModel model)

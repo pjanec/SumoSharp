@@ -20,12 +20,13 @@ public sealed class RealismMask
 
     private readonly HashSet<string> _teleportForbidden;
     private readonly HashSet<string> _popForbidden;
+    private readonly HashSet<string> _passThroughForbidden;
 
-    // `visibleEdgeIds` = the on-camera / high-realism edges. `forbidTeleport`/`forbidPop` say which
-    // cheating actions the visible zone forbids (both true by default: the visible zone is strict
-    // no-cheating). A visible edge with the corresponding flag set is forbidden; every other edge is
-    // permissive.
-    public RealismMask(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true)
+    // `visibleEdgeIds` = the on-camera / high-realism edges. `forbidTeleport`/`forbidPop`/
+    // `forbidPassThrough` say which cheating actions the visible zone forbids (all true by default:
+    // the visible zone is strict no-cheating). A visible edge with the corresponding flag set is
+    // forbidden; every other edge is permissive.
+    public RealismMask(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true, bool forbidPassThrough = true)
     {
         if (visibleEdgeIds is null)
         {
@@ -38,6 +39,9 @@ public sealed class RealismMask
         _popForbidden = forbidPop && visibleEdgeIds.Count > 0
             ? new HashSet<string>(visibleEdgeIds, StringComparer.Ordinal)
             : Empty;
+        _passThroughForbidden = forbidPassThrough && visibleEdgeIds.Count > 0
+            ? new HashSet<string>(visibleEdgeIds, StringComparer.Ordinal)
+            : Empty;
     }
 
     // True iff a jam-teleport is allowed on this edge (i.e. the edge is NOT a teleport-forbidden
@@ -47,4 +51,12 @@ public sealed class RealismMask
     // True iff on-lane popping (spawn / de-jam despawn) is allowed on this edge (i.e. the edge is NOT
     // a pop-forbidden visible edge). Off-camera / permissive edges always return true.
     public bool MayPop(string edgeId) => !_popForbidden.Contains(edgeId);
+
+    // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.1: true iff the ignore-junction-blocker pass-through
+    // (driving through a foe that has waited >= IgnoreJunctionBlockerSeconds) may fire against a foe
+    // standing on this edge. On a visible edge with forbidPassThrough set the skip is SUPPRESSED --
+    // the junction stays honestly blocked on camera. The foe's WaitingTime keeps accruing regardless
+    // (the skip is a stateless per-step comparison), so the recovery fires the step the edge leaves
+    // the visible set. Off-camera / permissive edges always return true.
+    public bool MayPassThrough(string edgeId) => !_passThroughForbidden.Contains(edgeId);
 }

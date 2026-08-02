@@ -1067,11 +1067,40 @@ public sealed partial class Engine : IEngine
     // an immutable RealismMask and publishes it with a single volatile assignment. Pass an empty set or
     // call ClearVisibleEdges() to return to fully-permissive. `forbidTeleport`/`forbidPop` choose which
     // cheating actions the visible zone forbids (both default true = strict no-cheating on camera).
-    public void SetVisibleEdges(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true)
-        => _realismMask = new RealismMask(visibleEdgeIds, forbidTeleport, forbidPop);
+    public void SetVisibleEdges(IReadOnlyCollection<string> visibleEdgeIds, bool forbidTeleport = true, bool forbidPop = true, bool forbidPassThrough = true)
+        => _realismMask = new RealismMask(visibleEdgeIds, forbidTeleport, forbidPop, forbidPassThrough);
 
     // X1: clear the mask -> fully permissive (every edge off-camera). Inert-equivalent for the gates.
     public void ClearVisibleEdges() => _realismMask = null;
+
+    // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.1: may the ignore-junction-blocker skip fire against
+    // this foe? Tested on the FOE's edge -- the drive-through the skip produces happens at the foe's
+    // body, so that is what the camera must not see. Null mask (every golden/bench/parity run) short-
+    // circuits to true; with a mask this is one HashSet lookup on the immutable per-step snapshot
+    // (_activeMask, captured once in AdvanceOneStep), so parallel plan-phase reads are safe and
+    // par==single is unaffected. Suppression never resets the foe's WaitingTime -- the comparison
+    // stays satisfied, so the recovery fires the step the foe's edge leaves the visible set.
+    private bool PassThroughAllowed(VehicleRuntime foe)
+    {
+        if (_activeMask is null)
+        {
+            return true;
+        }
+
+        if (_activeMask.MayPassThrough(_network!.LanesByHandle[foe.LaneHandle].EdgeId))
+        {
+            return true;
+        }
+
+        // Diagnostic tally only (witness visibility of the device, LIVECITY-REROUTES style). Never
+        // read by any behavioral path; Interlocked because the plan phase is region-parallel. Rare:
+        // only foes already past IgnoreJunctionBlockerSeconds reach this.
+        System.Threading.Interlocked.Increment(ref _passThroughSuppressed);
+        return false;
+    }
+
+    private long _passThroughSuppressed;
+    public long PassThroughSuppressedCount => System.Threading.Interlocked.Read(ref _passThroughSuppressed);
 
     // X1: aggressive OFF-CAMERA de-jam despawn. A frontmost jam blocker on an off-camera lane whose
     // WaitingTime exceeds this (seconds) is DESPAWNED before it would reach time-to-teleport, so
@@ -7861,7 +7890,8 @@ public sealed partial class Engine : IEngine
                         continue;
                     }
 
-                    if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds
+                        && PassThroughAllowed(occ))
                     {
                         continue;
                     }
@@ -7940,7 +7970,8 @@ public sealed partial class Engine : IEngine
             // Port of MSLink.cpp:1601 -- `if (leader->getWaitingTime() < MSGlobals::gIgnoreJunctionBlocker)`.
             // A foe standing at least IgnoreJunctionBlockerSeconds is skipped entirely, so it constrains
             // nobody (SUMO emits no LinkLeader for it). Inert at the default -1, exactly as in SUMO.
-            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds)
+            if (IgnoreJunctionBlockerSeconds >= 0.0 && foe.WaitingTime >= IgnoreJunctionBlockerSeconds
+                && PassThroughAllowed(foe))
             {
                 continue;
             }
@@ -8361,7 +8392,8 @@ public sealed partial class Engine : IEngine
                     // jy7 ego) whose only cuttable edge was this hold: a bay body that has stood for
                     // >= the threshold is a wedge, not a transient, and holding for it converts one
                     // stuck car into a citywide gridlock. Inert at the -1 default (SUMO parity).
-                    if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                    if (IgnoreJunctionBlockerSeconds >= 0.0 && cand.WaitingTime >= IgnoreJunctionBlockerSeconds
+                        && PassThroughAllowed(cand))
                     {
                         continue;
                     }
@@ -9515,7 +9547,8 @@ public sealed partial class Engine : IEngine
                     continue;
                 }
 
-                if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds
+                    && PassThroughAllowed(occ))
                 {
                     continue;
                 }
@@ -9675,7 +9708,8 @@ public sealed partial class Engine : IEngine
         var ignoreBlocker = IgnoreJunctionBlockerSeconds >= 0.0;
 
         if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId
-            && ignoreBlocker && foeMerging.WaitingTime >= IgnoreJunctionBlockerSeconds)
+            && ignoreBlocker && foeMerging.WaitingTime >= IgnoreJunctionBlockerSeconds
+            && PassThroughAllowed(foeMerging))
         {
             foeMerging = null; // long-standing on-lane merge foe: constrains nobody (SUMO emits no LinkLeader)
         }
@@ -9775,7 +9809,8 @@ public sealed partial class Engine : IEngine
 
         var leaderOnTarget = FindRearmostOnLane(ego, allVehicles, targetLane.Id);
         if (leaderOnTarget is null
-            || (ignoreBlocker && leaderOnTarget.WaitingTime >= IgnoreJunctionBlockerSeconds))
+            || (ignoreBlocker && leaderOnTarget.WaitingTime >= IgnoreJunctionBlockerSeconds
+                && PassThroughAllowed(leaderOnTarget)))
         {
             // Entry 63: the second (null) arm is the MSLink.cpp:1601 skip for PHASE 2 -- see the
             // ignoreBlocker comment above. Inert at the -1 default.

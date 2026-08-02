@@ -38,6 +38,25 @@ public class RungHDx1RealismMaskTests
         Assert.True(teleOnly.MayPop("eA"));
     }
 
+    // ---- HIREALISM-PASSTHROUGH-GATE-DESIGN.md §5.1: the pass-through flag ----
+    [Fact]
+    public void RealismMask_PassThrough_VisibleForbidden_OthersAndFlagOffPermissive()
+    {
+        // Default flags: a visible edge forbids the ignore-junction-blocker pass-through.
+        var mask = new RealismMask(new[] { "eA" });
+        Assert.False(mask.MayPassThrough("eA"));
+        Assert.True(mask.MayPassThrough("eB"));
+
+        // Empty visible set == fully permissive.
+        var empty = new RealismMask(System.Array.Empty<string>());
+        Assert.True(empty.MayPassThrough("eA"));
+
+        // Flag off: visible edge stays permissive for pass-through (other flags unaffected).
+        var noPass = new RealismMask(new[] { "eA" }, forbidPassThrough: false);
+        Assert.True(noPass.MayPassThrough("eA"));
+        Assert.False(noPass.MayTeleport("eA"));
+    }
+
     // ---- Teleport gate ----
     [Fact]
     public void TeleportGate_NoMask_TeleportsAsBaseline()
