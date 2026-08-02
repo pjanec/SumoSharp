@@ -9389,6 +9389,90 @@ public sealed partial class Engine : IEngine
         var foeInternalLaneHandle = _network.LaneHandleById[foeInternalLaneId];
         var foeMerging = FindFoeVehicle(ego, foeInternalLaneHandle);
 
+        // Entry 58 (gate-scoped): PHASE 1 evaluated against the foe lane's PHYSICAL occupants,
+        // folded into every downstream return via Math.Min (gate OFF: +infinity, so every return
+        // is bit-for-bit the pre-existing expression). FindFoeVehicle's slot-order first-match
+        // masks the ON-LANE merger behind a distant route-matched vehicle -- Entry 55 proved the
+        // miss at junction 30268 (veh411 window), and the veh1375 x veh1762 trace at junction
+        // 34994 confirmed it as the landing mechanism of the 25-minute depth-3.1 co-location:
+        // both vehicles' [jyrow] reached the foe row every step, yet neither ever emitted a
+        // PHASE 0/1 line about the other -- the pick was never the on-lane merger, so PHASE 2
+        // discovered the landed foe one step too late (gap -6.74 at 7.4 m/s; one emergency-decel
+        // step cannot un-land that). SUMO's sameTarget link-leaders come from getLeaderInfo's
+        // walk of the vehicles ON the foe lane (MSLink.cpp per-foeLane loop) -- never from a
+        // single route-matched candidate. Same physical-index switch as the crossing arm
+        // (Entry 57) and the bay arm (Entry 35b); ignore-junction-blocker applies PER OCCUPANT
+        // (MSLink.cpp:1601 is per link-leader). The pick keeps PHASE 0 (arbitration -- SUMO's
+        // setApproaching/blockedByFoe walks APPROACHING foes, where a route match is the right
+        // contract).
+        var occPhase1 = double.PositiveInfinity;
+        if (JunctionPhysicalOccupancyGate)
+        {
+            for (var oc = 0; oc < 2; oc++)
+            {
+                var occ = oc == 0 ? _physOnLaneFirst[foeInternalLaneHandle] : _physOnLaneSecond[foeInternalLaneHandle];
+                if (occ is null)
+                {
+                    break;
+                }
+
+                if (ReferenceEquals(occ, ego))
+                {
+                    continue;
+                }
+
+                if (IgnoreJunctionBlockerSeconds >= 0.0 && occ.WaitingTime >= IgnoreJunctionBlockerSeconds)
+                {
+                    continue;
+                }
+
+                // Same tie-break as the pick-based PHASE 1 below (F2.2 / Entry 38): ego follows
+                // the occupant only when ego is the LATER entrant; an approaching ego's entry
+                // time is MaxValue, so it always yields to an on-junction occupant (SUMO's
+                // isLeader clause 1).
+                if (!IsLeaderByEntryOrder(
+                        ego.JunctionEntryTime, occ.JunctionEntryTime,
+                        ego.Kinematics.Speed, occ.Kinematics.Speed,
+                        ego.Def.Id, occ.Def.Id))
+                {
+                    TraceMerge(ego, "PHASE1occ-egoIsLeader-skip", occ.Def.Id, 0.0);
+                    continue;
+                }
+
+                // Same C4-v merge-point geometry as the pick-based PHASE 1 below (kept in sync).
+                var occFoeLane = _network.LanesByHandle[foeInternalLaneHandle];
+                var occBack = occ.Kinematics.Pos - occ.VType.Length;
+                var (egoLbcOcc, foeLbcOcc) = MergeLengthsBehindCrossing(junction, egoLink.Index, foeLinkIndex);
+                var occDistToCrossing = distToMerge - egoLbcOcc;
+                var occLeaderBackDist = (occFoeLane.Length - foeLbcOcc) - occBack;
+                if (occLeaderBackDist < 0.0)
+                {
+                    var mismatchOcc = foeLbcOcc - egoLbcOcc;
+                    if (mismatchOcc > 0.0)
+                    {
+                        occLeaderBackDist += mismatchOcc;
+                    }
+                }
+
+                var occGap = occDistToCrossing - ego.VType.MinGap - occLeaderBackDist;
+                TraceMerge(ego, occGap >= 0.0 ? "PHASE1occ-follow" : "PHASE1occ-stop", occ.Def.Id, occGap);
+                var occVal = occGap >= 0.0
+                    ? FollowSpeedFor(
+                        ego.VType, ego.Kinematics.Speed, occGap, occ.Kinematics.Speed, occ.VType.Decel,
+                        laneVehicleMaxSpeed, dt, time: time,
+                        accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime,
+                        caccControlMode: ref ego.CaccControlMode, egoAcceleration: ego.Acceleration,
+                        hasPred: true, predIsCacc: occ.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService, ballistic: _config!.Ballistic)
+                    : StopSpeedFor(
+                        ego.VType, ego.Kinematics.Speed, distToMerge - egoInternalLane.Length - PositionEps,
+                        laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+                if (occVal < occPhase1)
+                {
+                    occPhase1 = occVal;
+                }
+            }
+        }
+
         // PHASE 0 (APPROACHING foe -- junction arrival-time RoW): the responded merge foe is still
         // on its OWN approach lane, heading for the shared merge (not yet ON its merging internal
         // lane -- PHASE 1 -- nor on the shared target lane -- PHASE 2). SUMO decides this via
@@ -9454,7 +9538,7 @@ public sealed partial class Engine : IEngine
                 + KraussModel.BrakeGap(foeMaxV, foeMerging.VType.Decel, foeMerging.VType.Tau, dt);
             if (foeSeen > foeReservationDist)
             {
-                return double.PositiveInfinity;
+                return occPhase1; // Entry 58: +infinity gate-off (pre-existing), occupant fold gate-on
             }
 
             // Arrival speeds: the current speed (a constant-speed arrival estimate). The block
@@ -9481,10 +9565,10 @@ public sealed partial class Engine : IEngine
                     ego.CrossingYieldTaken = true;
                 }
 
-                return StopSpeedFor(
+                return Math.Min(StopSpeedFor(
                     ego.VType, ego.Kinematics.Speed,
                     egoDistToEntry - PositionEps,
-                    laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+                    laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService), occPhase1);
             }
         }
 
@@ -9549,18 +9633,18 @@ public sealed partial class Engine : IEngine
             TraceMerge(ego, gap >= 0.0 ? "PHASE1-follow" : "PHASE1-stop", foeMerging.Def.Id, gap);
             if (gap >= 0.0)
             {
-                return FollowSpeedFor(
+                return Math.Min(FollowSpeedFor(
                     ego.VType, ego.Kinematics.Speed, gap, foeMerging.Kinematics.Speed, foeMerging.VType.Decel,
                     laneVehicleMaxSpeed, dt, time: time,
                     accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime,
                     caccControlMode: ref ego.CaccControlMode, egoAcceleration: ego.Acceleration,
-                    hasPred: true, predIsCacc: foeMerging.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService, ballistic: _config!.Ballistic);
+                    hasPred: true, predIsCacc: foeMerging.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService, ballistic: _config!.Ballistic), occPhase1);
             }
 
             // gap<0 (MSVehicle.cpp:3228): stop before entering the junction.
-            return StopSpeedFor(
+            return Math.Min(StopSpeedFor(
                 ego.VType, ego.Kinematics.Speed, distToMerge - egoInternalLane.Length - PositionEps,
-                laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService);
+                laneVehicleMaxSpeed, dt, actionStepLengthSecs, ego.LevelOfService), occPhase1);
             } // F2.2 leader-skip else-scope
         }
 
@@ -9578,23 +9662,23 @@ public sealed partial class Engine : IEngine
 
         if (targetLane is null)
         {
-            return double.PositiveInfinity;
+            return occPhase1; // Entry 58: +infinity gate-off (pre-existing), occupant fold gate-on
         }
 
         var leaderOnTarget = FindRearmostOnLane(ego, allVehicles, targetLane.Id);
         if (leaderOnTarget is null)
         {
-            return double.PositiveInfinity;
+            return occPhase1; // Entry 58: +infinity gate-off (pre-existing), occupant fold gate-on
         }
 
         var targetGap = distToMerge + (leaderOnTarget.Kinematics.Pos - leaderOnTarget.VType.Length) - ego.VType.MinGap;
         TraceMerge(ego, "PHASE2-targetFollow", leaderOnTarget.Def.Id + "@" + leaderOnTarget.LaneId, targetGap);
-        return FollowSpeedFor(
+        return Math.Min(FollowSpeedFor(
             ego.VType, ego.Kinematics.Speed, targetGap, leaderOnTarget.Kinematics.Speed, leaderOnTarget.VType.Decel,
             laneVehicleMaxSpeed, dt, time: time,
             accControlMode: ref ego.AccControlMode, accLastUpdateTime: ref ego.AccLastUpdateTime,
             caccControlMode: ref ego.CaccControlMode, egoAcceleration: ego.Acceleration,
-            hasPred: true, predIsCacc: leaderOnTarget.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService, ballistic: _config!.Ballistic);
+            hasPred: true, predIsCacc: leaderOnTarget.VType.CarFollowModel == "CACC", levelOfService: ego.LevelOfService, ballistic: _config!.Ballistic), occPhase1);
     }
 
     // C4-iv phase-2 helper: the rearmost vehicle (smallest Pos = ego's immediate downstream leader)
