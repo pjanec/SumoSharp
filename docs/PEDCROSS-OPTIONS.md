@@ -110,8 +110,48 @@ ladder promotes pedestrians into is constructed with **no static obstacles at al
 walkable area, so under crowd pressure the reciprocal solve is free to push an agent into a traffic lane
 — exactly the reported symptom, and exactly what you would predict from an unbounded solve.
 
-**Hypothesis (untested, cheap to test):** wiring the baked walkable boundary into the LOD crowd removes
-most or all of the runaway behaviour. Evac already does this and treats it as a hard edge.
+**⚠ MEASURED — and the hypothesis is only half right.** `tests/Sim.Pedestrians.Tests/Navigation/
+OrcaWalkableContainmentTests.cs`, on `poc0-crossing-plaza`, agents driven by the real
+`PedRouteController` + `WaypointFollower` over `SumoNavMesh` routes (the same pair `PedLodManager.cs:220`
+uses), 900 steps at dt = 0.1:
+
+```
+n= 20   off-walkable 0.000 %   depth p95 —        max —        routesCompleted 20.0 %
+n= 40   off-walkable 0.000 %   depth p95 —        max —        routesCompleted 45.0 %
+n= 80   off-walkable 1.094 %   depth p95 0.927 m  max 0.973 m  routesCompleted 40.0 %
+n=160   off-walkable 1.361 %   depth p95 0.560 m  max 0.797 m  routesCompleted 42.5 %
+n=240   off-walkable 2.619 %   depth p95 0.776 m  max 1.122 m  routesCompleted 30.0 %
+```
+
+**The runaway is real, it is density-triggered, and it is deep.** Nothing at all below ~40 agents; it
+appears at 80 and grows monotonically. **Max excursion 1.12 m** — that is not a clipped kerb corner, it
+is a pedestrian standing in a traffic lane. The owner's report is confirmed with a number.
+
+**But the fix is NOT one wiring call.** Two naive union-boundary constructions, both measured:
+
+| boundary | off-walkable | routes completed |
+| --- | --- | --- |
+| none (what ships today) | 0.00 % @n=40 · 2.62 % @n=240 | 45.0 % |
+| **endpoint-dedupe** (drop edges seen from both sides) | **0.00 %** | **0.0 %** ← every route blocked |
+| midpoint-filtered (drop edges whose midpoint is inside another polygon) | 2.89 % | 22.5 % |
+
+Endpoint dedupe contains *perfectly* and walls off **every** portal — not one agent completes its route.
+That is exactly the failure `SumoWalkableSpace`'s header predicts. The midpoint filter over-corrects,
+deleting genuine outer walls too, because the bake produces **overlapping** polygons (a buffered sidewalk
+strip overlaps the walkingarea it feeds) rather than merely abutting ones — so "midpoint inside another
+polygon" is true of real boundary edges as well. 138 raw edges → 74 after dedupe → 23 after the midpoint
+filter; the truth is somewhere between and neither construction finds it.
+
+**So the actual work item is a real polygon-union boundary** over overlapping polygons — the "future
+work" the header names, and materially harder than a call to `AddObstacle`. It is still far smaller than
+the SUMO port, but it is geometry work with a correctness bar, not wiring.
+
+⚠ **Methodology note, recorded because it flipped the result.** The first version of this harness gave
+agents straight-line `SetGoal` targets with no router. They walked over the carriageway *because that is
+where they were aimed*, reporting a spurious **37%** off-walkable, and adding walls "fixed" it purely by
+stopping them dead. That is CLAUDE.md §Measurement discipline item 6 — a metric that selects its own
+answer — and it would have fed a confident, wrong number into this decision. The numbers above are from
+the corrected, route-following harness.
 
 **Honest caveats, so this is not oversold:**
 - RVO2 obstacle handling is *strong*, not *absolute*. An agent already on the wrong side of a line, or a
@@ -362,11 +402,11 @@ Nothing below should be argued; all four are measurable in days.
 
 | # | question | experiment | decides |
 | --- | --- | --- | --- |
-| **Q1** | Does wiring the walkable boundary into the LOD crowd stop the runaways? | Call `AddObstacle(walkable boundary)` on `PedLodManager`'s high-power crowd, following `EvacDirector.cs:95`. Run the densest existing ped scenario. Count agent-steps outside the walkable polygon, before and after. | **C6**, and with it much of the case for the lattice |
+| **Q1** ⚠ **ANSWERED — problem confirmed, cheap fix refuted** | Does wiring the walkable boundary into the LOD crowd stop the runaways? | `OrcaWalkableContainmentTests`, §2.3. Runaways are **real, density-triggered and up to 1.12 m deep**. But endpoint-dedupe boundaries block **100%** of routes and the midpoint filter is worse on both axes: a correct polygon-union boundary is required. | **C6** — Option D still needs real geometry work, though far less than the port |
 | **Q2** | Can an ORCA ped abort mid-crossing without the reciprocal shove throwing it into traffic? | Bridge-crossing fixture; ped commits, car appears, move the goal back to the kerb. Measure max excursion and whether it re-enters the lane. | **R-A1**, the biggest unknown in Option A |
 | **Q3** | Does a gap-acceptance signal produce believable kerb behaviour at flow density? | Prototype `GapAcceptanceSignal`, render it, look. Compare kerb-wait distribution against a SUMO run on the same net (§7). | **C3**, and whether Option A is finishable |
 | **Q4** | Does ORCA hold up in the two places it is actually needed — threading a waiting crowd, and bi-directional streams on one crossing? | The two scenarios the SUMO work already identified as hard, run against ORCA. Render both. | whether the lattice is needed *anywhere* |
-| **Q5** | Does the baked low-power route graph **only ever cross a carriageway inside a crossing polygon**? | Enumerate every baked low-power path; intersect each segment with the road polygons; assert every road-crossing segment lies inside a crossing polygon. A standing test, not a one-off probe. | the entire safety argument of Option D (§5b.4) — if it fails, scripted peds walk into traffic and no lock fires |
+| **Q5** ✅ **ANSWERED — PASS** | Does the baked low-power route graph **only ever cross a carriageway inside a crossing polygon**? | `LowPowerRouteContainmentTests`: 240 routed paths over every polygon-centroid O/D pair, **71,932 samples at 0.25 m, ZERO off-walkable**; 14,756 samples land on `Crossing` polygons, so roads genuinely are traversed and only there. Negative control: the containment predicate rejects **94.3%** of the net's bounding box, so the zero is discriminating rather than vacuous. | Option D's safety argument **holds** on this fixture |
 | **Q6** | Can a kerb hold be expressed on the low-power tier and survive replication? | Insert an `ActivityTimeline.Pause` at the kerb whose duration is decided on arrival; check `ActivityTimelineWire` / `PedRemoteReconstructor` reproduce it, and measure the extra wire traffic | whether §5b.2 is as cheap as it looks, or needs a new open-ended segment kind |
 
 **Q5 and Q1 first, in that order.** Q5 because it is a pure static analysis of committed data — no
@@ -387,6 +427,21 @@ questions matter less.
 
 ## 8b. Current standing (2026-08-02)
 
+**Q5 and Q1 have been run (2026-08-02). Option D survives, with one item promoted from "wiring" to
+"real work".**
+
+- **Q5 passed cleanly** — the low-power router never leaves the pavement, and it does cross roads, only
+  at crossings. Option D's safety argument stands on this fixture. Caveat: **one fixture**
+  (`poc0-crossing-plaza`). Re-run on a larger/organic net before treating it as general.
+- **Q1 confirmed the runaways and refuted the cheap fix.** Excursions are density-triggered (nothing
+  ≤40 agents, 2.6% of agent-steps at 240) and reach **1.12 m** — a traffic lane, not a kerb. But
+  containment cannot be bought with one `AddObstacle` call: the naive boundary blocks 100% of routes.
+  A genuine polygon-union boundary over *overlapping* polygons is needed. Smaller than the SUMO port by
+  a wide margin, but geometry work with a correctness bar.
+
+**Net effect on the decision: unchanged in direction, sharper in cost.** Option D is still the
+front-runner, and it now has one more named work item.
+
 **Option D is the front-runner.** Not because ORCA beats the lattice on merit, but because it changes
 what has to be true:
 
@@ -398,8 +453,14 @@ what has to be true:
   construction rather than by tuning;
 - C1/C4/C5 are already built and are stronger than SUMO's.
 
-What remains genuinely uncertain: Q5 (is the low-power routing actually crossing-only?), Q2 (mid-crossing
-retreat), and how ORCA behaves in a dense island. None of these is settled by argument.
+What remains genuinely uncertain after Q5/Q1: **Q2** (mid-crossing retreat), **Q4** (does ORCA thread a
+dense waiting crowd believably), **Q6** (does a kerb hold survive replication), and whether Q5's clean
+result generalises beyond one fixture. Plus the newly-sized work item: a correct walkable-union boundary.
+
+Note the containment finding cuts **both** ways and should not be read as purely bad news for Option D.
+Under Option D, ORCA runs only inside junction islands — so the union boundary that must be computed is
+*one junction's*, not a city's, and the 1.12 m excursions matter only where a ped could reach a live
+lane. That is a much smaller and better-posed geometry problem than the one this experiment measured.
 
 **Nothing here retires the SUMO port.** If Q1/Q2/Q4 come back badly — if ORCA cannot be kept inside a
 junction polygon under pressure, or cannot thread a dense waiting crowd believably — the lattice's
