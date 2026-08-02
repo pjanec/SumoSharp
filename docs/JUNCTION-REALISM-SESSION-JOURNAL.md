@@ -3963,3 +3963,45 @@ constraint).
   the occupancy arm now sees real bodies, each hold is against a physically-present car).
 - P4: goldens byte-identical + bench hash `A134ED3716DDE7BC` unchanged (gate default OFF —
   by construction), full sln green.
+
+## Entry 57 (AFTER) — fix landed (`df23a27`); deep drive-throughs −62%; the row-kill was also a throughput bug
+
+**P1 ✓.** Fix replay (same deterministic window): the t=660 `:36220_7_0 × :36220_9_2`
+OVERLAP-EX is GONE (full capture: 23 → 3 EX lines at :36220). The new occupancy arm fired
+exactly as designed — `[veh]` shows veh314 junctionYield-bound (arm 5) against entity 3041
+before entry instead of sailing through.
+
+**P2 ✓ in kind, number MISSED.** veh314 waits ~55 s at the junction mouth (predicted ≤20 s),
+then crosses at 5.6 m/s at t≈716, exits, and cruises at free flow through t=850. Honest
+queuing while the crawling cross-stream occupies the conflict — no wedge, no new stall.
+
+**P3 MIXED as predicted-metric, WIN on the metrics that matter.** Standard capture
+(RINGBREAK=0), fix vs pv1:
+
+- Junction EX lines 414 → 319 (−23%; predicted ≥30% — MISS on the raw count). Distinct
+  episodes 66 → 60; transients 44 → 42 (flat).
+- **Depth decomposition rescues the story: deep samples (≥1.0 m) 145 → 55 (−62%); ≥1.5 m
+  52 → 26. Shallow brushes (<0.5 m) 169 → 246** — holds convert penetrations into
+  near-touches. The owner-visible "full speed through a body" class is the deep bucket.
+- **Arrivals 2635 → 2832 (+7.5%), stoppedFrac 0.95 → 0.89, meanSpd 0.44 → 0.96, aggMove
+  +118%.** The pick-level row-kill was not just an overlap bug — discarding entire foe links
+  let cars pile into occupied junctions and wedge them. Honest holds IMPROVED flow. (The
+  ±3% guard was beaten in the good direction.)
+- Merge EX 8 → 91 is ONE landed pair (`__veh1375 × __veh1762`, gen_road_7261_1, 76 samples)
+  — an Entry-55-class co-location landing; the merge fix (hunt queue item 2) owns it.
+
+**Shipped-defaults arm (fix + RINGBREAK=1) vs old best (pv1-rb1):** steady-state pairs
+53 → 35, junction 28 → 19; deep (≥1.5 m) 156 → 86 (−45%); stoppedFrac 0.90 → 0.81; meanSpd
+0.85 → 1.31; aggMove +54%; arrivals 3072 → 2935 (−4.5% — the honesty trade: the old number
+was partly financed by drive-throughs). Note the rb1 arms carry more deep samples than rb0
+(D2's escalation creep produces body-contact by design — known trade, Entry 51).
+
+**P4 ✓.** Full sln green (782/92/324/…); bench hash `A134ED3716DDE7BC` par==single unchanged.
+Gate default OFF — engine defaults untouched.
+
+**Remaining in the junction class:** the transient population (42) is varied (25+ junctions,
+no dominant one) and now mostly shallow; several named sub-shapes to triage next round:
+same-link parallel lanes (`:36315_1_0 × :36315_1_1`), edge-vs-internal boundary pairs
+(`gen_road_6272_0 × :36315_4_0`), and same-source diverge fans (`:30268` bikes). The MERGE
+class (Entry 55's FindFoeVehicle first-match in SameTargetMergeConstraint) is now the
+biggest single named defect still open.
