@@ -43,6 +43,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-2.4** coverage counters + `AllBranchesCoveredTest` + `PerScenarioClaimTest` (failing honestly)
 
 ## Stage 3 — Stepper, straight sidewalk
+- [ ] **SP-3.0** ⭐ lane-bucketed SoA store + pooled `Obstacle` scratch; **0 bytes/step** allocation gate green
 - [ ] **SP-3.1** `PersonRuntime`, `StripingParams` (every constant + `.cpp:line`), stripe math
 - [ ] **SP-3.2** `Obstacle`/`ObstacleType`/`DistanceTo`/`MergeObstacles`
 - [ ] **SP-3.3** `Walk()` — the utility fold, unit-proven in isolation ⭐ pivotal
@@ -73,6 +74,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-7.2** coordinate contract round-trip + `SpawnPersonAt` no-pop handover (the Phase 2 hinge)
 - [ ] **SP-7.3** `Sim.Viz` scenes + golden ground-truth overlay + stripe lines; in `gen-demos.sh`
 - [ ] **SP-7.4** production regime: measured speed spread; goldens provably unaffected
+- [ ] **SP-7.4c** `Sim.BenchPed` person-steps/s committed; allocation gate still green at the end
 - [ ] **SP-7.4b** coverage close-out: `AllBranchesCoveredTest` green or every miss an owner-signed hole
 - [ ] **SP-7.5** final gate: full sln, 782+/661 byte-identical, `A134ED3716DDE7BC`, LiveCity 92, Peds 324
 - [ ] **SP-7.6** doc reconciliation (`PEDESTRIAN-OVERVIEW.md` §3, `PEDESTRIANS.md`, `README.md`, `scenarios/README.md`, `TASKS-TODO.md`)
@@ -92,6 +94,8 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 | branch IDs covered / admitted holes (SP-0.6, SP-7.4b) | _(not yet)_ |
 | added golden bytes (SP-0.3) | _(not yet)_ — budget context: existing FCD goldens total 5.1 MB, largest single 1.26 MB |
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
+| person phase allocation per step, Tier C (SP-3.0d) | _(not yet)_ — **must be 0 bytes** |
+| person-steps/second, Tier C (SP-7.4c) | _(not yet)_ |
 
 ### Replayable step count — the stage-gate metric (`SUMOPED-PROCESS.md` §5.1)
 

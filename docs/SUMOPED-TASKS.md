@@ -247,6 +247,23 @@ Requirement R10, mirroring `Sim.Bench`'s `TrajectoryHash`.
 
 ## Stage 3 — The stepper, straight sidewalk only
 
+### SP-3.0 — ⭐ The lane-bucketed SoA store and the scratch pools
+Design §4.1–4.3. **Do this before any stepper code**, because it is the one decision that cannot be
+retrofitted cheaply: persons are greenfield, so they are built at the data-oriented destination rather
+than at the vehicle layer's current AoS position.
+Lane-bucketed contiguous runs sorted by `dir·relX` with the ordinal id tie-break; hot/cold field split;
+vType scalars denormalised into the hot arrays; per-worker pooled `Obstacle` scratch with a
+`stackalloc` fast path under `MaxStripes` and a rented-buffer fallback above it; hot `Obstacle` struct
+carrying `foeIndex`, not a description string.
+**Success:** (a) a test asserts the hot arrays contain no managed references (reflection over the
+store's field types) — that is what keeps it chunk-storable; (b) the per-lane run for any lane is
+**contiguous** and sorted, asserted directly on the store; (c) `MaxStripes` is derived from the loaded
+net (measured range across our scenarios: **1–12**) and exceeding it takes the rented path rather than
+throwing; (d) **the allocation gate** — with `Engine.ProfilePhases` on, the person phase reports
+**0 bytes** allocated per step after warm-up on the Tier C scenario. Gate (d) is the one that matters:
+a transliterated port allocates ~6 `Obstacle` arrays per ped per step, ≈180 k allocations per simulated
+second on Tier C, and nothing else in the plan would notice.
+
 ### SP-3.1 — `PersonRuntime`, `StripingParams`, stripe math
 Design §4.1, §5; rationale and per-constant sensitivity in `SUMOPED-ALGORITHM.md` §4.
 Field set fixed by SUMO's `saveState` enumeration.
@@ -412,6 +429,13 @@ Requirement R12, coverage §1, §8.
 admitted hole with a reason and explicit owner sign-off. The number of covered vs. admitted-hole branch
 IDs (out of 149) is recorded in the tracker. `PerScenarioClaimTest` green.
 
+### SP-7.4c — Person-scale benchmark
+Design §4.3 gate 3. `Sim.Bench`'s determinism hash covers **vehicles only** and cannot see persons.
+**Success:** a `Sim.BenchPed` reports person-steps/second on the Tier C saturated scenario and its
+number is committed to the tracker; the person trajectory hash is stable across two single-threaded
+runs; the zero-allocation gate from SP-3.0(d) still holds at the end of the port, not just when it
+was introduced.
+
 ### SP-7.5 — Final gate
 Requirement R9.
 **Success, all re-run first-hand:**
@@ -443,7 +467,7 @@ CLAUDE.md §Subagents' orchestration loop. Batches are sized so each ends at a v
 | B2 | SP-1.1, SP-1.2, SP-1.4 | net model extended, vehicle gate unmoved |
 | B3 | SP-1.3 | the ordering trace (Opus does this one — it is a judgment call) |
 | B4 | SP-2.1 … SP-2.4 | all seven comparators + the stripe helper + coverage counters; every test failing honestly |
-| B5 | SP-3.1 … SP-3.3 | `Walk()` unit-proven in isolation |
+| B5 | SP-3.0 … SP-3.3 | store + scratch pools with the allocation gate green; `Walk()` unit-proven in isolation |
 | B6 | SP-3.4, SP-3.5 | two scenarios at exact parity |
 | B7 | SP-4.1 … SP-4.4 | junctions + the owner's crowd behaviours at parity |
 | B8 | SP-5.1 … SP-5.5 | vehicle coupling; gate re-run inside the batch |

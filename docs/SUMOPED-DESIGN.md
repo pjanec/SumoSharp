@@ -191,20 +191,102 @@ holds a nullable `IPersonModel`. No cycle.
 17,010 lines; a separate assembly makes "inert when absent" structural rather than a discipline. And the
 name must not suggest continuity with the ORCA layer — the two are different models of different things.
 
-### 4.1 Storage
+### 4.1 Storage — lane-bucketed struct-of-arrays
 
-`List<PersonRuntime>` of a mutable class, indexed by a stable `EntityIndex`, plus
-`SortedDictionary<int laneNumericalId, List<PersonRuntime>> _activeLanes` mirroring SUMO's `myActiveLanes`.
+⚠ **Corrected.** An earlier draft of this section argued persons should mirror what vehicles *are
+today* (`List<VehicleRuntime>` of a mutable class, `Engine.cs:23`) on the grounds that "persons should
+not be more ECS than vehicles are". That reasoning is wrong. Vehicles are array-of-structs-of-references
+because of **migration cost** — `VehicleRuntime`'s own header describes the in-progress trim toward
+"chunk-storable" (unmanaged scalars, variable-length state moved to entity-keyed side storage).
+Persons are **greenfield**: there is no migration cost, so building them AoS now is a self-inflicted
+future migration and forfeits the performance the layout exists to buy. Design at the destination.
 
-This deliberately mirrors what vehicles actually are today (`List<VehicleRuntime>`, `Engine.cs:23`) rather
-than the aspirational SoA in CLAUDE.md's framing — persons should not be more ECS than vehicles are.
+**The layout is derived from the algorithm's access pattern, not from a general preference for SoA.**
+The hot loop (§5.2) is: *per lane, per direction, walk the pedestrians in `dir·relX` order, threading a
+rolling `Obstacle[numStripes]` array, calling `Walk()` on each.* Four consequences:
 
-`PersonRuntime`'s field set is fixed by SUMO's own `saveState` enumeration
-(`MSPModel_Striping.cpp:1765`), which is the authoritative list of everything that must be reproducible:
-`myLane, myRelX, myRelY, myDir, mySpeed, mySpeedLat, myWaitingToEnter, myWaitingTime,
-walkingAreaPath(from,to), myAmJammed, myNLI(lane, link.from, link.to, dir)`.
+**(a) Bucket by lane, contiguously.** Persons live in per-lane contiguous runs, kept sorted by
+`dir·myRelX` with the ordinal person-id tie-break (§5.2). `MoveInDirectionOnLane` then becomes a linear
+scan over contiguous memory instead of a pointer chase. This mirrors SUMO's own `myActiveLanes`
+grouping — a case where *following the source's data structure* and *being cache-friendly* coincide,
+which is not always true and is worth taking when it is. Note this is deliberately **not** the vehicle
+layout (a flat list indexed by entity); the access patterns genuinely differ.
 
----
+**(b) Hot/cold split.** `Walk()` touches only:
+
+```
+HOT  (every ped, every step)   relX, relY, speed, speedLat, dir, waitingTime,
+                               amJammed, waitingToEnter
+     + denormalised vType      width, length, minGap, vMax
+COLD (lane transition/output)  person id string, route slice, stage, NLI,
+                               walkingAreaPath reference
+```
+
+Hot fields are parallel arrays. Cold state goes in entity-keyed side tables — exactly the pattern
+`VehicleRuntime`'s header already describes for lane sequences and stops.
+
+**(c) Denormalise the vType scalars into the hot arrays.** `Walk()` reads `width`/`length`/`minGap`/
+`vMax` per pedestrian per step. Chasing a `PersonType` reference for them is a dependent load in the
+innermost loop. Vehicles still carry `VType` as a managed ref (a known, documented debt); persons
+should not inherit it.
+
+**(d) The `Obstacle[]` scratch is the real allocation hazard — and it is not small.** SUMO allocates
+`std::vector<Obstacle>` freely: per pedestrian per step it builds `currentObs`, neighbouring obstacles,
+next-lane obstacles, vehicle obstacles and crossing-vehicle obstacles, then merges them. A transliterated
+port allocates roughly **six arrays per pedestrian per step** — on the Tier C golden that is ~180 k
+allocations per simulated second. Unacceptable, and invisible until it is profiled.
+
+The port instead uses **per-worker pooled scratch reused across pedestrians**. `numStripes` is bounded
+by lane width (measured across our scenarios: **1 to 12**, with the netconvert default of 4.00 m giving
+6), so a fixed `MaxStripes` scratch is `stackalloc`-able, with a pooled rented buffer as the fallback
+for an unusually wide lane rather than a hard failure.
+
+`Obstacle` itself gets the same hot/cold treatment. SUMO's carries `{xFwd, xBack, speed, type,
+description (string), vehicle (pointer)}`; the `description` is debug-only, and a string per stripe per
+pedestrian per step would both allocate and destroy locality. The hot struct is
+`{double xFwd, xBack, speed; byte type; int foeIndex}` — the id resolves through `foeIndex` only when
+diagnostics are enabled.
+
+### 4.2 Parallelism — what is actually available, and what is not
+
+The parallelism story must be derived from SUMO's dependencies, not assumed. Checked first-hand:
+
+| level | parallelisable? | why |
+| --- | --- | --- |
+| **within a lane** | **No — strictly sequential** | The rolling `obs` fold is a genuine loop-carried dependency: pedestrian *i*'s post-move position becomes an obstacle for pedestrian *i+1* in the same pass (§5.2). This is behaviour, not implementation detail. |
+| **across directions** | **No — strictly sequential** | FORWARD over all lanes, then BACKWARD over all lanes. A FORWARD pedestrian's post-move position is visible to BACKWARD pedestrians in the same step but not the reverse; the asymmetry is observable. |
+| **across lanes** | **Not freely** | ⚠ `getNextLaneObstacles` (`MSPModel_Striping.cpp:826-880`) reads `getPedestrians(nextLane)` **live — there is no frozen snapshot**. So lane *L*'s result depends on whether its successor lanes have already moved this pass, which SUMO fixes by iterating lanes in numerical-id order. Naive per-lane parallelism changes results. |
+
+So the exploitable unit is **not** the lane. Safe parallelism requires partitioning lanes into sets with
+no successor relation crossing the partition boundary, and processing partitions in lane-id order —
+i.e. **junction-disjoint regions**. The engine already has exactly this shape for vehicles
+(`RegionPlan` / `BuildRegionActive`, `Engine.cs:566`, `:3155-3164`), and that is the precedent to follow.
+
+**Phase 1 ships the person pass single-threaded**, with the layout above so the regional decomposition
+is available later without a store reshape — the same sequencing the vehicle engine used. What Phase 1
+must *not* do is choose a layout that forecloses it.
+
+### 4.3 The performance gates
+
+Layout claims are worthless unassserted. Three gates, each a number:
+
+1. **Zero steady-state allocation on the person step path.** The engine already has per-phase allocation
+   accounting (`Engine.ProfilePhases` → `PhaseBytes`, `Engine.cs:803`, using
+   `GC.GetTotalAllocatedBytes` deltas). A test asserts the person phase allocates **0 bytes** per step
+   after warm-up on the Tier C scenario. This is what catches the §4.1(d) hazard the moment it appears,
+   rather than at profiling time months later.
+2. **`par == single`.** When regional parallelism is eventually enabled, the person trajectory hash must
+   be identical single-threaded and parallel, mirroring `Sim.Bench`'s existing vehicle assertion.
+   Until then the gate is that the hash is stable across two single-threaded runs (SP-2.3).
+3. **A person-scale benchmark**, `Sim.BenchPed`, reporting person-steps/second on the Tier C saturated
+   scenario, committed with its number so a regression is visible. Note the existing `Sim.Bench`
+   determinism hash covers **vehicles only** and cannot see persons at all.
+
+**The parity constraint over all three.** Layout must never change results. The sort order, the
+ordinal-id tie-break, and the iteration order are *behaviour*; a "faster" layout that reorders them is
+simply wrong. Per CLAUDE.md prime directive 3 and §Measurement discipline item 1, any optimisation is
+accepted only when the goldens stay byte-identical **and** the behavioural surface agrees — neither
+alone is sufficient.
 
 ## 5. The per-step algorithm
 
