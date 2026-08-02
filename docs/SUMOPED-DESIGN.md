@@ -106,8 +106,17 @@ outputs measured first-hand. The summary below is the FCD half; read coverage §
 - **Secondary — `<personinfo>` tripinfo.** `duration/waitingTime/timeLoss/routeLength/maxSpeed`, an
   aggregate tripwire. `regen-goldens.sh` already supports this via its `.wants-tripinfo` sentinel.
 - **No `golden.state.xml` for persons.** Verified: `--save-state` writes zero person/transportable
-  elements. Unlike the vehicle harness there is no init cross-check; the vType cross-check role is taken
-  by the `walk-straight-1` scenario instead.
+  elements.
+- ⚠ **But the vType init cross-check IS available, and an earlier draft wrongly gave it up.** The
+  mechanism this repo actually uses is `golden.vtype.json`, dumped via libsumo/TraCI by
+  `scripts/dump-scenario-vtypes.py` and consumed by `ParameterCrossCheckTests` — not `--save-state`. And
+  **SUMO persons reuse `MSVehicleType`** (§10.5), so a person's resolved type dumps the same way. This
+  matters because `Sim.Ingest`'s `VTypeDefaults.Resolve` **throws today** on `vClass="pedestrian"`
+  (`VTypeDefaults.cs:240-243` — there is no such row), and because §4.1(c) denormalises
+  `width`/`length`/`minGap`/`vMax` into the hot arrays, where a wrong default shifts every trajectory
+  with no obvious cause. Task **SP-1.0** ports the `SVC_PEDESTRIAN` defaults and commits the per-scenario
+  dumps, so a ped divergence can be triaged at the init rung — CLAUDE.md §Reporting a parity failure —
+  rather than one rung higher.
 
 ---
 
@@ -251,6 +260,19 @@ The port instead uses **per-worker pooled scratch reused across pedestrians**. `
 by lane width (measured across our scenarios: **1 to 12**, with the netconvert default of 4.00 m giving
 6), so a fixed `MaxStripes` scratch is `stackalloc`-able, with a pooled rented buffer as the fallback
 for an unusually wide lane rather than a hard failure.
+
+**(e) Churn is a hot-path operation, not a one-off — the hybrid makes spawn/despawn per-step.** Under
+the Phase-2 hybrid (§9) a pedestrian is *adopted* into this store when it nears a crossing and *released*
+when it leaves, so insertion and removal happen every step at every crossing boundary rather than once at
+scenario load. The layout above is a **sorted contiguous per-lane run**, so an insertion is an O(bucket)
+memmove — small buckets make that fine, but it must be *measured*, not assumed, and it must not allocate.
+
+This repo has already paid for getting it wrong once: `PedLodManager`'s header records that the POC
+version rebuilt the whole high-power crowd on every membership change, an O(current-high-power-count)
+cost per switch, **measured at 100k as the dominant reason a churning world cost 3.6× a stable one**.
+P0-1…P0-3 exist solely to make `OrcaCrowd`'s add/remove O(1). The person store must not reintroduce the
+same cost in a new place. Standing rule S-f therefore does **not** exempt adoption/release from the
+zero-allocation rule, and SP-3.0 carries an explicit churn condition.
 
 `Obstacle` itself gets the same hot/cold treatment. SUMO's carries `{xFwd, xBack, speed, type,
 description (string), vehicle (pointer)}`; the `description` is debug-only, and a string per stripe per
@@ -500,8 +522,34 @@ vehicle-vehicle junction conflicts**, as an entry with `vehicle == nullptr`, `ga
 acceptance, zippering — treats it as "something is blocking `distToCrossing` ahead" and brakes with the
 machinery that is already parity-validated.
 
-**The port must do the same**: inject a phantom `JunctionLeaderCandidate` (`Engine.cs:9988`) with a null
-vehicle into the existing junction-leader path consumed by `AdaptToJunctionLeader`.
+**The port must do the same** — inject a phantom entry into the existing junction-leader path consumed
+by `AdaptToJunctionLeader`. That path is **live** (called from the plan at `Engine.cs:7827` and `:8011`;
+the nearby *"NOT WIRED IN"* comment at `:10004` belongs to `IsLeader`, a different method), so CLAUDE.md
+§Measurement discipline item 3 is satisfied: the mechanism has a live reader *and* a live caller.
+
+⚠ **But "with a null vehicle" is the wrong description, and the difference is the actual work.**
+`JunctionLeaderCandidate` (`Engine.cs:9988`) is
+`(string LaneId, string Id, double Speed, long EntryTime, long EntryTimeNeverYield,
+long ConflictEntryTime, double MinGap, double MaxAccel, double MaxDecel, double HeadwayTime,
+double Length)` — there is **no vehicle field to null**. A phantom is just a synthetic `Id`, which is
+easier than SUMO's `nullptr`. The real question is the *consumption* branch:
+
+- SUMO pushes the ped in with `gap == -1`, a sentinel meaning **"no gap is known — brake to stop before
+  `distToCrossing`"**, and it deliberately bypasses the arrival-time foe comparison.
+- Our candidate instead carries `EntryTime`, `ConflictEntryTime`, `Length`, `MinGap`, `HeadwayTime` —
+  the inputs to **car-following adaptation against a real vehicle foe**. A pedestrian has no meaningful
+  value for any of them.
+
+So this is not a drop-in, and the danger is specific: SP-5.1's `13.89 → 11.11 → 6.61` success condition
+is reachable by *tuning a synthetic `Length`/`EntryTime`* until the numbers match — the exact failure
+mode `SUMOPED-PROCESS.md` §6.1 forbids, and one that would pass its own test. SP-5.1's first success
+condition is therefore a **reading** task: establish how SUMO's consumer branches on `gap == -1`
+(`MSVehicle::adaptToJunctionLeader` / `adaptToLeaders`, reached from the ped block at
+`MSLink.cpp:1667-1688`) and whether `AdaptToJunctionLeader` has an equivalent branch or needs one added.
+
+**If it needs one added, that is an edit to the live vehicle plan path**, and Stage 5 stops being
+"additive, gated on `Persons != null`". The S-d full-gate re-run inside SP-5.1 is then load-bearing, not
+a formality. Risk #5 in §13 is scoped on that assumption.
 
 This is deliberately **not** the existing crowd-disc route (`CrowdLongitudinalConstraint` binder 13,
 `CrowdYieldConstraint` binder 16, `Engine.cs:11366/11475`). Those stay, unchanged, for the ORCA layer.
@@ -688,20 +736,115 @@ in the walk and that person-FCD attributes are not masked out by an `--fcd-outpu
 
 ---
 
-## 9. The Phase 2 seam (build the hinge, not the door)
+## 9. The Phase 2 seam — a third tier on a ladder that already exists
 
-Phase 2 (Requirement R-N2) promotes a low-power ORCA ped to a SUMO-model ped near a crossing and demotes
-it afterwards. Phase 1 must not build it, but must not foreclose it. Two things suffice:
+Phase 2 (Requirement R-N2) promotes a low-power ambient ped to a SUMO-model ped near a crossing and
+demotes it afterwards. Phase 1 must not build it, but must not foreclose it.
 
-1. **A bidirectional coordinate contract**, `(edge, pos, posLat) ↔ (x, y)`, exposed as a pure public
-   function on the person model. The forward direction is already required for FCD output; the inverse
-   (world → nearest walkable edge + offset) is the piece the ORCA layer lacks — it is exactly the
-   "world→edge resolver" that `PersonFcdWriter.cs:14-16` defers as backlog item P8-5. Phase 1 should
-   build the inverse anyway (it is small, and it makes `PersonFcdWriter` complete as a side effect).
-2. **Spawn/despawn at an arbitrary `(edge, pos, posLat, speed)`**, not only at a route start — so a
-   promotion can hand over mid-stride with no pop. This is the `SpawnPerson` overload set in §10.
+### 9.0 ⚠ Corrected: the switching machinery is already built
+
+An earlier draft of this section described Phase 2 as inventing a promotion mechanism, and §10.3
+described it as "a bridge between two *different* APIs". Both were written without looking at
+`src/Sim.Pedestrians/Lod/PedLodManager.cs`, which **is** an LOD ladder with promotion and demotion,
+already shipped and already tuned:
+
+| the hybrid needs | `PedLodManager` already has |
+| --- | --- |
+| two tiers with different cost | low-power `PedDrModel.PathArc` (pose is a pure function of path/startTime/speed, O(1), no neighbour query) and high-power `FreeKinematic` (a real agent in a persistent `OrcaCrowd`) |
+| a promotion trigger | `InterestField` — multi-source, stable per-source ids, grid-indexed bounded per-ped query |
+| hysteresis | promote inside any `InterestSource.PromoteRadius`; demote only after continuously outside every (larger) `DemoteRadius` for `dwellSeconds`, plus a minimum dwell in each state |
+| an override | `SetForcedHighPower(id, on)` |
+| cheap churn | O(1) `Add`/`Remove` on both the crowd and the route controller (P0-1…P0-3) |
+| replication across a switch | `PedReplicationPublisher`, which already publishes across a `PedDrModel` change |
+
+**So Phase 2 is "add a third tier to that ladder, with crossings as the interest sources"** — not a
+bridge between unrelated systems. That is a far smaller problem, and it means the Phase-1 seam is shaped
+by an existing contract rather than by guesswork.
+
+It also means Phase 1 inherits a lesson rather than having to learn it. `PedLodManager`'s own header
+records that the POC version rebuilt the high-power crowd on every membership change — an
+O(current-high-power-count) cost per switch, **measured at 100k as the dominant reason a churning world
+cost 3.6× a stable one**. That is why `OrcaCrowd` was given real O(1) add/remove, and it is why §4.1(e)
+below treats person spawn/despawn as a hot-path operation rather than a one-off.
+
+### 9.1 What Phase 1 must build
+
+**(a) A bidirectional coordinate contract**, `(edge, pos, posLat) ↔ (x, y)`, as a pure public function on
+the person model. The forward direction is already required for FCD output; the inverse (world → nearest
+walkable edge + offset) is the piece the ORCA layer lacks — exactly the "world→edge resolver" that
+`PersonFcdWriter.cs:14-16` defers as backlog item P8-5. Phase 1 builds the inverse anyway: it is small,
+and it completes `PersonFcdWriter` as a side effect.
+
+**(b) Adoption at an arbitrary state, and it is a function Phase 1 is already writing.** SP-2.1d's
+single-step replay reconstructs a complete `PState` from a golden FCD row plus lane geometry. **A
+promotion is that same function with a different data source** — an ORCA ped's world position and
+velocity instead of an FCD row. Building it twice guarantees the two drift, and the test-side one will be
+the correct one because it is the one with 30,000 golden person-steps behind it.
+
+So the reconstruction is **public and `Engine`-side**, and the replay harness is a *caller* of it:
+
+```csharp
+bool TryAdoptAt(in PersonAdoptionState st, out PersonHandle p);   // the one entry point
+```
+
+The Phase-1 payoff is immediate: the promotion path is exercised by every replayed golden step long
+before Phase 2 exists.
+
+**(c) The promotion state must be fully specified, including the fields nothing observes.** §10.4's
+`SpawnPersonAt(type, edge, pos, posLat, speed, rest)` is not sufficient. `PState` also carries `myDir`,
+`mySpeedLat`, `myWaitingTime`, `myWaitingToEnter`, `myAmJammed`, `myNLI` and `myWalkingAreaPath` — and
+`SUMOPED-PROCESS.md` §3.1 lists **exactly those** as the fields the FCD does not observe. In the replay
+harness they come from the golden's history. **A promoted ambient ped has no history at all**, so the
+adoption must *define* them:
+
+| field | on adoption | why this value |
+| --- | --- | --- |
+| `myDir` | sign of the incoming velocity projected on the lane | the only source available |
+| `mySpeedLat` | lateral component of the incoming velocity | continuity of motion; do not zero it, that is a visible sideways snap |
+| `myWaitingTime` | `0` | the ped was walking, by construction — it was ambient a step ago |
+| `myWaitingToEnter` | **`false`** | ⚠ load-bearing, see below |
+| `myAmJammed` | `false` | jam state is earned over `jamTime`; a fresh adoptee has not earned it |
+| `myNLI`, `myWalkingAreaPath` | recomputed from `(net, route tail, current lane)` | deterministic functions of committed inputs (§3.2) |
+
+⚠ **`myWaitingToEnter` is not a cosmetic default.** It gates `WALK-OBSTRUCT-SELF-WAITING-EXEMPT`
+(`Striping.cpp:2046-2048`), which exempts a ped from self-penalising its own current stripe, and it
+interacts with the `MIN_STARTUP_DIST` guard. Set it `true` and a promoted ped skips the startup guard;
+leave the exemption logic thinking it is `true` and it self-blocks on its first tick. Either one is a
+visible stutter **at exactly the moment the hybrid exists to make seamless**. This is asserted by
+SP-7.2, not left to inspection.
+
+**(d) One stable id across both tiers.** `PedestrianWorld.AddWalker(int id, …)` takes a
+**caller-supplied** id; `PersonHandle` is engine-minted (D22). Under the hybrid a remote client watching
+a ped cross the street would see it leave the ped channel and reappear in the person channel — **a pop in
+the protocol even when the position is perfectly continuous.** Because the ORCA id is caller-chosen, the
+fix is one optional parameter: a caller-supplied `externalId` on the person spawn/adopt API, so a host
+can carry one id across both tiers.
+
+This is the cheapest item in this section and the most expensive to retrofit: one parameter now, a
+replication-protocol migration later. It does **not** mean Phase 1 builds person replication — see
+§10.2 item 7 — only that the id contract is settled while it is still free.
 
 Nothing else about Phase 2 is decided here.
+
+### 9.2 Two things the hybrid makes better, recorded so Phase 2 does not re-derive them
+
+- **The population shape matches the parallel unit.** §4.2 concludes the only parity-safe parallel unit
+  is the junction-disjoint region, because `getNextLaneObstacles` reads successor lanes live. Under the
+  hybrid, SUMO-peds **exist only near junctions** — the population is naturally partitioned by exactly
+  that unit. The Phase-1 layout lines up with the hybrid's shape rather than fighting it.
+- **DR classification survives the boundary.** D26 tags persons `DrModel.FreeKinematic`; the ORCA
+  high-power tier is already `PedDrModel.FreeKinematic`. A ped keeps its DR classification across a
+  promotion, so the interpolation path does not change under the switch — one less discontinuity for
+  `PedReplicationPublisher` to encode.
+
+### 9.3 What the hybrid takes OUT of the production path
+
+A production SUMO-ped's whole lifecycle is **promote → cross → demote**. It is never inserted from
+`<person>` demand and never reaches an `arrivalPos`. So the demand-insertion and arrival families are
+**parity-harness paths, not product surface**: they must be ported to the extent the goldens exercise
+them (SUMO's own runs do insert and arrive), but they are not on the hybrid's critical path and are
+labelled that way in the task list rather than scoped as product features. See Requirements R-N8.
+
 
 ---
 
@@ -755,8 +898,8 @@ in the subsections below; this table is the index.
 | 4 | `PersonReadBuffer` + `Engine` person spans | new + edit | `PersonHandles`, `PersonPosX/Y/Z`, `PersonAngle`, `PersonSpeed`, `PersonEdgeHandles`, `PersonPos`, `PersonPosLat`, `PersonIds`, `PersonCount`, `TryGetPerson` |
 | 5 | `SimulationSnapshot` person columns | edit | ⚠ **`Count` currently means *vehicle* count** and is read that way by every consumer — it must **not** be repurposed. Add `PersonCount` + parallel columns + `TryGetPerson`; extend `Capture(Engine)`. |
 | 6 | `SimulationRunner.TryInterpolatePerson` | edit | ⚠ **Corrected — see §10.5.** An earlier draft claimed persons need their own extrapolator because of the walkingarea Bezier. **Measured false.** Persons interpolate *better* than vehicles; reuse the same code path, parameterised by `DrModel`. |
-| 7 | `Sim.Host/ReplicationPublisher` | edit or route | ⚠ It has **zero** occurrences of "person"/"ped" — it is vehicle-only. See §10.3. |
-| 8 | `DefinePersonType`, `SpawnPerson`, `SpawnPersonAt`, `Despawn(PersonHandle)`, `ActivePersons()` | edit `Engine` | `SpawnPersonAt(type, edge, pos, posLat, speed, rest)` is the Phase-2 hinge (§9.2) |
+| 7 | `Sim.Host/ReplicationPublisher` | **not Phase 1** (R-N9) — but settle the id contract | ⚠ It has **zero** occurrences of "person"/"ped" — it is vehicle-only, and the ORCA layer has its own `PedReplicationPublisher`. **Decision: Phase 1 does not build person replication.** What Phase 1 *does* do is accept an optional caller-supplied **`externalId`** on the person spawn/adopt API (§9.1(d)), so a host can carry one id across both tiers. Without it, a Phase-2 promotion is a pop in the *protocol* even when the position is continuous — one parameter now, a protocol migration later. |
+| 8 | `DefinePersonType`, `SpawnPerson`, `SpawnPersonAt`, **`TryAdoptAt`**, `Despawn(PersonHandle)`, `ActivePersons()` | edit `Engine` | **`TryAdoptAt(in PersonAdoptionState)` is the Phase-2 hinge (§9.1b/c)** — the same reconstruction SP-2.1d needs, made public so the replay harness is a *caller* rather than a second implementation. Every spawn/adopt overload takes an optional `externalId` (§9.1d). |
 
 Note `IEngine` (`IEngine.cs`, 48 lines) carries only `LoadScenario`/`Run`/the obstacle API — the entire
 rich vehicle API lives on the concrete `Engine`, and `docs/SUMOSHARP-API.md` documents it there.
@@ -785,10 +928,18 @@ Alternative considered and rejected: unify now behind a generic `AgentHandle`/`A
 touch `SimEvent`, `SimulationSnapshot`, `ReplicationPublisher` and every consumer of `Count`, risking
 the vehicle gate for zero parity gain — the same reasoning as R-N4 for the net readers.
 
-**The cost of this decision, named up front:** Phase 2's LOD hybrid becomes a bridge between two
-*different* APIs (`PersonHandle`/lane-relative ↔ `int id`/`Vec2`), not a promotion within one. §9's
-coordinate contract is exactly that bridge, which is why Phase 1 must build it even though Phase 1 does
-not use it.
+**The cost of this decision, named up front — and it is smaller than an earlier draft claimed.** That
+draft said Phase 2's hybrid becomes "a bridge between two *different* APIs", implying a mechanism built
+from scratch. It is not: `PedLodManager` is **already** an LOD ladder with promotion, demotion,
+`InterestField` hysteresis, a forced-high-power override, O(1) add/remove and a replication publisher
+that crosses the tier boundary (§9.0). Phase 2 adds a **third tier** to that ladder with crossings as the
+interest sources.
+
+What genuinely does cost something is **identity**: `PersonHandle` is engine-minted while
+`PedestrianWorld.AddWalker` takes a caller-supplied `int id`, so without a shared id a promotion is
+visible to every replication client. That is why Phase 1 carries the optional `externalId` (§9.1d) —
+one parameter, paid now. §9's coordinate contract and `TryAdoptAt` are the rest of the seam, and Phase 1
+builds them even though Phase 1 does not use them.
 
 ### 10.5 Dead reckoning, and the unification question — measured
 
@@ -886,9 +1037,18 @@ public readonly struct PersonHandle { public uint Index; public ushort Generatio
 PersonTypeHandle DefinePersonType(in PersonTypeParams p);   // width, length, minGap, desiredMaxSpeed,
                                                             // speedDev, jmCrossingGap, impatience
 PersonHandle SpawnPerson(PersonTypeHandle t, ReadOnlySpan<int> routeEdges,
-                         double departPos, double departPosLat);
+                         double departPos, double departPosLat, long externalId = 0);
 PersonHandle SpawnPersonAt(PersonTypeHandle t, int edge, double pos, double posLat,
-                           double speed, ReadOnlySpan<int> rest);      // Phase-2 hinge, SS9.2
+                           double speed, ReadOnlySpan<int> rest, long externalId = 0);
+
+// The Phase-2 hinge (SS9.1b/c) AND the L2 replay harness's re-seed entry point -- one function,
+// so the two can never drift. `externalId` is the cross-tier id (SS9.1d): 0 means "none".
+bool TryAdoptAt(in PersonAdoptionState st, out PersonHandle p);
+readonly record struct PersonAdoptionState(
+    PersonTypeHandle Type, int Edge, double Pos, double PosLat,
+    double Speed, double SpeedLat, int Dir,             // Dir from the incoming velocity
+    double WaitingTime, bool WaitingToEnter, bool AmJammed,   // SS9.1c fixes the promotion defaults
+    long ExternalId);                                   // NLI / walkingAreaPath are recomputed
 void         Despawn(PersonHandle p);
 PersonLifecycle GetLifecycle(PersonHandle p);                          // Pending / Active / Arrived
 ActivePersonQuery ActivePersons();                                     // zero-alloc struct enumerator

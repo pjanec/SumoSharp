@@ -28,10 +28,18 @@ An implementor's report is never sufficient.
 - **S-e.** Commit before delegating; end a delegation at "compiles, verified, committed"; never delegate
   *waiting* for a long run (CLAUDE.md §Subagents).
 - **S-f. ZERO HEAP ALLOCATION ON THE PERSON STEP PATH — mandatory, checked every stage.**
-  "Step path" = `AdvancePersons` and everything it calls, after warm-up. Explicitly **not**: scenario
-  load, person spawn (one-off), FCD/output writing (opt-in, off the hot path), and diagnostics behind a
-  gate. Enforced by the design §4.3 gate 1 assertion (`Engine.ProfilePhases` → `PhaseBytes` reports
-  **0 bytes/step**), re-run at every stage gate — not once at SP-3.0 and then forgotten. A stage that
+  "Step path" = `AdvancePersons` and everything it calls, after warm-up, **plus adoption and release**
+  (`TryAdoptAt` / `Despawn`). Explicitly **not**: scenario load, FCD/output writing (opt-in, off the hot
+  path), and diagnostics behind a gate.
+  ⚠ **An earlier version of this rule exempted "person spawn (one-off)". That is false under the
+  Phase-2 hybrid** (design §9): a ped is adopted when it nears a crossing and released when it leaves, so
+  spawn/despawn happens **every step at every crossing boundary** — it *is* the hot path. This repo has
+  already paid for the mistake once: `PedLodManager`'s header records that rebuilding on every membership
+  change made a churning world cost **3.6× a stable one at 100k**, which is why `OrcaCrowd` was given
+  real O(1) add/remove. Only *scenario-load* spawn is exempt.
+  Enforced by the design §4.3 gate 1 assertion (`Engine.ProfilePhases` → `PhaseBytes` reports
+  **0 bytes/step**) plus SP-3.0(e)'s churn gate, re-run at every stage gate — not once at SP-3.0 and
+  then forgotten. A stage that
   regresses it is not closed. The hazard is concrete: SUMO allocates ~6 `std::vector<Obstacle>` per
   pedestrian per step, which transliterated is ≈180 k allocations per simulated second on Tier C.
 - **S-g. The default build is parity-exact.** Any optimisation that changes behaviour is a
@@ -90,9 +98,16 @@ right — coverage §4.3; straight-through demand never exercises the exit-cross
 **counterflow on a single crossing**, which coverage §4.2 shows does NOT arise from the obvious
 "peds both ways" demand and must be forced by routing across one arm in both directions with
 depart/arrival positions pinned near the junction.
+**Demand shape (R-N8):** every scenario uses `<walk edges=…>` over **normal edges only** with explicit
+`departPos`/`arrivalPos` — never `<walk from= to=>`, which invokes SUMO's intermodal router at insertion
+and is out of scope. Where a fixture is naturally a `<personFlow>`, **pre-expand it into explicit
+`<person>` elements at authoring time** and prove the expansion is faithful: regenerate the golden from
+the expanded routes file and diff it **byte-for-byte** against the `personFlow` version. If that holds,
+the port never needs a flow expander at all — one whole parser removed, on evidence rather than hope.
 **Success:** each `config.sumocfg` explicitly sets `--pedestrian.model striping` **and**
 `--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
-`departPos="random"`/`departPosLat="random"` anywhere; each `NOTES.md` names the axis values it pins and
+`departPos="random"`/`departPosLat="random"` and no `<walk from=/to=>` anywhere, with the personFlow
+byte-diff recorded in the scenario's `NOTES.md`; each `NOTES.md` names the axis values it pins and
 the SP-0.0 branch IDs it claims to fire. A test asserts the four pinning properties by parsing every
 `_sumoped` config, so the pinning can never silently lapse. **And the full gate is re-run (S-d)** —
 committing nets alone runs them through four repo-wide net-invariant tests before `Sim.Ingest` knows
@@ -159,6 +174,25 @@ Stage 1 begins. Holes discovered here become new scenarios in SP-0.2/SP-0.2b, no
 ---
 
 ## Stage 1 — Network model
+
+### SP-1.0 — ⚠ Pedestrian vType defaults, and the person init cross-check
+Design §2.3 (corrected), §4.1(c). **`VTypeDefaults.Resolve` throws today** on `vClass="pedestrian"`
+(`src/Sim.Ingest/VTypeDefaults.cs:240-243` — `RawDefaultsByVClass` has no such row), so the first thing
+that resolves a `_sumoped` vType fails before any of the port runs. And §4.1(c) denormalises
+`width`/`length`/`minGap`/`vMax` into the hot arrays, where a wrong default shifts every trajectory with
+no obvious cause. Port `SVC_PEDESTRIAN`'s `VClassDefaultValues` (`SUMOVTypeParameter.cpp`, plus the ped
+length 0.215 at `SUMOVehicleClass.cpp:547`) alongside the existing rows, in the same shape and with the
+same `.cpp:line` anchors.
+**Success:** `VTypeDefaults.Resolve` returns for `vClass="pedestrian"` with **`length 0.215
+width 0.478  minGap 0.25  maxSpeed 10.44 (cap)  desiredMaxSpeed 1.3889  speedDev 0.1`** (all measured
+first-hand this session); `scripts/dump-scenario-vtypes.py` is extended to dump **person** types — SUMO
+persons reuse `MSVehicleType`, so libsumo exposes them the same way — and every `_sumoped` scenario
+commits a `golden.vtype.json` that the existing `ParameterCrossCheckTests` picks up **without
+modification to that test's discovery rule** (verify it actually enumerates them: it walks `scenarios/*`
+at depth 1 and skips directories with no `golden.vtype.json`, so a nested `_sumoped/<scene>` is invisible
+to it and either the goldens or the enumeration must move — say which, in the diff). The full gate is
+unmoved (S-d). This exists so a ped divergence is triaged at the **init** rung, per CLAUDE.md §Reporting
+a parity failure, instead of one rung higher.
 
 ### SP-1.1 — Ped elements in `Sim.Ingest`
 Design §3.1. Additive only: `Lane.Permissions`, `Edge.Function`, `Edge.CrossingEdges`, crossing/WA lane
@@ -239,13 +273,23 @@ the step function long before any scenario can run end-to-end, and it localises 
 pedestrian on one lane with one obstacle array instead of "diverged at step 340".
 Reconstruct the full per-lane `PState` population at step `t` from the goldens (§3.1 recovery table),
 run exactly ONE step, compare against `t+1`, then discard our state and re-seed from the golden.
+⚠ **Build the reconstruction as `Engine.TryAdoptAt(in PersonAdoptionState)` — public and engine-side —
+and make this harness a *caller* of it** (design §9.1b). It is the same function a Phase-2 promotion
+needs, with a different data source; written twice it will drift, and the harness copy would be the
+correct one because it is the one with goldens behind it. Building it this way means the Phase-2
+promotion path is exercised by every replayed golden step, for free, before Phase 2 exists.
 **Success:** (a) the reconstruction self-checks pass — derived `pos` agrees with the FCD's own `pos`
 to 1e-6, and the two independent `myAmJammed` recoveries (the stderr `is jammed` event and the exact
 `vMax/4 = 0.3472` speed signature, measured at 1983 samples in the counterflow-jam golden) **agree with
 each other**; (b) replaying a ped's whole trajectory re-seeded each step reproduces `myWaitingTime`
 exactly; (c) the harness reports a **replayable step count** and it is written to the tracker — this is
-the stage-gate metric (§5.1); (d) at this stage every step throws `NotPortedInThisStage`, so the count
-is 0 and the harness fails honestly.
+the stage-gate metric (§5.1) — **and, separately, a count of steps EXCLUDED for missing geometry**:
+walkingarea `relY` needs the `WalkingAreaPath`, which the net file does not contain and which does not
+land until SP-1.4/SP-4.1, so Stage-2/3 replay covers normal edges and crossings only. Reporting both
+numbers keeps the S3→S4 jump legible instead of looking like a sudden win; (d) at this stage every step
+throws `NotPortedInThisStage`, so the replayable count is 0 and the harness fails honestly;
+(e) the harness re-seeds through `TryAdoptAt`, not through a private test-only path — asserted by the
+harness project having no `InternalsVisibleTo` for this call.
 
 ### SP-2.1e — Fail-loudly staging
 `SUMOPED-PROCESS.md` §4. Every not-yet-ported branch throws
@@ -284,7 +328,9 @@ than at the vehicle layer's current AoS position.
 Lane-bucketed contiguous runs sorted by `dir·relX` with the ordinal id tie-break; hot/cold field split;
 vType scalars denormalised into the hot arrays; per-worker pooled `Obstacle` scratch with a
 `stackalloc` fast path under `MaxStripes` and a rented-buffer fallback above it; hot `Obstacle` struct
-carrying `foeIndex`, not a description string.
+carrying `foeIndex`, not a description string. **The store must be built for churn** (design §4.1e): the
+hybrid adopts and releases pedestrians at crossing boundaries every step, so insertion/removal is a
+hot-path operation on a sorted contiguous run, not a load-time one.
 **Success:** (a) a test asserts the hot arrays contain no managed references (reflection over the
 store's field types) — that is what keeps it chunk-storable; (b) the per-lane run for any lane is
 **contiguous** and sorted, asserted directly on the store; (c) `MaxStripes` is derived from the loaded
@@ -293,6 +339,13 @@ throwing; (d) **the allocation gate** — with `Engine.ProfilePhases` on, the pe
 **0 bytes** allocated per step after warm-up on the Tier C scenario. Gate (d) is the one that matters:
 a transliterated port allocates ~6 `Obstacle` arrays per ped per step, ≈180 k allocations per simulated
 second on Tier C, and nothing else in the plan would notice.
+**(e) The churn gate.** N adoptions + N releases per step (N ≥ 32, distributed across lanes) allocate
+**0 bytes** and cost time **independent of the resident population** — measured at two population sizes
+an order of magnitude apart, not asserted. This is the property `OrcaCrowd` was forced to acquire after
+the POC's per-switch rebuild made a churning world cost 3.6× a stable one at 100k
+(`PedLodManager` header, P0-1…P0-3); the person store must not reintroduce it in a new place. Note (d)
+alone would not catch it — a load-time-only allocation on adoption is invisible to a steady-state
+per-step byte count.
 
 ### SP-3.1 — `PersonRuntime`, `StripingParams`, stripe math
 Design §4.1, §5; rationale and per-constant sensitivity in `SUMOPED-ALGORITHM.md` §4.
@@ -327,8 +380,14 @@ the whole run) and our output must reproduce that lane split, not merely the per
 x-position sort's id tie-break is present and covered by a test with two peds at identical `RelX`.
 
 ### SP-3.5 — Person demand + stage + FCD output
-`<person>`/`<walk edges=>` parsing, `MSStageWalking` equivalent, person FCD writer emitting
-`edge`/`pos` (completing what `PersonFcdWriter.cs:14-16` defers).
+`<person>`/`<walk edges=>` parsing (that shape only — R-N8; SP-0.2 pre-expands any `personFlow`),
+`MSStageWalking` equivalent, person FCD writer emitting `edge`/`pos` (completing what
+`PersonFcdWriter.cs:14-16` defers). Also the insertion/departure semantics the design previously left
+unsaid: what happens when the departure stripe is occupied, and `INIT-DIR-SINGLEEDGE`
+(`Striping.cpp:1604-1606`, initial direction from `departPos` vs `arrivalPos` on a single-edge route).
+Note this whole family is **parity-harness surface, not product surface** (design §9.3): a production
+SUMO-ped is adopted and released, so it never departs from demand — port it because the goldens exercise
+it, not because the hybrid needs it.
 **Success:** SumoSharp's own person FCD for `walk-straight-1` is byte-comparable in schema to SUMO's
 (same attributes, same order, same precision), and `<personinfo>` `routeLength`/`duration`/`timeLoss`
 match the golden tripinfo.
@@ -374,8 +433,20 @@ because the condition selects the congested moments (tracker §Render session).
 ## Stage 5 — Vehicle coupling
 
 ### SP-5.1 — `BlockedAtDist` + phantom-leader injection
-Design §6.1, §6.2, risks #5 and #6. Inject a null-vehicle `JunctionLeaderCandidate` into the existing
-junction-leader path. Gated on `Persons != null`.
+Design §6.1 (corrected), §6.2, risks #5 and #6. Inject a phantom entry into the existing junction-leader
+path. Gated on `Persons != null`.
+**Success condition ZERO — a reading task, and it must be discharged first.** `JunctionLeaderCandidate`
+has **no vehicle field to null**; it carries `EntryTime`/`ConflictEntryTime`/`Length`/`MinGap`/
+`HeadwayTime`, the inputs to car-following against a *real* foe. SUMO instead pushes the ped in with
+`gap == -1`, a sentinel meaning "no gap is known — brake to stop before `distToCrossing`", bypassing the
+arrival-time comparison. Establish, from the source, how `MSVehicle::adaptToJunctionLeader` /
+`adaptToLeaders` branches on that sentinel (reached from the ped block at `MSLink.cpp:1667-1688`), and
+whether `AdaptToJunctionLeader` has an equivalent branch or needs one added — **written down before any
+code**. ⚠ Without this, the deceleration profile below is reachable by *tuning a synthetic
+`Length`/`EntryTime`* until the numbers match, which is `SUMOPED-PROCESS.md` §6.1's forbidden move and
+would pass its own test. If a branch must be added, this task **edits the live vehicle plan path** and is
+no longer "additive, gated on `Persons != null`" — say so explicitly and treat the S-d re-run as
+load-bearing.
 **Success:** `xwalk-priority-1v1` at exact parity **including the `13.89 → 11.11 → 6.61` profile**; a
 dedicated test asserts the 2 s standing-ped clause by holding a ped stationary at the curb and showing
 the vehicle proceeds after — not before — 2 s; and the full gate is unmoved (S-d), re-run in this task,
@@ -464,19 +535,27 @@ mis-authored under SP-0.4's own rule and goes back to SP-0.2.
 ### SP-7.1 — Public API
 Design §10 (readiness assessment + the exact 8-item delta), Requirement R7.
 Add `PersonHandle`, `PersonState`, `PersonEvent`, `PersonReadBuffer` + `Engine` person spans,
-`SimulationSnapshot` person columns, `SimulationRunner.TryInterpolatePerson`, the spawn/despawn/lifecycle
-methods, and the replication decision from §10.3. Persons go on the concrete `Engine`, not `IEngine`
-(matching where the vehicle API actually lives).
+`SimulationSnapshot` person columns, `SimulationRunner.TryInterpolatePerson`, and the
+spawn/adopt/despawn/lifecycle methods. **Person replication is NOT Phase 1** (R-N9, design §10.2 item 7);
+what *is* Phase 1 is the **optional caller-supplied `externalId`** on every spawn/adopt overload —
+`PedestrianWorld.AddWalker(int id, …)` takes a caller-chosen id while `PersonHandle` is engine-minted, so
+without a shared id a Phase-2 promotion is a pop in the *replication protocol* even when the position is
+continuous (design §9.1d). One parameter now; a protocol migration later.
+Persons go on the concrete `Engine`, not `IEngine` (matching where the vehicle API actually lives).
 **Success:** a sample in `docs/TUTORIAL-SUMO-PEDESTRIANS.md` compiles as part of `Traffic.sln` and drives
 `xwalk-priority-1v1` end-to-end through public API only — verified by the sample project having no
 `InternalsVisibleTo`. `docs/SUMOSHARP-API.md` gains a person section in the same style as §5/§9/§10.
-**And three invariants that must hold by construction, each with its own assertion:**
+**And four invariants that must hold by construction, each with its own assertion:**
 (a) **no existing vehicle type is edited** — `VehicleHandle`, `VehicleState`, `SimEvent` and the vehicle
 columns of `SimulationSnapshot` are byte-identical in the diff, so the vehicle gate cannot move;
 (b) `SimulationSnapshot.Count` still means **vehicle** count (a test asserts it against
 `engine.VehicleCount` with persons present) — `PersonCount` is the new field, `Count` is never repurposed;
 (c) `PersonHandle` and `VehicleHandle` are **not interchangeable** — a test asserts a `PersonHandle` with
-the same `(Index, Generation)` as a live `VehicleHandle` resolves to a different entity.
+the same `(Index, Generation)` as a live `VehicleHandle` resolves to a different entity;
+(d) **`externalId` survives a handle recycle** — spawn, despawn, spawn again into the recycled slot, and
+assert the new person does not inherit the old `externalId`; and a person adopted with the same
+`externalId` as a live `PedestrianWorld` walker is resolvable from both sides. This is the whole point of
+the field, so it gets an assertion rather than a comment.
 
 ### SP-7.1b — Person dead-reckoning: REUSE the vehicle path, and prove it
 Design §10.5 (measured; supersedes an earlier draft of §10.2 item 6 that claimed the opposite).
@@ -489,11 +568,20 @@ envelope (ped walkingarea p95 ≤ 0.20 m, ped normal edge p95 ≤ 0.32 m, versus
 a future change makes persons need a bespoke extrapolator, this test is what will say so — with a
 number, not an argument.
 
-### SP-7.2 — Coordinate contract (the Phase 2 hinge)
-Design §9.
-**Success:** `WorldOf(edge,pos,posLat)` round-trips through `TryResolveToEdge` to within 1e-6 for 1000
-sampled points across every `_sumoped` net; `SpawnPersonAt` mid-edge produces a ped whose next 10 steps
-match a ped that walked there naturally (the no-pop handover property).
+### SP-7.2 — Coordinate contract + the adoption defaults (the Phase 2 hinge)
+Design §9.1. ⚠ Position continuity is **not** the whole no-pop property: the adoption defaults for the
+unobserved `PState` fields are load-bearing, and one of them can stall a freshly promoted ped on its
+first tick.
+**Success:** (a) `WorldOf(edge,pos,posLat)` round-trips through `TryResolveToEdge` to within 1e-6 for
+1000 sampled points across every `_sumoped` net; (b) `TryAdoptAt` mid-edge produces a ped whose next 10
+steps match a ped that walked there naturally — same positions, same stripe, **and same speed profile**,
+not merely a continuous position; (c) each default in design §9.1(c)'s table is asserted individually,
+`myWaitingToEnter = false` in particular: it gates `WALK-OBSTRUCT-SELF-WAITING-EXEMPT`
+(`Striping.cpp:2046-2048`) and interacts with the `MIN_STARTUP_DIST` guard, so the wrong value makes an
+adopted ped either self-block on tick 1 or skip the startup guard — a visible stutter at exactly the
+moment the hybrid exists to hide. Assert both failure directions by adopting with the value forced wrong
+and showing the stall/skip appears; (d) `mySpeedLat` carries over from the incoming velocity rather than
+being zeroed (a zeroed one is a sideways snap, invisible to a position-only check).
 
 ### SP-7.3 — Sim.Viz scenes + parity overlay
 Design §11, Requirement R8.

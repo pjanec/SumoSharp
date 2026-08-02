@@ -252,6 +252,13 @@ knobs are pinned, and a test asserts that flipping either knob to its SUMO defau
   A statistical-parity phase for it would need its own design, exactly as `sigma>0` did for vehicles.
 - **R-N2 — The LOD hybrid** (low-power ↔ SUMO-ped promotion near crossings). That is Phase 2 and gets
   its own design doc. Phase 1 must *leave the seam open* — see design §9 — but must not build it.
+  ⚠ Note what Phase 2 actually is: `src/Sim.Pedestrians/Lod/PedLodManager.cs` is **already** an LOD
+  ladder with promotion, demotion, `InterestField` hysteresis (`PromoteRadius`/`DemoteRadius`/
+  `dwellSeconds`), a `SetForcedHighPower` override, O(1) add/remove and a replication publisher that
+  crosses the tier boundary. Phase 2 adds a **third tier** to that ladder with crossings as the interest
+  sources — it does not invent a mechanism. Three Phase-1 obligations follow and are *not* deferrable
+  (design §9.1): the coordinate contract, `TryAdoptAt` with fully specified defaults, and the
+  cross-tier `externalId`.
 - **R-N3 — Replacing the ORCA crowd layer.** `src/Sim.Pedestrians` stays, unchanged and green. The two
   tiers coexist; Phase 2 is what couples them. Nothing in Phase 1 may edit ORCA-layer behaviour.
 - **R-N4 — Consolidating the three existing net.xml readers.** `Sim.Ingest/NetworkParser.cs`,
@@ -261,6 +268,21 @@ knobs are pinned, and a test asserts that flipping either knob to its SUMO defau
 - **R-N5 — TraCI/`moveToXY` remote control of persons**, containers, `personTrip` with public
   transport, ride/board stages, and `MSPModel_JuPedSim`. Walking only.
 - **R-N6 — `--no-internal-links`** (SUMO's straight-line junction-distance fallback).
+- **R-N8 — SUMO's intermodal pedestrian router, and `<personFlow>` in the engine.** Every committed
+  scenario uses `<walk edges=…>` over normal edges with explicit `departPos`/`arrivalPos`; the
+  *junction-local* router (design §5.5) **is** in scope, the network-wide intermodal one that
+  `<walk from= to=>` invokes at insertion is not. `<personFlow>` is pre-expanded into explicit
+  `<person>` elements at scenario-authoring time, verified by a byte-for-byte golden diff (SP-0.2), so
+  the engine needs no flow expander.
+  *Rationale beyond scope control:* under the Phase-2 hybrid a production SUMO-ped is **adopted and
+  released**, never inserted from demand and never arriving — so demand routing is harness surface, not
+  product surface (design §9.3). Departure and arrival are still ported to the extent the goldens
+  exercise them; they are simply not the product.
+- **R-N9 — Person replication.** `Sim.Host/ReplicationPublisher` is vehicle-only and stays that way in
+  Phase 1; the ORCA layer keeps its own `PedReplicationPublisher`. **What Phase 1 does settle is the
+  identity contract** — an optional caller-supplied `externalId` on the person spawn/adopt API, so one
+  id spans both tiers (design §9.1d). Without it a Phase-2 promotion is a pop in the protocol even when
+  the position is continuous, and that is a protocol migration to fix later versus one parameter now.
 - **R-N7 — Sublane vehicle model interaction with peds** (`MSLCM_SL2015`'s ped checks).
 
 ---

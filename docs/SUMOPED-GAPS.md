@@ -10,7 +10,14 @@ Every finding below was checked against the repo or the SUMO source, not inferre
 suspected gap turned out not to be one, it is recorded in §4 — a check that came back clean is worth as
 much as one that did not, and re-running it later is waste.
 
-**Applied vs open.** The ROT fixes (§3) and the clear-cut parts of G1, G4, G5 and G12 are **already
+**STATUS: PROJECTED INTO THE SPEC.** This document is now the *record of what was found and why*;
+`SUMOPED-{REQUIREMENTS,DESIGN,TASKS,TRACKER}.md` carry the corrections and are the spec. Only two items
+still need an owner decision — **G8** (stopping-place arrivals: scenario or admitted hole) and the
+outcome of **G3**'s reading task (whether adding a `gap == -1` branch to `AdaptToJunctionLeader` is an
+acceptable edit to the live vehicle plan path). Everything else below has landed; the per-finding
+"Resolution" paragraphs describe what was done.
+
+**Applied vs open (as first written).** The ROT fixes (§3) and the clear-cut parts of G1, G4, G5 and G12 are **already
 folded into the doc set** — they were unambiguous corrections to documents that are all still PROPOSAL.
 **G2, G3, G6, G8, G9, G10 and G11 remain open**; five of them change scope and are the owner's call. The
 tracker carries a banner naming the open ones so they cannot be lost.

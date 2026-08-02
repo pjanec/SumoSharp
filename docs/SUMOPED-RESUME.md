@@ -7,15 +7,21 @@ session (2026-08-02) for compaction and for a fresh VM.
 
 ## 1. Status in one paragraph
 
-Branch `claude/sumo-ped-port-sumosharp-gnhiip`, 14 commits, working tree clean, all pushed.
+Branch `claude/sumo-ped-port-sumosharp-gnhiip`, working tree clean, all pushed.
 The deliverable so far is a **design-first doc set + two tools — no engine code**. Everything is
 marked **PROPOSAL** and is waiting on owner sign-off before B0 starts. The vehicle gate is untouched:
 nothing in `src/` has been modified, so `Sim.ParityTests` is still 782/5 with 661 goldens
 byte-identical and the bench hash is still `A134ED3716DDE7BC`.
 
-**The immediate next task** (owner's instruction, end of session): *"take one more look at the design
-and look for gaps and weakly specified spots."* Not implementation — a review pass. §7 has my own
-candidate list to start from, but the point is to find what is *not* on it.
+**The gap review is DONE and projected into the spec.** `SUMOPED-GAPS.md` is the record of *what was
+found and why*; REQUIREMENTS / DESIGN / TASKS / TRACKER now carry the corrections. Two passes: §1–§5 of
+that doc are the cold review (twelve findings, four blocking), §6 is a second pass re-reading everything
+against the Phase-2 hybrid destination (seven findings).
+
+**The immediate next task: owner sign-off**, then B0. Only two things still need an owner decision, both
+named in the tracker banner — G8 (stopping-place arrivals: scenario or admitted hole) and G3's outcome
+(whether adding a `gap == -1` branch to `AdaptToJunctionLeader` is an acceptable edit to the live
+vehicle plan path).
 
 ## 2. The doc set, in reading order
 
@@ -117,33 +123,31 @@ for a fresh session to "fix" back to the wrong answer.
 - Only one named deviation from SUMO exists so far: the **dawdling RNG stream** (per-entity seeded
   instead of SUMO's process-global order).
 
-## 7. Next task — the gap review. My own candidate list
+## 7. What the gap review changed (so a fresh session does not re-litigate it)
 
-The owner asked for a review pass for gaps and weakly specified spots. Starting candidates, *not*
-exhaustive — the value of the review is finding what is missing from this list:
+Full detail in `SUMOPED-GAPS.md`. The load-bearing outcomes, already in the spec:
 
-- **Person demand parsing is thin.** `<personFlow>`, `departPos`/`arrivalPos` semantics, and the
-  `<walk from/to>` vs `<walk edges>` distinction are used in the scenarios but barely specified in the
-  design. The `from`/`to` form invokes SUMO's **intermodal router** at insertion — is that in scope?
-  (§5.5 only covers the *junction-local* router.)
-- **Person insertion/departure** is under-specified vs the vehicle side's queued-insertion semantics —
-  what happens when a sidewalk is full at depart time?
-- **`MaxStripes` fallback path** is stated but its behaviour under a very wide lane is not pinned.
-- **Arrival / `arrivalPos` / stopping-place obstacle** (`OBSTACLE_ARRIVALPOS`, incl. the "stop full"
-  blocked variant) is in the inventory but has no scenario and no task.
-- **Multi-stage persons** — `<person>` with more than one `<walk>`, or walk→stop→walk. R-N5 excludes
-  ride/board, but *consecutive walks* are not obviously excluded and are cheap.
-- **Error/edge paths**: no sidewalk on an edge, disconnected route, `getNextLane` finding no route.
-  These are `HIDDEN`-branch stderr warnings in the inventory; none has a task.
-- **The `Sim.Viz` overlay (SP-7.3)** is specified as a scene family but the *comparison* semantics
-  (time alignment, which golden, what a mismatch looks like) are hand-waved.
-- **Tier C count** — owner said 3 or 4, I recommended 4 (saturated TL, jam regime, narrow crossing,
-  turning-heavy); the requirements table still says 2–3.
-- **`regen-goldens.sh` changes** are described in prose across three tasks; no single place says exactly
-  what the script must do for `_sumoped`.
-- **Nothing specifies what happens when SUMO and we disagree and SUMO looks wrong** — the artefact
-  ladder (`CONSTRAINT-high-realism-artefact-ladder.md`) is cited for R5c but not wired into the
-  divergence protocol.
+- **Phase 2 is a third tier on an existing LOD ladder**, not a bridge between two systems.
+  `Sim.Pedestrians/Lod/PedLodManager.cs` already has both tiers, `InterestField` hysteresis
+  (`PromoteRadius`/`DemoteRadius`/`dwellSeconds`), `SetForcedHighPower`, O(1) add/remove, and a
+  replication publisher that crosses the tier boundary. Design §9 is rewritten against it.
+- **Adoption/release is the hot path**, so S-f no longer exempts person spawn and SP-3.0 has a churn
+  gate. `PedLodManager` measured 3.6× for getting this wrong once.
+- **`Engine.TryAdoptAt` is one function**, serving both the L2 replay harness and the Phase-2
+  promotion — otherwise they drift and the harness copy is the correct one.
+- **The adoption defaults are load-bearing**, especially `waitingToEnter = false` (it gates
+  `WALK-OBSTRUCT-SELF-WAITING-EXEMPT` and `MIN_STARTUP_DIST`). Design §9.1(c) fixes them; SP-7.2
+  asserts each one.
+- **An optional cross-tier `externalId`** on person spawn/adopt: one parameter now, a replication
+  protocol migration later. R-N9.
+- **R-N8**: intermodal router and `personFlow` out of the engine; fixtures use `<walk edges=>` and any
+  flow is pre-expanded with a byte-for-byte golden diff proving the expansion faithful.
+- **SP-1.0 is new and blocking**: `VTypeDefaults.Resolve` **throws** on `vClass="pedestrian"` today.
+- **SP-5.1 starts with a reading task**: `JunctionLeaderCandidate` has no vehicle field, and SUMO's ped
+  arrives with `gap == -1` — a different consumption branch. Without settling that first, the
+  deceleration profile is reachable by tuning a synthetic `Length`.
+- **Stage 0 is not gate-neutral**: four repo-wide tests parse every `*.net.xml` under `scenarios/`.
+  S-d now covers committed nets.
 
 ## 8. Traps specific to this work
 

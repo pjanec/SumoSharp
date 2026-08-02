@@ -14,26 +14,26 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 
 ---
 
-> **Gap review applied (`SUMOPED-GAPS.md`).** The ROT fixes and the clear-cut corrections are folded in
-> below. **Still open and needing an owner decision: G2** (ped vType defaults — `VTypeDefaults.Resolve`
-> throws on `vClass="pedestrian"` today, and no task adds it), **G3** (the phantom-leader injection may
-> need an edit to the live vehicle plan path), **G6** (intermodal router in or out of scope), **G8**
-> (stopping-place arrivals in or out), **G9** (replication in or out).
+> **Gap review + hybrid re-read are now PROJECTED INTO the doc set** (`SUMOPED-GAPS.md` is the record of
+> *why*; REQUIREMENTS / DESIGN / TASKS are the spec). Landed: R-N8 (intermodal router and `personFlow`
+> out of the engine; fixtures pre-expanded and byte-diffed), R-N9 (person replication out, but the
+> cross-tier `externalId` in), SP-1.0 (ped vType defaults — `VTypeDefaults.Resolve` **throws** on
+> `vClass="pedestrian"` today), S-f no longer exempting adoption/release, SP-3.0(e) churn gate, SP-5.1's
+> reading-first condition on the `gap == -1` branch, SP-7.2's adoption defaults, and design §9 rewritten
+> against `PedLodManager` — Phase 2 is a **third tier on an existing LOD ladder**, not a bridge between
+> two systems.
 >
-> **Hybrid re-read (`SUMOPED-GAPS.md` §6).** Read against the Phase-2 destination — low-power peds
-> switching to SUMO-peds near a crosswalk and back — two Phase-1 items are cheap now and expensive
-> later: **H2** (S-f exempts person spawn as "one-off", but under the hybrid spawn/despawn IS the hot
-> path; `PedLodManager` already measured 3.6× for getting this wrong once) and **H6** (an optional
-> caller-supplied `externalId` on person spawn, so one id spans both tiers — otherwise a promotion is a
-> pop in the replication protocol even when the position is continuous). H3 also relabels **G6/G8** as
-> parity-harness-only rather than product surface: a production SUMO-ped is promoted and demoted, so it
-> never departs from demand and never arrives.
+> **Still needing an owner decision, and only these:** whether **G8**'s stopping-place arrival family
+> (`MIDOL-ARRIVAL-*`, `NEXTLANE-WA-ARRIVALPOS`) gets a `<busStop>` scenario or is admitted as a hole —
+> note `DISTTOLANEEND-FINAL-EDGE-MINGAP` is in scope either way, since it fires on every ped's last
+> edge; and whether **G3**'s outcome (if `AdaptToJunctionLeader` needs a `gap == -1` branch added) is an
+> acceptable edit to the live vehicle plan path.
 
 ## Stage 0 — Oracle, coverage inventory, and fixtures
 - [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)
 - [ ] **SP-0.0b** knob sweep re-run on the final scenario set (RNG pinned + `--lat-edge`); inert knobs given scenarios or admitted as holes
 - [ ] **SP-0.1** oracle re-established (`/sumo` @ `v1_20_0`, `sumo` 1.20.0 via pip), recipe committed
-- [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; **all eight** coverage axes take every value; pinning test; full gate re-run (S-d)
+- [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; **all eight** coverage axes take every value; `<walk edges=>` only (R-N8) with the personFlow pre-expansion byte-diff; pinning test; full gate re-run (S-d)
 - [ ] **SP-0.2b** **4** Tier C scenarios: saturated, jam-regime, narrow crossing (1 stripe), wide crossing (12)
 - [ ] **SP-0.3** goldens for all seven output kinds + provenance; regeneration byte-reproducible
 - [ ] **SP-0.3b** every scenario rendered to `replay.html`, no JS errors, indexed in the scenarios README
@@ -42,6 +42,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-0.6** branch→scenario matrix mapped; unmapped IDs reported for owner sign-off
 
 ## Stage 1 — Network model
+- [ ] **SP-1.0** ⚠ ped vType defaults (`VTypeDefaults.Resolve` **throws** on `vClass="pedestrian"` today) + person `golden.vtype.json` cross-check
 - [ ] **SP-1.1** ped elements in `Sim.Ingest`; `AllowsRoadVehicle`↔`Permissions` equivalence test; gate unmoved
 - [ ] **SP-1.2** walkingarea foes for vehicle links
 - [ ] **SP-1.3** ⚠ begin-of-timestep ordering **by trace** — does a ped see the new or old TL phase on a switch step? (§6.6.2: peds read the CURRENT light; `t−DELTA_T` is an arrival time, not a lagged read)
@@ -51,14 +52,14 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-2.1** person FCD parser + comparator + tolerance extension
 - [ ] **SP-2.1b** the other six comparators (person-summary, personinfo, statistic, collisions, netstate, warnings)
 - [ ] **SP-2.1c** stripe-projection helper (x/y → pos/posLat/stripe), cross-checked against FCD `pos`
-- [ ] **SP-2.1d** ⭐ single-step replay harness (L2) — reconstruction self-checks + replayable-step count
+- [ ] **SP-2.1d** ⭐ single-step replay harness (L2) — reconstruction is public `Engine.TryAdoptAt` (the Phase-2 hinge, built once); self-checks; replayable-step count **and** steps excluded for missing walkingarea geometry
 - [ ] **SP-2.1e** fail-loudly staging: every unported branch throws, naming its inventory ID
 - [ ] **SP-2.2** one parity test per scenario, all failing honestly ("no persons produced")
 - [ ] **SP-2.3** person trajectory hash; value recorded below
 - [ ] **SP-2.4** coverage counters + `AllBranchesCoveredTest` + `PerScenarioClaimTest` (failing honestly)
 
 ## Stage 3 — Stepper, straight sidewalk
-- [ ] **SP-3.0** ⭐ lane-bucketed SoA store + pooled `Obstacle` scratch; **0 bytes/step** allocation gate green
+- [ ] **SP-3.0** ⭐ lane-bucketed SoA store + pooled `Obstacle` scratch; **0 bytes/step** allocation gate green; **(e) churn gate** — N adopt+release per step, 0 bytes, cost independent of resident population
 - [ ] **SP-3.1** `PersonRuntime`, `StripingParams` (every constant + `.cpp:line`), stripe math
 - [ ] **SP-3.2** `Obstacle`/`ObstacleType`/`DistanceTo`/`MergeObstacles`
 - [ ] **SP-3.3** `Walk()` — the utility fold, unit-proven in isolation ⭐ pivotal
@@ -73,7 +74,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
       `xwalk-priority-horde`, `walk-passby-queue` GREEN, oracle assertions now passing on our output
 
 ## Stage 5 — Vehicle coupling
-- [ ] **SP-5.1** `BlockedAtDist` + phantom-leader injection; `xwalk-priority-1v1` GREEN incl. 13.89→11.11→6.61; gate re-run
+- [ ] **SP-5.1** `BlockedAtDist` + phantom-leader injection. **Condition ZERO first:** how does SUMO's consumer branch on `gap == -1`, and does `AdaptToJunctionLeader` have that branch? Then `xwalk-priority-1v1` GREEN incl. 13.89→11.11→6.61; gate re-run
 - [ ] **SP-5.1b** ⭐ **R4b ped-priority zebra** — the A/B pair GREEN; car reaches a FULL STOP (0.00) and holds while the ped crosses at unbroken 1.39 m/s
 - [ ] **SP-5.2** `AddCrossingVehs` + `AddVehicleFoe`; fully-blocked pin asserted
 - [ ] **SP-5.3** `CheckWalkingAreaFoe`; `walkingarea-shared` GREEN
@@ -85,9 +86,9 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-6.1** crossing link state, `IgnoreRed`, `GetImpatience`; `xwalk-tls-release` GREEN **both ways** (ped release AND a vehicle held by a ped green phase — R6's second half)
 
 ## Stage 7 — API, viz, production regime, gate, docs
-- [ ] **SP-7.1** public `PersonHandle` API + tutorial sample; no existing vehicle type edited; `Count` still means vehicles; handle id spaces provably distinct
+- [ ] **SP-7.1** public `PersonHandle` API + tutorial sample; no existing vehicle type edited; `Count` still means vehicles; handle id spaces provably distinct; **cross-tier `externalId`** present and not inherited across a slot recycle
 - [ ] **SP-7.1b** person DR **reuses** the vehicle path (`DrModel.FreeKinematic`, no new enum member); interpolation error proven no worse than vehicles'
-- [ ] **SP-7.2** coordinate contract round-trip + `SpawnPersonAt` no-pop handover (the Phase 2 hinge)
+- [ ] **SP-7.2** coordinate contract round-trip + `TryAdoptAt` no-pop handover, **each §9.1(c) adoption default asserted** (`waitingToEnter=false` in both failure directions; `speedLat` carried, not zeroed)
 - [ ] **SP-7.3** `Sim.Viz` scenes + golden ground-truth overlay + stripe lines; in `gen-demos.sh`
 - [ ] **SP-7.4** production regime: measured speed spread; goldens provably unaffected
 - [ ] **SP-7.4c** `Sim.BenchPed` person-steps/s committed; allocation gate still green at the end
@@ -113,6 +114,8 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
 | person phase allocation per step, Tier C (SP-3.0d) | _(not yet)_ — **must be 0 bytes** |
 | person-steps/second, Tier C (SP-7.4c) | _(not yet)_ |
+| adopt+release churn cost, two population sizes (SP-3.0e) | _(not yet)_ — **must be 0 bytes and population-independent** |
+| replay steps excluded for missing WA geometry (SP-2.1d) | _(not yet)_ — reported alongside the replayable count |
 
 ### Performance-deviation ledger (design §4.4)
 
