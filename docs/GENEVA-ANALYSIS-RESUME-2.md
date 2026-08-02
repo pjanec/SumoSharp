@@ -49,15 +49,15 @@ Baseline capture: **180 LIVECITY-RING reports**; post-Entry-49: **273**. Three c
    circular blocking; not yet traced. Ring members' keepClear blockers now attributable
    (`538b84a`) — D1 output is the map.
 
-## 3. The decision the owner now has to make: D2
+## 3. D2 is IMPLEMENTED and measured (owner gave the go; commit `460e2da`, Entries 51 BEFORE/AFTER)
 
-`DEADLOCK-RING-DESIGN.md` D2 (the gated break: a ring confirmed ≥ RingBreakSeconds elects ONE
-member by the entry-order total order, relaxes its ring edge to corridor-follow CREEP — through
-gaps, never through bodies; honest `LIVECITY-RING-STUCK` when geometry is wedged) is the designed
-remedy for classes 2 and 3. The design's own precondition — "D2 needs D1 numbers first" — is now
-met (§2). Per its "no code before sign-off" gate, D2 implementation awaits the owner's go.
-Recommendation: implement D2 behind `LIVECITY_RINGBREAK` and A/B it on the standard capture; the
-predicted win is largest on class 2 (dominant, 300+ s ages, throughput-relevant).
+Behind `LIVECITY_RINGBREAK` (default OFF = byte-identical; env-honoured like F3, NOT in the
+forced bundle). Measured on the standard capture: ring reports 273 → 83, **age≥300 rings
+140 → 0**, arrivals 2961 → **3144 (+6.2%)**, 180 breaks / 5 escalations / 0 stuckSteps;
+hour-horizon flat (2554 vs 2562, stalls 0). Honest miss to close: the instantaneous same-lane
+overlap proxy rose 21.0 → 25.0 mean (still below the 29.3 pre-Entry-49 baseline) — the named
+follow-up is a per-lane attribution pass near released breakers. Defaults decision pending:
+(a) 3D-session eyeball of released-breaker motion, (b) the attribution pass.
 
 ## 4. Instruments and traps for the next session (deltas vs the predecessor brief)
 
