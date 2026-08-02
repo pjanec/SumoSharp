@@ -3322,6 +3322,15 @@ public sealed partial class Engine : IEngine
             // 1: this relative order is a correctness requirement). Entirely inert (returns
             // immediately) whenever ScenarioConfig.ReroutePeriod<=0.
             UpdateRerouteEdgeWeights(time, dt);
+
+            // [SystemPhase.PostSimulation] DEADLOCK-RING D2: detect confirmed blocker-graph rings
+            // on the fully-settled post-move state and manage breaker releases for the NEXT step's
+            // plan (one-step lag; see DetectAndBreakRings). Gated OFF by default -- never runs, so
+            // byte-identical for every committed scenario.
+            if (RingBreakGate)
+            {
+                DetectAndBreakRings(dt);
+            }
         }
     }
 
@@ -5446,7 +5455,7 @@ public sealed partial class Engine : IEngine
         // creep onto the internal lane and block cross traffic. +infinity (non-binding) unless a
         // stopped vehicle is found on ego's downstream exit chain with leftSpace < 0 -- so every
         // existing (jam-free) scenario is untouched.
-        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var kcBlockerIdx); if (dc < vPos) { binder = 11; blockerIdx = kcBlockerIdx; } vPos = Math.Min(vPos, dc);
+        dc = KeepClearConstraint(v, ActiveVehicles(), dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var kcBlockerIdx); if (RingBreakGate && v.RingReleaseTargetEntity >= 0 && kcBlockerIdx == v.RingReleaseTargetEntity) { dc = double.PositiveInfinity; } if (dc < vPos) { binder = 11; blockerIdx = kcBlockerIdx; } vPos = Math.Min(vPos, dc); // D2: an elected ring breaker skips ITS ring stop-edge only.
 
         // B1: external obstacle (DESIGN.md "Two futures" -- a live, non-SUMO input, not a
         // ported SUMO code path). Modeled as one more virtual stopped leader reusing the same
@@ -5466,7 +5475,7 @@ public sealed partial class Engine : IEngine
         // (non-binding) whenever InternalJunctionAdmissionGate is off (the default) -- see the
         // constraint's own header comment for the full derivation, and InternalJunctionAdmissionGate's
         // header comment for the parity argument and the deliberate omissions.
-        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var iajByApproachArm, out var iajFoeIdx, prePass); if (dc < vPos) { binder = iajByApproachArm ? (byte)17 : (byte)14; blockerIdx = iajFoeIdx; } vPos = Math.Min(vPos, dc);
+        dc = InternalJunctionAdmissionConstraint(v, dt, actionStepLengthSecs, laneVehicleMaxSpeed, out var iajByApproachArm, out var iajFoeIdx, prePass); if (RingBreakGate && v.RingReleaseTargetEntity >= 0 && iajFoeIdx == v.RingReleaseTargetEntity) { dc = double.PositiveInfinity; } if (dc < vPos) { binder = iajByApproachArm ? (byte)17 : (byte)14; blockerIdx = iajFoeIdx; } vPos = Math.Min(vPos, dc); // D2: an elected ring breaker skips ITS ring stop-edge only.
         dc = ColocationSymmetryBreakConstraint(v, neighbors); if (dc < vPos) { binder = 15; blockerIdx = -1; } vPos = Math.Min(vPos, dc);
 
         // Task B-guard (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.2): the high-realism-zone pedestrian
@@ -14463,6 +14472,242 @@ public sealed partial class Engine : IEngine
     // two cars yields and the conflict actually clears. It needs new per-vehicle junction entry-time
     // state. See docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c/§3d.
     public bool JunctionPhysicalOccupancyGate { get; set; }
+
+    // ===================== DEADLOCK-RING D2 (docs/DEADLOCK-RING-DESIGN.md §2) =====================
+    // The gated ring BREAK. D1 (the LIVECITY-RING witness) counts and ages blocker-graph cycles;
+    // this acts on them: a ring confirmed for >= RingBreakSeconds elects ONE member by the
+    // entry-order total order and releases its stop-form edge into the ring (keepClear /
+    // internalJunctionAdmission) toward exactly its ring target -- the follow-form arms
+    // (adaptToJunctionLeader, corridor FOLLOW, leaderFollow) still bound its speed, so it advances
+    // INTO gaps, never THROUGH bodies. DEFAULT OFF = byte-identical by construction: the pass never
+    // runs and no release field is ever read.
+    public bool RingBreakGate { get; set; }
+
+    // Ring age (min member consecutive-stop seconds) required before a break is attempted, AND the
+    // stationary-timeout after which a released breaker is declared wedged and the next member is
+    // elected (design §2.1/§2.3). SUMO has no equivalent (it interpenetrates instead); 20 s is the
+    // design's proposal -- far below the 60 s blanket patience because a PROVEN cycle cannot
+    // self-resolve.
+    public double RingBreakSeconds { get; set; } = 20.0;
+
+    // Route-distance a breaker must make good for its release to count as "cleared the interlock"
+    // (the design's release-end condition, expressed lane-agnostically so a cont-turn crossing of
+    // several internal lanes stays one release). ~ one junction crossing.
+    public double RingBreakClearDistance { get; set; } = 20.0;
+
+    // Diagnostics for the host reporter (LIVECITY-RINGBREAK): elections taken, wedged-breaker
+    // escalations, scan-steps in which a confirmed ring had NO electable member left (the honest
+    // "this one is geometric" signal, design §2.3), and currently-active releases.
+    public long RingBreaksTotal { get; private set; }
+    public long RingBreakEscalations { get; private set; }
+    public long RingStuckSteps { get; private set; }
+    public int RingReleasesActive { get; private set; }
+
+    // Scratch for the end-of-step scan -- reused, no steady-state allocation.
+    private readonly List<VehicleRuntime> _ringNodes = new();
+    private readonly Dictionary<int, int> _ringNodeByEntity = new();
+    private int[] _ringSucc = System.Array.Empty<int>();
+    private byte[] _ringColour = System.Array.Empty<byte>();
+    private readonly List<int> _ringWalk = new();
+    private readonly List<int> _ringMembers = new();
+
+    // End-of-step, single-threaded, deterministic (EntityIndex-sorted iteration, no RNG): release
+    // upkeep, blocker-graph build over stopped vehicles, colour-marking cycle scan, and per-ring
+    // election. Runs only under RingBreakGate; reads the post-ExecuteMoves settled state (the same
+    // one-step-lag discipline as HeldAtLinkLastStep -- the release takes effect in the NEXT step's
+    // plan, which is what keeps the parallel plan order-independent).
+    private void DetectAndBreakRings(double dt)
+    {
+        _ringNodes.Clear();
+        _ringNodeByEntity.Clear();
+        foreach (var v in ActiveVehicles())
+        {
+            _ringNodes.Add(v);
+        }
+
+        _ringNodes.Sort(static (a, b) => a.EntityIndex.CompareTo(b.EntityIndex));
+
+        // --- release upkeep: completion (progress), wedged-timeout (escalate + cooldown). A release
+        // on a vehicle that arrived died with its runtime (it is simply absent here).
+        var active = 0;
+        for (var i = 0; i < _ringNodes.Count; i++)
+        {
+            var v = _ringNodes[i];
+            if (v.RingReleaseTargetEntity < 0)
+            {
+                continue;
+            }
+
+            var heldSecs = (_elapsedSteps - v.RingReleaseStartStep) * dt;
+            if (v.RouteDistanceTraveled - v.RingReleaseStartRouteDist >= RingBreakClearDistance)
+            {
+                v.RingReleaseTargetEntity = -1; // cleared the interlock -- release complete.
+            }
+            else if ((heldSecs >= RingBreakSeconds && v.WaitingTime >= heldSecs)
+                || heldSecs >= 3.0 * RingBreakSeconds)
+            {
+                // Never moved since the release (WaitingTime spans the whole hold), or a hard cap on
+                // nibbling progress -- geometry wedged for THIS member. Escalate: cooldown so the
+                // next election (same deterministic chain) picks the next member.
+                v.RingReleaseTargetEntity = -1;
+                v.RingReleaseCooldownUntilStep = _elapsedSteps + (long)(2.0 * RingBreakSeconds / dt);
+                RingBreakEscalations++;
+            }
+            else
+            {
+                active++;
+            }
+        }
+
+        RingReleasesActive = active;
+
+        // --- blocker graph over stopped vehicles (same predicate as the D1 host scan: stopped =
+        // speed < 0.1, edge only to a blocker that is itself present and stopped).
+        for (var i = 0; i < _ringNodes.Count; i++)
+        {
+            _ringNodeByEntity[_ringNodes[i].EntityIndex] = i;
+        }
+
+        if (_ringSucc.Length < _ringNodes.Count)
+        {
+            _ringSucc = new int[Math.Max(_ringNodes.Count, 2 * _ringSucc.Length)];
+            _ringColour = new byte[_ringSucc.Length];
+        }
+
+        for (var i = 0; i < _ringNodes.Count; i++)
+        {
+            var v = _ringNodes[i];
+            _ringSucc[i] = -1;
+            _ringColour[i] = 0;
+            if (v.Kinematics.Speed < 0.1 && v.BlockerEntityIndex >= 0
+                && _ringNodeByEntity.TryGetValue(v.BlockerEntityIndex, out var bi)
+                && _ringNodes[bi].Kinematics.Speed < 0.1)
+            {
+                _ringSucc[i] = bi;
+            }
+        }
+
+        // --- colour-marking cycle scan (identical shape to the D1 host witness).
+        for (var s = 0; s < _ringNodes.Count; s++)
+        {
+            if (_ringColour[s] != 0)
+            {
+                continue;
+            }
+
+            _ringWalk.Clear();
+            var cur = s;
+            while (cur >= 0 && _ringColour[cur] == 0)
+            {
+                _ringColour[cur] = 1;
+                _ringWalk.Add(cur);
+                cur = _ringSucc[cur];
+            }
+
+            if (cur >= 0 && _ringColour[cur] == 1)
+            {
+                var start = _ringWalk.IndexOf(cur);
+                var age = double.PositiveInfinity;
+                _ringMembers.Clear();
+                for (var k = start; k < _ringWalk.Count; k++)
+                {
+                    _ringMembers.Add(_ringWalk[k]);
+                    age = Math.Min(age, _ringNodes[_ringWalk[k]].WaitingTime);
+                }
+
+                if (age >= RingBreakSeconds)
+                {
+                    ManageRing(dt);
+                }
+            }
+
+            for (var k = 0; k < _ringWalk.Count; k++)
+            {
+                _ringColour[_ringWalk[k]] = 2;
+            }
+        }
+    }
+
+    // One confirmed ring (member node indices in _ringMembers): if no member already holds a
+    // release, elect the breaker among members whose CURRENT binding edge is a releasable stop-form
+    // constraint (keepClear 11, internalJunctionAdmission 14/17 -- the follow-form binders ARE
+    // already the creep and gain nothing from a release) and who are not on escalation cooldown.
+    // Election per design §2.1: inside-junction members first, by the IsLeaderByEntryOrder total
+    // order (earliest entrant); fallback, the member closest to its lane end (id-ordinal tie-break).
+    // No electable member left => the honest RING-STUCK signal (design §2.3).
+    private void ManageRing(double dt)
+    {
+        for (var k = 0; k < _ringMembers.Count; k++)
+        {
+            if (_ringNodes[_ringMembers[k]].RingReleaseTargetEntity >= 0)
+            {
+                return; // one release per ring at a time.
+            }
+        }
+
+        VehicleRuntime? best = null;
+        var bestInside = false;
+        for (var k = 0; k < _ringMembers.Count; k++)
+        {
+            var m = _ringNodes[_ringMembers[k]];
+            var b = m.BindingConstraint;
+            if (b != 11 && b != 14 && b != 17)
+            {
+                continue;
+            }
+
+            if (m.RingReleaseCooldownUntilStep > _elapsedSteps || m.BlockerEntityIndex < 0)
+            {
+                continue;
+            }
+
+            var inside = m.LaneId.Length > 0 && m.LaneId[0] == ':';
+            if (best is null || (inside && !bestInside))
+            {
+                best = m;
+                bestInside = inside;
+                continue;
+            }
+
+            if (!inside && bestInside)
+            {
+                continue;
+            }
+
+            if (inside)
+            {
+                // best yields to m by the entry-order chain => m is the earlier entrant/leader.
+                if (IsLeaderByEntryOrder(
+                        best.JunctionEntryTime, m.JunctionEntryTime,
+                        best.Kinematics.Speed, m.Kinematics.Speed, best.Def.Id, m.Def.Id))
+                {
+                    best = m;
+                }
+            }
+            else
+            {
+                var mD = _network!.LanesByHandle[m.LaneHandle].Length - m.Kinematics.Pos;
+                var bD = _network!.LanesByHandle[best.LaneHandle].Length - best.Kinematics.Pos;
+                if (mD < bD || (mD == bD && string.CompareOrdinal(m.Def.Id, best.Def.Id) < 0))
+                {
+                    best = m;
+                }
+            }
+        }
+
+        if (best is null)
+        {
+            RingStuckSteps++;
+            return;
+        }
+
+        best.RingReleaseTargetEntity = best.BlockerEntityIndex;
+        best.RingReleaseStartStep = _elapsedSteps;
+        best.RingReleaseStartRouteDist = best.RouteDistanceTraveled;
+        RingBreaksTotal++;
+        RingReleasesActive++;
+    }
+    // =================== end DEADLOCK-RING D2 ===================
 
     // F3/cont-turn "am I inside the junction" predicate fix (docs/NEED-contturn-stuck-in-junction.md).
     // DEFAULT false = OFF = byte-identical (with it off, `egoInsideJunction` collapses to

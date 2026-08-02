@@ -3538,3 +3538,67 @@ ONE member by the entry-order total order and relaxes its ring edge to corridor-
 wedged. D1 now supplies the justifying numbers the design required before D2 code. Per the
 design's own gate ("no code before sign-off"), D2 implementation awaits the owner's go on these
 numbers.
+
+## Entry 51 (BEFORE) — D2 implemented behind LIVECITY_RINGBREAK (owner: "D2 go")
+
+**Owner said "D2 go."** Implementation (design §2, three refinements journaled here):
+
+- Engine end-of-step pass `DetectAndBreakRings` (single-threaded, EntityIndex-sorted, no RNG;
+  one-step lag like `HeldAtLinkLastStep`): D1-identical blocker graph + colour scan; a ring with
+  age (min member WaitingTime) ≥ `RingBreakSeconds` (20) and no member already released elects a
+  breaker; the breaker's per-entity release skips ONLY its stop-form edge (keepClear 11 /
+  admission 14/17) toward ONLY its frozen ring-target entity. Follow-form arms still bound speed
+  — creep into gaps, never through bodies (arm-7 HOLD, adaptToJxnLeader, corridor FOLLOW are
+  untouched — they ARE the body-contact guard).
+- **Refinement 1 (election filter):** only members whose CURRENT binder is a releasable stop-edge
+  are electable — releasing a member creeping at gap 0 is a no-op by construction, so the
+  escalation ladder skips straight past them. Inside-junction members first (entry-order chain,
+  earliest entrant), fallback closest-to-lane-end, id-ordinal ties.
+- **Refinement 2 (release end):** the design's "blocker edge leaves the ring" cannot be read
+  after the skip erases that very edge, so completion is route-progress ≥
+  `RingBreakClearDistance` (20 m ≈ one junction crossing); wedged = stationary the whole hold for
+  `RingBreakSeconds` (or 3× as a hard cap on nibbling) → cooldown 2×RingBreakSeconds +
+  escalation; next scan's election deterministically picks the next member. All members
+  exhausted → `RingStuckSteps` (the honest "this one is geometric" counter).
+- **Refinement 3 (reporting):** engine exposes counters; the host prints `LIVECITY-RINGBREAK:
+  active/breaks/escalations/stuckSteps` at the witness cadence. Gate `LIVECITY_RINGBREAK`
+  (default OFF, env-honoured like F3, NOT in the forced bundle), ENV-GATES row added, bench
+  curated list updated.
+
+**Falsifiable predictions (D3 ladder):**
+
+- P1: gate OFF ⇒ byte-identical — goldens green, bench hash `A134ED3716DDE7BC`, full sln green.
+- P2: standard Geneva capture + `LIVECITY_RINGBREAK=1`: age≥300 ring reports collapse (140 → <30);
+  the `:35479` locked 12-member ring does not survive to t=1800; breaks > 0, stuckSteps small
+  relative to breaks.
+- P3: arrivals at t=1800 IMPROVE over 2961 (the locked ring blocks a major junction for ~1100 s).
+- P4: overlaps counter does NOT increase vs 42 peak (creep is follow-bounded).
+- P5: hour-horizon `F3OCCUPANCY=1 RINGBREAK=1`: arrivals ≥ the 2562-class baseline, stalls 0.
+
+## Entry 51 (AFTER) — D2 measured: rings eliminated on Geneva, arrivals +6.2%; two honest misses
+
+- **P1 CONFIRMED**: gate OFF byte-identical — full sln green (782/5 goldens, LiveCity 92/92,
+  peds 324), bench hash `A134ED3716DDE7BC` (par==single).
+- **P2 CONFIRMED, stronger than predicted**: standard Geneva capture + `LIVECITY_RINGBREAK=1`:
+  ring reports 273 → 83, **age≥300 reports 140 → 0** — not one locked ring survives. The
+  `:35479` ring never locks (max age 19 s, transient sizes 4–7, broken within about one witness
+  cadence). Breaker economics: **180 breaks, 5 escalations, stuckSteps = 0** (no ring ever
+  exhausted its electable members — the honest-wedge path never had to fire on this capture).
+- **P3 CONFIRMED, stronger than predicted**: arrivals 2961 → **3144 (+6.2%)**; final
+  stoppedFrac 0.92 → 0.82; final-interval mean speed 0.71 → 1.28 m/s; aggregate movement
+  56 584 → 102 647 m. On the wedge-hunting configuration (reroute OFF) the break converts the
+  permanent admission-ring gridlock into flow.
+- **P4 MISSED (honest)**: the instantaneous same-lane overlap proxy (pairs < 4 m at the 20 s
+  sample) — mean 21.0 → 25.0, peak 42 → 53 vs the Entry-49 arm; both remain BELOW the
+  pre-Entry-49 baseline (29.3 mean / 57 peak). Reading: more movement through saturated lanes
+  raises dense-packing samples; whether any of it is creep-caused body contact (vs the
+  pre-existing queue-compression class) needs a per-lane attribution pass near released
+  breakers — follow-up, not a blocker, but not waved away either.
+- **P5 MISSED by a hair**: hour-horizon ON arm 2554 vs 2562 (−0.3%, 8 arrivals), stalls 0 both
+  arms. The box surface has few rings; the break neither helps nor hurts there materially.
+
+**Recommendation to the owner:** D2 works as designed on the surface it was designed for. Given
+the +6.2% arrivals and total elimination of locked rings on Geneva vs a −0.3% box-grid wash and
+a small unattributed overlap-proxy rise, proposed next steps: (a) keep `LIVECITY_RINGBREAK`
+opt-in for the 3D session to eyeball the released-breaker motion at the photographed junctions;
+(b) run the overlap attribution pass; (c) defaults decision after (a)+(b).

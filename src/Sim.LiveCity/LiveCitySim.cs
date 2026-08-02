@@ -462,6 +462,12 @@ public sealed class LiveCitySim : IDisposable
         // this mirrors that A/B switch into the live-city hosts so the trade can be judged on the
         // 3D surface too. Default: engine default (ON), same as every other mirrored gate.
         _engine.UrgentStrategicLeaderFollow = EnvGate("LIVECITY_URGENTFOLLOW", _engine.UrgentStrategicLeaderFollow);
+        // DEADLOCK-RING D2 (docs/DEADLOCK-RING-DESIGN.md §2, owner GO after the D1 Geneva numbers):
+        // the gated ring BREAK. OFF by default (engine default) pending the D3 ladder + defaults
+        // decision; LIVECITY_RINGBREAK=1 for A/B. Deliberately NOT in the forced junction-gate
+        // bundle (AllLiveCityGateVars) -- like LIVECITY_F3OCCUPANCY it stays env-honoured in the
+        // hour-horizon test so both arms of an A/B can set it explicitly.
+        _engine.RingBreakGate = EnvGate("LIVECITY_RINGBREAK", _engine.RingBreakGate);
         // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
         // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
         // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
@@ -1447,6 +1453,16 @@ public sealed class LiveCitySim : IDisposable
         if (_reroutePeriodResolved > 0.0)
         {
             Console.Error.WriteLine($"LIVECITY-REROUTES: t={_now:F0} total={_engine.PeriodicRerouteCount}");
+        }
+
+        // DEADLOCK-RING D2: make the breaker visible when enabled -- elections, wedged-breaker
+        // escalations, honest-stuck scan-steps, currently-active releases.
+        if (_engine.RingBreakGate)
+        {
+            Console.Error.WriteLine(
+                $"LIVECITY-RINGBREAK: t={_now:F0} active={_engine.RingReleasesActive} "
+                + $"breaks={_engine.RingBreaksTotal} escalations={_engine.RingBreakEscalations} "
+                + $"stuckSteps={_engine.RingStuckSteps}");
         }
 
         var w = WitnessAuthoritative();

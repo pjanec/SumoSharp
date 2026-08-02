@@ -154,6 +154,19 @@ internal sealed class VehicleRuntime
     // specific vehicle). Never read by sim logic -> parity-neutral, same guarantee as BindingConstraint.
     public int BlockerEntityIndex = -1;
 
+    // DEADLOCK-RING D2 (docs/DEADLOCK-RING-DESIGN.md §2): the per-entity ring-break release. When
+    // >= 0, this vehicle is the elected breaker of a confirmed blocker-graph ring and its
+    // stop-form constraint edges (keepClear 11 / internalJunctionAdmission 14/17) toward EXACTLY
+    // this target entity are skipped, so the follow-form arms (adaptToJunctionLeader, corridor
+    // FOLLOW, leaderFollow) bound its speed instead -- creep into gaps, never through bodies.
+    // Written ONLY by Engine.DetectAndBreakRings (single-threaded end-of-step pass); read by the
+    // plan phase next step (one-step lag, same discipline as HeldAtLinkLastStep). All -1/0 when
+    // RingBreakGate is off -- never read then, so parity-neutral by construction.
+    public int RingReleaseTargetEntity = -1;
+    public long RingReleaseStartStep = -1;
+    public double RingReleaseStartRouteDist;
+    public long RingReleaseCooldownUntilStep = -1;
+
     // DIAGNOSTIC ONLY (#15): when JunctionYieldConstraint bound this vehicle, WHICH arm did (low 4 bits:
     // 1 cycleHold, 2 cautiousApproach, 3 sameTargetMerge, 4 externalAgent, 5 adaptToJunctionLeader,
     // 6 approachingCross) plus bit 0x80 = the ego link held a protected-green signal priority. Never read
