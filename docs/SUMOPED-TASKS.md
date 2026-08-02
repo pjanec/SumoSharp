@@ -23,7 +23,23 @@ An implementor's report is never sufficient.
 
 ---
 
-## Stage 0 — Oracle and fixtures (no C# yet)
+## Stage 0 — Oracle, coverage inventory, and fixtures (no C# yet)
+
+### SP-0.0 — Build and commit the branch inventory
+`SUMOPED-COVERAGE.md` §1. Read `MSPModel_Striping.{h,cpp}` in full plus the ped-relevant parts of
+`MSLink.cpp`/`MSLane.cpp`/`MSStageWalking.cpp`; enumerate **every** behavioural branch — every decision
+whose outcome changes a pedestrian trajectory — as `docs/SUMOPED-BRANCH-INVENTORY.md`.
+One row per branch: stable ID, `file:line`, the quoted C++ predicate, what changes when it fires,
+FCD-observability (`DIRECT` / `LATERAL` / `INDIRECT` / `HIDDEN`), and the minimal net+demand to trigger it.
+**Success:** the inventory covers, at minimum, every `if` in `walk()` and its utility folds; every branch
+of `getNextLane`, `moveToNextLane`, `arriveAndAdvance`, `getNeighboringObstacles`, `getVehicleObstacles`
+(incl. the "vehicle still behind while overlapping" case), `getNextLaneObstacles`, `addCrossingVehs`
+(incl. the fully-blocked pin-all-stripes pass), `addVehicleFoe`, the three walkingarea sub-branches of
+`moveInDirection`, both `mergeObstacles` overloads, `distanceTo`, `stripe`/`otherStripe`, `getReserved`,
+the whole jam family, `MIN_STARTUP_DIST`, the step-aside branch, `ignoreRed`, `getImpatience`, both
+clauses of `blockedAtDist`, and `checkWalkingAreaFoe`. Every `HIDDEN` row names the cheapest oracle
+signal that would witness it. A reviewer spot-checking ten random `if`s in the `.cpp` finds all ten in
+the table.
 
 ### SP-0.1 — Re-establish the oracle, and commit the recipe
 Design §2. Clone `/sumo` at `v1_20_0`; `pip install eclipse-sumo==1.20.0`.
@@ -31,20 +47,41 @@ Design §2. Clone `/sumo` at `v1_20_0`; `pip install eclipse-sumo==1.20.0`.
 is 2725 lines; the recipe (including the "apt ships 1.18, do not use it" warning) is committed in
 `scenarios/_sumoped/README.md`.
 
-### SP-0.2 — Author the eight Phase-1 scenarios
-Requirements §6. Each gets `nodes.nod.xml`/`edges.edg.xml` sources, a `netconvert` regeneration line in
-its `NOTES.md`, `net.net.xml`, `rou.rou.xml`, `config.sumocfg`.
+### SP-0.2 — Author the Tier A / Tier B scenarios
+Requirements §6 + `SUMOPED-COVERAGE.md` §3–4. Each gets `nodes.nod.xml`/`edges.edg.xml` sources, a
+`netconvert` regeneration line in `NOTES.md`, `net.net.xml`, `rou.rou.xml`, `config.sumocfg`.
+Roughly 20 Tier A (1–4 peds, ≤80 steps, one mechanism each) and 8 Tier B (10–40 peds + vehicles,
+120–200 steps). The six axes of coverage §4 must each take every listed value somewhere in the set —
+in particular a **1-stripe** (`--default.crossing-width 0.64`) and a **12-stripe** (`8.00`) crossing,
+and a **pass-by** flow of peds who turn at the junction without crossing.
 **Success:** each `config.sumocfg` explicitly sets `--pedestrian.model striping` **and**
-`--pedestrian.striping.dawdling 0`, and each ped vType sets `speedDev="0" speedFactor="1"`; no
-`departPos="random"` or `departPosLat="random"` anywhere; a test asserts these four properties by
-parsing every `_sumoped` config, so the pinning can never silently lapse.
+`--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
+`departPos="random"`/`departPosLat="random"` anywhere; each `NOTES.md` names the axis values it pins and
+the SP-0.0 branch IDs it claims to fire. A test asserts the four pinning properties by parsing every
+`_sumoped` config, so the pinning can never silently lapse.
 
-### SP-0.3 — Generate and commit the goldens
-Design §2.3, §8.2. Extend `scripts/regen-goldens.sh` to cover `_sumoped` with tripinfo.
-**Success:** every `_sumoped` scenario has `golden.fcd.xml` containing `<person>` rows,
-`golden.tripinfo.xml` containing `<personinfo>`, `tolerance.json`, and `provenance.txt` recording
-`sumo_version=1.20.0` + input sha256s. Re-running the script twice produces byte-identical goldens
-(the determinism proof for the oracle itself).
+### SP-0.2b — Author the Tier C saturated scenarios
+`SUMOPED-COVERAGE.md` §3, §4.1. 2–3 scenarios: a saturated multi-lane signalized junction (2-lane arms,
+4 car flows + 4 personFlows, 300 s — verified to reach steady state by t≈80 with ~110–140 concurrently
+walking), plus a **jam-regime** variant at `personFlow period="0.5"` that drives `jammed > 0`, and a
+narrow-crossing variant. Honest-SUMO flags: `--time-to-teleport -1 --collision.action warn
+--collision.check-junctions true`.
+**Success:** the saturated scenario produces ≥25,000 person FCD rows; the jam variant reports
+`jammed > 100` in `--statistic-output`; two independent SUMO runs give **byte-identical** FCD bodies
+(re-verify determinism per scenario, do not assume it); the committed footprint per Tier C scenario is
+≤2 MB using the windowed shape in coverage §3.
+
+### SP-0.3 — Generate and commit the goldens (seven output kinds, not one)
+Design §2.3, §8.2; coverage §2. Extend `scripts/regen-goldens.sh` to cover `_sumoped` with the full
+person output set.
+**Success:** every `_sumoped` scenario has, as applicable to its tier: `golden.fcd.xml` (windowed via
+`--device.fcd.begin` for Tier C — verified to start the FCD at exactly that time),
+`golden.personsummary.xml`, `golden.personinfo.xml`, `golden.statistic.xml`, `golden.collisions.xml`,
+`golden.netstate.xml` (Tier A/B only — it is large), a normalised/sorted `golden.warnings.txt` capturing
+the `is jammed` / `collision with person` stderr lines, plus `tolerance.json` and `provenance.txt`
+recording `sumo_version=1.20.0` + input sha256s. Re-running the script twice produces byte-identical
+goldens. Total added golden bytes are reported in the tracker (budget context: the repo's existing FCD
+goldens total 5.1 MB, largest single 1.26 MB).
 
 ### SP-0.4 — Assert the R3 behaviours **on the oracle**
 Requirements R3, design §8.1. Before requiring anything of SumoSharp, prove the goldens contain it.
@@ -54,12 +91,21 @@ entering the crossing within 2 s on ≥3 distinct stripes; `walk-passby-queue` h
 every step while ≥3 others are stopped beside it; `xwalk-priority-1v1` reproduces the deceleration
 `13.89 → 11.11 → 6.61`. **A scenario that fails this is mis-authored and goes back to SP-0.2.**
 
-### SP-0.5 — Zero-overlap invariant helper
-Requirement R5.
-**Success:** a shared helper computes world-space vehicle-body-to-ped clearance; run over every
-`_sumoped` golden it reports `> 0` at every step. If SUMO's own golden shows an overlap, that is
-recorded as a known-oracle-artefact in the scenario NOTES (CLAUDE.md item 11: SUMO's defaults include
-cheating), not silently tolerated.
+### SP-0.5 — Collision baseline on the oracle
+Requirements R5a/R5b, coverage §6. **Not** a zero-overlap invariant — that is false of the oracle.
+**Success:** a shared helper computes world-space vehicle-body-to-ped clearance per step from a golden;
+run over every `_sumoped` golden it reports, per scenario: minimum clearance, `<collision>` count,
+distinct `(collider, victim)` pair count, and max `colliderSpeed`. Tier A and Tier B must report
+**zero** collisions. Tier C's numbers are recorded in the tracker as the R5c improvement baseline.
+Reference measurement from this session's jam-regime run: 80 collisions / 29 distinct pairs / max
+`colliderSpeed` 2.60 with only 1 of 80 above 0.1 m/s.
+
+### SP-0.6 — Coverage matrix, first pass
+`SUMOPED-COVERAGE.md` §4, §8. Map every SP-0.0 branch ID to the scenario(s) that fire it and the oracle
+signal that witnesses it.
+**Success:** the matrix is committed; every ID is either mapped or listed in coverage §8 as an admitted
+hole **with a reason**; the count of unmapped IDs is reported to the owner for sign-off **before**
+Stage 1 begins. Holes discovered here become new scenarios in SP-0.2/SP-0.2b, not deferred silently.
 
 ---
 
@@ -105,10 +151,38 @@ Design §8. New `PersonFcdParser`, `PersonTrajectoryPoint/Set`, `PersonTrajector
 a golden with one row perturbed by `2 × tolerance` reports exactly one attribute failure naming the right
 person, time, and attribute. `ToleranceConfig` throws for an unconfigured compared person attribute.
 
-### SP-2.2 — Eight failing parity tests
+### SP-2.1b — The other six comparators
+Coverage §2. Person FCD alone under-uses the oracle. Add parsers + comparators for:
+`golden.personsummary.xml` (per-step time series — exact integer match on every column, `jammed`
+included), `golden.personinfo.xml` (per-person aggregate), `golden.statistic.xml`
+(`<persons>`/`<personTeleports>`/`<pedestrianStatistics>`), `golden.collisions.xml` (R5a — exact set
+match), `golden.netstate.xml` (per-edge person membership + `stage`), and `golden.warnings.txt`
+(normalised/sorted stderr lines, for the FCD-`HIDDEN` branches).
+**Success:** each comparator, run against its own golden, reports zero differences; run against a
+golden with one field perturbed, reports exactly that field. The person-summary comparator is exact
+(integers, no tolerance). The warnings comparator normalises away timestamps only where the golden says
+so, and is order-insensitive by sorting.
+
+### SP-2.1c — The lateral / stripe-projection helper
+Coverage §2. Person FCD emits **no `posLat`** even when explicitly requested, so world `x/y` is the only
+lateral witness.
+**Success:** a shared helper projects `(x, y)` onto a lane's centreline to yield `(pos, posLat, stripe)`;
+on every `_sumoped` golden its derived `pos` agrees with the FCD's own `pos` attribute to 1e-6 (the FCD
+`pos` is the cross-check that validates the projection), and the derived stripe index is integral to
+within 1e-9 of a half-open bin boundary. This helper is used by **both** arms of every derived
+assertion — the oracle side and ours — so a bug in it cannot create a false pass.
+
+### SP-2.2 — One failing parity test per scenario
 One test class per scenario, following the `Rung1ParityTests.cs` pattern.
-**Success:** all eight compile and **fail** with a clear "no persons produced" diagnostic. A test that
-passes at this stage is vacuous and must be fixed before Stage 3 starts.
+**Success:** all compile and **fail** with a clear "no persons produced" diagnostic. A test that passes
+at this stage is vacuous and must be fixed before Stage 3 starts.
+
+### SP-2.4 — Coverage counters and the two coverage tests
+Coverage §5.
+**Success:** `BranchCounters` has one counter per SP-0.0 branch ID; `AllBranchesCoveredTest` reports
+which IDs the `_sumoped` suite fails to hit (initially: all of them — it must fail honestly at this
+stage); `PerScenarioClaimTest` compares each scenario's `NOTES.md` claim list against the counters it
+fires. Both tests name the specific IDs, never just a count.
 
 ### SP-2.3 — Person trajectory hash
 Requirement R10, mirroring `Sim.Bench`'s `TrajectoryHash`.
@@ -207,11 +281,14 @@ oncoming discount.
 Design §6.5.
 **Success:** `sidewalk-shared-lane` at exact parity.
 
-### SP-5.5 — Zero-overlap invariant, on SumoSharp
-Requirement R5.
-**Success:** SP-0.5's helper, run over SumoSharp's own output for all eight scenarios, reports clearance
-`> 0` at every step; plus the saturated non-golden scenario reports the same. Report the **minimum**
-clearance observed, per scenario — a bare "no overlap" is not a measurement.
+### SP-5.5 — Collision-set parity and the collision baseline
+Requirements R5a/R5b, coverage §6.
+**Success:** `golden.collisions.xml` matches **exactly** on `(time, type, lane, pos, collider, victim,
+colliderSpeed, victimSpeed)` for every `_sumoped` scenario — empty for Tier A and Tier B, and an exact
+set match for the Tier C jam variant. SP-0.5's clearance helper, run over our own output, reports the
+same minimum clearance per scenario as it does over the golden. The tracker's collision-baseline table
+is filled from our output and agrees with the oracle's. Note this is the R5c improvement baseline; do
+**not** "fix" a collision here — reproducing SUMO's is the requirement.
 
 ---
 
@@ -251,6 +328,12 @@ Requirement R11, design §12.
 per-ped crossing speeds (min/median/max reported in the tracker); **and** a test asserts that flipping
 either knob changes **no** `_sumoped` golden, because every one of them sets both explicitly.
 
+### SP-7.4b — Coverage close-out
+Requirement R12, coverage §1, §8.
+**Success:** `AllBranchesCoveredTest` is green, or every remaining miss is listed in coverage §8 as an
+admitted hole with a reason and explicit owner sign-off. The number of covered vs. admitted-hole branch
+IDs (out of 149) is recorded in the tracker. `PerScenarioClaimTest` green.
+
 ### SP-7.5 — Final gate
 Requirement R9.
 **Success, all re-run first-hand:**
@@ -276,13 +359,14 @@ CLAUDE.md §Subagents' orchestration loop. Batches are sized so each ends at a v
 
 | Batch | Tasks | Ends at |
 | --- | --- | --- |
-| B1 | SP-0.1 … SP-0.5 | goldens committed, oracle proven to contain the R3 behaviours |
+| B0 | SP-0.0 | branch inventory reviewed and corrected (a first pass of 149 rows exists) |
+| B1 | SP-0.1 … SP-0.6 | Tier A/B/C goldens committed; oracle proven to contain the R3 behaviours; coverage matrix mapped and holes signed off |
 | B2 | SP-1.1, SP-1.2, SP-1.4 | net model extended, vehicle gate unmoved |
 | B3 | SP-1.3 | the ordering trace (Opus does this one — it is a judgment call) |
-| B4 | SP-2.1 … SP-2.3 | harness in place, eight tests failing honestly |
+| B4 | SP-2.1 … SP-2.4 | all seven comparators + the stripe helper + coverage counters; every test failing honestly |
 | B5 | SP-3.1 … SP-3.3 | `Walk()` unit-proven in isolation |
 | B6 | SP-3.4, SP-3.5 | two scenarios at exact parity |
 | B7 | SP-4.1 … SP-4.4 | junctions + the owner's crowd behaviours at parity |
 | B8 | SP-5.1 … SP-5.5 | vehicle coupling; gate re-run inside the batch |
 | B9 | SP-6.1 | TL crossings |
-| B10 | SP-7.1 … SP-7.6 | API, viz, production regime, final gate, docs |
+| B10 | SP-7.1 … SP-7.6 (incl. SP-7.4b) | API, viz, production regime, final gate, docs |

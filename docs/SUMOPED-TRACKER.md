@@ -6,16 +6,20 @@ At-a-glance checklist over `SUMOPED-TASKS.md`. A box is ticked **only** when its
 been verified first-hand by the reviewer — diff read, test read for non-vacuity, command re-run — never
 on an implementor's report (CLAUDE.md §Subagents).
 
-Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-TASKS.md` (tasks).
+Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-COVERAGE.md` (coverage
+plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 149-branch denominator) · `SUMOPED-TASKS.md` (tasks).
 
 ---
 
-## Stage 0 — Oracle and fixtures
+## Stage 0 — Oracle, coverage inventory, and fixtures
+- [ ] **SP-0.0** branch inventory reviewed (a **149-row** first pass is committed; needs review, not authoring)
 - [ ] **SP-0.1** oracle re-established (`/sumo` @ `v1_20_0`, `sumo` 1.20.0 via pip), recipe committed
-- [ ] **SP-0.2** eight scenarios authored; determinism-pinning test over every `_sumoped` config
-- [ ] **SP-0.3** goldens + tripinfo + provenance committed; regeneration is byte-reproducible
+- [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; all six coverage axes take every value; pinning test
+- [ ] **SP-0.2b** 2–3 Tier C saturated scenarios (incl. a jam-regime and a narrow-crossing variant)
+- [ ] **SP-0.3** goldens for all seven output kinds + provenance; regeneration byte-reproducible
 - [ ] **SP-0.4** R3 behaviours asserted **on the oracle** (stripe counts, abreast entry, no-stall pass-by)
-- [ ] **SP-0.5** zero-overlap helper; minimum clearance recorded per scenario
+- [ ] **SP-0.5** collision baseline on the oracle (count, distinct pairs, max colliderSpeed, min clearance)
+- [ ] **SP-0.6** branch→scenario matrix mapped; unmapped IDs reported for owner sign-off
 
 ## Stage 1 — Network model
 - [ ] **SP-1.1** ped elements in `Sim.Ingest`; `AllowsRoadVehicle`↔`Permissions` equivalence test; gate unmoved
@@ -25,8 +29,11 @@ Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-
 
 ## Stage 2 — Harness (must fail first)
 - [ ] **SP-2.1** person FCD parser + comparator + tolerance extension
-- [ ] **SP-2.2** eight parity tests, all failing honestly ("no persons produced")
+- [ ] **SP-2.1b** the other six comparators (person-summary, personinfo, statistic, collisions, netstate, warnings)
+- [ ] **SP-2.1c** stripe-projection helper (x/y → pos/posLat/stripe), cross-checked against FCD `pos`
+- [ ] **SP-2.2** one parity test per scenario, all failing honestly ("no persons produced")
 - [ ] **SP-2.3** person trajectory hash; value recorded below
+- [ ] **SP-2.4** coverage counters + `AllBranchesCoveredTest` + `PerScenarioClaimTest` (failing honestly)
 
 ## Stage 3 — Stepper, straight sidewalk
 - [ ] **SP-3.1** `PersonRuntime`, `StripingParams` (every constant + `.cpp:line`), stripe math
@@ -47,7 +54,7 @@ Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-
 - [ ] **SP-5.2** `AddCrossingVehs` + `AddVehicleFoe`; fully-blocked pin asserted
 - [ ] **SP-5.3** `CheckWalkingAreaFoe`; `walkingarea-shared` GREEN
 - [ ] **SP-5.4** `HasPedestrians`/`NextBlocking`; `sidewalk-shared-lane` GREEN
-- [ ] **SP-5.5** zero-overlap invariant on our output + saturated scenario; min clearance reported
+- [ ] **SP-5.5** collision-set parity (`golden.collisions.xml` exact); baseline table agrees with the oracle
 
 ## Stage 6 — Traffic lights
 - [ ] **SP-6.1** crossing link state, `IgnoreRed`, `GetImpatience`; `xwalk-tls-release` GREEN
@@ -57,6 +64,7 @@ Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-
 - [ ] **SP-7.2** coordinate contract round-trip + `SpawnPersonAt` no-pop handover (the Phase 2 hinge)
 - [ ] **SP-7.3** `Sim.Viz` scenes + golden ground-truth overlay + stripe lines; in `gen-demos.sh`
 - [ ] **SP-7.4** production regime: measured speed spread; goldens provably unaffected
+- [ ] **SP-7.4b** coverage close-out: `AllBranchesCoveredTest` green or every miss an owner-signed hole
 - [ ] **SP-7.5** final gate: full sln, 782+/661 byte-identical, `A134ED3716DDE7BC`, LiveCity 92, Peds 324
 - [ ] **SP-7.6** doc reconciliation (`PEDESTRIAN-OVERVIEW.md` §3, `PEDESTRIANS.md`, `README.md`, `scenarios/README.md`, `TASKS-TODO.md`)
 
@@ -71,8 +79,20 @@ Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-
 | `Sim.Bench` hash (must not move) | **`A134ED3716DDE7BC`** (par == single) |
 | `Sim.LiveCity.Tests` / `Sim.Pedestrians.Tests` | **92/92** / **324/324** |
 | person trajectory hash (SP-2.3) | _(not yet)_ |
-| min vehicle↔ped clearance, per scenario (SP-5.5) | _(not yet)_ |
+| branch IDs in the inventory | **149** (first pass) |
+| branch IDs covered / admitted holes (SP-0.6, SP-7.4b) | _(not yet)_ |
+| added golden bytes (SP-0.3) | _(not yet)_ — budget context: existing FCD goldens total 5.1 MB, largest single 1.26 MB |
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
+
+### Collision baseline (R5b) — the denominator for the later R5c improvement
+
+| scenario | collisions | distinct (collider,victim) | max colliderSpeed | min clearance |
+| --- | --- | --- | --- | --- |
+| all Tier A / Tier B | **0** (measured on the oracle) | 0 | — | _(not yet)_ |
+| Tier C saturated (300 s, 2-lane TL) | **0** (measured) | 0 | — | _(not yet)_ |
+| Tier C jam regime (`period=0.5`) | **80** (measured) | 29 | 2.60 m/s (only 1 of 80 above 0.1) | _(not yet)_ |
+| Tier C narrow crossing (1 stripe, 200 s) | **42** (measured) | _(not yet)_ | _(not yet)_ | _(not yet)_ |
+| Tier C wide crossing (12 stripes, 200 s) | **1** (measured) | _(not yet)_ | _(not yet)_ | _(not yet)_ |
 
 ## Verified first-hand before any of this was written (session of 2026-08-02)
 
@@ -89,3 +109,23 @@ These are established facts, not assumptions — the commands are in `SUMOPED-DE
 - `Sim.Harness/FcdParser.cs:24` filters on `Elements("vehicle")` — `<person>` rows are silently dropped
   today, so a person harness is new code, not a tolerance change.
 - `Sim.Ingest/NetworkParser.cs` never reads `<crossing>`; `Sim.Viz/Payload.cs:66` already has ped discs.
+
+### Coverage session (same day), all measured
+
+- Vanilla SUMO exposes **seven** person-bearing outputs, not one — `--person-summary-output` (per-step
+  time series **including a `jammed` column**, 54 KB for 300 s) and `--statistic-output` (2.4 KB) make
+  large scenarios affordable. `--collision-output` is the vehicle↔ped oracle and
+  `intermodal-collision.action` already defaults to `warn`, so it is armed.
+- **Exact parity holds at saturation**: 300 s, 2-lane TL junction, 10,068 vehicle + **30,549 person** FCD
+  rows, two runs **byte-identical**. Windowing is a storage decision, not a determinism one.
+- **`posLat` is not emitted for persons** even when explicitly requested — world x/y is the only lateral
+  witness, so the stripe index must be back-derived by projection.
+- **Crossing width is independent of road lanes** (`--default.crossing-width`, default 4.00 m ⇒ 6
+  stripes) and strongly selects the failure regime: 1 stripe ⇒ 42 collisions, 6 ⇒ 33, 12 ⇒ 1.
+- ⚠ **At jam density vanilla SUMO collides vehicles with pedestrians by design** (175/370 jammed ⇒ 80
+  collisions). R5 was restated: parity with SUMO's collision set now, improvement later under the
+  artefact-ladder constraint.
+- The owner's crowd behaviours are **present and measurable in the oracle**: 6 of 6 stripes occupied
+  abreast, 25 peds stopped on one walkingarea — and speed spread (min 0.000 / median 1.198 / max 1.389)
+  appears with `dawdling=0` **and** `speedDev=0`, so it is largely golden-checkable rather than
+  RNG-dependent.

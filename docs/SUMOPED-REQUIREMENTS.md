@@ -107,14 +107,37 @@ uses for junction leaders**, not a bespoke pedestrian rule (this is how SUMO doe
 *Acceptance:* the fixture verified first-hand this session (`scenarios/_sumoped/xwalk-priority-1v1`,
 below) reproduces to tolerance, including the car's deceleration profile `13.89 → 11.11 → 6.61`.
 
-### R5 — Cars never cross a pedestrian
-No vehicle body may overlap a pedestrian's footprint at any step, in any committed scenario, at any
-demand level exercised.
+### R5 — Vehicle↔pedestrian collisions: parity first, improvement later
 
-*Acceptance:* a standing invariant test over every `_sumoped` scenario computing world-space
-body-to-ped clearance per step and asserting `> 0`; plus a saturated (non-golden, behavioural)
-crossing scenario asserting the same. Honest-SUMO comparison flags apply
-(`--collision.check-junctions true`), per CLAUDE.md §Measurement discipline item 11.
+⚠ **Restated after measurement. The original wording — "no vehicle body may overlap a pedestrian's
+footprint at any step" — is not true of the oracle**, so it cannot be a parity requirement. At jam
+density vanilla SUMO produces vehicle↔ped collisions by design: once `myWaitingTime > jamTimeCrossing`,
+a ped sets `myAmJammed` and squeezes at `vMax/4` **ignoring the usual collision gating**
+(`MSPModel_Striping.cpp:2200-2215`). Measured: 175 of 370 walking peds jammed ⇒ 80 collision records.
+Full numbers and analysis in `SUMOPED-COVERAGE.md` §6.
+
+Collisions are to be **minimized**, and improving on SUMO here is a real goal — but it comes *after*
+parity, as a deliberate, gated deviation. Phase 1 splits the requirement three ways:
+
+- **R5a — collision-set parity (Phase 1).** Reproduce SUMO's `<collision>` records exactly:
+  `(time, type, lane, pos, collider, victim, colliderSpeed, victimSpeed)`. This is a *stronger* claim
+  than "we never collide" — it pins the jam-squeeze behaviour to the tick.
+  *Acceptance:* `golden.collisions.xml` matches exactly for every `_sumoped` scenario, and it is
+  **empty** for every Tier A and Tier B scenario (verified: zero collisions at realistic density).
+- **R5b — measurement (Phase 1).** Collision count, distinct (collider, victim) pair count, and max
+  `colliderSpeed` are committed per scenario in the tracker. Without this baseline, "we made it better"
+  is unfalsifiable.
+  *Acceptance:* the tracker table is filled for every scenario, and a standing test computes world-space
+  body-to-ped clearance per step, reporting the **minimum** per scenario — a bare "no overlap" is not a
+  measurement.
+- **R5c — reduce collisions below SUMO's (LATER, own design).** A deliberate deviation from parity,
+  therefore governed by `docs/CONSTRAINT-high-realism-artefact-ladder.md` (target SUMO's flow, never its
+  method) and gated behind an explicit opt-in so the parity goldens stay reachable. **Not Phase 1.**
+
+Honest-SUMO flags apply throughout (`--time-to-teleport -1 --collision.action warn
+--collision.check-junctions true`), per CLAUDE.md §Measurement discipline item 11. Note
+`intermodal-collision.action` already defaults to `warn` (`MSFrame.cpp:382`), so ped/vehicle detection is
+armed by default and an empty collision output is a real negative result.
 
 ### R6 — TL-controlled crossings
 Peds obey the crossing's TL link state, including SUMO's `ignoreRed` grace window, and vehicles obey
@@ -175,9 +198,16 @@ running the model in **two regimes**, not by choosing between them:
 | parity bar | **exact** — R2, R3a, R3b, R3d | statistical / behavioural only |
 
 This works because the three behaviours in R3a/R3b/R3d are **deterministic** — they fall out of the
-stripe-utility fold, with no RNG anywhere in the path. Only the *speed spread* needs randomness. So the
-harness proves the crowd mechanics exactly, and the production regime layers heterogeneity on top of an
-already-proven mechanism.
+stripe-utility fold, with no RNG anywhere in the path. So the harness proves the crowd mechanics
+exactly, and the production regime layers extra heterogeneity on top of an already-proven mechanism.
+
+⚠ **Measured correction, in our favour.** Speed spread is *not* purely RNG-fed. On a saturated crossing
+with `dawdling=0` **and** `speedDev=0`, the peds mid-crossing showed **min 0.000 / median 1.198 /
+max 1.389 m/s** — the spread emerges from the interaction dynamics (peds slowing for each other), not
+from randomness. So the "members move at different speeds" look is **substantially on the exact-parity
+side and is golden-checkable**. The two-regime split below still stands for the *additional* spread
+`dawdling`/`speedDev` provide, but it is a garnish on a deterministic effect, not the source of it.
+Numbers: `SUMOPED-COVERAGE.md` §7.
 
 Heterogeneity has two independent sources, and they are **not** equally hard:
 
@@ -264,11 +294,37 @@ aggregate is `golden.tripinfo.xml` `<personinfo>`.
 | `walk-passby-queue` | a ped walks the sidewalk past a curb cluster — routes around, never stalls | R3d |
 | `xwalk-tls-release` | signalized crossing, one full red→green ped release | R2, R6 |
 | `walkingarea-shared` | vehicle drives across a bare walkingarea (no marked crossing) — `checkWalkingAreaFoe` | R2, R4, R5 |
-| `sidewalk-shared-lane` | ped on a lane vehicles also use — `nextBlocking` leader path | R2, R5 |
+| `sidewalk-shared-lane` | ped on a lane vehicles also use — `nextBlocking` leader path | R2, R5a |
 
-A saturated, **non-golden** crossing scenario also ships for R5, in `_sumoped/_sat/` — labelled
-behavioural-only, because a golden cannot contain a saturated crossing and CLAUDE.md §Measurement
-discipline item 1 requires both surfaces to accept a change.
+### R12 — Coverage must be demonstrated, not asserted
+
+The ten scenarios above are **Tier A/B seeds, not the coverage claim**. The full plan — a branch
+inventory of `MSPModel_Striping` derived from the source, a branch→scenario matrix, in-port coverage
+counters, and the three-tier ladder that carries it up to saturated multi-lane crossings — is
+`SUMOPED-COVERAGE.md`, and it is part of Phase 1, not a follow-up.
+
+Headline shape (all sizes measured, §`SUMOPED-COVERAGE.md` §2–3):
+
+| tier | scale | parity | golden shape | count |
+| --- | --- | --- | --- | --- |
+| **A — micro** | 1–4 peds, ≤80 steps | exact, full horizon | FCD 10–50 KB | ~20 |
+| **B — meso** | 10–40 peds + vehicles, 120–200 steps | exact, full horizon | FCD 150–400 KB | ~8 |
+| **C — macro** | 300+ persons, saturated multi-lane, 300 s | exact over a window + full-horizon aggregates | ~1.6 MB total | 2–3 |
+
+Six axes must be varied deliberately: crossing **width** (1 / 6 / 12 stripes — independent of road
+lanes, and a 1-stripe crossing is the only route to the `jamTimeNarrow` branch), crossing **length**
+(1 / 2 / 3 road lanes), **control** (priority / TL / bare walkingarea), **ped demand** (single /
+counterflow / platoon / saturated / jammed), **vehicle demand** (none / single / stream / saturated),
+and **ped flow mix** (unidirectional / counterflow / pass-by).
+
+*Acceptance:* every branch ID in `SUMOPED-BRANCH-INVENTORY.md` is either witnessed by a named scenario
+plus a named oracle signal, or listed as an **admitted hole with a reason and owner sign-off**;
+`AllBranchesCoveredTest` passes; each scenario's claimed branch set matches what it actually fires.
+
+**On CLAUDE.md §Measurement discipline item 1.** That lesson says goldens are small and cannot contain a
+saturated junction, so both surfaces must accept a change. Tier C narrows that gap but does not close
+it: a saturated *golden* is now affordable and exact (determinism verified at 30,549 person rows), yet
+the demo/`_bench` surfaces still have no SUMO reference. Both surfaces are still required.
 
 ---
 

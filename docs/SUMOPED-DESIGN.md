@@ -2,8 +2,9 @@
 
 **Status: PROPOSAL — awaiting owner sign-off. No implementation has started.**
 
-The WHAT is `SUMOPED-REQUIREMENTS.md`; this document does not restate it. Task breakdown:
-`SUMOPED-TASKS.md`. Checklist: `SUMOPED-TRACKER.md`.
+The WHAT is `SUMOPED-REQUIREMENTS.md`; this document does not restate it. Coverage plan:
+`SUMOPED-COVERAGE.md` (+ `SUMOPED-BRANCH-INVENTORY.md`). Task breakdown: `SUMOPED-TASKS.md`.
+Checklist: `SUMOPED-TRACKER.md`.
 
 This is the mechanism, the data structures, the exact seams into the existing engine, and the
 determinism/parity argument for porting SUMO 1.20.0's `MSPModel_Striping` into SumoSharp.
@@ -91,6 +92,10 @@ every step; with SUMO's defaults it jitters 1.12–1.38. `dawdling` is the pedes
 vehicle `sigma`, and per CLAUDE.md it goes in each scenario's `config.sumocfg`, never in a script flag.
 
 ### 2.3 Golden format
+
+⚠ **Superseded in part by `SUMOPED-COVERAGE.md` §2**, which enumerates **seven** person-bearing SUMO
+outputs measured first-hand. The summary below is the FCD half; read coverage §2 for the rest
+(`--person-summary-output`'s per-step `jammed` column and `--collision-output` in particular).
 
 - **Primary — person FCD.** `<person id x y angle speed pos edge slope/>` nested under `<timestep>`.
   Note: `edge` (not `lane`), and it carries **internal ids** (`:c_w1`, `:c_c1`) while on a walkingarea or
@@ -584,3 +589,55 @@ Note the demand uses `<walk from= to=>`, which invokes SUMO's intermodal router 
 should convert this to an explicit `<walk edges="cn cs"/>` (normal edges only — the striping model
 inserts the walkingareas and crossings itself, §5.5) so the committed input does not depend on the
 router's route choice, only the model's junction-local one.
+
+
+---
+
+## Appendix B — the Tier C saturated fixture, verbatim
+
+Same `nodes.nod.xml` as Appendix A but with `<node id="c" ... type="traffic_light"/>`, and
+`numLanes="2"` on all eight edges. Regenerate with:
+
+```bash
+netconvert --node-files=nodes.nod.xml --edge-files=edges.edg.xml \
+           --sidewalks.guess --crossings.guess --tls.guess --no-turnarounds \
+           --output-file=net.net.xml
+# crossing width axis (coverage §4): --default.crossing-width 0.64  (1 stripe)
+#                                    --default.crossing-width 8.00  (12 stripes)
+```
+Yields four crossings at width 4.00 m (**6 stripes**) and length 12.80 m.
+
+`rou.rou.xml` — saturated variant (460 persons loaded, steady state from t≈80, ~110–140 walking):
+```xml
+<routes>
+  <vType id="car" vClass="passenger" sigma="0" tau="1" length="5" accel="2.6" decel="4.5" maxSpeed="13.89"/>
+  <vType id="ped" vClass="pedestrian" speedDev="0" speedFactor="1"/>
+  <flow id="fwe" type="car" begin="0" end="300" period="3" from="wc" to="ce" departLane="best" departSpeed="max"/>
+  <flow id="few" type="car" begin="0" end="300" period="3" from="ec" to="cw" departLane="best" departSpeed="max"/>
+  <flow id="fns" type="car" begin="0" end="300" period="4" from="nc" to="cs" departLane="best" departSpeed="max"/>
+  <flow id="fsn" type="car" begin="0" end="300" period="4" from="sc" to="cn" departLane="best" departSpeed="max"/>
+  <personFlow id="pns"   type="ped" begin="0" end="300" period="2"><walk from="cn" to="cs"/></personFlow>
+  <personFlow id="psn"   type="ped" begin="0" end="300" period="2"><walk from="cs" to="cn"/></personFlow>
+  <personFlow id="pew"   type="ped" begin="0" end="300" period="3"><walk from="ce" to="cw"/></personFlow>
+  <personFlow id="ppass" type="ped" begin="0" end="300" period="5"><walk from="cn" to="cn"/></personFlow>
+</routes>
+```
+`ppass` (`from="cn" to="cn"`) is the **pass-by** flow for R3d — peds who reach the junction and turn
+back without crossing.
+
+Jam-regime variant: drop to two car flows at `period="2"` and two personFlows at `period="0.5"`.
+Measured: `<persons loaded="1200" running="365" jammed="175"/>`, 80 `<collision>` records.
+
+Generation command (honest-SUMO flags + the full person output set):
+```bash
+sumo -n net.net.xml -r rou.rou.xml --begin 0 --end 300 --step-length 1 \
+  --pedestrian.model striping --pedestrian.striping.dawdling 0 \
+  --time-to-teleport -1 --collision.action warn --collision.check-junctions true \
+  --fcd-output golden.fcd.xml --fcd-output.attributes id,x,y,speed,pos,edge --precision 4 \
+  --device.fcd.begin 200 \
+  --person-summary-output golden.personsummary.xml \
+  --personinfo-output     golden.personinfo.xml \
+  --statistic-output      golden.statistic.xml \
+  --collision-output      golden.collisions.xml \
+  --no-step-log true 2> golden.warnings.txt
+```
