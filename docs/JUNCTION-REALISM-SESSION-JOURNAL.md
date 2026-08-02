@@ -4063,3 +4063,46 @@ crossing-standoff family (Class-2 admission/holds) is now the top open class.
 
 **P3 ✓.** Full sln green; bench hash `A134ED3716DDE7BC` par==single unchanged; gate-off
 bit-for-bit by construction (every return is `Math.Min(pre-existing, +infinity)`).
+
+## Entry 59 — owner 3D verdict on Entries 57–58 (fresh pack, F3 ON, shipped defaults, 10k/30k): "improved a lot"; two NEW named classes from the session
+
+Owner verdict: overall situation improved a lot; the remaining weirdnesses are now few enough
+to target individually; quality good enough that this branch becomes the new main (see the
+merge note at the end of this entry).
+
+**NEW CLASS A — late lane-change planning at queue tails (owner-reported, screenshot 1/2).**
+A car arriving at the back of a queue drives TIGHT up to the standing tail car first, and only
+then — front bumper nearly at the leader's rear — decides to change to the free left lane; the
+IG renders the maneuver sweeping THROUGH the leader's body, and the car often ends misaligned,
+not fully in the target lane. The owner's framing: drivers think ahead; in the sim the
+emergency-shaped last-moment swerve is the NORM, not the exception. This is a lane-change
+DECISION-TIMING gap, not an overlap-classifier gap: SUMO's strategic change runs against
+bestLanes with a speed-scaled lookAheadDistance (laneChangeModel lookahead, MSLaneChanger),
+so a queue tail on the current lane triggers the strategic change well upstream. Ours
+evidently fires only near standstill. NEXT: design-first item (it is a behavioral feature,
+not a one-line fix) — trace one such vehicle first ([veh] + lane-change prints), THEN read
+our change-trigger code against MSLaneChanger's strategic arm. Related but distinct from the
+old DR-viewer issue "stopped car lane-changes into an occupied slot".
+
+**NEW CLASS B — turners holding mid-junction "for no obvious reason" + straight stream
+driving through them (owner-reported, screenshot 3).** Two left-turning cars stop inside the
+junction with BOTH exit lanes free, blocking it; the bottom-up straight stream then drives
+THROUGH the standing blockers as if the box were free; after a long stand the blockers clear
+and the NEXT turning pair stops in the same spot. A pedestrian crossing sits at the exit; the
+known ped-render z=0 bug may be hiding peds that are LOGICALLY on that crossing.
+HYPOTHESES (owner's + mine, all unverified — trace before believing any):
+  (a) the hold = crowdYield/crossing-occupied against peds invisible in the render (z=0 render
+      bug, docs/TASKS-TODO.md) — would explain "no obvious reason" + the repeat at the same spot;
+  (b) the drive-through = the F3 bounded-patience recovery working as designed:
+      IgnoreJunctionBlockerSeconds=60 (LIVECITY_IGNOREBLOCKER, Entry 37) skips a foe that has
+      stood >= 60 s — the owner's own "maybe this is some kind of recovery maneuver, not
+      always" matches a 60 s threshold exactly;
+  (c) if the drive-through starts BEFORE 60 s, it is a real residual miss (e.g. the occupant
+      is on a different internal sub-lane than the one the straight link folds over).
+NEXT: reproduce at that junction headless (identify it from the cut by the ped crossing +
+left-turn geometry), [veh]-trace one straight-stream car and one turner; check the turner's
+binder (crowdYield?) and the crosser's window vs the 60 s threshold.
+
+**Merge note:** owner decision — this branch (Entries 48–58 state: partials ON, ring break
+ON, rerouting ON, Entry 49/57/58 fixes) becomes the new main. Gates at merge: full sln
+green, bench hash `A134ED3716DDE7BC` par==single, goldens byte-identical.
