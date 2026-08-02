@@ -3813,3 +3813,30 @@ Instrument anatomy of the residuals (pv1 capture, OVERLAP-EX dedup):
 - The merge class's crispest signature: `__veh411 × __veh2209` both at `gen_road_7290_2@1.0`,
   depth 5.0 — **full co-location at a shared target lane's start**, i.e. two streams landing in
   (likely) the same step, neither seeing the other mid-flight. Being traced.
+
+## Entry 55 — the merge co-location TRACED: the simultaneous same-target release; the (link,link) pair the foe loop never evaluates
+
+`[veh]` traces of both cars, full landing window (t=636–642, junction 30268, TL-off):
+
+1. Both queue STOPPED on two different internal lanes with the SAME target lane
+   (`:30268_5_2@34.75` link 7, `:30268_0_1@28.72`), each bound `crossJxnLeader` on the SAME
+   leader `__veh2917` standing on the shared target `gen_road_7290_2` (lane _2).
+2. veh2917 moves; both release in PERFECT LOCKSTEP (0.65 / 1.80 / 3.08 m/s — the [merge] trace
+   shows each running `PHASE2-targetFollow foe=__veh2917 x=0.65`: both follow the leader, and
+   NEITHER EVER EVALUATES THE OTHER — no [merge] phase names veh2209 as veh411's foe at any
+   step, though PHASE 1 ("foe still on its merging internal lane") is exactly this situation.
+3. Both land at `gen_road_7290_2@1.03` the same step (t=640.5) — full co-location.
+4. `colocationSymmetryBreak` (binder 15) catches it at t=641.0 — one car freezes, the other
+   proceeds; they untangle into a legitimate platoon by t=642.5. Transient, at speed, and the
+   owner sees it constantly: every saturated same-target pair whose shared leader departs does
+   this.
+
+**Named gap:** the sameTargetMerge evaluation is reached per (egoLink, foeLink) from the
+junction-yield foe loop — for this pair (link 7 ↔ :30268_0_1's link) the loop never evaluates
+the relation at all (no respondsTo/FoeWith reach, or single-foe-per-link short-circuit at
+FindFoeVehicle — the two candidate guards; next instrument names which). SUMO cannot miss it:
+each link's `setApproaching` registration makes the other stream visible via
+`opened()/blockedByFoe`'s sameTargetLane arm regardless of the request matrix, and the
+entry-order tie-break makes exactly one yield. `colocationSymmetryBreak` is doing its job as
+the last-resort net — the fix belongs one layer up. NEXT: one instrumented run printing the foe
+links the loop iterates for link 7; then the fix, gate-scoped, standard ladder.
