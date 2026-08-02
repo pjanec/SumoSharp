@@ -130,10 +130,119 @@ def offset_polygon(center, half):
     return left + list(reversed(right))
 
 
+def build_scene(cfg):
+    """cfg keys: net, fcd, name, desc, begin, end, stride, dirSplit, radius, crop, cropJunction."""
+    net_root = ET.parse(cfg["net"]).getroot()
+    network, _ = build_network(net_root)
+    dir_split = bool(cfg.get("dirSplit"))
+    begin, end = cfg.get("begin"), cfg.get("end")
+    stride = int(cfg.get("stride") or 1)
+    radius = float(cfg.get("radius") or 0.25)
+
+    veh_slot, ped_slot = {}, {}
+    ped_first, ped_last = {}, {}
+    times = []
+    for _, ts in ET.iterparse(cfg["fcd"], events=("end",)):
+        if ts.tag != "timestep":
+            continue
+        t = float(ts.get("time"))
+        if (begin is not None and t < begin) or (end is not None and t > end):
+            ts.clear()
+            continue
+        times.append(t)
+        for v in ts.findall("vehicle"):
+            veh_slot.setdefault(v.get("id"), len(veh_slot))
+        for p in ts.findall("person"):
+            pid = p.get("id")
+            ped_slot.setdefault(pid, len(ped_slot))
+            xy = (float(p.get("x")), float(p.get("y")))
+            ped_first.setdefault(pid, xy)
+            ped_last[pid] = xy
+        ts.clear()
+    if not times:
+        sys.exit(f"error: no timesteps in range for {cfg['fcd']}")
+    times.sort()
+    dt = (times[1] - times[0]) if len(times) > 1 else 1.0
+
+    ped_kind = {}
+    for pid, (x0, y0) in ped_first.items():
+        x1, y1 = ped_last[pid]
+        dx, dy = x1 - x0, y1 - y0
+        if not dir_split:
+            ped_kind[pid] = 2
+        elif abs(dy) >= abs(dx):
+            ped_kind[pid] = 0 if dy >= 0 else 1
+        else:
+            ped_kind[pid] = 0 if dx >= 0 else 1
+
+    keep = set(times[:: max(1, stride)])
+    frames = []
+    minx = miny = float("inf")
+    maxx = maxy = float("-inf")
+    for lane in network["lanes"]:
+        sh = lane["shape"]
+        for i in range(0, len(sh), 2):
+            minx, maxx = min(minx, sh[i]), max(maxx, sh[i])
+            miny, maxy = min(miny, sh[i + 1]), max(maxy, sh[i + 1])
+    veh_len = veh_wid = 0.0
+    for _, ts in ET.iterparse(cfg["fcd"], events=("end",)):
+        if ts.tag != "timestep":
+            continue
+        if float(ts.get("time")) not in keep:
+            ts.clear()
+            continue
+        V = [None] * len(veh_slot)
+        D = [None] * len(ped_slot)
+        for v in ts.findall("vehicle"):
+            V[veh_slot[v.get("id")]] = [r2(float(v.get("x"))), r2(float(v.get("y"))),
+                                        r2(float(v.get("angle")))]
+            veh_len, veh_wid = 5.0, 1.8
+        for p in ts.findall("person"):
+            D[ped_slot[p.get("id")]] = [r2(float(p.get("x"))), r2(float(p.get("y"))),
+                                        radius, ped_kind[p.get("id")]]
+        frames.append({"v": V, "d": D})
+        ts.clear()
+
+    pad = 6.0
+    view = [r2(minx - pad), r2(miny - pad), r2(maxx + pad), r2(maxy + pad)]
+    if cfg.get("cropJunction"):
+        jid, half = cfg["cropJunction"].rsplit(",", 1)
+        half = float(half)
+        found = None
+        for j in net_root.findall("junction"):
+            if j.get("id") == jid:
+                found = (float(j.get("x")), float(j.get("y")))
+        if found is None:
+            sys.exit(f"error: junction '{jid}' not found")
+        cx, cy = found
+        view = [r2(cx - half), r2(cy - half), r2(cx + half), r2(cy + half)]
+    elif cfg.get("crop"):
+        cx, cy, half = (float(v) for v in cfg["crop"].split(","))
+        view = [r2(cx - half), r2(cy - half), r2(cx + half), r2(cy + half)]
+
+    return {
+        "name": cfg.get("name") or os.path.basename(cfg["fcd"]),
+        "desc": cfg.get("desc", ""),
+        "view": view,
+        "network": network,
+        "vdim": [veh_len, veh_wid],
+        "dt": dt * max(1, stride),
+        "frames": frames,
+        "labels": ["pedestrian (stream A)", "pedestrian (stream B)", "pedestrian"] if dir_split else None,
+        "incident": None,
+        "boundary": None,
+        "useDataHeading": False,
+        "vehIds": [k for k, _ in sorted(veh_slot.items(), key=lambda kv: kv[1])] or None,
+    }, len(frames), len(ped_slot), len(veh_slot)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--net", required=True)
-    ap.add_argument("--fcd", required=True)
+    ap.add_argument("--net")
+    ap.add_argument("--fcd")
+    ap.add_argument("--manifest",
+                    help="JSON list of scene configs -> ONE multi-scene HTML (the player has a scene combo). "
+                         "Keys: net, fcd, name, desc, begin, end, stride, dirSplit, radius, crop, cropJunction.")
     ap.add_argument("--out", required=True)
     ap.add_argument("--name", default=None)
     ap.add_argument("--desc", default="")
@@ -160,122 +269,29 @@ def main():
         if not os.path.exists(p):
             sys.exit(f"error: template not found: {p}")
 
-    net_root = ET.parse(a.net).getroot()
-    network, lane_geom = build_network(net_root)
+    if a.manifest:
+        cfgs = json.load(open(a.manifest))
+    else:
+        if not a.net or not a.fcd:
+            sys.exit("error: need --net and --fcd (or --manifest)")
+        cfgs = [{"net": a.net, "fcd": a.fcd, "name": a.name, "desc": a.desc,
+                 "begin": a.begin, "end": a.end, "stride": a.stride,
+                 "dirSplit": a.dir_split, "radius": a.radius,
+                 "crop": a.crop, "cropJunction": a.crop_junction}]
 
-    # ---- pass 1: fixed slots + per-ped dominant travel axis (for --dir-split) ----
-    veh_slot, ped_slot = {}, {}
-    ped_first, ped_last = {}, {}
-    times = []
-    for _, ts in ET.iterparse(a.fcd, events=("end",)):
-        if ts.tag != "timestep":
-            continue
-        t = float(ts.get("time"))
-        if (a.begin is not None and t < a.begin) or (a.end is not None and t > a.end):
-            ts.clear()
-            continue
-        times.append(t)
-        for v in ts.findall("vehicle"):
-            veh_slot.setdefault(v.get("id"), len(veh_slot))
-        for p in ts.findall("person"):
-            pid = p.get("id")
-            ped_slot.setdefault(pid, len(ped_slot))
-            xy = (float(p.get("x")), float(p.get("y")))
-            ped_first.setdefault(pid, xy)
-            ped_last[pid] = xy
-        ts.clear()
-    if not times:
-        sys.exit("error: no timesteps in range")
-    times.sort()
-    dt = (times[1] - times[0]) if len(times) > 1 else 1.0
-
-    ped_kind = {}
-    for pid, (x0, y0) in ped_first.items():
-        x1, y1 = ped_last[pid]
-        dx, dy = x1 - x0, y1 - y0
-        if not a.dir_split:
-            ped_kind[pid] = 2
-        elif abs(dy) >= abs(dx):
-            ped_kind[pid] = 0 if dy >= 0 else 1
-        else:
-            ped_kind[pid] = 0 if dx >= 0 else 1
-
-    # ---- pass 2: frames ----
-    keep = set(times[:: max(1, a.stride)])
-    frames = []
-    minx = miny = float("inf")
-    maxx = maxy = float("-inf")
-    for lane in network["lanes"]:
-        s = lane["shape"]
-        for i in range(0, len(s), 2):
-            minx, maxx = min(minx, s[i]), max(maxx, s[i])
-            miny, maxy = min(miny, s[i + 1]), max(maxy, s[i + 1])
-
-    veh_len = veh_wid = 0.0
-    for _, ts in ET.iterparse(a.fcd, events=("end",)):
-        if ts.tag != "timestep":
-            continue
-        t = float(ts.get("time"))
-        if t not in keep:
-            ts.clear()
-            continue
-        V = [None] * len(veh_slot)
-        D = [None] * len(ped_slot)
-        for v in ts.findall("vehicle"):
-            V[veh_slot[v.get("id")]] = [r2(float(v.get("x"))), r2(float(v.get("y"))),
-                                        r2(float(v.get("angle")))]
-            veh_len = veh_len or 5.0
-            veh_wid = veh_wid or 1.8
-        for p in ts.findall("person"):
-            D[ped_slot[p.get("id")]] = [r2(float(p.get("x"))), r2(float(p.get("y"))),
-                                        a.radius, ped_kind[p.get("id")]]
-        frames.append({"v": V, "d": D})
-        ts.clear()
-
-    pad = 6.0
-    view = [r2(minx - pad), r2(miny - pad), r2(maxx + pad), r2(maxy + pad)]
-    if a.crop_junction:
-        jid, half = a.crop_junction.rsplit(",", 1)
-        half = float(half)
-        found = None
-        for j in net_root.findall("junction"):
-            if j.get("id") == jid:
-                found = (float(j.get("x")), float(j.get("y")))
-        if found is None:
-            sys.exit(f"error: junction '{jid}' not found in the net")
-        cx, cy = found
-        view = [r2(cx - half), r2(cy - half), r2(cx + half), r2(cy + half)]
-    elif a.crop:
-        cx, cy, half = (float(v) for v in a.crop.split(","))
-        view = [r2(cx - half), r2(cy - half), r2(cx + half), r2(cy + half)]
-    labels = None
-    if a.dir_split:
-        labels = ["pedestrian (stream A)", "pedestrian (stream B)", "pedestrian"]
-
-    scene = {
-        "name": a.name or os.path.basename(a.fcd),
-        "desc": a.desc,
-        "view": view,
-        "network": network,
-        "vdim": [veh_len, veh_wid],
-        "dt": dt * max(1, a.stride),
-        "frames": frames,
-        "labels": labels,
-        "incident": None,
-        "boundary": None,
-        "useDataHeading": False,
-        "vehIds": [k for k, _ in sorted(veh_slot.items(), key=lambda kv: kv[1])] or None,
-    }
-    payload = {"scenes": [scene]}
+    scenes = []
+    for c in cfgs:
+        sc, nf, npd, nv = build_scene(c)
+        scenes.append(sc)
+        print(f"  scene '{sc['name']}': {nf} frames, {npd} persons, {nv} vehicles")
 
     html = open(th).read() \
-        .replace("__SCENARIO_NAME__", a.title or scene["name"]) \
-        .replace("/*REPLAY_DATA*/", json.dumps(payload, separators=(",", ":"))) \
+        .replace("__SCENARIO_NAME__", a.title or scenes[0]["name"]) \
+        .replace("/*REPLAY_DATA*/", json.dumps({"scenes": scenes}, separators=(",", ":"))) \
         .replace("/*TEMPLATE_JS*/", open(tj).read())
     with open(a.out, "w") as f:
         f.write(html)
-    print(f"{a.out}: {len(frames)} frames, {len(ped_slot)} persons, {len(veh_slot)} vehicles, "
-          f"{os.path.getsize(a.out)} bytes")
+    print(f"{a.out}: {len(scenes)} scene(s), {os.path.getsize(a.out)} bytes")
 
 
 if __name__ == "__main__":

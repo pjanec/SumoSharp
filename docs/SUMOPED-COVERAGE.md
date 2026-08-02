@@ -193,6 +193,31 @@ Sidewalk counterflow, by contrast, works with the obvious demand and self-organi
 **y = −3.52** and hold that 3.2 m separation for the whole run; the same result holds at 214 peds
 concurrent on a 6 m (9-stripe) sidewalk.
 
+### 4.2b Ped turners threading the waiting bunch (R3d, the sharpest form)
+
+A pedestrian that **turns at the corner and stays on the sidewalk** (no crossing) must pass through the
+walkingarea where other peds are queued waiting for a gap. Corner-turn routes with **zero crossings**
+exist at a 4-arm junction — `nc → :c_w0 → cw`, `ec → :c_w1 → cn`, `wc → :c_w3 → cs` — and are the
+cleanest witness for R3d.
+
+Measured, moderate density (car flow gaps present):
+
+```
+TURNERS : 1428 ped-steps on walkingareas,  411 stopped (29%)
+crossers:  511 ped-steps on walkingareas,  152 stopped (30%)
+turner cells on :c_w0 also used by a waiter:  2%
+turner cells on :c_w1 also used by a waiter:  4%
+```
+Turners are no more delayed than the crossers and occupy almost entirely *different ground* — the model
+routes them **around** the cluster. At 2.4× the car flow the same scenario degrades into corner
+gridlock: turners stopped 76% of the time and sharing 77% of their ground on `:c_w3` with waiters.
+The degradation is continuous with density, not a switch.
+
+⚠ **Metric warning, learned the hard way here.** Conditioning "turner stopped %" on *steps where ≥3
+peds are already stopped on that walkingarea* reports 79–95% stopped and looks like total failure —
+because the condition selects the congested moments. The unconditioned figure is 29%. Any
+"is it flowing" metric for this behaviour must be unconditioned, or it measures its own selector.
+
 ### 4.3 Turning cars blocked by peds on the EXIT crossing
 
 A car turning left or right commits into the junction and must then yield to pedestrians on the

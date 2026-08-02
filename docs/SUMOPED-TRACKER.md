@@ -147,3 +147,10 @@ These are established facts, not assumptions — the commands are in `SUMOPED-DE
   held on internal lane `:c_4_0`, t=84..89, 9 peds on `:c_c0`). Coverage §4.3.
 - Sidewalk counterflow works with the obvious demand and self-organises: two lanes at y=-6.72 / y=-3.52
   held for the whole run (4 m sidewalk, 75 peds each way); same at 214 concurrent on 6 m.
+- **Ped turners threading the waiting bunch (R3d)** works at moderate density: stopped 29% of their
+  walkingarea time vs 30% for crossers, and only 2-4% of the ground they use is ever used by a waiter --
+  they route AROUND the cluster. At 2.4x car flow it degrades to corner gridlock (76% stopped, 77%
+  shared ground on `:c_w3`), continuously rather than as a switch.
+- ⚠ **Metric warning:** conditioning "turner stopped %" on steps that already have >=3 stopped peds on
+  the walkingarea reports 79-95% and looks like total failure -- the condition selects the congested
+  moments. Unconditioned it is 29%. This nearly shipped as a wrong conclusion.

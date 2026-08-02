@@ -302,6 +302,8 @@ aggregate is `golden.tripinfo.xml` `<personinfo>`.
 | `counterflow-crossing` | peds both ways over the SAME crossing — **does not happen by default**, see coverage §4.2 | R3a, R3b, R3d |
 | `counterflow-crossing-jam` | the same oversaturated → head-on deadlock + squeeze-through | R3a, R5a |
 | `turning-vs-crossing-peds` | cars turning **left and right** held on the internal lane by peds on the **exit** crossing | R4, R5a |
+| `ped-turners-through-bunch` | peds **turning at the corner** (sidewalk only, zero crossings) threading the queue waiting to cross | R3d |
+| `ped-turners-gridlock` | the same at 2.4x car flow — corner gridlock, the degraded end of R3d | R3a, R3d |
 
 ### R12 — Coverage must be demonstrated, not asserted
 
