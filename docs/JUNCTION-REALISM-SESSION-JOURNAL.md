@@ -3864,3 +3864,35 @@ other is farther/not my leader", neither follows, co-location. The same missing-
 shape as Entry 40/49. NEXT (first move of the next round): read PHASE 1's ordering guard
 against the trace values; if the tie hypothesis holds, the fix is the IsLeaderByEntryOrder
 chain at that decision, gate-scoped, standard ladder.
+
+**PHASE-1 read (same session): tie hypothesis REFUTED, suspect moved one level down.** PHASE 1
+HAS the entry-order tie-break (Engine.cs ~9369, Entry-38's ungated `IsLeaderByEntryOrder`, with
+`PHASE1-egoIsLeader-skip` trace tag). The trace shows NEITHER PHASE-1 tag during the release —
+so the `foeMerging.LaneId == foeInternalLaneId` guard failed: **`FindFoeVehicle(ego,
+:30268_0_1)` returned some OTHER route-matching vehicle** (its documented single-foe-per-link
+first-match short-circuit — most plausibly an approaching follower queued behind veh2209 whose
+route also includes that lane), so the ON-LANE merger was invisible and the arm took the
+PHASE-0 approaching branch against the wrong foe. Next instrument: print FindFoeVehicle's pick
+for foeLink=1 in the release window. Candidate fix shape (SUMO-faithful): the merge arm should
+consider the on-lane occupant (rearmost of the foe internal lane, which the neighbor query
+already answers) BEFORE falling back to the route-matched approaching foe — SUMO's
+getLeaderInfo walks the foe LANE's occupants, not a single route-matched candidate.
+
+## Entry 56 (BEFORE) — owner decisions: RingBreakGate DEFAULT ON; the crossing-class hunt is next
+
+Owner (after watching the best-config 3D run): fewer fully-gridlocked junctions than ever seen,
+traffic still moving city-wide; "ringbreak on by default - ok"; next hunt = the crossing-class
+overlaps ("cars go full speed through another one blocked in junction is exactly what I would
+not like to see") + the merge class + a few residual queue stackings.
+
+`RingBreakGate` default flipped ON (kill switch `LIVECITY_RINGBREAK=0`; ENV-GATES row updated).
+Predictions: goldens byte-identical (no golden forms an aged stopped cycle); full sln green
+incl. hour-horizon (its arms now run ringbreak-ON via the env-honoured default); bench hash
+unchanged.
+
+**Crossing-class trace targets** (from the pv1 capture, for the next round): the full-speed-
+through-blocked-car class = crossing-internal-lane pairs with one member moving —
+`:35673_0_0@14.9 × :35673_1_0@13.7`, `:30268_8_0 × :30268_5_2`, `:36220_7_0 × :36220_9_2`
+(depths 1.8 m). Hunt shape: [veh]-trace the MOVING member through the intersection window and
+read which arm admitted it past the standing body (adaptToJxnLeader mapping vs FoeIsInTheWay
+vs the F3 crossing arms) — same discipline as Entries 53/55.

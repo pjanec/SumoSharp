@@ -14639,9 +14639,12 @@ public sealed partial class Engine : IEngine
     // entry-order total order and releases its stop-form edge into the ring (keepClear /
     // internalJunctionAdmission) toward exactly its ring target -- the follow-form arms
     // (adaptToJunctionLeader, corridor FOLLOW, leaderFollow) still bound its speed, so it advances
-    // INTO gaps, never THROUGH bodies. DEFAULT OFF = byte-identical by construction: the pass never
-    // runs and no release field is ever read.
-    public bool RingBreakGate { get; set; }
+    // INTO gaps, never THROUGH bodies. DEFAULT ON (owner decision, Entry 56): the Entry-52
+    // blocker (frozen interpenetrating landings) was cured by PartialOccupancyGate, and partials
+    // + ringbreak measured as the best honest configuration (+3.7% arrivals at -87% overlaps).
+    // LIVECITY_RINGBREAK=0 is the kill switch. Goldens are expected untouched: the pass acts only
+    // on aged stopped blocker-graph CYCLES, which no golden scenario forms (ladder-verified).
+    public bool RingBreakGate { get; set; } = true;
 
     // Ring age (min member consecutive-stop seconds) required before a break is attempted, AND the
     // stationary-timeout after which a released breaker is declared wedged and the next member is
