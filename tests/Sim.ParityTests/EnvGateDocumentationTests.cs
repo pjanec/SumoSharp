@@ -91,6 +91,7 @@ public class EnvGateDocumentationTests
         "SUMOSHARP_ISLEADERFIX",         // Engine.JunctionIsLeaderGate            = true
         "SUMOSHARP_INTERNALJUNCTIONFIX", // Engine.InternalJunctionAdmissionGate   = true
         "SUMOSHARP_URGENTFOLLOW",        // Engine.UrgentStrategicLeaderFollow     = true (Entry 30)
+        "SUMOSHARP_PARTIALVEH",          // Engine.PartialOccupancyGate            = true (Entry 54)
     };
 
     [Fact]

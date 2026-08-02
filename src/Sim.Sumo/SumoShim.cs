@@ -277,6 +277,8 @@ public static class SumoShim
         // because the behavioural regression test drives THIS path, and its forced-OFF arm must be
         // the same engine configuration as its shipped-default arm. Unset => the ENGINE DEFAULT.
         engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
+        // PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md): engine default ON; 0 = kill switch.
+        engine.PartialOccupancyGate = EnvGate("SUMOSHARP_PARTIALVEH", engine.PartialOccupancyGate);
         // JUNCTION-FOE-LANE F2.1: measurement gate for the F3 physical-occupancy arm -- see
         // Sim.Run's twin line and docs/JUNCTION-FOE-LANE-DESIGN.md. Engine default OFF.
         engine.JunctionPhysicalOccupancyGate = EnvGate("SUMOSHARP_PHYSOCCUPANCY", engine.JunctionPhysicalOccupancyGate);

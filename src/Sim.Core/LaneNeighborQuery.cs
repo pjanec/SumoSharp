@@ -33,6 +33,16 @@ internal sealed class LaneNeighborQuery
 {
     private readonly List<VehicleRuntime>[] _byLaneHandle;
 
+    // PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md §2c): the myPartialVehicles analog --
+    // bodies INTERSECTING this lane whose front is on a later lane (MSLane.h:125's second
+    // container). Kept SEPARATE from the main bucket, exactly like SUMO, so every reader opts in
+    // explicitly; phase 1 = the same-lane leader fold and the cross-junction rearmost. Each entry
+    // carries the EXTRAPOLATED front position in THIS lane's frame (lane.Length + posOnNextLane,
+    // design §2b) so the standard `back = pos - length` arithmetic is correct unchanged.
+    // Registered by Engine's serial post-refill pass (never from the region-parallel refill -- a
+    // partial's back lane may belong to another region), cleared here in Refill/RefillRegion.
+    private readonly List<(VehicleRuntime Veh, double ExtPos)>[] _partialsByLaneHandle;
+
     // `laneCount` is `network.LanesByHandle.Count` -- the size of the dense handle space, so
     // every lane's bucket is a plain array slot rather than a hashed dictionary entry. This is
     // the ONLY place per-lane `List<VehicleRuntime>` instances are allocated -- cold path (once
@@ -40,10 +50,38 @@ internal sealed class LaneNeighborQuery
     public LaneNeighborQuery(int laneCount)
     {
         _byLaneHandle = new List<VehicleRuntime>[laneCount];
+        _partialsByLaneHandle = new List<(VehicleRuntime, double)>[laneCount];
         for (var i = 0; i < laneCount; i++)
         {
             _byLaneHandle[i] = new List<VehicleRuntime>();
+            _partialsByLaneHandle[i] = new List<(VehicleRuntime, double)>();
         }
+    }
+
+    // PARTIAL-OCCUPANCY: registration (Engine's serial pass; MSLane::setPartialOccupation analog).
+    public void AddPartial(int laneHandle, VehicleRuntime veh, double extrapolatedPos) =>
+        _partialsByLaneHandle[laneHandle].Add((veh, extrapolatedPos));
+
+    // The nearest partial body ahead of `egoPos` on this lane, or null. Partials hang off the
+    // lane's END (extPos > lane length >= any full vehicle's pos), so for the same-lane leader
+    // fold this is only ever REACHED when it is nearer than +infinity -- the caller Min-folds it
+    // against the main-bucket leader's follow speed.
+    public VehicleRuntime? GetPartialLeader(VehicleRuntime ego, int laneHandle, double egoPos, out double extPos)
+    {
+        extPos = double.PositiveInfinity;
+        VehicleRuntime? best = null;
+        var list = _partialsByLaneHandle[laneHandle];
+        for (var i = 0; i < list.Count; i++)
+        {
+            var (veh, p) = list[i];
+            if (p > egoPos && p < extPos && !ReferenceEquals(veh, ego))
+            {
+                best = veh;
+                extPos = p;
+            }
+        }
+
+        return best;
     }
 
     // D4: replaces the old per-step `Build` factory. `List<T>.Clear()` keeps each bucket's
@@ -60,6 +98,11 @@ internal sealed class LaneNeighborQuery
     public void Refill(ActiveVehicleQuery vehicles)
     {
         foreach (var list in _byLaneHandle)
+        {
+            list.Clear();
+        }
+
+        foreach (var list in _partialsByLaneHandle)
         {
             list.Clear();
         }
@@ -97,6 +140,7 @@ internal sealed class LaneNeighborQuery
         for (var li = 0; li < lanes.Count; li++)
         {
             _byLaneHandle[lanes[li]].Clear();
+            _partialsByLaneHandle[lanes[li]].Clear();
         }
 
         for (var i = 0; i < vehicleIndices.Count; i++)

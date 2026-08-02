@@ -3734,3 +3734,64 @@ lookahead) treats only the traced site and leaves the same blindness in every ot
 the neighbor query — the port is the right shape. ⚠ Default-path behavioural change: full
 goldens + both surfaces + the F3 battery are the gate; expect golden-sensitive scenarios (the
 cjl arm is on the parity path).
+
+## Entry 54 (BEFORE) — partial-occupancy phase 1 implemented (owner GO on PARTIAL-OCCUPANCY-DESIGN.md); the ladder
+
+Implementation per the design: separate per-lane partials container in `LaneNeighborQuery`
+(cleared in both refills, registered by a SERIAL engine pass from the frozen route pool —
+extrapolated-front-pos frame, §2b); phase-1 opt-ins = the same-lane leader fold (partial fold
+applied identically after BOTH the packed and GetLeader branches, keeping spatial/non-spatial
+equivalence) and the cross-junction rearmost (`IRearmostSource.Rearmost` now returns
+pos-in-frame; the insertion-time `ActiveRearmost` source stays full-occupants-only — phase 2).
+The post-move phase is inert by construction (the second Refill clears partials; only the
+pre-plan pass registers). Gates: `LIVECITY_PARTIALVEH` / `SUMOSHARP_PARTIALVEH`, engine default
+**ON** (owner: "use what SUMO is having"), rows + safe-form tripwire + bench list updated.
+Deviation from the task doc: T1's isolated unit test folds into T2's trace repro (no
+InternalsVisibleTo for the internal query; the repro asserts the same thing end-to-end).
+
+**Falsifiable predictions (design §3 ladder):**
+
+- P1: gate OFF (`LIVECITY_PARTIALVEH=0`) reproduces today bit-for-bit; full sln + bench hash
+  `A134ED3716DDE7BC` with the DEFAULT (ON) — goldens byte-identical per the §3 argument (SUMO
+  produced them WITH partials). Any golden move = investigate first.
+- P2: standard Geneva capture (4000 cars, reroute OFF, F3 ON, RINGBREAK=0), PARTIALVEH 0 vs 1:
+  junction overlap class 329 → **< 100** at t≈1780; merge and queue classes not worse.
+- P3: the Entry-53 ratchet signature (freeFlow/e-stop alternation into a standing blocker) does
+  not occur gate-ON — no `[veh]` freeFlow step while a partial blocker stands in range.
+- P4: D2 re-run (PARTIALVEH=1 RINGBREAK=1): the frozen queue>2.5m class collapses (492 → < 100)
+  — the breaker's landing now sees the queue tail; re-opens the D2 default-ON question.
+- P5: hour-horizon with defaults: arrivals within noise of 2436/2562-class values, stalls 0.
+- Risk watched: partials add braking; watch arrivals for a systemic slowdown (a small drop is
+  acceptable physics — cars no longer drive through each other; a large drop means an over-wide
+  registration, e.g. the off-pool caveat in `RegisterPartialOccupations`).
+
+## Entry 54 (AFTER) — every prediction confirmed; overlaps −87%; partials+ringbreak is the best honest configuration measured
+
+- **P1 CONFIRMED**: full sln green with the gate DEFAULTED ON — 782/5 goldens byte-identical,
+  bench hash `A134ED3716DDE7BC` (par==single), LiveCity 92/92 (hour-horizon = P5). The §3
+  argument held exactly: SUMO-produced goldens, partial visibility never binds at golden density.
+- **P2 CONFIRMED, 3× past target**: standard capture (reroute OFF, F3 ON, RINGBREAK=0),
+  t≈1780 simultaneous pairs — junction **329 → 34** (target <100), queue>2.5m 45 → 7, total
+  **401 → 50 (−87%)**. The stopped-lookahead ratchet class is gone (P3 by class evidence).
+- **P4 CONFIRMED**: D2 re-run (PARTIALVEH=1 RINGBREAK=1): the frozen landing class queue>2.5m
+  **492 → 8** — the breaker's landing sees the queue tail now. Breaker still healthy: 168
+  breaks / 3 escalations / 0 stuckSteps / 91 ring reports (nothing locks).
+- **The arrivals triangle (the risk watch, and the real story):**
+
+  | arm | arrivals t=1800 | total overlap pairs |
+  | --- | --- | --- |
+  | baseline (no partials, no break) | 2961 | 401 |
+  | partials only | 2635 (−11%) | 50 |
+  | partials + ring break | **3072 (+3.7%)** | **53** |
+
+  Partials alone LOWER throughput — cars no longer drive through junction blockers, so honest
+  gridlock deepens; the old number was inflated by interpenetration, the same class of cheat as
+  SUMO's teleports. The ring break then recovers the flow legitimately (creep through gaps) and
+  ends ABOVE baseline with 87% fewer overlapping bodies. **partials(ON) + ringbreak is the best
+  honest configuration measured on this surface.**
+
+**Decisions this opens for the owner:** (a) `PartialOccupancyGate` shipped default ON per the
+direction — done; (b) D2's default-ON blocker (the Entry-52 frozen landings) is REMOVED — given
+the triangle, recommend flipping `RingBreakGate` default ON as well (the two are complementary:
+honesty + legitimate recovery); (c) the residual 34 junction pairs are phase-2 territory
+(insertion, keepClear space walks, lane-change shadow — T5, own sign-off).

@@ -3254,6 +3254,18 @@ public sealed partial class Engine : IEngine
             }
 
             PhaseEnd("refill", pRefill);
+            // PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md §2a): register boundary-spanning
+            // bodies on the lanes their TAILS still cover -- SUMO's myFurtherLanes/
+            // setPartialOccupation, derived STATELESSLY each step from the frozen route pool
+            // instead of maintained incrementally. Serial on purpose: a partial's back lane may
+            // belong to another region, so the region-parallel refill must not write it. Runs
+            // before every reader of the snapshot (BuildFoeApproachIndex/BuildPacked/plan).
+            if (PartialOccupancyGate)
+            {
+                var pPart = PhaseStart();
+                RegisterPartialOccupations(neighbors);
+                PhaseEnd("partials", pPart);
+            }
             // Perf (super-linear fix): (re)build the O(1) foe-approach index from the SAME frozen
             // start-of-step routes the plan phase reads. Both readers of it -- ComputeWillPass and
             // PlanMovements (via ComputeMoveIntent -> JunctionYieldConstraint -> FindFoeVehicle) -- run
@@ -10479,6 +10491,40 @@ public sealed partial class Engine : IEngine
         // followed, -1 when non-binding (+infinity returns). Read at the fold site only when this
         // arm wins, mirroring CrossJunctionLeaderConstraint's cjlFoeIdx.
         leaderIdx = -1;
+        var main = LeaderFollowMainConstraint(ego, neighbors, dt, time, laneVehicleMaxSpeed, ref leaderIdx, packedEgoSlot);
+
+        // PARTIAL-OCCUPANCY phase 1 (design §2c): fold in the nearest boundary-spanning TAIL on
+        // ego's lane -- SUMO's getLeaderInfo sees myPartialVehicles; the main bucket cannot (a
+        // partial's front is on a later lane). Applied identically after BOTH branches above, so
+        // the spatial and non-spatial plans stay equivalent (partials are not in the packed
+        // array). extPos is the leader's front in EGO'S lane frame (design §2b), so the standard
+        // back-minus-minGap gap is correct as-is.
+        if (PartialOccupancyGate)
+        {
+            var partial = neighbors.GetPartialLeader(ego, ego.LaneHandle, ego.Kinematics.Pos, out var extPos);
+            if (partial is not null
+                && FootprintsOverlap(partial.Kinematics.LatOffset, partial.VType.Width, ego.Kinematics.LatOffset, ego.VType.Width))
+            {
+                var pGap = (extPos - partial.VType.Length) - ego.VType.MinGap - ego.Kinematics.Pos;
+                var pFollow = FollowSpeedFor(
+                    ego.VType, ego.Kinematics.Speed, pGap, partial.Kinematics.Speed, partial.VType.Decel,
+                    laneVehicleMaxSpeed, dt, time,
+                    ref ego.AccControlMode, ref ego.AccLastUpdateTime, ref ego.CaccControlMode,
+                    ego.Acceleration, hasPred: true, predIsCacc: partial.VType.CarFollowModel == "CACC",
+                    ego.LevelOfService, _config!.Ballistic);
+                if (pFollow < main)
+                {
+                    leaderIdx = partial.EntityIndex;
+                    return pFollow;
+                }
+            }
+        }
+
+        return main;
+    }
+
+    private double LeaderFollowMainConstraint(VehicleRuntime ego, LaneNeighborQuery neighbors, double dt, double time, double laneVehicleMaxSpeed, ref int leaderIdx, int packedEgoSlot)
+    {
         // SPATIAL-OPT probe: when the plan takes the spatial branch, the same-lane leader is the
         // adjacent packed slot (sequential/prefetched) instead of a random foe-object deref. The
         // packed leader is byte-identically the same vehicle GetLeader returns (nearest strictly-
@@ -10629,7 +10675,7 @@ public sealed partial class Engine : IEngine
         // intra-edge lane change.
         var poolFollow = TryFindCrossJunctionLeader(
                 ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
-                downstream, new NeighborRearmost(neighbors, ego), dt, out var leader, out var gap)
+                downstream, new NeighborRearmost(neighbors, ego, PartialOccupancyGate), dt, out var leader, out var gap)
             ? FollowSpeedFor(
                 ego.VType, ego.Kinematics.Speed, gap, leader.Kinematics.Speed, leader.VType.Decel,
                 laneVehicleMaxSpeed, dt, time, ref ego.AccControlMode, ref ego.AccLastUpdateTime,
@@ -10650,7 +10696,7 @@ public sealed partial class Engine : IEngine
 #endif
         var arrivalFollow = TryFindCrossJunctionLeader(
                 ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
-                arrivalDownstream, new NeighborRearmost(neighbors, ego), dt, out var aLeader, out var aGap)
+                arrivalDownstream, new NeighborRearmost(neighbors, ego, PartialOccupancyGate), dt, out var aLeader, out var aGap)
             ? FollowSpeedFor(
                 ego.VType, ego.Kinematics.Speed, aGap, aLeader.Kinematics.Speed, aLeader.VType.Decel,
                 laneVehicleMaxSpeed, dt, time, ref ego.AccControlMode, ref ego.AccLastUpdateTime,
@@ -10678,7 +10724,7 @@ public sealed partial class Engine : IEngine
             if (actualLen > 0
                 && TryFindCrossJunctionLeader(
                     ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
-                    actualBuf.Slice(0, actualLen), new NeighborRearmost(neighbors, ego), dt,
+                    actualBuf.Slice(0, actualLen), new NeighborRearmost(neighbors, ego, PartialOccupancyGate), dt,
                     out var xLeader, out var xGap))
             {
                 actualFollow = FollowSpeedFor(
@@ -10851,17 +10897,20 @@ public sealed partial class Engine : IEngine
                 break;
             }
 
-            var cand = rearmostOnLane.Rearmost(laneHandle);
+            var cand = rearmostOnLane.Rearmost(laneHandle, out var candPosInFrame);
             if (egoSelf is not null && DiagTraceVehicleId is not null && DiagTraceVehicleId == egoSelf.Def.Id)
             {
                 Console.Error.WriteLine(
                     $"[cjl] t={CurrentTime:F1} veh={egoSelf.Def.Id} walkLane={_network.LanesByHandle[laneHandle].Id} "
-                    + $"seen={seen:F2} rearmost={(cand is null ? "none" : cand.Def.Id + "@" + cand.Kinematics.Pos.ToString("F2"))}");
+                    + $"seen={seen:F2} rearmost={(cand is null ? "none" : cand.Def.Id + "@" + candPosInFrame.ToString("F2"))}");
             }
 
             if (cand is not null && (egoSelf is null || !ReferenceEquals(cand, egoSelf)))
             {
-                gap = seen + (cand.Kinematics.Pos - cand.VType.Length) - egoVType.MinGap;
+                // PARTIAL-OCCUPANCY: candPosInFrame is the candidate's front IN THIS LANE'S frame --
+                // its own Kinematics.Pos for a full occupant (byte-identical to the pre-partials
+                // read), or the extrapolated position for a boundary-spanning tail (design §2b).
+                gap = seen + (candPosInFrame - cand.VType.Length) - egoVType.MinGap;
                 leader = cand;
                 return true;
             }
@@ -10878,21 +10927,49 @@ public sealed partial class Engine : IEngine
     // ActiveRearmost scans ActiveVehicles (insertion, before the neighbor query is refilled).
     private interface IRearmostSource
     {
-        VehicleRuntime? Rearmost(int laneHandle);
+        // `posInFrame`: the candidate's front position IN THE QUERIED LANE'S frame -- its own
+        // Kinematics.Pos for a full occupant, or the extrapolated position for a partial
+        // (boundary-spanning tail, PARTIAL-OCCUPANCY design §2b).
+        VehicleRuntime? Rearmost(int laneHandle, out double posInFrame);
     }
 
     private readonly struct NeighborRearmost : IRearmostSource
     {
         private readonly LaneNeighborQuery _neighbors;
         private readonly VehicleRuntime _ego;
+        private readonly bool _partials;
 
-        public NeighborRearmost(LaneNeighborQuery neighbors, VehicleRuntime ego)
+        public NeighborRearmost(LaneNeighborQuery neighbors, VehicleRuntime ego, bool partials)
         {
             _neighbors = neighbors;
             _ego = ego;
+            _partials = partials;
         }
 
-        public VehicleRuntime? Rearmost(int laneHandle) => _neighbors.GetRearmost(_ego, laneHandle);
+        public VehicleRuntime? Rearmost(int laneHandle, out double posInFrame)
+        {
+            var full = _neighbors.GetRearmost(_ego, laneHandle);
+            if (full is not null)
+            {
+                // A full occupant is always rearmost of the two containers: a partial hangs off
+                // the lane's far END (extPos > lane length >= any full occupant's pos).
+                posInFrame = full.Kinematics.Pos;
+                return full;
+            }
+
+            if (_partials)
+            {
+                var partial = _neighbors.GetPartialLeader(_ego, laneHandle, double.NegativeInfinity, out var extPos);
+                if (partial is not null)
+                {
+                    posInFrame = extPos;
+                    return partial;
+                }
+            }
+
+            posInFrame = 0.0;
+            return null;
+        }
     }
 
     private readonly struct ActiveRearmost : IRearmostSource
@@ -10901,7 +10978,14 @@ public sealed partial class Engine : IEngine
 
         public ActiveRearmost(Engine engine) => _engine = engine;
 
-        public VehicleRuntime? Rearmost(int laneHandle) => _engine.RearmostOnLaneAmongActive(laneHandle);
+        public VehicleRuntime? Rearmost(int laneHandle, out double posInFrame)
+        {
+            // Insertion-time source: full occupants only (no partials -- the pre-refill scan has no
+            // container; a boundary-spanning tail at insertion is phase 2, design SS2c).
+            var full = _engine.RearmostOnLaneAmongActive(laneHandle);
+            posInFrame = full is not null ? full.Kinematics.Pos : 0.0;
+            return full;
+        }
     }
 
     // B1/B5-i: external-obstacle constraint. Treats the nearest active obstacle ahead of `v` on
@@ -14147,7 +14231,7 @@ public sealed partial class Engine : IEngine
 
         return TryFindCrossJunctionLeader(
             ego.Kinematics.Speed, ego.VType, ego, ego.LaneHandle, ego.Kinematics.Pos,
-            downstream, new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
+            downstream, new NeighborRearmost(neighbors, ego, PartialOccupancyGate), dt, out leader, out gap);
     }
 
     // Entry 34 (b): nearest leader on a NEIGHBOUR lane's continuation past that lane's end (SUMO's
@@ -14176,7 +14260,7 @@ public sealed partial class Engine : IEngine
 
         return TryFindCrossJunctionLeader(
             ego.Kinematics.Speed, ego.VType, ego, neighborLane.Handle, ego.Kinematics.Pos,
-            buf.Slice(0, n), new NeighborRearmost(neighbors, ego), dt, out leader, out gap);
+            buf.Slice(0, n), new NeighborRearmost(neighbors, ego, PartialOccupancyGate), dt, out leader, out gap);
     }
 
     // Entry 34b: SUMO's LaneQ.occupation as seen by the right-direction rule-2 stay
@@ -14483,6 +14567,57 @@ public sealed partial class Engine : IEngine
     // two cars yields and the conflict actually clears. It needs new per-vehicle junction entry-time
     // state. See docs/F3-JUNCTION-OVERLAP-DESIGN.md §3c/§3d.
     public bool JunctionPhysicalOccupancyGate { get; set; }
+
+    // ================== PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md) ==================
+    // The myPartialVehicles port: a vehicle whose front is less than its own length onto its lane
+    // has body hanging back across the boundary; SUMO keeps it REGISTERED on those back lanes
+    // (MSLane.h:125 myPartialVehicles; MSVehicle::updateFurtherLanes MSVehicle.cpp:4829) so leader
+    // queries see the tail at any ego speed. Without it, the tail is visible only through the
+    // lookahead-limited cross-junction walk -- for a STOPPED follower that lookahead is ~2 m, and
+    // the Entry-53 trace shows the resulting freeFlow/e-stop RATCHET driving a follower 1.6 m deep
+    // into the blocker's body (329 simultaneous junction-overlap pairs at 4000-car Geneva
+    // saturation -- the owner's "tolerance to driving through junction blockers").
+    // DEFAULT ON (owner: "use what SUMO is having") -- a correctness port toward the reference;
+    // goldens are expected byte-identical because they were produced by SUMO WITH partials yet
+    // pass today without them (the visibility difference never binds at golden densities).
+    // LIVECITY_PARTIALVEH / SUMOSHARP_PARTIALVEH gate it for A/B.
+    public bool PartialOccupancyGate { get; set; } = true;
+
+    // Registration pass (serial; see the AdvanceOneStep call site). For each active vehicle whose
+    // body spans its lane's START, walk BACKWARD through its route pool while un-covered length
+    // remains, registering on each earlier lane at the extrapolated front position (design §2b:
+    // backLane.Length + accumulated offset -- the standard `back = pos - length` arithmetic is
+    // then correct in that lane's frame with no reader changes). Off-pool caveat (Entry 39
+    // family): after a LATERAL change at low pos, the pool's previous slot may not be the lane
+    // the tail physically covers -- the registered partial is then conservative (a follower
+    // brakes for a body a lane-width off), which errs opposite to today's drive-through.
+    private void RegisterPartialOccupations(LaneNeighborQuery neighbors)
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (v.IsParked || v.Kinematics.Pos >= v.VType.Length)
+            {
+                continue;
+            }
+
+            var remaining = v.VType.Length - v.Kinematics.Pos;
+            var offset = v.Kinematics.Pos;
+            for (var i = v.LaneSeqIndex - 1; i >= 0 && remaining > 0.0; i--)
+            {
+                var backLaneHandle = _laneSeqPool[v.LaneSeqStart + i];
+                if (backLaneHandle < 0)
+                {
+                    break;
+                }
+
+                var backLane = _network!.LanesByHandle[backLaneHandle];
+                neighbors.AddPartial(backLaneHandle, v, backLane.Length + offset);
+                remaining -= backLane.Length;
+                offset += backLane.Length;
+            }
+        }
+    }
+    // ================ end PARTIAL-OCCUPANCY ================
 
     // ===================== DEADLOCK-RING D2 (docs/DEADLOCK-RING-DESIGN.md §2) =====================
     // The gated ring BREAK. D1 (the LIVECITY-RING witness) counts and ages blocker-graph cycles;

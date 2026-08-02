@@ -159,6 +159,8 @@ internal static class Program
         // Entry 24/25 probe gate: the informLeader urgent-strategic leader-follow coupling. Same
         // EnvGate semantics as every gate above (unset => engine default, currently OFF).
         engine.UrgentStrategicLeaderFollow = EnvGate("SUMOSHARP_URGENTFOLLOW", engine.UrgentStrategicLeaderFollow);
+        // PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md): engine default ON; 0 = kill switch.
+        engine.PartialOccupancyGate = EnvGate("SUMOSHARP_PARTIALVEH", engine.PartialOccupancyGate);
         // JUNCTION-FOE-LANE F2.1 (docs/JUNCTION-FOE-LANE-DESIGN.md): measurement gate for the F3
         // physical-occupancy arm (FoeWith-widened AdaptToJunctionLeader). Engine default OFF; the
         // F3-era "counterproductive alone" verdict predates its sibling gates shipping default-ON

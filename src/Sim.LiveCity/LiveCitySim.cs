@@ -468,6 +468,10 @@ public sealed class LiveCitySim : IDisposable
         // bundle (AllLiveCityGateVars) -- like LIVECITY_F3OCCUPANCY it stays env-honoured in the
         // hour-horizon test so both arms of an A/B can set it explicitly.
         _engine.RingBreakGate = EnvGate("LIVECITY_RINGBREAK", _engine.RingBreakGate);
+        // PARTIAL-OCCUPANCY (docs/PARTIAL-OCCUPANCY-DESIGN.md): boundary-spanning tails visible to
+        // the leader queries -- SUMO's myPartialVehicles. Engine default ON (owner direction);
+        // `0` is the kill switch for A/B.
+        _engine.PartialOccupancyGate = EnvGate("LIVECITY_PARTIALVEH", _engine.PartialOccupancyGate);
         // F3/isLeader entry-time ordering (docs/F3-ISLEADER-PORT-DESIGN.md). OFF by default. Faithful and
         // measurably safe, but on its own it does NOT resolve the arm-5 deadlock: the trace showed
         // IsLeader correctly releasing the yielding vehicle 121/121 steps while `FoeIsInTheWay` -- the
