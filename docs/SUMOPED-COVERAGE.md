@@ -404,8 +404,27 @@ consciously choose not to witness in Phase 1, with a reason. Candidates known no
 - Branches reachable only via TraCI/`moveToXY` (Requirement R-N5).
 - `--no-internal-links` straight-line junction-distance fallback (R-N6).
 - `MSLCM_SL2015` sublane ped checks (R-N7).
-- Stop/`arrivalPos`-full "blocked" arrival obstacle — needs a `<stop>`-anchored walk, which is
-  personTrip-adjacent scope.
+- **The two stopping-place arrival branches — OWNER-SIGNED HOLE, doors left open.**
+  `MIDOL-ARRIVAL-OBSTACLE` (`Striping.cpp:1260-1263`) and `MIDOL-ARRIVAL-BLOCKED-STOPFULL` (`:1264-1266`)
+  are both gated on `p.myStage->getDestinationStop() != nullptr`, so **only** a walk whose destination is
+  a `<busStop>`/`<parkingArea>` reaches them. They govern where exactly a ped halts relative to
+  `arrivalPos` — `+minGap` past it when the stop has room, `−minGap` short of it when the stop is full.
+  *Reason for the hole:* both read `getWaitingCapacity()` / `getNumWaitingPersons()`, so porting them
+  means introducing **pedestrians that wait at a stopping place** — the first brick of the ride/board
+  machinery R-N5 excludes. The owner has confirmed no near-term need for buses or stop waiting, and
+  under the Phase-2 hybrid a production SUMO-ped is adopted and released and never arrives anywhere, so
+  this is harness-only coverage either way.
+  *Reopening condition, so the door is genuinely open rather than rhetorically:* the two branches are
+  still **implemented faithfully** (`SUMOPED-PROCESS.md` §8 — port the branch even where no golden
+  witnesses it), guarded so that a destination stop is a `NotPortedInThisStage(STOP-ARRIVAL)` rather
+  than a silent fallback. Reopening is then one Tier A scenario — a `<busStop>` with a small
+  `personCapacity` and ~4 peds so the full variant fires — plus a stop-occupancy count. Nothing in
+  Phase 1 forecloses it.
+  ⚠ **Two neighbouring rows are NOT part of this hole and stay in scope**, because neither is
+  stop-dependent: `DISTTOLANEEND-FINAL-EDGE-MINGAP` (`:1869-1874`) fires for an ordinary stopless walk —
+  its guard is `stop == nullptr || stop has capacity`, and the first disjunct is satisfied by every walk
+  we ship — and `NEXTLANE-WA-ARRIVALPOS` (`:577-580`) is about the walkingarea router's target on the
+  final edge, needing only a ≥3-arm walkingarea. Both are witnessed by the ordinary scenario set.
 - **`--pedestrian.striping.reserve-oncoming`** (normal lanes; default 0.0) — measured inert in every
   configuration tried (symmetric and asymmetric counterflow, 2/4/6 m sidewalks, with and without
   dawdling). The rule codifies segregation that already emerges, so nothing observable changes.

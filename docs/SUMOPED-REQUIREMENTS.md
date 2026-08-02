@@ -266,7 +266,15 @@ knobs are pinned, and a test asserts that flipping either knob to its SUMO defau
   independent reads today. Phase 1 extends only the first (see design §3) and leaves the other two
   alone; merging them risks 324 green tests for no parity gain.
 - **R-N5 — TraCI/`moveToXY` remote control of persons**, containers, `personTrip` with public
-  transport, ride/board stages, and `MSPModel_JuPedSim`. Walking only.
+  transport, ride/board stages, **stopping-place destinations (`<busStop>`/`<parkingArea>` as a walk
+  target, and persons waiting at one)**, multi-stage persons, and `MSPModel_JuPedSim`. Walking only,
+  one walk stage per person.
+  **Doors left open, deliberately** (owner, 2026-08-02: *"no urgent need for buses and waiting at bus
+  stop … we can leave the doors open so that we can return to it later"*). The two branches this
+  excludes are implemented faithfully and guarded with `NotPortedInThisStage(STOP-ARRIVAL)` rather than
+  a silent fallback, and are listed with their reopening condition in `SUMOPED-COVERAGE.md` §8. Note the
+  two *neighbouring* arrival branches are **not** excluded — `DISTTOLANEEND-FINAL-EDGE-MINGAP` fires on
+  every ordinary walk's final edge and `NEXTLANE-WA-ARRIVALPOS` needs only a ≥3-arm walkingarea.
 - **R-N6 — `--no-internal-links`** (SUMO's straight-line junction-distance fallback).
 - **R-N8 — SUMO's intermodal pedestrian router, and `<personFlow>` in the engine.** Every committed
   scenario uses `<walk edges=…>` over normal edges with explicit `departPos`/`arrivalPos`; the
@@ -393,6 +401,52 @@ plus a named oracle signal, or listed as an **admitted hole with a reason and ow
 saturated junction, so both surfaces must accept a change. Tier C narrows that gap but does not close
 it: a saturated *golden* is now affordable and exact (determinism verified at 30,549 person rows), yet
 the demo/`_bench` surfaces still have no SUMO reference. Both surfaces are still required.
+
+---
+
+## 6b. Recorded future need — kerbside pickup / drop-off (NOT Phase 1)
+
+Owner, 2026-08-02: *"what i will need is an approximation of ped getting on/off a car; a pedestrian
+coming to the side of road to a car waiting there and vanishing and then car going away, and the inverse
+process; these two can be done for a ped and car without the two knowing about each other just by
+navigating the car and ped to the same place at the same time."*
+
+Recorded here so it is not lost, and **assessed against Phase 1 rather than merely noted**.
+
+**The owner's assessment is correct: this needs no change to the pedestrian model.** It is host
+choreography over two independently-routed agents, not a coupling. The person model contributes only
+primitives Phase 1 already owes for other reasons:
+
+| the choreography needs | Phase 1 already has it, for | 
+| --- | --- |
+| despawn a person at an arbitrary mid-route point | hybrid *release* at a crossing boundary (design §9, SP-3.0e churn gate) |
+| spawn a person at an arbitrary `(edge, pos, posLat)` with a route tail and no pop | hybrid *adoption* — `TryAdoptAt` (design §9.1b) |
+| a car that halts at the kerb | vehicle-side `<stop>`; nothing to do with persons |
+
+So **no new requirement lands on the port**, and the two branch families it might have implicated do
+not apply: this is not a `<busStop>` destination (R-N5) and not a ride/board stage — the ped simply
+stops existing, by host command.
+
+**Two constraints worth writing down now, because both are cheap to honour and awkward to retrofit:**
+
+1. **A ped held at the kerb must remain visible to other pedestrians.**
+   `getNeighboringObstacles` skips a neighbour entirely when
+   `p.myWaitingToEnter || p.myAmJammed` (`MSPModel_Striping.cpp:777`) — such a ped is **not** an
+   obstacle and others walk straight through it. So whichever mechanism holds a ped at the pickup point
+   must leave both flags **false**, or the kerb becomes a spot where pedestrians visibly interpenetrate.
+   This is the same constraint as design §9.1(c)'s adoption defaults, and the same answer, which is a
+   good sign rather than a coincidence: "a ped that is standing still on purpose" is one state, and it
+   is not either of SUMO's two invisible ones.
+2. **Hold-in-place is a distinct primitive from arrival, and Phase 1 must not foreclose it.** SUMO
+   *deletes* a person at the end of its walk, so "walk to the kerb and wait for the car" is not
+   expressible as an arrival. Phase 1 does not build the hold — but it must not add an invariant that
+   would prevent one later (e.g. asserting every active person advances each step, or making `Despawn`
+   legal only at route end). Timing jitter between the two agents makes the hold the difference between
+   a robust choreography and one that only works when the car is punctual.
+
+Neither of these is a task. They are recorded so that whoever builds the pickup does not have to
+rediscover `Striping.cpp:777` the hard way, by watching pedestrians walk through each other at a taxi
+rank.
 
 ---
 

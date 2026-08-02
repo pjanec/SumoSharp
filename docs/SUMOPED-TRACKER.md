@@ -23,11 +23,21 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 > against `PedLodManager` — Phase 2 is a **third tier on an existing LOD ladder**, not a bridge between
 > two systems.
 >
-> **Still needing an owner decision, and only these:** whether **G8**'s stopping-place arrival family
-> (`MIDOL-ARRIVAL-*`, `NEXTLANE-WA-ARRIVALPOS`) gets a `<busStop>` scenario or is admitted as a hole —
-> note `DISTTOLANEEND-FINAL-EDGE-MINGAP` is in scope either way, since it fires on every ped's last
-> edge; and whether **G3**'s outcome (if `AdaptToJunctionLeader` needs a `gap == -1` branch added) is an
-> acceptable edit to the live vehicle plan path.
+> **Both open questions are now CLOSED.**
+> **G8 — stopping-place arrivals: owner decided (2026-08-02) to admit them as holes with the doors left
+> open.** No near-term need for buses or stop waiting. The two stop-gated branches
+> (`MIDOL-ARRIVAL-OBSTACLE`, `MIDOL-ARRIVAL-BLOCKED-STOPFULL`) are still ported faithfully but guarded
+> with `NotPortedInThisStage(STOP-ARRIVAL)`; coverage §8 records the reopening condition (one Tier A
+> `<busStop>` scenario + a stop-occupancy count). The two neighbouring rows
+> (`DISTTOLANEEND-FINAL-EDGE-MINGAP`, `NEXTLANE-WA-ARRIVALPOS`) are **not** stop-gated and stay in scope.
+> **G3 — answered by reading the source, and the answer is "additive".** SUMO's ped arm bypasses
+> `isLeader` and passes ego itself as a dummy leader with gap −1, so the only live branch is
+> `stopSpeed(this, speed, distToCrossing)`. The port is a sibling arm calling `StopSpeedFor`, not a
+> phantom candidate and not a change to `AdaptToJunctionLeader`. Design §6.1 has the trace; SP-5.1's
+> condition zero now *confirms* it rather than discovering it.
+>
+> Remaining before B0: **owner sign-off on the set**, including four calls made on the owner's behalf —
+> R-N8, R-N9, Tier C 2–3 → **4**, and the new blocking **SP-1.0**.
 
 ## Stage 0 — Oracle, coverage inventory, and fixtures
 - [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)
