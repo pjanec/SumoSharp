@@ -104,6 +104,10 @@ and is out of scope. Where a fixture is naturally a `<personFlow>`, **pre-expand
 `<person>` elements at authoring time** and prove the expansion is faithful: regenerate the golden from
 the expanded routes file and diff it **byte-for-byte** against the `personFlow` version. If that holds,
 the port never needs a flow expander at all — one whole parser removed, on evidence rather than hope.
+**Measured already** (R-N8): a 120 s fixture with two personFlows reproduced byte-for-byte, stderr
+included. ⚠ **Sort the expansion by departure time.** Unsorted, SUMO warns per person, **silently drops
+them (1500 of 3960 rows in the trial) and still exits 0** — a golden regenerated that way looks fine.
+The byte-diff is the only thing that catches it.
 **Success:** each `config.sumocfg` explicitly sets `--pedestrian.model striping` **and**
 `--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
 `departPos="random"`/`departPosLat="random"` and no `<walk from=/to=>` anywhere, with the personFlow
@@ -257,7 +261,15 @@ so, and is order-insensitive by sorting.
 Coverage §2.1. Person FCD emits no `posLat`, but lateral state **is** fully recoverable: `myRelY` by
 projecting `(x, y)` onto the lane centreline, and `mySpeedLat` by inverting `angle`
 (`MSPModel_Striping.cpp:2342-2349` — `angle = laneRotation ± atan2(mySpeedLat, max(mySpeed, eps))`).
-**Success:** a shared helper yields `(pos, posLat, stripe, speedLat)` from an FCD row + lane geometry.
+⚠ **Scope limit, stated because it silently bounds the stage-gate metric:** on a **walkingarea**,
+`myRelX`/`myRelY` are measured along a `WalkingAreaPath` that the model *computes* and the net file does
+**not** contain (design §10.5). That geometry lands in SP-1.4/SP-4.1, so this helper is complete for
+normal edges and crossings only until then — and curb waiting happens *on the walkingarea*, so that is a
+large, interesting slice of the Tier B/C steps. The helper must **refuse** a walkingarea row with a clear
+diagnostic rather than projecting onto the wrong centreline and returning a plausible wrong number, and
+SP-2.1d reports the excluded count separately.
+**Success:** a shared helper yields `(pos, posLat, stripe, speedLat)` from an FCD row + lane geometry,
+and throws `NotPortedInThisStage(WA-GEOMETRY)` on a walkingarea row until SP-4.1 lands.
 Three self-validating checks, all on committed goldens: (a) derived `pos` agrees with the FCD's own
 `pos` attribute to 1e-6 — the FCD attribute is the cross-check that validates the projection;
 (b) derived stripe index is integral to within 1e-9 of a half-open bin boundary; (c) derived
@@ -316,6 +328,9 @@ fires. Both tests name the specific IDs, never just a count.
 ### SP-2.3 — Person trajectory hash
 Requirement R10, mirroring `Sim.Bench`'s `TrajectoryHash`.
 **Success:** hashing the same run twice gives the same value; the value is recorded in the tracker.
+Note this is only **half** of R10 — the `par == single` half needs vehicles present and belongs to
+SP-5.6(d), because the race is on the ped→vehicle read inside the parallel plan, not inside the person
+pass. Do not mark R10 accepted here.
 
 ---
 
@@ -516,7 +531,14 @@ have.
 person state is written between `AdvancePersons` returning and the end of `ExecuteMoves`.
 (d) **The ped→vehicle query is allocation-free and side-effect-free** — it runs inside a possibly
 parallel `PlanMovements` (`UseParallelPlan`), so a lazily populated cache there is a data race that
-surfaces only as nondeterminism under load. Covered by S-f's 0-bytes gate plus the par == single hash.
+surfaces only as nondeterminism under load. Covered by S-f's 0-bytes gate **plus an explicit
+`par == single` run**: on a person-bearing scenario with vehicles, **both** the vehicle bench hash and
+the person trajectory hash are identical with `Engine.UseParallelPlan` on and off.
+⚠ This is R10's acceptance condition and nothing else discharges it. The person pass being
+single-threaded does **not** make the run thread-count-independent, because vehicles query persons from
+inside the parallel plan (design §6.6.4) — the race R10 guards against is on the *read* side and is live
+in Phase 1. SP-2.3's two-single-threaded-runs check is necessary and not sufficient; design §4.3 gate 2
+is corrected to say so.
 
 ## Stage 6 — Traffic lights
 
@@ -585,10 +607,25 @@ being zeroed (a zeroed one is a sideways snap, invisible to a position-only chec
 
 ### SP-7.3 — Sim.Viz scenes + parity overlay
 Design §11, Requirement R8.
-**Success:** `--sumoped-<scene>` renders for every committed `_sumoped` scenario; the overlay mode draws golden
-ground-truth rings alongside live peds; stripe lines render on crossings; all registered in
-`scripts/gen-demos.sh` under a **SUMO pedestrians** category. Verified by opening the HTML, not just by
-the command exiting 0.
+**The overlay's comparison semantics, which an earlier draft hand-waved** — a render that shows two
+dots without saying what "the same moment" means is decoration, not a diff:
+- **Which golden:** the scene's own `scenarios/_sumoped/<scene>/golden.fcd.xml`, named in the HTML so a
+  reader knows what they are looking at. For a **windowed** Tier C golden the overlay starts at the
+  window, and the pre-window frames say "no reference" rather than drawing nothing (an absent ring and a
+  matching ring look identical at a glance).
+- **Time alignment:** by simulation time, exactly — golden `time=t` against our step `t`, no
+  interpolation on the golden side. Both runs are 1 s steps; if a future scene is not, the overlay
+  refuses rather than resampling.
+- **Identity:** by person id. A ped present in one arm and not the other is a **presence mismatch** and
+  is drawn differently from a position mismatch — they have completely different causes.
+- **What a mismatch looks like:** the ring is drawn at the golden position and a line connects it to
+  ours, so the *direction and magnitude* of the error are visible, not just its existence. Beyond the
+  scenario's `tolerance.json` the pair is highlighted, using the same tolerance the comparator uses —
+  the picture and the test must never disagree about what counts as a divergence.
+**Success:** `--sumoped-<scene>` renders for every committed `_sumoped` scenario; the overlay implements
+the four semantics above; stripe lines render on crossings; all registered in `scripts/gen-demos.sh`
+under a **SUMO pedestrians** category. Verified by opening the HTML **and** by a deliberately perturbed
+run whose known divergence is visible in the frame where the comparator reports it.
 
 ### SP-7.4 — Production regime
 Requirement R11, design §12.

@@ -152,6 +152,10 @@ Full detail in `SUMOPED-GAPS.md`. The load-bearing outcomes, already in the spec
 ## 8. Traps specific to this work
 
 - `apt` SUMO is **1.18**. Wrong version. Goldens from it are worthless.
+- ⚠ **An unsorted routes file loses persons silently.** SUMO warns `Route file should be sorted by
+  departure time, ignoring 'X'!` per person, drops them, and **exits 0** — measured at 1500 of 3960
+  person rows vanishing from a golden that otherwise looked perfectly well-formed. Relevant to R-N8's
+  personFlow pre-expansion; the byte-diff in SP-0.2 is the guard.
 - `--crossings.guess` at an uncontrolled node **always** gives `priority="false"` (`NBNode.cpp:2788`) —
   the ped-priority zebra regime is silently absent unless crossings are declared explicitly.
 - Opposing ped streams at a 4-arm junction use **different crossings**, so crossing counterflow does

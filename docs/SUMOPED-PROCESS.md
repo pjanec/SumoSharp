@@ -187,6 +187,29 @@ The only legitimate outcomes are: (a) the port is corrected to match the source;
 structural deviation is identified, **named in the design, gated, and justified in writing** (CLAUDE.md
 prime directive 4 — so far there is exactly one, the dawdling RNG stream, `SUMOPED-DESIGN.md` §12).
 
+### 6.2 When SUMO is the one that looks wrong
+
+There is a third outcome the protocol above does not name, and it will come up: **we match the source,
+we understand the mechanism, and SUMO's behaviour is still visibly bad** — a vehicle interpenetrating a
+jammed pedestrian, a squeeze-through at `vMax/4` that no real person performs. Requirements R5 already
+concedes this is true of the oracle at jam density (80 collision records, measured).
+
+The answer is **not** to quietly improve it. `docs/CONSTRAINT-high-realism-artefact-ladder.md` is binding
+and its rule is *target SUMO's flow, never its method*, so:
+
+1. **Phase 1 reproduces it.** Parity with SUMO's artefact is the requirement (R5a) — a divergence here is
+   still a port bug until proven otherwise, and "SUMO looks wrong" is the single most attractive excuse
+   for an unexamined difference.
+2. **It is recorded, with numbers**, in the R5b baseline table — count, distinct pairs, max
+   `colliderSpeed`, min clearance. Without the baseline, any later improvement is unfalsifiable.
+3. **Improvement is a separate, gated deviation** (R5c), governed by the artefact ladder and by design
+   §4.4's protocol — named, default OFF, measured on both surfaces, owner sign-off. Never a quiet fix
+   inside a parity task.
+
+So the divergence protocol has exactly three legitimate exits, not two: correct the port, name a
+structural deviation, or **reproduce the artefact and log it as an R5c candidate**. What it never has is
+a fourth.
+
 Tolerances in `tolerance.json` exist for floating-point representation, not for behavioural
 disagreement. If a scenario needs a wider tolerance than its siblings, that is a finding to
 investigate, not a knob to turn.

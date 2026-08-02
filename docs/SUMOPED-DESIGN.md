@@ -308,9 +308,13 @@ Layout claims are worthless unassserted. Three gates, each a number:
    `GC.GetTotalAllocatedBytes` deltas). A test asserts the person phase allocates **0 bytes** per step
    after warm-up on the Tier C scenario. This is what catches the §4.1(d) hazard the moment it appears,
    rather than at profiling time months later.
-2. **`par == single`.** When regional parallelism is eventually enabled, the person trajectory hash must
-   be identical single-threaded and parallel, mirroring `Sim.Bench`'s existing vehicle assertion.
-   Until then the gate is that the hash is stable across two single-threaded runs (SP-2.3).
+2. **`par == single`, and it is live in Phase 1 — not deferred.** An earlier draft said this gate waits
+   for person-side parallelism. That is wrong: **vehicles query pedestrians from inside a possibly
+   parallel `PlanMovements`** (§6.6.4), so the race is on the *read* side and exists the moment the
+   coupling does. On a person-bearing scenario with vehicles, both the vehicle bench hash and the person
+   trajectory hash must be identical with `Engine.UseParallelPlan` on and off — that is R10's acceptance
+   condition, and SP-5.6(d) owns it. SP-2.3's two-single-threaded-runs check is necessary and not
+   sufficient. When person-side regional parallelism is *later* enabled the same gate simply widens.
 3. **A person-scale benchmark**, `Sim.BenchPed`, reporting person-steps/second on the Tier C saturated
    scenario, committed with its number so a regression is visible. Note the existing `Sim.Bench`
    determinism hash covers **vehicles only** and cannot see persons at all.
@@ -729,10 +733,26 @@ position projected onto the lane, in a shared helper used by both arms of the co
 
 ### 8.2 `regen-goldens.sh`
 
-Needs one change: `_sumoped` scenarios must be regenerated with their own `config.sumocfg` carrying
-`--pedestrian.model striping` and `--pedestrian.striping.dawdling 0`. Since those live in the config, the
-script's generic walk already picks them up; the script change is only to ensure `_sumoped` is included
-in the walk and that person-FCD attributes are not masked out by an `--fcd-output.attributes` list.
+**This is the single specification of what the script must do for `_sumoped`** — SP-0.3 references it
+rather than restating it, so there is one place to change.
+
+1. `_sumoped` is included in the generic walk. The striping options (`--pedestrian.model striping`,
+   `--pedestrian.striping.dawdling 0`) live in each scenario's `config.sumocfg`, so the walk picks them
+   up with no per-scenario logic in the script.
+2. The person output set beyond FCD is emitted per tier — `--person-summary-output`,
+   `--personinfo-output`, `--statistic-output`, `--collision-output` always; `--netstate-dump` for
+   Tier A/B only (it is large); stderr captured, normalised and sorted to `golden.warnings.txt`.
+3. Honest-SUMO flags on every `_sumoped` run: `--time-to-teleport -1 --collision.action warn
+   --collision.check-junctions true` (CLAUDE.md §Measurement discipline item 11).
+4. Tier C is windowed with `--device.fcd.begin`, and the script **verifies** the emitted FCD actually
+   starts at that time rather than assuming it.
+5. ⚠ **If an `--fcd-output.attributes` list is used at all, it must include `angle` and `slope`.**
+   An earlier version of this section said only "do not mask attributes out", and Appendix B then
+   shipped a mask that dropped `angle` — the one attribute R2 calls load-bearing. Prefer no mask; if
+   bytes force one, the script asserts `angle` is present in the emitted rows rather than trusting the
+   flag string.
+6. `provenance.txt` records `sumo_version=1.20.0` plus input sha256s, and re-running the script twice
+   produces byte-identical goldens.
 
 ---
 

@@ -272,8 +272,17 @@ knobs are pinned, and a test asserts that flipping either knob to its SUMO defau
   scenario uses `<walk edges=…>` over normal edges with explicit `departPos`/`arrivalPos`; the
   *junction-local* router (design §5.5) **is** in scope, the network-wide intermodal one that
   `<walk from= to=>` invokes at insertion is not. `<personFlow>` is pre-expanded into explicit
-  `<person>` elements at scenario-authoring time, verified by a byte-for-byte golden diff (SP-0.2), so
-  the engine needs no flow expander.
+  `<person>` elements at scenario-authoring time, so the engine needs no flow expander.
+  ⚠ **Verified first-hand, not assumed** (2026-08-02, 4-arm priority junction, 2 personFlows + 1 car
+  flow, 120 s, 3960 person FCD rows): the pre-expanded arm reproduces the `personFlow` arm's FCD body
+  **byte-for-byte**, and its stderr — including the `is jammed` line for the same person at the same
+  second — is identical too. The expansion rule is `id = <flowId>.<n>`, `depart = begin + n·period`
+  while `depart < end`.
+  ⚠⚠ **But the expanded file MUST be sorted by departure time**, and getting this wrong fails
+  *silently*: an unsorted first attempt made SUMO emit `Warning: Route file should be sorted by
+  departure time, ignoring 'psn.0'!` per person, **drop 1500 of 3960 rows, and still exit 0**. A golden
+  regenerated that way would look perfectly well-formed. SP-0.2's byte-diff is what catches it, which is
+  why it is a success condition and not a note.
   *Rationale beyond scope control:* under the Phase-2 hybrid a production SUMO-ped is **adopted and
   released**, never inserted from demand and never arriving — so demand routing is harness surface, not
   product surface (design §9.3). Departure and arrival are still ported to the extent the goldens
