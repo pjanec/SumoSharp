@@ -19,6 +19,15 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 > throws on `vClass="pedestrian"` today, and no task adds it), **G3** (the phantom-leader injection may
 > need an edit to the live vehicle plan path), **G6** (intermodal router in or out of scope), **G8**
 > (stopping-place arrivals in or out), **G9** (replication in or out).
+>
+> **Hybrid re-read (`SUMOPED-GAPS.md` §6).** Read against the Phase-2 destination — low-power peds
+> switching to SUMO-peds near a crosswalk and back — two Phase-1 items are cheap now and expensive
+> later: **H2** (S-f exempts person spawn as "one-off", but under the hybrid spawn/despawn IS the hot
+> path; `PedLodManager` already measured 3.6× for getting this wrong once) and **H6** (an optional
+> caller-supplied `externalId` on person spawn, so one id spans both tiers — otherwise a promotion is a
+> pop in the replication protocol even when the position is continuous). H3 also relabels **G6/G8** as
+> parity-harness-only rather than product surface: a production SUMO-ped is promoted and demoted, so it
+> never departs from demand and never arrives.
 
 ## Stage 0 — Oracle, coverage inventory, and fixtures
 - [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)

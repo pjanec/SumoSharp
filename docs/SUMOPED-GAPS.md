@@ -370,3 +370,149 @@ Recorded so a later session does not spend the same time.
 
 G3 is the one to actually think about rather than edit: it is the only finding that could change a
 stage's risk profile from "additive" to "touches the vehicle plan path".
+
+---
+
+## 6. Re-read under the Phase-2 hybrid lens
+
+The owner restated the original vision: the destination is **low-power ambient peds that switch into
+SUMO-model peds near a crosswalk and back to low-power on the long sidewalk runs.** Phase 1 is the
+SUMO-exact tier standing alone — that is unchanged — but reading the design with the hybrid as the
+*destination* rather than as a footnote changes seven things. Two of them are cheap now and expensive
+later.
+
+**What does not change: the parity bar.** Parity is measured on pure-SUMO scenarios and stays exact
+(R2, prime directive 3). Nothing below softens it. The hybrid changes what the *product* looks like, not
+what the *proof* is.
+
+### H1 — The hybrid's switching machinery already exists, and the design does not know it
+
+`SUMOPED-DESIGN.md` §9 and §10.3 describe Phase 2 as building a bridge between two unrelated APIs, and
+name that as the cost of decision D19/D21. That framing is out of date with the repo.
+`src/Sim.Pedestrians/Lod/PedLodManager.cs` **is** an LOD ladder with promotion and demotion already
+built, and it has every part the hybrid needs:
+
+- **two tiers** — low-power `PedDrModel.PathArc` (pose is a pure function of path/startTime/speed, O(1),
+  no neighbour query) and high-power `FreeKinematic` (a real agent in a persistent `OrcaCrowd`);
+- **hysteresis** — promote inside any `InterestSource.PromoteRadius`, demote only after continuously
+  outside every (larger) `DemoteRadius` for `dwellSeconds`, plus a minimum dwell in each state;
+- **a multi-source `InterestField`** with stable per-source ids and a grid-indexed bounded per-ped query;
+- **an override** — `SetForcedHighPower(id, on)`, pinning a ped high-power regardless of the field;
+- **O(1) add/remove** on both the crowd and the route controller (`PedLodManager.cs` P0-1…P0-3);
+- **a replication layer that already crosses the tier boundary** — `PedReplicationPublisher` publishes
+  across a `PedDrModel` change.
+
+So Phase 2 is **"add a third tier to an existing ladder, with crossings as the interest sources"**, not
+"bridge two unrelated systems". That is a much smaller and much better-understood problem, and it means
+the seam Phase 1 must leave open is shaped by `PedLodManager`'s existing contract, not invented in §9.
+
+**Action:** rewrite §9 and the "cost of this decision" paragraph in §10.3 against the real machinery;
+cite `PedLodManager`, `InterestField`, `PromoteRadius`/`DemoteRadius`/`dwellSeconds` and
+`SetForcedHighPower` by name. SP-7.2's no-pop test should be shaped like the existing tier-switch tests
+rather than invented fresh.
+
+### H2 — S-f exempts person spawn as "one-off". Under the hybrid it is the hot path — and this repo has already paid for that mistake once
+
+Standing rule S-f exempts *"person spawn (one-off)"* from the zero-allocation rule. Under the hybrid,
+spawn and despawn happen **continuously, every step, at every crossing boundary** — churn is the
+dominant store operation, not iteration. The exemption would license per-promotion allocation in exactly
+the place the hybrid spends its time.
+
+This is not speculative. `PedLodManager`'s own header records the measurement: the POC version rebuilt
+the whole high-power crowd on every membership change, an O(current-high-power-count) cost per switch,
+**measured at 100k as the dominant reason a churning world cost 3.6× a stable one**. P0-1…P0-3 exist
+solely to make add/remove O(1). The person store would be repeating that mistake in a new place.
+
+And §4.1's layout is exactly where it would bite: persons live in **contiguous per-lane runs kept sorted
+by `dir·relX`**, so an insertion is an O(bucket) memmove and a removal likewise. Probably fine — buckets
+are small — but SP-3.0's success conditions test contiguity and sortedness and say nothing about
+insert/remove cost or allocation.
+
+**Action:** drop the exemption, or narrow it to *scenario-load* spawn. Add a SP-3.0 success condition:
+N promotes + N demotes per step at **0 bytes** allocated, with per-switch cost independent of the
+resident population — the same property `OrcaCrowd` was forced to acquire.
+
+### H3 — Production SUMO-peds never depart from demand and never arrive, which answers two of the open questions
+
+Under the hybrid a SUMO-ped's whole lifecycle is **promote → cross → demote**. It is never inserted from
+`<person>` demand and never reaches an `arrivalPos`. That reclassifies two open findings:
+
+- **G6 (intermodal router)** and **G8 (stopping-place arrivals)** are **parity-harness paths, not product
+  surface.** They must be ported to the extent the goldens exercise them — SUMO's own runs do insert and
+  arrive — but they are not on the hybrid's critical path and should be labelled that way rather than
+  scoped as if they were product features.
+- It strengthens the G6 recommendation (convert every fixture to `<walk edges=>`, intermodal router out
+  of scope as **R-N8**) and suggests going one step further: **pre-expand `<personFlow>` into explicit
+  `<person>` elements at scenario-authoring time**, which removes personFlow from the engine entirely.
+  That is a checkable claim, not a hope — regenerate the golden from the expanded routes file and diff it
+  **byte-for-byte** against the personFlow version. If it matches, the port never needs a flow expander.
+
+### H4 — The promotion entry point is the L2 reconstruction function, which Phase 1 is building anyway
+
+SP-2.1d reconstructs a complete `PState` from a golden FCD row plus lane geometry. **A promotion is the
+same function with a different data source** — an ORCA ped's world position and velocity instead of an
+FCD row. Right now the reconstruction lives test-side (`Sim.Harness`, per design §4) and
+`SpawnPersonAt` is a separate, thinner method on `Engine`. Two implementations of one thing, and the
+test-side one is the one that will be correct, because it is the one with goldens behind it.
+
+**Action:** build the reconstruction as the *public* adoption path — `Engine`-side, taking
+`(worldPos, velocity, routeTail)` — and make the replay harness a caller of it. Then the promotion path
+is covered by 30,000 golden person-steps in Phase 1, for free, before Phase 2 exists.
+
+### H5 — §9 under-specifies the promotion state, and the missing fields are the ones that cause a visible pop
+
+§9 says two things suffice: the `(edge, pos, posLat) ↔ (x, y)` contract and
+`SpawnPersonAt(type, edge, pos, posLat, speed, rest)`. But `PState` also carries `dir`, `speedLat`,
+`waitingTime`, `waitingToEnter`, `amJammed`, `NLI` and `walkingAreaPath` — and `SUMOPED-PROCESS.md` §3.1
+lists **exactly those** as the fields the FCD does not observe. In the replay harness they come from the
+golden's history. **A promoted ORCA ped has no history at all**, so the promotion must *define* them.
+
+The defaults are load-bearing. `myWaitingToEnter` gates `WALK-OBSTRUCT-SELF-WAITING-EXEMPT`
+(`Striping.cpp:2046-2048`) and interacts with the `MIN_STARTUP_DIST` guard — set it wrong and a promoted
+ped either self-blocks on its first tick or skips the startup guard. Either one is a visible stutter at
+precisely the moment the hybrid exists to make seamless.
+
+**Action:** §9 fixes the promotion defaults explicitly (`waitingTime = 0`, `waitingToEnter = false`,
+`amJammed = false`, `dir` from the ORCA velocity, `NLI`/`walkingAreaPath` recomputed from the route tail)
+and SP-7.2's no-pop condition covers them, not just position continuity.
+
+### H6 — Cross-tier identity is one parameter now and a protocol migration later
+
+`PedestrianWorld.AddWalker(int id, …)` takes a **caller-supplied** `int id`; `PersonHandle` is
+engine-minted (32+16, D22). Under the hybrid, a remote client watching a ped cross the street sees it
+leave the ped channel and reappear in the person channel: **a pop in the protocol even when the position
+is perfectly continuous.**
+
+Because the ORCA id is caller-chosen, the fix is unusually cheap — an **optional caller-supplied
+`externalId`** on the person spawn API, so a host can carry one id across both tiers. One parameter in
+Phase 1; a replication-protocol migration if it is added later.
+
+**This flips the G9 recommendation.** I previously argued replication was out of Phase 1 because no host
+drives SUMO persons remotely yet. Under the hybrid the replicated surfaces — Live City, `server == IG` —
+are the *point*. Still do not build person replication in Phase 1; **do** settle the id contract in it.
+
+### H7 — Two things the hybrid makes better, worth recording so Phase 2 does not re-derive them
+
+- **Parallelism.** §4.2 concludes the only parity-safe parallel unit is the junction-disjoint region,
+  because `getNextLaneObstacles` reads successor lanes live. Under the hybrid, SUMO-peds **exist only
+  near junctions** — the population is naturally partitioned by exactly that unit. The layout §4.1 picks
+  for Phase 1 lines up with the hybrid's population shape rather than fighting it.
+- **DR classification survives the boundary.** D26 tags persons `DrModel.FreeKinematic`; the ORCA
+  high-power tier is already `PedDrModel.FreeKinematic`. A ped keeps its DR classification across a
+  promotion, so the interpolation path does not change under the switch — which is one less
+  discontinuity for `PedReplicationPublisher` to encode.
+
+### Summary of what this pass changes
+
+| # | change | cost in Phase 1 |
+| --- | --- | --- |
+| H2 | drop S-f's spawn exemption; churn success condition on SP-3.0 | a test |
+| H6 | optional caller-supplied `externalId` on person spawn | one parameter |
+| H4 | reconstruction is public and Engine-side; harness calls it | a file moves |
+| H5 | §9 fixes the promotion defaults; SP-7.2 asserts them | a paragraph + a test |
+| H1 | §9/§10.3 rewritten against `PedLodManager`, not against an imagined bridge | doc edit |
+| H3 | G6/G8 relabelled parity-only; try pre-expanding `personFlow` | doc edit + one byte-diff check |
+| H7 | recorded, no action | — |
+
+H2 and H6 are the two that are cheap now and expensive later. Everything else is documentation catching
+up with a destination that was always the point.
