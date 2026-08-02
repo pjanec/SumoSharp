@@ -41,6 +41,16 @@ clauses of `blockedAtDist`, and `checkWalkingAreaFoe`. Every `HIDDEN` row names 
 signal that would witness it. A reviewer spot-checking ten random `if`s in the `.cpp` finds all ten in
 the table.
 
+### SP-0.0b — Knob sensitivity sweep (DONE in the proposal session; re-run on the final scenario set)
+`SUMOPED-ALGORITHM.md` §4. `scripts/sumoped-knob-sweep.py` exists and has been run on two bases.
+**Success:** the sweep is re-run against the final committed `_sumoped` set with the RNG pinned
+(`--pedestrian.striping.dawdling 0`, ped `speedDev="0"` — an unpinned baseline makes the whole table
+noise, see §4 trap 1) and with `--lat-edge` set wherever a lateral knob is in scope (aggregate counters
+are blind to stripe usage, trap 2). Every knob that comes back `NO CHANGE` on the whole set is either
+given a witnessing scenario or listed in `SUMOPED-COVERAGE.md` §8 as an admitted hole with a reason.
+Known-inert today and needing scenarios: `jamtime.narrow` (needs a 1-stripe lane),
+`jmDriveAfterRedTime` (needs a TL), `legacy-departposlat`, `reserve-oncoming` (may be unreachable).
+
 ### SP-0.1 — Re-establish the oracle, and commit the recipe
 Design §2. Clone `/sumo` at `v1_20_0`; `pip install eclipse-sumo==1.20.0`.
 **Success:** `sumo --version` reports 1.20.0; `/sumo/src/microsim/transportables/MSPModel_Striping.cpp`
@@ -213,7 +223,8 @@ Requirement R10, mirroring `Sim.Bench`'s `TrajectoryHash`.
 ## Stage 3 — The stepper, straight sidewalk only
 
 ### SP-3.1 — `PersonRuntime`, `StripingParams`, stripe math
-Design §4.1, §5. Field set fixed by SUMO's `saveState` enumeration.
+Design §4.1, §5; rationale and per-constant sensitivity in `SUMOPED-ALGORITHM.md` §4.
+Field set fixed by SUMO's `saveState` enumeration.
 **Success:** every constant in the design's table is present with SUMO's exact value and its
 `.cpp:line` anchor; `Stripe`/`OtherStripe`/`GetStripeOffset` unit tests cover the boundary cases
 (`offset == ±threshold`, `numStripes == 1`, `width < stripeWidth`).

@@ -3,7 +3,8 @@
 **Status: PROPOSAL — awaiting owner sign-off.**
 
 How we know the golden set actually covers SUMO's pedestrian behaviour, rather than merely containing
-some pedestrians. Companion to `SUMOPED-REQUIREMENTS.md` (WHAT), `SUMOPED-DESIGN.md` (HOW),
+some pedestrians. The mechanism being covered is explained in `SUMOPED-ALGORITHM.md`, whose §4.5 lists
+the knobs this set does **not** witness. Companion to `SUMOPED-REQUIREMENTS.md` (WHAT), `SUMOPED-DESIGN.md` (HOW),
 `SUMOPED-TASKS.md`, `SUMOPED-TRACKER.md`.
 
 The oracle is **vanilla SUMO 1.20.0 only** — no hand-authored expectations, no reference implementation
@@ -403,6 +404,13 @@ consciously choose not to witness in Phase 1, with a reason. Candidates known no
 - `MSLCM_SL2015` sublane ped checks (R-N7).
 - Stop/`arrivalPos`-full "blocked" arrival obstacle — needs a `<stop>`-anchored walk, which is
   personTrip-adjacent scope.
+- **`--pedestrian.striping.reserve-oncoming`** (normal lanes; default 0.0) — measured inert in every
+  configuration tried (symmetric and asymmetric counterflow, 2/4/6 m sidewalks, with and without
+  dawdling). The rule codifies segregation that already emerges, so nothing observable changes.
+  `SUMOPED-ALGORITHM.md` §4.3 has the mechanism. Port it, but do not expect a golden to witness it.
+- Knobs needing a purpose-built scenario before they can be witnessed at all:
+  `jamtime.narrow` (1-stripe lane), `jmDriveAfterRedTime` on either vType (TL scenario with a red
+  phase), `legacy-departposlat`, `walkingarea-detail=2`. `SUMOPED-ALGORITHM.md` §4.5.
 
 Anything else that lands here needs owner sign-off, because an unwitnessed branch is a place the port
 can be silently wrong.

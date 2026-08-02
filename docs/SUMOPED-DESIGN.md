@@ -2,7 +2,8 @@
 
 **Status: PROPOSAL — awaiting owner sign-off. No implementation has started.**
 
-The WHAT is `SUMOPED-REQUIREMENTS.md`; this document does not restate it. Coverage plan:
+The WHAT is `SUMOPED-REQUIREMENTS.md`; this document does not restate it. **What the model does and
+what each knob is worth: `SUMOPED-ALGORITHM.md`** (read it before porting anything). Coverage plan:
 `SUMOPED-COVERAGE.md` (+ `SUMOPED-BRANCH-INVENTORY.md`). Task breakdown: `SUMOPED-TASKS.md`.
 Checklist: `SUMOPED-TRACKER.md`.
 

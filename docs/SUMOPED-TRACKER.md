@@ -7,12 +7,14 @@ been verified first-hand by the reviewer — diff read, test read for non-vacuit
 on an implementor's report (CLAUDE.md §Subagents).
 
 Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-COVERAGE.md` (coverage
-plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-TASKS.md` (tasks).
+plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-ALGORITHM.md` (what the
+model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks).
 
 ---
 
 ## Stage 0 — Oracle, coverage inventory, and fixtures
 - [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)
+- [ ] **SP-0.0b** knob sweep re-run on the final scenario set (RNG pinned + `--lat-edge`); inert knobs given scenarios or admitted as holes
 - [ ] **SP-0.1** oracle re-established (`/sumo` @ `v1_20_0`, `sumo` 1.20.0 via pip), recipe committed
 - [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; all six coverage axes take every value; pinning test
 - [ ] **SP-0.2b** 2–3 Tier C saturated scenarios (incl. a jam-regime and a narrow-crossing variant)
