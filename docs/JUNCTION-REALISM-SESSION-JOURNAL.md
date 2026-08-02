@@ -4106,3 +4106,29 @@ binder (crowdYield?) and the crosser's window vs the 60 s threshold.
 **Merge note:** owner decision — this branch (Entries 48–58 state: partials ON, ring break
 ON, rerouting ON, Entry 49/57/58 fixes) becomes the new main. Gates at merge: full sln
 green, bench hash `A134ED3716DDE7BC` par==single, goldens byte-identical.
+
+## Entry 60 — Class A traced end-to-end: the three-stage chain; design doc written (awaiting owner)
+
+Instruments this entry (committed): `[lclate]` (executed/wished late queue-tail changes with
+neighDist), `[sg]` (per-step speed-gain accumulator/gates/stay-rules for TRACEVEH).
+
+**The chain (exemplar `__veh320`, deterministic t=243–250):** (1) wish forms EARLY —
+accumulator crosses 0.2 at 11 m/s, 27 m upstream; (2) commit deferred by SUMO's own
+`neighDist/speed > 20` usability gate — the left lane is TURN-ONLY (continuation ~100 m), so
+the gate opens only at crawl (~2.3 m/s); (3) the committed 2 s continuous maneuver freezes
+under the `LaneChangeMinSpeed` hold one step later, resumes on queue-creep in body contact,
+and re-freezes past midpoint = the misaligned half-lane stop.
+
+**The design-deciding measurement:** 187/208 executed late swerves (90%) target
+short-continuation (<150 m) lanes — vanilla SUMO's identical gate would commit those at crawl
+too (instantly, hence artifact-free). Decision side is SUMO-faithful; the artifact is wholly
+owned by the beyond-SUMO continuous-maneuver mechanism. Prevalence: 208 executed (~1/6 s),
+842 distinct standing wishers.
+
+Also checked and rejected: `REACT_TO_STOPPED_DISTANCE` (MSLCM_LC2013.cpp:1378) reacts to
+SCHEDULED stops (`isStopped()`), not queue tails — porting it would not touch this class.
+
+**Design: `docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md`** — two execution guards (E1 runway at
+start, E2 abort-or-complete instead of frozen poses), no decision change, everything inside
+the `LaneChangeDuration>0` realism gate (goldens byte-identical by construction). AWAITING
+OWNER REVIEW before implementation.

@@ -2083,6 +2083,27 @@ public sealed partial class Engine : IEngine
     public bool DiagLaneChangeLog { get; set; }
     private readonly long[] _lcByPathChangerSpeed = new long[12];
     private readonly long[] _lcTargetNearStopped = new long[4]; // per path: commits with a target car <20m going <0.5
+    // Entry 59 Class A instrument: a commit made while ego is nearly stopped TIGHT behind its
+    // OWN same-lane stopped leader is the owner's "last-moment swerve at the queue tail" --
+    // the maneuver that should have been decided upstream (SUMO's REACT_TO_STOPPED_DISTANCE
+    // urgent arm, MSLCM_LC2013.cpp:1378, is not ported; this line measures how often that
+    // absence bites and names exemplar vehicles for the [veh]/[sg] trace). Print-only, gated.
+    private void RecordLateQueueTailChange(VehicleRuntime v, VehicleRuntime? sameLaneLeader, string tag, double neighDist = double.NaN)
+    {
+        if (!DiagLaneChangeLog || sameLaneLeader is null) return;
+        var gap = (sameLaneLeader.Kinematics.Pos - sameLaneLeader.VType.Length) - v.Kinematics.Pos;
+        if (v.Kinematics.Speed < 3.0 && sameLaneLeader.Kinematics.Speed < 0.5 && gap < 8.0)
+        {
+            // neighDist decides the Entry 59 Class A design split: > ~260 m (20 s at urban full
+            // speed) means the 20 s usability gate would have passed during the APPROACH -- the
+            // late commit is a decision bug; short (~turn-lane continuation) means the lateness
+            // matches SUMO's own gate and only the execution artifact needs fixing.
+            Console.Error.WriteLine(
+                $"[lclate] t={CurrentTime:F1} veh={v.Def.Id} {v.LaneId}@{v.Kinematics.Pos:F1} v={v.Kinematics.Speed:F2} "
+                + $"leader={sameLaneLeader.Def.Id} leadGap={gap:F2} neighDist={neighDist:F0} tag={tag}");
+        }
+    }
+
     private void RecordLaneChangeCommit(int path, VehicleRuntime v, VehicleRuntime? nLead, VehicleRuntime? nFollow, bool bypassesMinSpeed, string tag = "")
     {
         if (!DiagLaneChangeLog) return;
@@ -13748,12 +13769,25 @@ public sealed partial class Engine : IEngine
                     // :1398 -- for the left direction, !changeToBest is effOffset <= 0.
                     if (neighLeftPlaceLeft / (Math.Abs(effOffsetLeft) + 2.0) < laDistLeft)
                     {
+                        // Entry 59 Class A instrument: which left-stay rule pins an approacher.
+                        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                        {
+                            Console.Error.WriteLine(
+                                $"[sg] t={CurrentTime:F1} {v.Def.Id} STAY1 place={neighLeftPlaceLeft:F1} laDist={laDistLeft:F1} laSpd={v.LookAheadSpeed:F1} v={v.Kinematics.Speed:F2}");
+                        }
+
                         return;
                     }
 
                     // :1411 (rule 2)
                     if (effOffsetLeft == 0 && neighLeftPlaceLeft * 2.0 < laDistLeft)
                     {
+                        if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                        {
+                            Console.Error.WriteLine(
+                                $"[sg] t={CurrentTime:F1} {v.Def.Id} STAY2 place={neighLeftPlaceLeft:F1} laDist={laDistLeft:F1} laSpd={v.LookAheadSpeed:F1} v={v.Kinematics.Speed:F2}");
+                        }
+
                         return;
                     }
                 }
@@ -13839,6 +13873,16 @@ public sealed partial class Engine : IEngine
             // parity tolerance and never near a threshold-crossing boundary here).
             speedGainProbability = Math.Ceiling(speedGainProbability * 100000.0) * 0.00001;
 
+            // Entry 59 Class A instrument: the accumulator's whole state each step for the traced
+            // vehicle -- when did the wish START building vs when did it cross the threshold.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[sg] t={CurrentTime:F1} {v.Def.Id} {v.LaneId}@{v.Kinematics.Pos:F1} v={v.Kinematics.Speed:F2} "
+                    + $"thisVSafe={thisLaneVSafe:F2} neighVSafe={neighLaneVSafe:F2} relGain={relativeGain:F4} acc={speedGainProbability:F4} "
+                    + $"currDist={currentDist:F1} neighDist={neighDist:F1} usable={(neighDist / Math.Max(0.1, v.Kinematics.Speed)):F1}");
+            }
+
             string? targetLaneId = null;
             var targetLaneHandle = 0;
             if (speedGainProbability > changeProbThresholdLeft
@@ -13872,6 +13916,7 @@ public sealed partial class Engine : IEngine
                     && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "sgLeft"); // #15 float analysis (speed-gain left)
+                    RecordLateQueueTailChange(v, leader, "sgLeft", neighDist); // Entry 59 Class A
                     targetLaneId = leftLane.Id;
                     targetLaneHandle = leftLane.Handle;
                     speedGainProbability = 0.0; // :1063/1080 resetState() on committed change.
@@ -16028,6 +16073,7 @@ public sealed partial class Engine : IEngine
 
         v.LcStrategicOutcome = 1;
         RecordLaneChangeCommit(2, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "strategic"); // #15 float analysis (strategic/urgent)
+        RecordLateQueueTailChange(v, neighbors.GetLeader(v), "strategic"); // Entry 59 Class A
         CommitLaneChange(v, neighborLane.Handle, neighborLane.Id);
         // MSLCM_LC2013.cpp:1063/1080 resetState() on any committed change (strategic included).
         v.SpeedGainProbability = 0.0;
