@@ -4207,3 +4207,24 @@ Full sln green; bench hash `A134ED3716DDE7BC` par==single unchanged.
 **Next named target:** the residual 788 s wedge — `__veh56 :34994_6_0@33.3
 bind=crossJxnLeader/none wait=788 -> __veh1375 gen_road_7261_1@2.6 keepClear/none` (the
 Entry 58 junction; keepClear-rooted chain, likely the landed-standoff family from RESUME-3).
+
+## Entry 63 — merge PHASE 1/2 ignore-junction-blocker parity (the veh903 hold shape); honest mixed result
+
+**Trace:** the residual 788 s wedge head (`__veh903`, `:34991_4_0@16.3`) was
+`PHASE2-targetFollow foe=__veh280@gen_road_4504_0 x=0.00` — following a car STRANDED on the
+dead stub lane (Entry 62's lane, sibling permanently full at that pocket). SUMO's
+`gIgnoreJunctionBlocker` skip (MSLink.cpp:1601) applies to EVERY link leader, but our merge
+arm's PHASE 1 (route-matched pick) and PHASE 2 (shared-target rearmost) never carried it —
+so the 60 s recovery structurally could not fire for merge-held streams. Fix: both phases
+skip a foe whose WaitingTime ≥ IgnoreJunctionBlockerSeconds (inert at the parity default -1;
+verified: full sln green, hash `A134ED3716DDE7BC` par==single).
+
+**Measured (ped-heavy A/B vs fix62):** max JXNHOLD wait 788 → 706; arrivals 2064 → 2074;
+overlaps flat (34 → 36 pairs — no drive-through cost spike); :34994 holds 39 → 38 and
+stoppedFrac 0.60 → 0.64 — i.e. the SPECIFIC hold shape is cured (veh903's own chain), but
+the junction's wider standoff family persists and run-to-run noise dominates the aggregates.
+Honest verdict: a real SUMO-faithfulness gap closed, modest immediate effect. **Next named
+wedge (~706 s): `__veh1096 :35022_5_0@4.0 bind=leaderFollow/none wait=706 -> __veh996
+:35022_1_0@11.5 junctionYield/sameTargetMerge`** — a co-located landing pair inside :35022
+(the RESUME-3 landed-standoff family; likely wants the colocation/symmetry treatment, not a
+skip).

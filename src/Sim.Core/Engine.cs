@@ -9630,6 +9630,20 @@ public sealed partial class Engine : IEngine
             }
         }
 
+        // Entry 63: SUMO's gIgnoreJunctionBlocker skip (MSLink.cpp:1601) applies to EVERY link
+        // leader -- sameTarget ones included -- but only the crossing arm and PHASE1occ carried
+        // it here. The veh903 wedge (788 s) was PHASE2-targetFollow of a car stranded on the
+        // dead stub lane: without the skip the 60 s recovery NEVER fires for merge holds, so a
+        // single stranded car wedges every merge stream permanently. Inert at the -1 default
+        // (every golden); live-city F3 sets 60 s.
+        var ignoreBlocker = IgnoreJunctionBlockerSeconds >= 0.0;
+
+        if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId
+            && ignoreBlocker && foeMerging.WaitingTime >= IgnoreJunctionBlockerSeconds)
+        {
+            foeMerging = null; // long-standing on-lane merge foe: constrains nobody (SUMO emits no LinkLeader)
+        }
+
         if (foeMerging is not null && foeMerging.LaneId == foeInternalLaneId)
         {
             // JUNCTION-FOE-LANE F2.2: with the FoeWith widening, a mutual-foes merge pair reaches
@@ -9724,8 +9738,11 @@ public sealed partial class Engine : IEngine
         }
 
         var leaderOnTarget = FindRearmostOnLane(ego, allVehicles, targetLane.Id);
-        if (leaderOnTarget is null)
+        if (leaderOnTarget is null
+            || (ignoreBlocker && leaderOnTarget.WaitingTime >= IgnoreJunctionBlockerSeconds))
         {
+            // Entry 63: the second (null) arm is the MSLink.cpp:1601 skip for PHASE 2 -- see the
+            // ignoreBlocker comment above. Inert at the -1 default.
             return occPhase1; // Entry 58: +infinity gate-off (pre-existing), occupant fold gate-on
         }
 
