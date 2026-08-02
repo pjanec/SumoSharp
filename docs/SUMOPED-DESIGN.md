@@ -462,6 +462,26 @@ for unifying with the ORCA pedestrian layer.** Nothing blocks the port. The work
 plus additive edits to 3 existing files, and **no edit to any existing vehicle type** — so the 782-test
 gate structurally cannot move. There is exactly one real design decision (§10.3).
 
+### 10.0 Decisions log
+
+Mirrors the format of `docs/SUMOSHARP-API.md` §12 (D1–D18), continuing its numbering as **D19–D27**
+so the two logs read as one series. All **PROPOSED** until this document is signed off. Rationale is
+in the subsections below; this table is the index.
+
+| # | Decision | Rationale | Rejected alternative |
+|---|---|---|---|
+| D19 | **SUMO persons live on the concrete `Engine`**, alongside vehicles | They are lane-based (`edge`/`pos`/`posLat`) — the same shape as vehicles, and structurally unlike the ORCA layer's world-space agents (§1). This is where they belong, not merely where they are convenient. | A third facade beside `Engine`/`PedestrianWorld` |
+| D20 | **`src/Sim.Pedestrians` (ORCA) is untouched**; the two tiers coexist | R-N3. 324 green tests, a different axis (live-reactivity, never golden FCD). Phase 2 bridges them via §9's coordinate contract. | Replacing or extending the ORCA layer |
+| D21 | Persons go on **`Engine`, not `IEngine`** | `IEngine` is 48 lines (`LoadScenario`/`Run`/obstacles); the entire rich vehicle API already lives on the concrete class and `SUMOSHARP-API.md` documents it there. Follow the precedent rather than inventing a second convention. | Widening `IEngine` |
+| D22 | **`PersonHandle` in its own id space**, same 32+16 index/generation shape | D4 applies unchanged. `VehicleHandle`'s own header already establishes the two-distinct-id-spaces precedent with `ObstacleHandle`. | Sharing `VehicleHandle`'s id space |
+| D23 | **`PersonState` mirrors `VehicleState`**, but carries **both** `EdgeHandle` and `LaneHandle`, plus `Stripe` and `SpeedLat` | SUMO person FCD reports `edge`, and it takes **internal** ids (`:c_c1`, `:c_w1`) — that is exactly what makes the curb wait a checkable golden fact (§2.3). D7's float/double precision split carries over unchanged. | A lane-only state record |
+| D24 | **Parallel `PersonEvent`**, not a generalised `SimEvent` | `SimEvent` is `VehicleHandle`-typed. A parallel type keeps it byte-identical and keeps D13's drained-buffer shape; generalising would touch every existing consumer for no gain. | Making `SimEvent` carry a discriminated handle |
+| D25 | **`SimulationSnapshot.Count` keeps meaning *vehicles***; add `PersonCount` + parallel columns | Every existing consumer reads `Count` as the vehicle count. Repurposing it is a silent breaking change with no compiler error. | Making `Count` the total agent count |
+| D26 | **Share the dead-reckoning layer.** `DrModel` unchanged (3 members), persons tagged `FreeKinematic`, one interpolation path parameterised by DR model | **Measured** (§10.5): persons extrapolate ~6× more accurately than vehicles (p95 0.64 m vs 4.08 m) because `MSTransportable::getAcceleration()` is hard-coded `0.0`; and mid-step chord interpolation on a **walkingarea** has the lowest p95 of all four categories (0.175 m vs the vehicle's 0.390 m). | A bespoke person extrapolator following the `WalkingAreaPath` Bezier — **this was an earlier draft of this design and the measurement disproved it** |
+| D27 | **Unify the read shape and the DR/replication layer; keep identity, spawn and step scheduling separate** | This is SUMO's own split, verified in its source: it unifies **internally** (`MSTransportable`/`SUMOVehicle` both derive from the ~30-method `SUMOTrafficObject`; persons even reuse `MSVehicleType`) but **not externally** (separate libsumo/TraCI `Person` and `Vehicle` domains). §10.5. | A generic `AgentHandle`/`AgentState` unification now — it would touch `SimEvent`, `SimulationSnapshot`, `ReplicationPublisher` and every consumer of `Count`, risking the 782-test gate for zero parity gain (same reasoning as R-N4) |
+
+---
+
 ### 10.1 What already has the right shape (reuse the pattern, change nothing)
 
 | existing | why it transfers |

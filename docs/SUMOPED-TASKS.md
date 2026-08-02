@@ -399,7 +399,8 @@ plus `Sim.LiveCity.Tests` 92/92 and `Sim.Pedestrians.Tests` 324/324 (the ORCA la
 
 ### SP-7.6 — Doc reconciliation
 Requirement R-N3.
-**Success:** `docs/PEDESTRIAN-OVERVIEW.md` §3's "we do NOT port MSPModel_Striping" is rewritten to
+**Success:** `docs/SUMOSHARP-API.md` §12b flips from **PROPOSED** to **STATUS: landed** and its
+D19–D27 entries lose the PROPOSED banner; `docs/PEDESTRIAN-OVERVIEW.md` §3's "we do NOT port MSPModel_Striping" is rewritten to
 describe two coexisting tiers; `docs/PEDESTRIANS.md` gains a pointer to the new subsystem;
 `docs/README.md` indexes the SUMOPED doc set; `scenarios/README.md` documents `_sumoped` as a
 **golden-bearing** group (unlike `_ped`); `docs/TASKS-TODO.md` gains the new test counts.

@@ -585,6 +585,59 @@ Each of the three target users falls out of the *same* core + wrapper:
 | D17 | **Reserve an `avoidanceClass` byte** (`StaticBlocker`/`OneSided`/`Reciprocal`, default `OneSided`) in the obstacle store now | The RVO solve needs per-agent reciprocity `share`; reserving now avoids a store reshape at Stage 3 |
 | D18 | **Merge order:** store lands first, then RVO Stage 3's `ComputeRvoLateral` loop retargets onto it; RVO Stages 1–2 are order-independent | Agreed with the laneless session; `RvoNeighbor` is the sole seam |
 
+**PROPOSED — pedestrians / persons on this API.** Design of record: `SUMOPED-DESIGN.md` §10
+(assessment, the additive delta, and the measurements). Not landed; listed here so the API doc of
+record carries the decisions rather than only the SUMOPED doc set.
+
+| # | Decision | Rationale |
+|---|---|---|
+| D19 | **SUMO persons live on the concrete `Engine`**, alongside vehicles | They are lane-based (`edge`/`pos`/`posLat`) — the same shape as vehicles, unlike the ORCA layer's world-space agents |
+| D20 | **`src/Sim.Pedestrians` (ORCA crowd) is untouched**; the two tiers coexist | Different axis (live-reactivity, never golden FCD), 324 green tests; Phase 2 bridges them via a coordinate contract |
+| D21 | Persons go on **`Engine`, not `IEngine`** | `IEngine` carries only `LoadScenario`/`Run`/obstacles; the rich vehicle API already lives on the concrete class (§5, §9, §10) |
+| D22 | **`PersonHandle`: same 32+16 shape as D4, own id space** | D4 unchanged; `VehicleHandle` vs `ObstacleHandle` already set the two-id-spaces precedent |
+| D23 | **`PersonState` mirrors `VehicleState`**, carrying **both** `EdgeHandle` and `LaneHandle` + `Stripe`/`SpeedLat` | SUMO person FCD reports `edge` and takes internal ids (`:c_c1`); D7's float/double split carries over unchanged |
+| D24 | **Parallel `PersonEvent`**, not a generalised `SimEvent` | `SimEvent` is `VehicleHandle`-typed; a parallel type keeps it byte-identical and preserves D13's drained-buffer shape |
+| D25 | **`SimulationSnapshot.Count` keeps meaning *vehicles***; add `PersonCount` | Repurposing `Count` is a silent breaking change for every existing consumer, with no compiler error |
+| D26 | **Share the DR layer** — `DrModel` unchanged at 3 members, persons `FreeKinematic`, one interpolation path | Measured: persons extrapolate ~6× better than vehicles (`MSTransportable::getAcceleration()` is hard-coded `0.0`), and walkingarea chord interpolation has the lowest p95 of all agent classes |
+| D27 | **Unify the read shape + DR; keep identity, spawn and scheduling separate** | Mirrors SUMO's own split: unified internally (`SUMOTrafficObject`), separate externally (libsumo `Person` vs `Vehicle` domains) |
+
+---
+
+## 12b. Pedestrians / persons (PROPOSED)
+
+**STATUS: PROPOSED — design agreed pending sign-off, nothing implemented.** Full design:
+`SUMOPED-DESIGN.md` §10; requirements `SUMOPED-REQUIREMENTS.md` R7; tasks SP-7.1/SP-7.1b.
+
+A faithful port of SUMO's `MSPModel_Striping` adds a **second agent population on this same API**.
+The assessment of how ready the surface is (done first-hand against `IEngine.cs`,
+`VehicleHandle`/`VehicleState`/`SimEvent`, `VehicleReadBuffer`, `SimulationSnapshot`,
+`SimulationRunner`, `Sim.Host`) is: **ready in shape, vehicle-typed in plumbing**. Nothing blocks it;
+the work is ~6 new types plus additive edits to 3 files, and **no edit to any existing vehicle type**,
+so the parity gate structurally cannot move.
+
+Reused unchanged: the D4 handle convention, D7's float/double precision split, D9's
+`SimulationRunner` (already agent-agnostic), D12's SUMO-parity queued insertion (persons need it for
+the same reason), D13's drained event buffer shape, and — per D26, measured — the whole
+dead-reckoning layer.
+
+The surface being added:
+
+```csharp
+PersonTypeHandle DefinePersonType(in PersonTypeParams p);
+PersonHandle SpawnPerson(PersonTypeHandle t, ReadOnlySpan<int> routeEdges, double departPos, double departPosLat);
+PersonHandle SpawnPersonAt(PersonTypeHandle t, int edge, double pos, double posLat, double speed, ReadOnlySpan<int> rest);
+void Despawn(PersonHandle p);   PersonLifecycle GetLifecycle(PersonHandle p);
+ActivePersonQuery ActivePersons();   bool TryGetPerson(PersonHandle p, out PersonState s);
+ReadOnlySpan<PersonHandle> PersonHandles { get; }   // + PersonPosX/Y/Z, PersonAngle, PersonSpeed,
+ReadOnlySpan<PersonEvent> PersonEvents { get; }     //   PersonEdgeHandles, PersonPos, PersonPosLat
+(double X, double Y) WorldOf(int edge, double pos, double posLat);
+bool TryResolveToEdge(double x, double y, out int edge, out double pos, out double posLat);
+```
+
+`SpawnPersonAt` and the two coordinate-contract methods exist for the Phase-2 LOD hybrid (promoting an
+ambient ORCA pedestrian to a SUMO-exact one near a crossing and back); Phase 1 builds the seam but does
+not use it.
+
 ---
 
 ## 13. Phased roadmap

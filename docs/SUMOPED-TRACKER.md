@@ -8,7 +8,8 @@ on an implementor's report (CLAUDE.md §Subagents).
 
 Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-COVERAGE.md` (coverage
 plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-ALGORITHM.md` (what the
-model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks).
+model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **API decisions D19–D27: `SUMOPED-DESIGN.md` §10.0**, mirrored into
+`docs/SUMOSHARP-API.md` §12 + §12b (the API doc of record).
 
 ---
 
