@@ -3896,3 +3896,70 @@ through-blocked-car class = crossing-internal-lane pairs with one member moving 
 (depths 1.8 m). Hunt shape: [veh]-trace the MOVING member through the intersection window and
 read which arm admitted it past the standing body (adaptToJxnLeader mapping vs FoeIsInTheWay
 vs the F3 crossing arms) — same discipline as Entries 53/55.
+
+## Entry 57 (BEFORE) — the crossing drive-through traced: FindCrossFoeVehicle's slot-order mask + the pick-level ignore-blocker row-kill
+
+**Target triage first (corrects Entry 56's list).** Of the three named "crossing" pairs only
+ONE is a true crossing:
+
+- `:35673_0_0 × :35673_1_0` — BOTH links target `gen_road_7805.25_0` (net connections); the
+  overlap sits ~2.3 m before the merge apex. Traced: `__veh4991` enters at 10.4 m/s, brakes
+  under `crossJxnLeader/sameTargetMerge` against blocker **1607** — never against entity 199
+  (`__veh199`, standing at `:35673_0_0@14.9`) — and asymptotes to a stop 1.8 m into veh199's
+  body. **Merge-class (Entry 55 FindFoeVehicle mask), second junction confirmed.** Not a
+  crossing.
+- `:30268_8_0 × :30268_5_2` — both connections leave the SAME source lane
+  (`-gen_road_4760.82_2`), bicycle/scooter lanes (1.5 m wide): a diverge-fan pair of bikes.
+  Minor class, parked.
+- `:36220_7_0 × :36220_9_2` — different sources, different targets, minor (`m`) vs major
+  uncontrolled (`M`), mutual foes in the request table (link 7 responds to links 9–11).
+  **The genuine crossing.** Transient (single 20 s witness hit, t=660, depth 1.8 m) — a
+  fly-through, exactly the owner's "full speed through a car blocked in junction".
+
+**The trace (deterministic standard capture + RINGBREAK=0, frames 1340, TRACEVEH both
+members).** `__veh3474` crawls along `:36220_9_2` at 0.3–2.5 m/s (queue creep behind entity
+1040, `leaderFollow` throughout, never fully stops). `__veh314` enters `:36220_7_0` at t=655
+at 8 m/s and passes THROUGH veh3474's body at t=660.5 at 5.5 m/s. During the whole window
+veh314's winning binder is `leaderFollow` (its own far leader, entity 639); the only
+junctionYield step is t=654.5 `cautiousApproach blocker=-1`. `[jyrow]` proves foeLink=11
+(`:36220_9_2`) is scanned EVERY step with `respondsTo=True foeWith=True conflict=geo` — the
+miss is downstream of the row scan.
+
+**The `[jyfoe]` instrument (this entry) names it — two coupled defects:**
+
+1. **The mask**: `FindCrossFoeVehicle` returned `pick=__veh242` on `gen_road_5195_2` — the
+   first vehicle in ENTITY-SLOT order whose remaining route contains `:36220_9_2`, kilometres
+   away — every step of the window, while the physical index (`_physOnLaneFirst`) knew the
+   lane was occupied (`__veh1040`, with `__veh3474` behind it). Same defect the bay arm
+   measured in Entry 35b and fixed by switching to the physical index; same family as the
+   Entry 55 merge mask.
+2. **The row-kill**: with F3 ON, LiveCity sets `IgnoreJunctionBlockerSeconds=60`, and the
+   skip is applied to the PICK before any branch — veh242 had been waiting ≥60 s in its own
+   distant queue, so the ENTIRE foe link was discarded every step (`[jyarm]`/`[jyskip]`:
+   zero lines for foeLink=11 — the absence is the proof). SUMO applies that skip per
+   LINK-LEADER on the foe lane (MSLink.cpp:1601), never to a route-matched candidate.
+
+**Fix (gate-scoped under `JunctionPhysicalOccupancyGate`, this entry):** the on-junction
+occupancy arm now walks the foe lane's PHYSICAL occupants (`_physOnLaneFirst/Second`), with
+the ignore-blocker applied PER OCCUPANT; the same skip structure as the pick-based branch
+(isLeader gate variant, FoeIsInTheWay for !respondsTo, Entry 40/49 entry-order tie-break) is
+replicated per occupant; the pick-based on-lane branch is skipped under the gate (double-eval
+guard). The APPROACHING arbitration arm keeps the route-matched pick — SUMO's own split
+(myFoeLanes occupant walk vs setApproaching/blockedByFoe). Gate OFF keeps the pre-existing
+path bit-for-bit. New committed instruments: `[jyfoe]` (pick vs physical occupant), `[jyarm]`
+(branch + constraint), `[jyskip]` (approaching-arm skip bits), `[jyocc]` (per-occupant
+constraint).
+
+**Predictions (recorded before reading the fix trace):**
+
+- P1: the fix replay shows `[jyocc]` lines for foeLink=11 naming veh1040/veh3474 with finite
+  constraints, and veh314 is junctionYield-bound (arm 5) in the t=655–663 window; the
+  t=660 `:36220_7_0 × :36220_9_2` OVERLAP-EX line is GONE.
+- P2: veh314 clears the junction ≤20 s later than before (follows the crawler through or
+  waits for it to clear) — no new landed stall at :36220.
+- P3 (full 3600-frame capture, same env): junction-class steady-state pairs drop from 34
+  (pv1 baseline; 414 junction EX lines over the run) by ≥30%; queue/merge classes unchanged
+  (they are different mechanisms); arrivals within ±3% of the pv1 arm (over-yield watch —
+  the occupancy arm now sees real bodies, each hold is against a physically-present car).
+- P4: goldens byte-identical + bench hash `A134ED3716DDE7BC` unchanged (gate default OFF —
+  by construction), full sln green.
