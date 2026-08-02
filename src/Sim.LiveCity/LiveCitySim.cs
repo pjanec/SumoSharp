@@ -1465,6 +1465,8 @@ public sealed class LiveCitySim : IDisposable
                 + $"stuckSteps={_engine.RingStuckSteps}");
         }
 
+        ReportOverlapClasses();
+
         var w = WitnessAuthoritative();
         string[] binderNames = { "none", "leaderFollow", "crossJxnLeader", "freeFlow", "successiveLane",
             "deadLaneMerge", "stopLine", "redLight", "railSignal", "railCrossing", "junctionYield",
@@ -1659,6 +1661,189 @@ public sealed class LiveCitySim : IDisposable
                     + $"foeSpd={c.JyFoeSpeed:F1} blockerEnt={c.BlockerEntity}{blockerText}");
             }
         }
+    }
+
+    // Entry 52 (owner's re-prioritized top classes): the OVERLAP classifier. True oriented-body
+    // (OBB) intersection over the engine's exported world poses, grid-hashed, run at the witness
+    // cadence from ReportMidLaneStuck. The pre-existing `overlaps=` proxy (same-lane pos gap < 4 m)
+    // conflates the owner's three classes and cannot see a cross-lane junction drive-through at
+    // all; this names them:
+    //   queue    -- same lane, longitudinal body overlap, depth-bucketed (<1 / 1-2.5 / >2.5 m --
+    //               "half-size" on a ~5 m car is ~2.5 m);
+    //   merge    -- same lane, the two members' PREVIOUS lanes differ and one member just landed
+    //               (pos < 20 m): the straight+turn merge-landing class;
+    //   junction -- different lanes, at least one internal: driving through a junction blocker;
+    //   lateral  -- different normal lanes (wide-lane side-by-side; mostly benign, kept for
+    //               completeness).
+    // Angle is navigational degrees (0 = north/+Y, clockwise; LaneGeometry.PositionAtOffset), so
+    // the heading unit vector is (sin th, cos th). Pure read of the published snapshot -- no engine
+    // mutation, no trajectory effect.
+    private void ReportOverlapClasses()
+    {
+        // Spans materialized to arrays: the Classify local function below cannot capture ref
+        // structs, and at the 20 s witness cadence the copies are negligible.
+        var laneH = _engine.LaneHandles.ToArray();
+        var laneIds = _engine.LaneIds.ToArray();
+        var pos = _engine.Pos.ToArray();
+        var px = _engine.PosX.ToArray();
+        var py = _engine.PosY.ToArray();
+        var ang = _engine.Angle.ToArray();
+        var len = _engine.VehicleLengths.ToArray();
+        var wid = _engine.VehicleWidths.ToArray();
+        var prevLane = _engine.PrevLaneHandles.ToArray();
+        var ids = _engine.VehicleIds.ToArray();
+        var n = laneH.Length;
+
+        const float cell = 12.0f;
+        var grid = new Dictionary<(int Cx, int Cy), List<int>>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var key = ((int)MathF.Floor(px[i] / cell), (int)MathF.Floor(py[i] / cell));
+            if (!grid.TryGetValue(key, out var list))
+            {
+                list = new List<int>(4);
+                grid[key] = list;
+            }
+
+            list.Add(i);
+        }
+
+        int qShallow = 0, qMid = 0, qDeep = 0, merge = 0, junction = 0, lateral = 0;
+        var examples = new List<string>(6);
+
+        void Classify(int i, int j)
+        {
+            if (!ObbIntersect(
+                    px[i], py[i], ang[i], len[i], wid[i],
+                    px[j], py[j], ang[j], len[j], wid[j], out var depth))
+            {
+                return;
+            }
+
+            string cls;
+            if (laneH[i] == laneH[j])
+            {
+                // Leader = greater longitudinal pos; depth along the lane = follower FRONT past
+                // the leader's BACK (pos is the front-bumper offset, SUMO convention).
+                var (li, fi) = pos[i] >= pos[j] ? (i, j) : (j, i);
+                var lonDepth = pos[fi] - (pos[li] - len[li]);
+                var landed = Math.Min(pos[i], pos[j]) < 20.0
+                    && prevLane[i] >= 0 && prevLane[j] >= 0 && prevLane[i] != prevLane[j];
+                if (landed)
+                {
+                    cls = "merge";
+                    merge++;
+                }
+                else
+                {
+                    cls = "queue";
+                    if (lonDepth > 2.5) { qDeep++; } else if (lonDepth > 1.0) { qMid++; } else { qShallow++; }
+                }
+
+                depth = Math.Max(depth, lonDepth);
+            }
+            else if ((laneIds[i].Length > 0 && laneIds[i][0] == ':') || (laneIds[j].Length > 0 && laneIds[j][0] == ':'))
+            {
+                cls = "junction";
+                junction++;
+            }
+            else
+            {
+                cls = "lateral";
+                lateral++;
+                return; // side-by-side on normal lanes -- counted, not exemplified.
+            }
+
+            if (examples.Count < 6)
+            {
+                examples.Add(
+                    $"LIVECITY-OVERLAP-EX: t={_now:F0} {cls} depth={depth:F1} "
+                    + $"{ids[i]} {laneIds[i]}@{pos[i]:F1} x {ids[j]} {laneIds[j]}@{pos[j]:F1}");
+            }
+        }
+
+        // Half-neighbourhood offsets (CA2014: allocated ONCE, never stackalloc'd in the loop):
+        // same cell takes unordered pairs; the 4 lexicographically-greater neighbour offsets make
+        // each cross-cell pair visited from exactly one side.
+        ReadOnlySpan<(int Dx, int Dy)> half = new (int, int)[] { (1, 0), (-1, 1), (0, 1), (1, 1) };
+        foreach (var (key, cellList) in grid)
+        {
+            for (var a = 0; a < cellList.Count; a++)
+            {
+                var i = cellList[a];
+                for (var b = a + 1; b < cellList.Count; b++)
+                {
+                    Classify(i, cellList[b]);
+                }
+
+                foreach (var (dx, dy) in half)
+                {
+                    if (!grid.TryGetValue((key.Cx + dx, key.Cy + dy), out var other))
+                    {
+                        continue;
+                    }
+
+                    for (var b = 0; b < other.Count; b++)
+                    {
+                        Classify(i, other[b]);
+                    }
+                }
+            }
+        }
+
+        var total = qShallow + qMid + qDeep + merge + junction + lateral;
+        Console.Error.WriteLine(
+            $"LIVECITY-OVERLAP: t={_now:F0} pairs={total} queue<1m={qShallow} queue1-2.5m={qMid} "
+            + $"queue>2.5m={qDeep} merge={merge} junction={junction} lateral={lateral}");
+        foreach (var ex in examples)
+        {
+            Console.Error.WriteLine(ex);
+        }
+    }
+
+    // Separating-axis test for two oriented rectangles (vehicle bodies). Returns the minimal
+    // penetration depth across the four candidate axes when they intersect -- a coarse "how deep"
+    // for the report, not a physics resolution.
+    private static bool ObbIntersect(
+        float x1, float y1, float angDeg1, float len1, float wid1,
+        float x2, float y2, float angDeg2, float len2, float wid2, out double depth)
+    {
+        depth = double.PositiveInfinity;
+        var r1 = angDeg1 * MathF.PI / 180f;
+        var r2 = angDeg2 * MathF.PI / 180f;
+        // Navigational: heading (sin, cos); right-normal (cos, -sin).
+        Span<(float Ax, float Ay)> axes = stackalloc (float, float)[]
+        {
+            (MathF.Sin(r1), MathF.Cos(r1)), (MathF.Cos(r1), -MathF.Sin(r1)),
+            (MathF.Sin(r2), MathF.Cos(r2)), (MathF.Cos(r2), -MathF.Sin(r2)),
+        };
+        // The export pose is the FRONT-bumper point; the body extends half a length backwards from
+        // the centre, so shift each centre back along its own heading.
+        var cx1 = x1 - axes[0].Ax * (len1 * 0.5f);
+        var cy1 = y1 - axes[0].Ay * (len1 * 0.5f);
+        var cx2 = x2 - axes[2].Ax * (len2 * 0.5f);
+        var cy2 = y2 - axes[2].Ay * (len2 * 0.5f);
+        var dx = cx2 - cx1;
+        var dy = cy2 - cy1;
+
+        for (var k = 0; k < 4; k++)
+        {
+            var (ax, ay) = axes[k];
+            var proj1 = (len1 * 0.5f) * Math.Abs(ax * axes[0].Ax + ay * axes[0].Ay)
+                + (wid1 * 0.5f) * Math.Abs(ax * axes[1].Ax + ay * axes[1].Ay);
+            var proj2 = (len2 * 0.5f) * Math.Abs(ax * axes[2].Ax + ay * axes[2].Ay)
+                + (wid2 * 0.5f) * Math.Abs(ax * axes[3].Ax + ay * axes[3].Ay);
+            var dist = Math.Abs(ax * dx + ay * dy);
+            var pen = proj1 + proj2 - dist;
+            if (pen <= 0)
+            {
+                return false;
+            }
+
+            depth = Math.Min(depth, pen);
+        }
+
+        return true;
     }
 
     // Stage 3: the reused per-step ped-event batch (see the publishPeds block). Grows once to the peak

@@ -3620,3 +3620,72 @@ run-comparable; trends only):
   interlocked across corridors — exactly the design's §2.3 "this one is geometric" case, honestly
   reported instead of broken. Each burst is one ring persisting ~40 s before dissolving on its
   own. The upstream fix for this class remains the overlap-prevention work, not the breaker.
+
+## Entry 52 (BEFORE) — owner re-prioritization: OVERLAPS are now the top classes; classifying instrument first
+
+**Owner verdict from the 3D run (verbatim classes):** (1) "way too big tolerance to driving
+through cars that are blocking the junction"; (2) "if two lanes merge (straight lane with turning
+lane) — also overlap"; (3) "queuing cars overlaps half-size". With the ring/stall classes
+largely cleared, these moved to the top of the priority list.
+
+**Why an instrument first (measurement rule 8):** the only overlap counter we have
+(`LIVECITY-STUCKCLEAR overlaps=`, same-lane pos-gap < 4 m at 20 s samples) conflates all three
+classes and cannot see a cross-lane junction drive-through at all. Entry 51's unattributed proxy
+rise (21.0 → 25.0 mean under RINGBREAK) is the same blindness. So: a witness-cadence
+`LIVECITY-OVERLAP` reporter in the live-city host — true oriented-body (OBB) intersection over
+the engine's world poses (PosX/PosY/Angle/Length/Width; angle is navigational degrees), grid-
+hashed, classified:
+
+- `queue` — same lane, longitudinal body overlap; depth-bucketed (<1 m, 1–2.5 m, >2.5 m — the
+  owner's "half-size" is ~2.5 m on a 5 m car);
+- `merge` — same lane, the two members' PREVIOUS lanes differ and one member just landed
+  (pos < 20 m): the straight+turn merge-landing class;
+- `junction` — different lanes, ≥1 internal: the drive-through-a-blocker class;
+- `lateral` — different normal lanes (wide-lane side-by-side; expected mostly benign).
+
+**Falsifiable predictions:**
+
+- P1: the junction and merge classes are PRE-EXISTING — nonzero with `LIVECITY_RINGBREAK=0` on
+  the standard capture (they are not D2 creep artifacts).
+- P2: the RINGBREAK=1 arm's proxy rise decomposes mostly into the queue class (more movement =
+  more compression samples), NOT a junction-class jump; if junction DOES jump under RINGBREAK,
+  that is a D2 creep defect and blocks any default-ON.
+- P3: the queue class shows a distinct >2.5 m depth mode (the owner saw "half-size" overlaps,
+  not grazing contacts).
+
+## Entry 52 (AFTER) — the overlap landscape measured: P2 REFUTED (D2 creep DOES interpenetrate — default-ON blocked); the junction class is pre-existing and dominant; one unifying suspect
+
+Instrument landed (gate green, hash unchanged; diagnostic-only, WITNESS-gated). A/B on the
+standard capture (4000 cars, reroute OFF, F3 ON, 1800 s), `LIVECITY_RINGBREAK` 0 vs 1.
+Simultaneous overlapping PAIRS at t≈1780 (per-tick snapshot, not cumulative):
+
+| class | RB=0 | RB=1 |
+| --- | --- | --- |
+| junction (≥1 internal lane) | **329** | 309 |
+| queue >2.5 m deep | 45 | **492** |
+| queue 1–2.5 m | 14 | 5 |
+| merge landing | 2 | 8 |
+| lateral | 9 | 8 |
+
+- **P1 CONFIRMED**: the junction class is pre-existing (329 pairs with RB=0) and DOMINANT — the
+  owner's "too big tolerance driving through junction blockers" is real and huge at saturation.
+  Example anatomy (`gen_road_5345_1@2.2 × :34178_0_1@7.1`): an exit-lane car's TAIL still
+  covers the internal lane's end while the internal follower has closed to its front — a
+  cross-boundary following gap short by ~1–2 m. Depths cluster 0.7–1.8 m.
+- **P2 REFUTED — and this is the important one**: the RB=1 queue>2.5m class is not compression;
+  it grows monotonically (3 → 148 → 292 → 492) and its pairs are FROZEN (`__veh441@12.1 ×
+  __veh1953@10.4` identical from t=1100 to t=1780, 3.3 m deep). Mechanism: releasing keepClear
+  lets the breaker enter a junction whose EXIT lane is full; the landing lands it inside the
+  queue tail's body, where both stand forever. **The D2 "never through bodies" guarantee fails
+  at the lane-boundary landing. Default-ON is BLOCKED until this is fixed.** Note RB=0 also has
+  45 such pairs — the landing defect PRE-EXISTS; D2 multiplies exposure ~10× by design (it keeps
+  sending breakers into full boxes).
+- **P3 CONFIRMED**: the deep (>2.5 m) mode dominates the queue class — matching the owner's
+  "half-size" description.
+
+**Unifying suspect for all three owner classes:** the cross-lane-boundary car-following frame —
+a follower approaching/landing across a lane boundary appears to lose the leader's length (or
+measure to the wrong frame), yielding exit-boundary junction overlaps, landing-into-full-lane
+queue overlaps, and merge-landing overlaps as one family (the C4-vii-a frame-bug pattern at a
+site the sweep did not cover). Next: trace `__veh1953` (the RB=1 landing) and `__veh995/__veh471`
+(the RB=0 exit boundary) — deterministic replay + `LIVECITY_TRACEVEH` reach both directly.
