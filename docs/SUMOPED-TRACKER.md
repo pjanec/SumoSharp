@@ -23,7 +23,14 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 > against `PedLodManager` — Phase 2 is a **third tier on an existing LOD ladder**, not a bridge between
 > two systems.
 >
-> **Both open questions are now CLOSED.**
+> ⚠ **PAUSED, NOT WITHDRAWN — pending the `docs/PEDCROSS-OPTIONS.md` decision (2026-08-02).** The owner
+> is weighing this port against extending the existing ORCA crossing layer instead, and is leaning
+> ORCA-first. **B0 does not start until that is decided.** Two findings drove the pause: a faithful port
+> reproduces SUMO's 80 vehicle↔ped collisions, which *violates* the owner's first acceptance criterion;
+> and the car-side of that criterion is already built and guaranteed (binder 16). Everything below stays
+> valid and executable if the port wins. See PEDCROSS-OPTIONS §8 for the four experiments that decide it.
+>
+> **Both open questions within this plan are CLOSED.**
 > **G8 — stopping-place arrivals: owner decided (2026-08-02) to admit them as holes with the doors left
 > open.** No near-term need for buses or stop waiting. The two stop-gated branches
 > (`MIDOL-ARRIVAL-OBSTACLE`, `MIDOL-ARRIVAL-BLOCKED-STOPFULL`) are still ported faithfully but guarded

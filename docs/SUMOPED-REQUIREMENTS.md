@@ -1,6 +1,9 @@
 # SUMOPED — Requirements (the WHAT)
 
-**Status: PROPOSAL — awaiting owner sign-off. No implementation has started.**
+**Status: PROPOSAL — PAUSED pending `docs/PEDCROSS-OPTIONS.md`. No implementation has started.**
+The owner is weighing this port against extending the existing ORCA crossing layer. Note in particular
+that a *faithful* port reproduces SUMO's vehicle↔ped collisions (R5a), which conflicts with the owner's
+stated first criterion that cars must never go through pedestrians — see PEDCROSS-OPTIONS §3.
 
 This is the WHAT for a faithful port of SUMO's pedestrian model (`MSPModel_Striping`) into SumoSharp,
 held to the same exact-parity bar as the vehicle engine. The HOW is `SUMOPED-DESIGN.md`; the work

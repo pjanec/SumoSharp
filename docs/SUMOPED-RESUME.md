@@ -5,6 +5,10 @@ session (2026-08-02) for compaction and for a fresh VM.
 
 ---
 
+> ⚠ **READ `docs/PEDCROSS-OPTIONS.md` FIRST.** This port is **paused pending a decision** on whether to
+> extend the existing ORCA crossing layer instead. The plan below is complete and reviewed; it is not
+> currently the chosen path. Do not start B0 without checking that decision.
+
 ## 1. Status in one paragraph
 
 Branch `claude/sumo-ped-port-sumosharp-gnhiip`, working tree clean, all pushed.
