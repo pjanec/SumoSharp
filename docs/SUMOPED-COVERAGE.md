@@ -148,8 +148,10 @@ file). Exact parity is a legitimate bar at Tier C; the reason to window is stora
 
 ## 4. The scenario matrix — the axes that must be varied
 
-Coverage is a product of axes, not a list of scenarios. Six axes, each with a value that fires branches
-the others cannot:
+Coverage is a product of axes, not a list of scenarios. **Eight** axes, each with a value that fires
+branches the others cannot. (Six of them were identified from the source; **crossing priority** and
+**car movement** were found later, by *rendering* the goldens and looking — §4.3 and §4.5. That is worth
+remembering about how the last two got here.)
 
 | axis | values | why this axis exists |
 | --- | --- | --- |

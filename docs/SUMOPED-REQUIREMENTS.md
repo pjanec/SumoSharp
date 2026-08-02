@@ -323,7 +323,7 @@ aggregate is `golden.tripinfo.xml` `<personinfo>`.
 
 ### R12 — Coverage must be demonstrated, not asserted
 
-The ten scenarios above are **Tier A/B seeds, not the coverage claim**. The full plan — a branch
+The twenty rows above are **Tier A/B seeds, not the coverage claim**. The full plan — a branch
 inventory of `MSPModel_Striping` derived from the source, a branch→scenario matrix, in-port coverage
 counters, and the three-tier ladder that carries it up to saturated multi-lane crossings — is
 `SUMOPED-COVERAGE.md`, and it is part of Phase 1, not a follow-up.
@@ -334,13 +334,25 @@ Headline shape (all sizes measured, §`SUMOPED-COVERAGE.md` §2–3):
 | --- | --- | --- | --- | --- |
 | **A — micro** | 1–4 peds, ≤80 steps | exact, full horizon | FCD 10–50 KB | ~20 |
 | **B — meso** | 10–40 peds + vehicles, 120–200 steps | exact, full horizon | FCD 150–400 KB | ~8 |
-| **C — macro** | 300+ persons, saturated multi-lane, 300 s | exact over a window + full-horizon aggregates | ~1.6 MB total | 2–3 |
+| **C — macro** | 300+ persons, saturated multi-lane, 300 s | exact over a window + full-horizon aggregates | ~1.6 MB each | **4** |
 
-Six axes must be varied deliberately: crossing **width** (1 / 6 / 12 stripes — independent of road
+The four Tier C variants are **saturated** (2-lane TL, the base), **jam regime** (`personFlow period=0.5`,
+drives `jammed > 100` and the collision set), **narrow crossing** (1 stripe — the only route to
+`jamTimeNarrow`) and **wide crossing** (12 stripes). They are not redundant: crossing width alone moves
+collisions 42 → 33 → 1, so each variant selects a different failure regime. The tracker's
+collision-baseline table already has a row for each.
+
+**Eight** axes must be varied deliberately: crossing **width** (1 / 6 / 12 stripes — independent of road
 lanes, and a 1-stripe crossing is the only route to the `jamTimeNarrow` branch), crossing **length**
-(1 / 2 / 3 road lanes), **control** (priority / TL / bare walkingarea), **ped demand** (single /
-counterflow / platoon / saturated / jammed), **vehicle demand** (none / single / stream / saturated),
-and **ped flow mix** (unidirectional / counterflow / pass-by).
+(1 / 2 / 3 road lanes), **control** (priority / TL / bare walkingarea), **crossing priority**
+(`priority="false"` ped-yields / `priority="true"` zebra, car-yields — R4b; `--crossings.guess` only ever
+produces the first), **ped demand** (single / counterflow / platoon / saturated / jammed), **vehicle
+demand** (none / single / stream / saturated), **ped flow mix** (unidirectional / counterflow on a
+sidewalk / counterflow on a crossing / pass-by), and **car movement** (straight / right turn / left turn —
+straight-through demand never exercises the exit-crossing yield).
+
+The last two axes were found by rendering the goldens and looking at them, not by reading the source;
+`SUMOPED-COVERAGE.md` §4.3 and §4.5 record what each is worth.
 
 *Acceptance:* every branch ID in `SUMOPED-BRANCH-INVENTORY.md` is either witnessed by a named scenario
 plus a named oracle signal, or listed as an **admitted hole with a reason and owner sign-off**;

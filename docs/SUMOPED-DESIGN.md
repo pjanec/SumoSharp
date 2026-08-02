@@ -140,6 +140,17 @@ All **purely additive**. `AllowsRoadVehicle` keeps its exact current semantics a
 | `Link.WalkingAreaFoe` / `WalkingAreaFoeExit` | vehicle-link shape ∩ walkingarea polygon | `CheckWalkingAreaFoe` (§6.3) |
 | crossing TL link index | `<tlLogic>` + `<connection linkIndex=>` | crossing link state (§7) |
 
+**The core parser already survives crossing-bearing nets — checked, and it is a stronger claim than
+the inertness argument below.** Four committed nets carry walkingareas and `function="crossing"` edges
+(`scenarios/_ped/poc0-crossing-plaza`, `scenarios/_ped/evac-district`, `scenarios/_ped/georef_min`,
+`scenarios/_bench/livecity-mega`), and `poc0-crossing-plaza`'s junction `c` lists crossing internal lanes
+`:c_c0_0 … :c_c3_0` directly in its `intLanes`. Four repo-wide tests parse **every** `*.net.xml` under
+`scenarios/` and assert that every `intLanes` entry resolves in `LinkIndexByInternalLane` and every
+internal-link foe resolves to a real lane handle — and they are green on those nets today. So
+`poc0-crossing-plaza` is the existing regression fixture for SP-1.1's additive parse, and adding
+`_sumoped` nets is a known-survivable operation rather than an untested one. (It is still not free: see
+standing rule S-d, which is why Stage 0 re-runs the gate.)
+
 **Inertness argument.** New fields on existing records are invisible to the vehicle engine unless read.
 The one genuine risk is `Permissions` accidentally changing lane-eligibility decisions — mitigated by
 keeping `AllowsRoadVehicle` byte-identical in derivation and adding a test that asserts
@@ -1047,12 +1058,16 @@ back without crossing.
 Jam-regime variant: drop to two car flows at `period="2"` and two personFlows at `period="0.5"`.
 Measured: `<persons loaded="1200" running="365" jammed="175"/>`, 80 `<collision>` records.
 
-Generation command (honest-SUMO flags + the full person output set):
+Generation command (honest-SUMO flags + the full person output set). ⚠ **`angle` must be in the
+attribute list** — R2 makes it a compared attribute and it is the *only* lateral-velocity witness person
+FCD carries (§8, SP-2.1c). An earlier version of this recipe masked it out, contradicting §8.2; the
+1.45 MB Tier C footprint in `SUMOPED-COVERAGE.md` §3 was measured against that narrower list and is now a
+lower bound, to be re-measured at SP-0.2b.
 ```bash
 sumo -n net.net.xml -r rou.rou.xml --begin 0 --end 300 --step-length 1 \
   --pedestrian.model striping --pedestrian.striping.dawdling 0 \
   --time-to-teleport -1 --collision.action warn --collision.check-junctions true \
-  --fcd-output golden.fcd.xml --fcd-output.attributes id,x,y,speed,pos,edge --precision 4 \
+  --fcd-output golden.fcd.xml --fcd-output.attributes id,x,y,angle,speed,pos,edge,slope --precision 4 \
   --device.fcd.begin 200 \
   --person-summary-output golden.personsummary.xml \
   --personinfo-output     golden.personinfo.xml \

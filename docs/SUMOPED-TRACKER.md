@@ -14,12 +14,18 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 
 ---
 
+> **Gap review applied (`SUMOPED-GAPS.md`).** The ROT fixes and the clear-cut corrections are folded in
+> below. **Still open and needing an owner decision: G2** (ped vType defaults — `VTypeDefaults.Resolve`
+> throws on `vClass="pedestrian"` today, and no task adds it), **G3** (the phantom-leader injection may
+> need an edit to the live vehicle plan path), **G6** (intermodal router in or out of scope), **G8**
+> (stopping-place arrivals in or out), **G9** (replication in or out).
+
 ## Stage 0 — Oracle, coverage inventory, and fixtures
 - [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)
 - [ ] **SP-0.0b** knob sweep re-run on the final scenario set (RNG pinned + `--lat-edge`); inert knobs given scenarios or admitted as holes
 - [ ] **SP-0.1** oracle re-established (`/sumo` @ `v1_20_0`, `sumo` 1.20.0 via pip), recipe committed
-- [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; all six coverage axes take every value; pinning test
-- [ ] **SP-0.2b** 2–3 Tier C saturated scenarios (incl. a jam-regime and a narrow-crossing variant)
+- [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; **all eight** coverage axes take every value; pinning test; full gate re-run (S-d)
+- [ ] **SP-0.2b** **4** Tier C scenarios: saturated, jam-regime, narrow crossing (1 stripe), wide crossing (12)
 - [ ] **SP-0.3** goldens for all seven output kinds + provenance; regeneration byte-reproducible
 - [ ] **SP-0.3b** every scenario rendered to `replay.html`, no JS errors, indexed in the scenarios README
 - [ ] **SP-0.4** R3 behaviours asserted **on the oracle** (stripe counts, abreast entry, no-stall pass-by)
@@ -63,11 +69,11 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-5.2** `AddCrossingVehs` + `AddVehicleFoe`; fully-blocked pin asserted
 - [ ] **SP-5.3** `CheckWalkingAreaFoe`; `walkingarea-shared` GREEN
 - [ ] **SP-5.4** `HasPedestrians`/`NextBlocking`; `sidewalk-shared-lane` GREEN
-- [ ] **SP-5.6** ⚠ cross-population data-flow contract asserted (refill ordering, lagged approach index, person immutability, race-free query)
 - [ ] **SP-5.5** collision-set parity (`golden.collisions.xml` exact); baseline table agrees with the oracle
+- [ ] **SP-5.6** ⚠ cross-population data-flow contract asserted (refill ordering, lagged approach index, person immutability, race-free query, par == single with persons present)
 
 ## Stage 6 — Traffic lights
-- [ ] **SP-6.1** crossing link state, `IgnoreRed`, `GetImpatience`; `xwalk-tls-release` GREEN
+- [ ] **SP-6.1** crossing link state, `IgnoreRed`, `GetImpatience`; `xwalk-tls-release` GREEN **both ways** (ped release AND a vehicle held by a ped green phase — R6's second half)
 
 ## Stage 7 — API, viz, production regime, gate, docs
 - [ ] **SP-7.1** public `PersonHandle` API + tutorial sample; no existing vehicle type edited; `Count` still means vehicles; handle id spaces provably distinct

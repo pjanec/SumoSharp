@@ -17,8 +17,14 @@ An implementor's report is never sufficient.
 - **S-a.** Every ported function carries a `/sumo/<path>:<line>` comment naming its C++ original.
 - **S-b.** No `System.Random`, ever. Per-entity seeded streams only (design §12).
 - **S-c.** Nothing may be committed with `Engine.Persons` non-null by default.
-- **S-d.** After any task that touches `src/Sim.Core` or `src/Sim.Ingest`, re-run the **full** gate
-  (`dotnet test -c Release`, not just `Sim.ParityTests`) — CLAUDE.md §Measurement discipline item 9.
+- **S-d.** After any task that touches `src/Sim.Core` or `src/Sim.Ingest`, **or that adds a committed
+  net**, re-run the **full** gate (`dotnet test -c Release`, not just `Sim.ParityTests`) — CLAUDE.md
+  §Measurement discipline item 9. ⚠ The "adds a net" half is not padding: four existing tests
+  (`JunctionLinkLaneMapTests`, `JunctionIsLeaderTests`, `InternalJunctionFoeTests`, `InternalLinkFoeTests`)
+  enumerate **every `*.net.xml` under `scenarios/` recursively** and assert structural invariants on all
+  of them, so **Stage 0 is not gate-neutral** even though it writes no C#. (Risk is low, not zero:
+  `scenarios/_ped/poc0-crossing-plaza` already puts crossing internal lanes `:c_c0_0 … :c_c3_0` in a
+  junction's `intLanes` and those tests are green on it today — see design §3.1.)
 - **S-e.** Commit before delegating; end a delegation at "compiles, verified, committed"; never delegate
   *waiting* for a long run (CLAUDE.md §Subagents).
 - **S-f. ZERO HEAP ALLOCATION ON THE PERSON STEP PATH — mandatory, checked every stage.**
@@ -75,7 +81,9 @@ is 2725 lines; the recipe (including the "apt ships 1.18, do not use it" warning
 Requirements §6 + `SUMOPED-COVERAGE.md` §3–4. Each gets `nodes.nod.xml`/`edges.edg.xml` sources, a
 `netconvert` regeneration line in `NOTES.md`, `net.net.xml`, `rou.rou.xml`, `config.sumocfg`.
 Roughly 20 Tier A (1–4 peds, ≤80 steps, one mechanism each) and 8 Tier B (10–40 peds + vehicles,
-120–200 steps). The six axes of coverage §4 must each take every listed value somewhere in the set —
+120–200 steps). **All eight** axes of coverage §4 must each take every listed value somewhere in the set
+— including the two found by rendering rather than by reading (**crossing priority** and **car
+movement**), which is exactly why they are easy to skip —
 in particular a **1-stripe** (`--default.crossing-width 0.64`) and a **12-stripe** (`8.00`) crossing,
 a **pass-by** flow of peds who turn at the junction without crossing, **turning car flows** (left and
 right — coverage §4.3; straight-through demand never exercises the exit-crossing yield), and
@@ -86,14 +94,18 @@ depart/arrival positions pinned near the junction.
 `--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
 `departPos="random"`/`departPosLat="random"` anywhere; each `NOTES.md` names the axis values it pins and
 the SP-0.0 branch IDs it claims to fire. A test asserts the four pinning properties by parsing every
-`_sumoped` config, so the pinning can never silently lapse.
+`_sumoped` config, so the pinning can never silently lapse. **And the full gate is re-run (S-d)** —
+committing nets alone runs them through four repo-wide net-invariant tests before `Sim.Ingest` knows
+anything about crossings.
 
 ### SP-0.2b — Author the Tier C saturated scenarios
-`SUMOPED-COVERAGE.md` §3, §4.1. 2–3 scenarios: a saturated multi-lane signalized junction (2-lane arms,
-4 car flows + 4 personFlows, 300 s — verified to reach steady state by t≈80 with ~110–140 concurrently
-walking), plus a **jam-regime** variant at `personFlow period="0.5"` that drives `jammed > 0`, and a
-narrow-crossing variant. Honest-SUMO flags: `--time-to-teleport -1 --collision.action warn
---collision.check-junctions true`.
+`SUMOPED-COVERAGE.md` §3, §4.1. **Four** scenarios: a saturated multi-lane signalized junction (2-lane
+arms, 4 car flows + 4 personFlows, 300 s — verified to reach steady state by t≈80 with ~110–140
+concurrently walking), a **jam-regime** variant at `personFlow period="0.5"` that drives `jammed > 100`,
+a **narrow-crossing** variant (1 stripe, `--default.crossing-width 0.64` — the only route to
+`jamTimeNarrow`), and a **wide-crossing** variant (12 stripes, `8.00`). Width alone moves collisions
+42 → 33 → 1, so these select different failure regimes rather than repeating one. Honest-SUMO flags:
+`--time-to-teleport -1 --collision.action warn --collision.check-junctions true`.
 **Success:** the saturated scenario produces ≥25,000 person FCD rows; the jam variant reports
 `jammed > 100` in `--statistic-output`; two independent SUMO runs give **byte-identical** FCD bodies
 (re-verify determinism per scenario, do not assume it); the committed footprint per Tier C scenario is
@@ -154,7 +166,8 @@ shape+width+length, ped `<connection>` chain, crossing TL link index.
 **Success:** parsing every `_sumoped` net yields the same crossing count, walkingarea count, and
 per-crossing width that `sumo --net-dump`-equivalent inspection of the net file reports; **and** the
 equivalence test `LaneAllowsRoadVehicle(allow) == Permissions.AllowsAnyRoadVehicle()` passes over every
-lane of all 91 committed scenarios; **and** the full gate is unmoved (S-d).
+lane of **every committed `*.net.xml` under `scenarios/`** (141 files today, not the 91 scenario
+directories — the four repo-wide invariant tests use the file enumeration, and so must this); **and** the full gate is unmoved (S-d).
 
 ### SP-1.2 — Walkingarea foes for vehicle links
 Design §3.1, §6.3.
@@ -178,7 +191,7 @@ design doc. **Reasoning from the event-queue source is explicitly not acceptable
 Design §3.2: `WalkingAreaPaths`, `WalkingAreaFoes`, `MinNextLengths`, `NumStripes`.
 **Success:** on `walk-junction-turn`, every `(from,to)` path's length matches SUMO's own
 `WalkingAreaPath.length` to 1e-9, dumped from a debug build or via the `<personinfo>` `routeLength`
-cross-check; `NumStripes` matches `floor(width/0.64)` on every crossing/WA lane in all eight scenarios.
+cross-check; `NumStripes` matches `floor(width/0.64)` on every crossing/WA lane in every committed `_sumoped` net.
 
 ---
 
@@ -305,9 +318,13 @@ Each case cites the `.cpp` line whose behaviour it pins.
 
 ### SP-3.4 — `GetNeighboringObstacles`, `MoveInDirectionOnLane`, `MoveInDirection`, `ArriveAndAdvance`, `MoveToNextLane`
 Design §5.2, §5.4. Single-threaded; FORWARD pass fully, then BACKWARD.
-**Success:** `walk-straight-1` and `walk-oncoming-2` reach **exact parity** (SP-2.2's tests flip to
-green with no tolerance widening). The x-position sort's id tie-break is present and covered by a test
-with two peds at identical `RelX`.
+**Success:** `walk-straight-1`, `walk-oncoming-2` and **both sidewalk-counterflow scenarios**
+(`counterflow-sidewalk-4m` at 75 peds each way on 6 stripes, `counterflow-sidewalk-6m` at 214 concurrent
+on 9) reach **exact parity** (SP-2.2's tests flip to green with no tolerance widening). The counterflow
+pair is what proves the oncoming-reserve and `ONCOMING_CONFLICT_PENALTY` folds rather than just the
+free-walk path: the oracle self-organises into two stable lanes (measured at y=-6.72 / y=-3.52, held for
+the whole run) and our output must reproduce that lane split, not merely the per-ped positions. The
+x-position sort's id tie-break is present and covered by a test with two peds at identical `RelX`.
 
 ### SP-3.5 — Person demand + stage + FCD output
 `<person>`/`<walk edges=>` parsing, `MSStageWalking` equivalent, person FCD writer emitting
@@ -339,10 +356,18 @@ parity, including the `stripeEnd` walls where the next lane is narrower.
 
 ### SP-4.4 — R3 crowd behaviours, at parity
 Requirements R3a/R3b/R3d.
-**Success:** `xwalk-priority-queue`, `xwalk-priority-horde` and `walk-passby-queue` at exact parity, and
-the **same** derived assertions SP-0.4 ran against the oracle now pass against SumoSharp's output — same
-helper, same thresholds. Distinct-stripe counts must match the golden exactly, not merely clear the ≥3/≥4
-bar.
+**Success:** `xwalk-priority-queue`, `xwalk-priority-horde`, `walk-passby-queue`,
+**`counterflow-crossing`**, **`counterflow-crossing-jam`**, **`ped-turners-through-bunch`** and
+**`ped-turners-gridlock`** at exact parity, and the **same** derived assertions SP-0.4 ran against the
+oracle now pass against SumoSharp's output — same helper, same thresholds. Distinct-stripe counts must
+match the golden exactly, not merely clear the ≥3/≥4 bar.
+Three of those seven are here because nothing else reaches their branches: crossing counterflow does
+**not** arise from "peds both ways" demand (coverage §4.2 — every crossing runs one-way; it must be
+forced), its jam variant is the only head-on-deadlock-plus-squeeze case, and the ped-turner pair is the
+owner's R3d at both ends of its range — 29% stopped at moderate density, degrading **continuously** to
+76% and corner gridlock at 2.4× car flow. ⚠ Assert the turner metric **unconditioned**: conditioning
+"turner stopped %" on steps that already have ≥3 stopped peds reports 79–95% and reads as total failure
+because the condition selects the congested moments (tracker §Render session).
 
 ---
 
@@ -356,11 +381,31 @@ dedicated test asserts the 2 s standing-ped clause by holding a ped stationary a
 the vehicle proceeds after — not before — 2 s; and the full gate is unmoved (S-d), re-run in this task,
 not deferred to Stage 7.
 
+### SP-5.1b — ⭐ R4b: the ped-priority zebra (the opposite yield regime)
+Requirement **R4b**, coverage §4.5. ⚠ This is the regime `--crossings.guess` **never** produces:
+`NBNode.cpp:2788` creates a guessed crossing with `priority = isTLControlled()`, so at an uncontrolled
+node it is always `priority="false"` (the *pedestrian* gives way). Declaring
+`<crossing … priority="true"/>` flips the link from state `m` to `M` and inverts who yields. Without
+this task the port would be validated on only half of R4.
+**Success:** the A/B pair `zebra-1v1-yields` / `xwalk-1v1-noprio` — identical except for that one
+attribute — both at exact parity. The `priority="true"` arm must reproduce the measured trace: the car
+decelerates `13.89 → … → 2.15 → 0.00`, holds a **full stop for 3 s** on the internal lane, and the ped
+crosses at an unbroken `1.39 m/s` without ever stopping at the curb. The `priority="false"` arm must
+reproduce the ped stopping dead at the curb while the car dips to 6.28 and proceeds. Plus the flow-density
+pair at exact parity: `zebra-flow-balanced` (peds stopped on the curb **0%** of walkingarea steps, ≥60
+distinct vehicles reaching a full stop) and `zebra-flow-pedheavy` (cars starved — 45 of 69 still queued).
+The 0%-vs-91% curb-stopping split is asserted by the **same helper** on both arms, so the two regimes
+cannot both pass by accident.
+
 ### SP-5.2 — `AddCrossingVehs` + `AddVehicleFoe`
 Design §6.4.
-**Success:** `xwalk-priority-queue` (vehicles enabled) at exact parity; a test asserts the "fully
-blocked ⇒ pin every stripe" second pass by constructing a crossing where every non-reserved stripe is
-vehicle-occupied and showing no ped enters.
+**Success:** `xwalk-priority-queue` (vehicles enabled) **and `turning-vs-crossing-peds`** at exact
+parity; a test asserts the "fully blocked ⇒ pin every stripe" second pass by constructing a crossing
+where every non-reserved stripe is vehicle-occupied and showing no ped enters.
+`turning-vs-crossing-peds` is not optional coverage: a turning car yields to peds on the crossing over
+its **exit** edge and is held *on the internal lane inside the junction*, not at the stop line —
+straight-through demand never fires that path at all (coverage §4.3, measured: 80 vehicle-steps of
+blocked RIGHT turns, 57 of blocked LEFT). Assert both turn directions.
 
 ### SP-5.3 — `CheckWalkingAreaFoe`
 Design §6.3.
@@ -370,6 +415,17 @@ oncoming discount.
 ### SP-5.4 — `HasPedestrians` / `NextBlocking` on shared lanes
 Design §6.5.
 **Success:** `sidewalk-shared-lane` at exact parity.
+
+### SP-5.5 — Collision-set parity and the collision baseline
+Requirements R5a/R5b, coverage §6.
+**Success:** `golden.collisions.xml` matches **exactly** on `(time, type, lane, pos, collider, victim,
+colliderSpeed, victimSpeed)` for every `_sumoped` scenario — empty for Tier A and Tier B, and an exact
+set match for the Tier C jam variant. SP-0.5's clearance helper, run over our own output, reports the
+same minimum clearance per scenario as it does over the golden. The tracker's collision-baseline table
+is filled from our output and agrees with the oracle's. Note this is the R5c improvement baseline; do
+**not** "fix" a collision here — reproducing SUMO's is the requirement.
+
+---
 
 ### SP-5.6 — ⚠ The cross-population data-flow contract, asserted
 Design §6.6. The coupling is correct only because of *ordering*, and ordering that is merely "how the
@@ -391,23 +447,15 @@ person state is written between `AdvancePersons` returning and the end of `Execu
 parallel `PlanMovements` (`UseParallelPlan`), so a lazily populated cache there is a data race that
 surfaces only as nondeterminism under load. Covered by S-f's 0-bytes gate plus the par == single hash.
 
-### SP-5.5 — Collision-set parity and the collision baseline
-Requirements R5a/R5b, coverage §6.
-**Success:** `golden.collisions.xml` matches **exactly** on `(time, type, lane, pos, collider, victim,
-colliderSpeed, victimSpeed)` for every `_sumoped` scenario — empty for Tier A and Tier B, and an exact
-set match for the Tier C jam variant. SP-0.5's clearance helper, run over our own output, reports the
-same minimum clearance per scenario as it does over the golden. The tracker's collision-baseline table
-is filled from our output and agrees with the oracle's. Note this is the R5c improvement baseline; do
-**not** "fix" a collision here — reproducing SUMO's is the requirement.
-
----
-
 ## Stage 6 — Traffic lights
 
 ### SP-6.1 — Crossing link state, `IgnoreRed`, `GetImpatience`
 Design §7, and whatever SP-1.3's trace determined.
 **Success:** `xwalk-tls-release` at exact parity across at least one full red→green→red cycle, with the
-ped's release step matching to the tick.
+ped's release step matching to the tick, **and** — R6's second half, currently asserted nowhere — at
+least one vehicle held to a stop by a ped's green phase, matching the golden's stop step and its release
+step. If the scenario as authored contains no vehicle demand conflicting with the ped phase, it is
+mis-authored under SP-0.4's own rule and goes back to SP-0.2.
 
 ---
 
@@ -449,7 +497,7 @@ match a ped that walked there naturally (the no-pop handover property).
 
 ### SP-7.3 — Sim.Viz scenes + parity overlay
 Design §11, Requirement R8.
-**Success:** `--sumoped-<scene>` renders for all eight scenarios; the overlay mode draws golden
+**Success:** `--sumoped-<scene>` renders for every committed `_sumoped` scenario; the overlay mode draws golden
 ground-truth rings alongside live peds; stripe lines render on crossings; all registered in
 `scripts/gen-demos.sh` under a **SUMO pedestrians** category. Verified by opening the HTML, not just by
 the command exiting 0.
@@ -464,7 +512,7 @@ either knob changes **no** `_sumoped` golden, because every one of them sets bot
 Requirement R12, coverage §1, §8.
 **Success:** `AllBranchesCoveredTest` is green, or every remaining miss is listed in coverage §8 as an
 admitted hole with a reason and explicit owner sign-off. The number of covered vs. admitted-hole branch
-IDs (out of 149) is recorded in the tracker. `PerScenarioClaimTest` green.
+IDs (out of 148) is recorded in the tracker. `PerScenarioClaimTest` green.
 
 ### SP-7.4d — Performance-deviation ledger close-out
 Design §4.4. Only if any `PD-n` was taken.
@@ -508,7 +556,7 @@ CLAUDE.md §Subagents' orchestration loop. Batches are sized so each ends at a v
 
 | Batch | Tasks | Ends at |
 | --- | --- | --- |
-| B0 | SP-0.0 | branch inventory reviewed and corrected (a first pass of 149 rows exists) |
+| B0 | SP-0.0 | branch inventory reviewed and corrected (a first pass of 148 rows exists) |
 | B1 | SP-0.1 … SP-0.6 (incl. SP-0.3b renders) | Tier A/B/C goldens committed; oracle proven to contain the R3 behaviours; coverage matrix mapped and holes signed off |
 | B2 | SP-1.1, SP-1.2, SP-1.4 | net model extended, vehicle gate unmoved |
 | B3 | SP-1.3 | the ordering trace (Opus does this one — it is a judgment call) |
