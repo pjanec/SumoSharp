@@ -7620,6 +7620,20 @@ public sealed partial class Engine : IEngine
                 }
             }
 
+            // Entry 55 instrument: which foe links does this loop actually evaluate, and through
+            // which reachability bits? The veh411/veh2209 co-location trace showed the merge
+            // phases never naming the parallel same-target merger; this line decides between the
+            // two candidate guards (no respondsTo/foeWith reach vs a downstream short-circuit).
+            // NO !prePass filter (T1.8: a fusion-eligible vehicle only ever gets the pre-pass, so
+            // filtering it out hides exactly the stopped vehicles this hunts). Pass is tagged.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[jyrow] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} egoLink={egoLink.Index} foeLink={j} "
+                    + $"respondsTo={respondsTo} foeWith={foeWith} conflict={(conflict is not null ? "geo" : "none")} "
+                    + $"foeIntLane={junction.IntLanes[j]}");
+            }
+
             if (conflict is not null && !respondsTo && !physicalFoe)
             {
                 continue; // crossing arms: reachability unchanged (RespondsTo, FoeWith gate-scoped)

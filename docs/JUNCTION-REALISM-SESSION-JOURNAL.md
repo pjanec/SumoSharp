@@ -3840,3 +3840,27 @@ each link's `setApproaching` registration makes the other stream visible via
 entry-order tie-break makes exactly one yield. `colocationSymmetryBreak` is doing its job as
 the last-resort net — the fix belongs one layer up. NEXT: one instrumented run printing the foe
 links the loop iterates for link 7; then the fix, gate-scoped, standard ladder.
+
+### Entry 55 addendum — the [jyrow] instrument decides: the pair IS reached; the miss is INSIDE SameTargetMergeConstraint; symmetric-release tie is the named suspect
+
+New committed instrument `[jyrow]` (trace-gated): per-foe-link reachability bits at the jy loop
+head. Lesson re-learned en route: the print's first version filtered `!prePass` and showed
+NOTHING for the stopped vehicle — a fusion-eligible vehicle only ever gets the PRE-pass (T1.8's
+exact staleness trap, now hit from the instrumentation side); the pass is tagged instead.
+
+Decisive rows (t=640.0, pre-pass, ego=__veh411 egoLink=7 at junction 30268):
+
+```
+foeLink=1  respondsTo=True  foeWith=True  conflict=none  foeIntLane=:30268_0_1
+```
+
+The pair IS evaluated, with BOTH reachability bits set and no geometric-conflict record — it
+flows exactly into the `conflict is null` sameTarget-merge branch with `arbitration: true`. Yet
+no [merge] phase ever names `__veh2209`. So the miss is INSIDE `SameTargetMergeConstraint`:
+given both cars released in PERFECT symmetry (each ~0.5 m from the merge point, identical
+speeds every step — lockstep 0.65/1.80/3.08), the top suspect is PHASE 1's leader/follower
+decision lacking a TOTAL-ORDER tie-break for the exactly-symmetric case — both conclude "the
+other is farther/not my leader", neither follows, co-location. The same missing-total-order
+shape as Entry 40/49. NEXT (first move of the next round): read PHASE 1's ordering guard
+against the trace values; if the tie hypothesis holds, the fix is the IsLeaderByEntryOrder
+chain at that decision, gate-scoped, standard ladder.
