@@ -4224,7 +4224,10 @@ overlaps flat (34 → 36 pairs — no drive-through cost spike); :34994 holds 39
 stoppedFrac 0.60 → 0.64 — i.e. the SPECIFIC hold shape is cured (veh903's own chain), but
 the junction's wider standoff family persists and run-to-run noise dominates the aggregates.
 Honest verdict: a real SUMO-faithfulness gap closed, modest immediate effect. **Next named
-wedge (~706 s): `__veh1096 :35022_5_0@4.0 bind=leaderFollow/none wait=706 -> __veh996
-:35022_1_0@11.5 junctionYield/sameTargetMerge`** — a co-located landing pair inside :35022
-(the RESUME-3 landed-standoff family; likely wants the colocation/symmetry treatment, not a
-skip).
+wedge (706 s, CORRECTED — the line below is the measured head, an earlier draft named a
+wrong exemplar): `__veh56 :34994_6_0@33.4 bind=crossJxnLeader/none wait=706 -> __veh1762
+gen_road_7261_1@3.4 keepClear/none`** — the SAME :34994 -> gen_road_7261 keepClear-rooted
+chain as before (now headed by veh1762, the Entry 58 exemplar's partner): the crossJxnLeader
+hold on a keepClear-held exit-lane car has no 60 s recovery either (crossJxnLeader is
+car-following, not a junction arm) — next session should trace veh1762's keepClear chain to
+ITS root before touching any skip.
