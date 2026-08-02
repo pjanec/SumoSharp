@@ -143,6 +143,7 @@ The largest active cluster. Sessions coordinate through `TASKS-TODO.md`'s in-fli
 | [`LIVE-CITY-PERF-DESIGN.md`](LIVE-CITY-PERF-DESIGN.md) + [`-TRACKER`](LIVE-CITY-PERF-TRACKER.md) | The measurement framework and the instrument it mandates. |
 | [`PERF-ROADMAP.md`](PERF-ROADMAP.md) | Superseded by `PERF-HANDOVER.md`; one of its claims is falsified for the coupled host (see the banner). |
 | [`BENCHMARK-INSTRUCTIONS.md`](BENCHMARK-INSTRUCTIONS.md), [`BENCHMARK_SPEC.md`](BENCHMARK_SPEC.md) | How to run the benches. |
+| [`MEASURE-WRITE-RATE-RESULTS.md`](MEASURE-WRITE-RATE-RESULTS.md) | **The replication write rate**, measured: ~0.64 updates/car/s flat from 500 to 4000 cars, 125 KiB/s at 4000. Explains why the `laneChange` share is ~half the stream and yet only 0.7% is a real lane change. Instrument: `src/Sim.MeasureWriteRate`. |
 | [`DOMAIN-DECOMP.md`](DOMAIN-DECOMP.md), [`PEDESTRIAN-P6-2-RESULTS.md`](PEDESTRIAN-P6-2-RESULTS.md) | Region decomposition, car side and ped side. The ped result missed its target — do not re-attempt phase 1. |
 
 ## Panic evacuation

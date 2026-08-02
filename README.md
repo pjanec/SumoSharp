@@ -56,7 +56,8 @@ doesn't have. Highlights below; precise scope after that.
   **network-distributable** crowd subsystem: a navmesh baked from the SUMO net, Poisson O-D demand, a
   two-level LOD (cheap dead-reckoned "ambient" peds vs. reactive full-ORCA ones, promoted on demand),
   activity-timeline liveliness (pause / sit / step inside), crosswalk signals, and a **deterministic
-  lateral weave** so dense crowds thread shared sidewalks without passing through each other. Every
+  lateral weave** so opposing pedestrian flows are kept to their own half of a shared sidewalk by
+  construction (same-direction overtaking can still overlap — see *Pedestrians* for the exact bound). Every
   low-power pedestrian's pose is a **pure function of `(route, seed, width, time)`**, so the server and
   every remote image-generator reconstruct it **bit-for-bit identically** — a route is broadcast *once*
   and thousands of ambient peds cost ~O(1) each over a tiny bandwidth budget. Default-off, so the
@@ -437,7 +438,12 @@ the determinism hash are byte-unchanged when peds are unused. Suite: **324 tests
   meet-and-talk, and templated actors (a looping waiter) — all still low-power.
 - **Deterministic lateral weave** — dense low-power crowds are offset onto their own half of each
   sidewalk (a pure function of `route, seed, width, time`), so opposing/overtaking peds thread shared
-  sidewalks **without passing through each other** — at O(1) per ped, no neighbour queries.
+  sidewalks. ⚠ **What it does and does not guarantee:** the keep-right offset puts opposing streams on
+  provably different halves, so east- and west-bound peds **structurally cannot** cross into each other.
+  It carries **no minimum-separation enforcement**, so two peds walking the *same* way can still overlap
+  when one overtakes — visually clean to ~0.3 peds/m², degrading above that. Same-direction avoidance is
+  open work (PED-REALISM-1); promoting to full ORCA is what makes avoidance *assured*. O(1) per ped either
+  way, no neighbour queries.
 - **Reacts with traffic** — signalized crosswalk gates (queue → surge on the walk phase), cars stopping
   for a ped in their lane (`Engine.CrowdSource`), obstacle dodge + dynamic-blocker reroute, and parking-lot
   board/alight with mutual car↔ped avoidance.
@@ -835,7 +841,8 @@ external-agent subsystems are implemented and parity-tested. The standing gate:
 
 | Suite | Result |
 | --- | --- |
-| `dotnet test Traffic.sln -c Release` (parity) | **775 pass · 0 fail · 4 skip**, all 661 goldens byte-identical |
+| `dotnet test Traffic.sln -c Release` | **1120 pass · 0 fail · 4 skip** across 5 test projects |
+| └ `Sim.ParityTests` alone (the parity gate) | **777 pass · 0 fail · 4 skip**, all 661 goldens byte-identical |
 | `Sim.Bench` determinism hash | **`BF3794A4704BCD79`**, parallel == single-threaded |
 | `tests/Sim.Pedestrians.Tests` | 324 / 324 |
 | `tests/Sim.LiveCity.Tests` | 90 / 90 |

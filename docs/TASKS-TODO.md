@@ -4,9 +4,9 @@ The short, live queue. **Completed work + the full detail/characterization of ev
 the archive `TASKS-DONE.md`** — this file is just the open items with pointers. Other sessions:
 coordinate here (add/claim items), keep it short, move finished items' detail to `TASKS-DONE.md`.
 
-Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **781/5** with all 661 goldens byte-identical
+Iron law: `dotnet test tests/Sim.ParityTests -c Release` = **782/5** with all 661 goldens byte-identical
 (775/4 before the traffic-bugs branch, which adds tests and perturbs none);
-`Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **90/90**
+`Sim.Bench` hash **`A134ED3716DDE7BC`** (par==single); no `System.Random`. `Sim.LiveCity.Tests` = **92/92**
 (**IS in `Traffic.sln`** since `f4f39a4` — plain `dotnet test -c Release` from the root runs it; the old
 "not in the sln, build explicitly" warning is stale and cost a session a wrong process lesson). `Sim.Pedestrians.Tests` = **324/324**. `demos/City3D/CityLib.Tests` (also not in
 the sln) = **186 pass / 4 skip** in ~45 s. The four skips are `[RealTimeFact]`s — render-loop tests that
@@ -16,6 +16,11 @@ cost ~1 s of wall clock per simulated second because `DrClock` tracks wall time 
 Reasoning + why a `--filter` alone cannot enable them: `demos/City3D/CityLib.Tests/RealTimeFactAttribute.cs`.
 ⚠ Also **clear `~/.nuget/packages/sumosharp.*` before repacking City3D**, or the version-pinned local feed
 serves a stale engine and you measure code you are not looking at.
+
+> ⚠ **Name the PROJECT, not the solution, when quoting these.** `Sim.ParityTests` is **782 pass / 0 fail /
+> 5 skip**; the whole `Traffic.sln` is **~1225 pass / 0 fail / 5 skip** across six test projects
+> (ParityTests 782, LiveCity 92, Pedestrians 324, Host 6, Viewer.Motion 19, DotRecast 2). Quoting 782 as
+> "the solution" understates the suite and invites a correction from anyone who runs it.
 
 > **The bench hash moved AGAIN at journal Entry 34** (`BF3794A4704BCD79` → `A134ED3716DDE7BC`, commit
 > `05653f4`, the speedGain-RIGHT lane-change arm shipping default-ON) — attributed by the 3D-test

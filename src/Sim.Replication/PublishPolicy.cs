@@ -73,9 +73,57 @@ public sealed class DrErrorPublishPolicy : IPublishPolicy
     public double LatTol { get; init; } = 0.2;      // m of lateral (posLat) prediction error
     public double MaxInterval { get; init; } = 3.0; // s liveliness heartbeat
 
-    public bool ShouldPublish(in PublishSignals s) =>
-        s.LaneChanged
-        || s.PosError > PosTol
-        || s.LatError > LatTol
-        || s.SecondsSinceLastSent >= MaxInterval;
+    // Per-reason attribution counters. `ShouldPublish` returns a bare bool, so without these there is no
+    // way to ask WHICH of the four conditions is driving the write rate -- and that is exactly the question
+    // that decides whether a high rate is fixed by loosening a threshold or not fixable at all. Tallied in
+    // the same short-circuit order the boolean expression used, so a fire is attributed to the FIRST
+    // condition that fired (lane change > pos > lat > heartbeat), never double-counted.
+    //
+    // Reading them is only meaningful per-policy-instance: ReplicationPublisher constructs its own policy,
+    // so a recording sink's counters are separate from the live wire's. Not thread-safe, and deliberately
+    // so -- a PublishScheduler is driven from one thread per publisher. Zero behavioural effect: the
+    // increments are the only change, and the decision order is identical to the expression they replaced.
+    public long FiresLaneChanged { get; private set; }
+    public long FiresPos { get; private set; }
+    public long FiresLat { get; private set; }
+    public long FiresHeartbeat { get; private set; }
+
+    public long FiresTotal => FiresLaneChanged + FiresPos + FiresLat + FiresHeartbeat;
+
+    public void ResetReasonCounters()
+    {
+        FiresLaneChanged = 0;
+        FiresPos = 0;
+        FiresLat = 0;
+        FiresHeartbeat = 0;
+    }
+
+    public bool ShouldPublish(in PublishSignals s)
+    {
+        if (s.LaneChanged)
+        {
+            FiresLaneChanged++;
+            return true;
+        }
+
+        if (s.PosError > PosTol)
+        {
+            FiresPos++;
+            return true;
+        }
+
+        if (s.LatError > LatTol)
+        {
+            FiresLat++;
+            return true;
+        }
+
+        if (s.SecondsSinceLastSent >= MaxInterval)
+        {
+            FiresHeartbeat++;
+            return true;
+        }
+
+        return false;
+    }
 }

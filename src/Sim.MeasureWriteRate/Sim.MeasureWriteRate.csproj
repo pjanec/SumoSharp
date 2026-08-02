@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A MEASUREMENT INSTRUMENT ONLY: how many vehicle updates the DECIMATED replication stream
+    (DrErrorPublishPolicy) actually emits per second under LiveCity demand, and which of the four publish
+    conditions drives that rate. Answers the question a consumer-side port cannot; the write COUNT is
+    scenario-determined, so if it is high the lever is the publish thresholds, not the consumer.
+
+    Adds ZERO behavioral risk; it drives LiveCitySim through the public record-sink tee exactly as
+    Sim.DensityDiff and Sim.BenchLiveCity drive it, and never mutates simulation logic. Fully managed with no
+    DDS, no native dependency, no GPU. NOT in Traffic.sln's test path and NEVER invoked by `dotnet test`
+    (CLAUDE.md "two loops, kept strictly separate").
+
+    Committed rather than kept as a throwaway probe, per CLAUDE.md measurement-discipline #8. A probe that
+    is run once and reverted makes its own number unfalsifiable and poisons every later comparison.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Workstation GC, matching Sim.BenchLiveCity/Sim.BenchCity, so the producer real-time factor this
+         tool reports stays comparable with theirs rather than depending on Server GC's heap count. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.LiveCity\Sim.LiveCity.csproj" />
+    <ProjectReference Include="..\Sim.Host\Sim.Host.csproj" />
+  </ItemGroup>
+
+</Project>
