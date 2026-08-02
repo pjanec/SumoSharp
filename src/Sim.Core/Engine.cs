@@ -7723,6 +7723,21 @@ public sealed partial class Engine : IEngine
             }
 
             var foe = FindCrossFoeVehicle(v, foeInternalLaneHandle);
+
+            // Entry 57 instrument: the crossing arm's foe PICK vs the lane's PHYSICAL occupant.
+            // The bay arm (F2.1b below) already measured the pool-based lookup first-masking the
+            // actual occupant behind a distant route-matched vehicle (Entry 35b); this line decides
+            // whether the :36220 drive-through is the same mask on the crossing arm. No !prePass
+            // filter (T1.8); pass is tagged.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                var physOcc = _physOnLaneFirst[foeInternalLaneHandle];
+                Console.Error.WriteLine(
+                    $"[jyfoe] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} foeLink={j} "
+                    + $"pick={(foe is not null ? foe.Def.Id : "null")} pickLane={(foe is not null ? foe.LaneId : "-")} "
+                    + $"phys={(physOcc is not null ? $"{physOcc.Def.Id}@{physOcc.Kinematics.Pos:F1}v{physOcc.Kinematics.Speed:F1}" : "null")}");
+            }
+
             if (foe is null)
             {
                 continue;
@@ -8029,6 +8044,16 @@ public sealed partial class Engine : IEngine
                 // the ">120 s yield wait" where real SUMO's equivalent stall resolves in ~10 s, and the
                 // teleports it produced are literally classified `Yield`.
                 var takesCrossingYield = !(egoInsideJunction || foeWillNotPass || foeNotApproaching || foeYieldsThisStep || ignoresFoe || egoHasSignalPriority || crossingWindowClear || impatientTimeout);
+
+                // Entry 57 instrument: the approaching-cross arm's skip bits, one line per evaluated
+                // foe link for the traced vehicle. Any single true bit suppresses the yield.
+                if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+                {
+                    Console.Error.WriteLine(
+                        $"[jyskip] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} foeLink={j} inside={egoInsideJunction} "
+                        + $"foeNoPass={foeWillNotPass} foeFar={foeNotApproaching} foeYields={foeYieldsThisStep} "
+                        + $"sigPri={egoHasSignalPriority} winClear={crossingWindowClear} impat={impatientTimeout} yield={takesCrossingYield}");
+                }
                 // Perf (willPass/plan fusion): a finite approaching-foe crossing yield taken in the
                 // pre-pass is the ONLY thing the real pass can relax (via `!foe.WillPass`), so flag it
                 // -- PlanMovements must then RECOMPUTE this vehicle rather than reuse the pre-pass
@@ -8051,6 +8076,16 @@ public sealed partial class Engine : IEngine
             {
                 // Cleared: foe already past its internal lane.
                 thisConstraint = double.PositiveInfinity;
+            }
+
+            // Entry 57 instrument (companion to [jyfoe] above): which branch ran and what it returned.
+            // A foe-link that `continue`d in the on-junction branch (isLeader gate / entry-order /
+            // ignore-blocker skips) shows a [jyfoe] pick line with NO [jyarm] line -- that absence is
+            // itself the answer.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                Console.Error.WriteLine(
+                    $"[jyarm] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} foeLink={j} arm={thisArm} c={thisConstraint:F2}");
             }
 
             constraint = Math.Min(constraint, thisConstraint);
