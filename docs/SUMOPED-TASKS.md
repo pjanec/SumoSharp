@@ -111,7 +111,9 @@ The byte-diff is the only thing that catches it.
 **Success:** each `config.sumocfg` explicitly sets `--pedestrian.model striping` **and**
 `--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
 `departPos="random"`/`departPosLat="random"` and no `<walk from=/to=>` anywhere, with the personFlow
-byte-diff recorded in the scenario's `NOTES.md`; each `NOTES.md` names the axis values it pins and
+byte-diff recorded in the scenario's `NOTES.md`; **no vType sets `jmIgnoreJunctionFoeProb`** (it gates an
+RNG draw on the vehicle's pedestrian arm, `MSVehicle.cpp:3419-3421`, and would make the ped-yield
+behaviour stochastic); each `NOTES.md` names the axis values it pins and
 the SP-0.0 branch IDs it claims to fire. A test asserts the four pinning properties by parsing every
 `_sumoped` config, so the pinning can never silently lapse. **And the full gate is re-run (S-d)** —
 committing nets alone runs them through four repo-wide net-invariant tests before `Sim.Ingest` knows
@@ -462,6 +464,16 @@ code**. ⚠ Without this, the deceleration profile below is reachable by *tuning
 would pass its own test. If a branch must be added, this task **edits the live vehicle plan path** and is
 no longer "additive, gated on `Persons != null`" — say so explicitly and treat the S-d re-run as
 load-bearing.
+**A first pass of this reading is already recorded in design §6.1, and it says the answer is "additive".**
+SUMO's ped arm bypasses `isLeader` and passes *ego itself* as a dummy leader with gap −1, so the only
+branch that fires is `stopSpeed(this, speed, distToCrossing)` — "brake to stop before the peds" and
+nothing else. The port is therefore a **sibling arm** at the link-leader call site calling
+`StopSpeedFor` (`Engine.cs:6538`), **not** a phantom `JunctionLeaderCandidate` and **not** a change to
+`AdaptToJunctionLeader`'s body. Condition zero is to *confirm* that against the source, not to rediscover
+it — and to say plainly if it turns out otherwise.
+⚠ Also port `jmIgnoreJunctionFoeProb`'s ped early-out (`MSVehicle.cpp:3419-3421`) faithfully: it is an
+**RNG draw on the ped branch**. Default 0, so off, but S-b applies if it is ever enabled and SP-0.2
+asserts no `_sumoped` scenario sets it.
 **Success:** `xwalk-priority-1v1` at exact parity **including the `13.89 → 11.11 → 6.61` profile**; a
 dedicated test asserts the 2 s standing-ped clause by holding a ped stationary at the curb and showing
 the vehicle proceeds after — not before — 2 s; and the full gate is unmoved (S-d), re-run in this task,

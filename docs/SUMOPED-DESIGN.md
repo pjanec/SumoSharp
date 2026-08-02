@@ -551,9 +551,43 @@ condition is therefore a **reading** task: establish how SUMO's consumer branche
 (`MSVehicle::adaptToJunctionLeader` / `adaptToLeaders`, reached from the ped block at
 `MSLink.cpp:1667-1688`) and whether `AdaptToJunctionLeader` has an equivalent branch or needs one added.
 
-**If it needs one added, that is an edit to the live vehicle plan path**, and Stage 5 stops being
-"additive, gated on `Persons != null`". The S-d full-gate re-run inside SP-5.1 is then load-bearing, not
-a formality. Risk #5 in §13 is scoped on that assumption.
+**First pass of that reading, done — and the answer makes the port SIMPLER than this section assumed.**
+Traced through SUMO 1.20.0:
+
+1. `MSLink::getLeaderInfo` emits `result.emplace_back(nullptr, -1, distToPeds)` (`MSLink.cpp:1680`).
+2. At the consumption site (`MSVehicle.cpp:3409-3428`) a null leader **skips `isLeader()` entirely** —
+   it is the `if (leader == nullptr)` arm, disjoint from the `else if (isLeader(...) || inTheWay())`
+   arm that handles vehicle foes — and calls
+   `adaptToJunctionLeader(std::make_pair(this, -1), seen, lastLink, lane, v, vLinkPass, distToCrossing)`,
+   **passing ego itself as a dummy leader**.
+3. Inside `adaptToJunctionLeader` that dummy makes every vehicle-foe branch fall through:
+   `leaderInfo.second >= 0` is false (it is −1), and the in-lapping fallback is guarded by
+   `leaderInfo.first != this` which is also false. The only branch that fires is
+   **`leaderInfo.first == this` → `vsafeLeader = cfModel.stopSpeed(this, getSpeed(), distToCrossing)`**
+   (`MSVehicle.cpp:3242-3246`, comment: *"braking for pedestrian"*).
+
+So SUMO's pedestrian path reduces to exactly one thing: **stop before `distToPeds`.** No gap, no leader
+speed, no leader decel, no arrival-time comparison — all the machinery `JunctionLeaderCandidate` carries
+is precisely what SUMO *skips* for a pedestrian.
+
+**Consequence for the port: do not build a phantom candidate, and do not touch `AdaptToJunctionLeader`.**
+`Engine.AdaptToJunctionLeader` (`Engine.cs:10394`) takes a non-nullable `VehicleRuntime foe` and derives
+`seen`/`distToCrossing`/`leaderBack` from it — a pedestrian cannot be expressed in it, and does not need
+to be. The port is a **sibling arm at the link-leader call site**, mirroring SUMO's own `if/else if`:
+when `Persons != null` and `BlockedAtDist(...)` returns true, min `StopSpeedFor(ego, speed,
+gap: distToPeds, …)` (`Engine.cs:6538` — our `cfModel.stopSpeed`) into `v`/`vLinkPass`. Additive,
+disjoint from the vehicle-foe arm, and reached only with persons attached.
+
+That lowers risk #5 in §13 substantially: this is a new branch beside the existing one, not a rewrite of
+it. SP-5.1's condition zero remains — confirm the above against the source before coding, since it is a
+reading of the source and not yet a trace — but the expected outcome is "additive".
+
+⚠ **One genuine new find from that read: the pedestrian arm has an RNG draw.**
+`jmIgnoreJunctionFoeProb` is tested with `RandHelper::rand(getRNG())` on the *ped* branch
+(`MSVehicle.cpp:3419-3421`) and, if it fires, the vehicle ignores the pedestrian entirely. It defaults to
+**0** so it is off and the goldens are unaffected — but it must be a per-entity stream if ever supported
+(S-b), and a test must assert **no `_sumoped` scenario sets it**, exactly as the dawdling/speedDev
+pinning test does. Add to SP-0.2's pinning assertions.
 
 This is deliberately **not** the existing crowd-disc route (`CrowdLongitudinalConstraint` binder 13,
 `CrowdYieldConstraint` binder 16, `Engine.cs:11366/11475`). Those stay, unchanged, for the ORCA layer.
