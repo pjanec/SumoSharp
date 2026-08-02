@@ -297,6 +297,11 @@ aggregate is `golden.tripinfo.xml` `<personinfo>`.
 | `xwalk-tls-release` | signalized crossing, one full red→green ped release | R2, R6 |
 | `walkingarea-shared` | vehicle drives across a bare walkingarea (no marked crossing) — `checkWalkingAreaFoe` | R2, R4, R5 |
 | `sidewalk-shared-lane` | ped on a lane vehicles also use — `nextBlocking` leader path | R2, R5a |
+| `counterflow-sidewalk-4m` | 75 peds each way on ONE 6-stripe sidewalk — lane self-organisation | R3d |
+| `counterflow-sidewalk-6m` | same at 214 concurrent on 9 stripes | R3a, R3d |
+| `counterflow-crossing` | peds both ways over the SAME crossing — **does not happen by default**, see coverage §4.2 | R3a, R3b, R3d |
+| `counterflow-crossing-jam` | the same oversaturated → head-on deadlock + squeeze-through | R3a, R5a |
+| `turning-vs-crossing-peds` | cars turning **left and right** held on the internal lane by peds on the **exit** crossing | R4, R5a |
 
 ### R12 — Coverage must be demonstrated, not asserted
 

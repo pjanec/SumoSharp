@@ -157,10 +157,57 @@ the others cannot:
 | **control** | priority (uncontrolled) · TL · bare walkingarea (no marked crossing) | Three different vehicle-yield paths: `blockedAtDist` under right-of-way, under TL state, and `checkWalkingAreaFoe`'s 2-D test. |
 | **ped demand** | single · counterflow pair · platoon · saturated · **jammed** | The jam family only fires above a density threshold. |
 | **vehicle demand** | none · single · stream · saturated | "None" is essential: Tier A junction scenarios must have no vehicles so a divergence has exactly one cause. |
-| **ped flow mix** | unidirectional · counterflow · **pass-by** (turns at the junction, does not cross) | Pass-by is the owner's R3d and needs peds who never enter a crossing. |
+| **ped flow mix** | unidirectional · counterflow **on a sidewalk** · counterflow **on a crossing** · **pass-by** (turns at the junction, does not cross) | Three separate cases, see §4.2 — crossing counterflow does **not** happen by default and must be forced. Pass-by is the owner's R3d and needs peds who never enter a crossing. |
+| **car movement** | straight · **right turn** · **left turn** | A turning car yields to peds on the crossing over its **EXIT** edge, holding *on the internal lane inside the junction* rather than at the stop line. Straight-through flows never exercise this. See §4.3. |
 
 Every Tier A/B scenario states, in its `NOTES.md`, which axis value it pins and which branch IDs it
 claims to fire. That claim is checked mechanically by §5.
+
+### 4.2 ⚠ Crossing counterflow does NOT occur by default — a coverage hole found by rendering
+
+Measured on a dense uncontrolled 4-arm junction with peds crossing both ways on every arm, counting
+each crossing's traversals by the sign of `pos` progression:
+
+```
+:c_c0:  0 peds +pos,  56 -pos          steps with BOTH directions on the same crossing: NONE
+:c_c1:  5 peds +pos,  31 -pos
+:c_c3:  0 peds +pos,   5 -pos          (:c_c2 never used at all)
+```
+
+**Every crossing is unidirectional.** The junction-local ped router (design §5.5) sends opposing
+streams around the junction the same way, so they use *different* crossings. A scenario set built by
+"add lots of pedestrians going both ways" would therefore never exercise counterflow-on-a-crossing —
+the `mergeObstacles` oncoming path, `ONCOMING_CONFLICT_PENALTY`, the reserved-oncoming band on a
+junction lane, and `jamTimeCrossing` under head-on pressure would all sit untested while looking
+thoroughly covered.
+
+Forcing it needs peds routed across **one arm** in both directions (both sidewalks of the same road,
+depart/arrival positions set near the junction so the router cannot go around the far node instead).
+Measured with that fix, moderate rate: `:c_c0` 36 peds +pos / 36 −pos, **43 steps with both directions
+simultaneously**, busiest 50 peds on the crossing at once (24 vs 26 opposing), all arrive, zero jams,
+zero collisions. At 2.5× the rate it deadlocks: first arrival only at t≈230, jam count climbing to 57
+as squeeze-through breaks the standoff — still zero vehicle-ped collisions.
+
+Sidewalk counterflow, by contrast, works with the obvious demand and self-organises cleanly: on a 4 m
+(6-stripe) sidewalk with 75 peds each way, the two streams separate into lanes at **y = −6.72** and
+**y = −3.52** and hold that 3.2 m separation for the whole run; the same result holds at 214 peds
+concurrent on a 6 m (9-stripe) sidewalk.
+
+### 4.3 Turning cars blocked by peds on the EXIT crossing
+
+A car turning left or right commits into the junction and must then yield to pedestrians on the
+crossing over the edge it is *leaving by* — so it holds **on the internal lane, inside the junction
+box**, not at the stop line. Straight-through demand never produces this.
+
+Measured on an uncontrolled 2-lane junction with every car flow turning (three arms, both directions)
+and peds crossing all four arms both ways, counting vehicle-steps where a stopped car on an internal
+lane had peds on its exit crossing:
+
+```
+RIGHT turns blocked:  80 vehicle-steps
+LEFT  turns blocked:  57 vehicle-steps
+e.g. eRIGHT.15 (ec->cn, right turn) held on internal lane :c_4_0 from t=84 to t=89, 9 peds on :c_c0
+```
 
 ### 4.1 Measured regime map — width drives the jam/collision regime
 Same jam-level demand, 200 s, varying only crossing width:
@@ -172,6 +219,20 @@ Same jam-level demand, 200 s, varying only crossing width:
 | 8.00 m | 12 | 168 | **1** |
 
 So width is not a cosmetic axis — it selects which failure modes the model exhibits at all.
+
+---
+
+## 4.4 Renders of the oracle
+
+`scripts/render-ped-fcd.py` turns any `(net.net.xml, fcd.xml)` pair into a self-contained HTML replay
+by emitting the **exact** payload schema of `src/Sim.Viz/Payload.cs` and splicing it into the real
+`src/Sim.Viz/template.{html,js}` through the same two markers `VizHtml.Write` uses. It is not a second
+renderer — it is the repo's own player, fed from a golden. `--dir-split` colours pedestrians by
+travel direction so counterflow reads at a glance; `--crop`/`--crop-junction` only set the initial
+camera (the player has zoom/pan).
+
+When the C# person model exists this becomes the **ground-truth layer** of the parity overlay
+(task SP-7.3): SumoSharp's peds drawn live, SUMO's drawn as rings, same frame.
 
 ---
 

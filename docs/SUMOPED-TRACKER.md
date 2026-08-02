@@ -17,6 +17,7 @@ plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-
 - [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; all six coverage axes take every value; pinning test
 - [ ] **SP-0.2b** 2–3 Tier C saturated scenarios (incl. a jam-regime and a narrow-crossing variant)
 - [ ] **SP-0.3** goldens for all seven output kinds + provenance; regeneration byte-reproducible
+- [ ] **SP-0.3b** every scenario rendered to `replay.html`, no JS errors, indexed in the scenarios README
 - [ ] **SP-0.4** R3 behaviours asserted **on the oracle** (stripe counts, abreast entry, no-stall pass-by)
 - [ ] **SP-0.5** collision baseline on the oracle (count, distinct pairs, max colliderSpeed, min clearance)
 - [ ] **SP-0.6** branch→scenario matrix mapped; unmapped IDs reported for owner sign-off
@@ -133,3 +134,16 @@ These are established facts, not assumptions — the commands are in `SUMOPED-DE
   abreast, 25 peds stopped on one walkingarea — and speed spread (min 0.000 / median 1.198 / max 1.389)
   appears with `dawdling=0` **and** `speedDev=0`, so it is largely golden-checkable rather than
   RNG-dependent.
+
+### Render session (same day) — two coverage holes found by looking at the renders
+
+- ⚠ **Crossing counterflow does not occur by default.** On a dense uncontrolled 4-arm junction with peds
+  crossing both ways on every arm, *every* crossing is traversed in one direction only (`:c_c0` 0/56,
+  `:c_c1` 5/31, `:c_c3` 0/5, `:c_c2` unused; ZERO steps with both directions on one crossing) — the
+  junction ped router sends opposing streams over different crossings. Forced version measured: 36/36,
+  43 steps with both directions, busiest 50 peds (24 vs 26 opposing). Coverage §4.2.
+- ⚠ **Turning cars vs exit-crossing peds** needs turning demand; straight-through never fires it.
+  Measured: **80 vehicle-steps of blocked RIGHT turns, 57 of blocked LEFT** (e.g. `eRIGHT.15` `ec->cn`
+  held on internal lane `:c_4_0`, t=84..89, 9 peds on `:c_c0`). Coverage §4.3.
+- Sidewalk counterflow works with the obvious demand and self-organises: two lanes at y=-6.72 / y=-3.52
+  held for the whole run (4 m sidewalk, 75 peds each way); same at 214 concurrent on 6 m.

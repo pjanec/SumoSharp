@@ -53,7 +53,11 @@ Requirements §6 + `SUMOPED-COVERAGE.md` §3–4. Each gets `nodes.nod.xml`/`edg
 Roughly 20 Tier A (1–4 peds, ≤80 steps, one mechanism each) and 8 Tier B (10–40 peds + vehicles,
 120–200 steps). The six axes of coverage §4 must each take every listed value somewhere in the set —
 in particular a **1-stripe** (`--default.crossing-width 0.64`) and a **12-stripe** (`8.00`) crossing,
-and a **pass-by** flow of peds who turn at the junction without crossing.
+a **pass-by** flow of peds who turn at the junction without crossing, **turning car flows** (left and
+right — coverage §4.3; straight-through demand never exercises the exit-crossing yield), and
+**counterflow on a single crossing**, which coverage §4.2 shows does NOT arise from the obvious
+"peds both ways" demand and must be forced by routing across one arm in both directions with
+depart/arrival positions pinned near the junction.
 **Success:** each `config.sumocfg` explicitly sets `--pedestrian.model striping` **and**
 `--pedestrian.striping.dawdling 0`; each ped vType sets `speedDev="0" speedFactor="1"`; no
 `departPos="random"`/`departPosLat="random"` anywhere; each `NOTES.md` names the axis values it pins and
@@ -82,6 +86,15 @@ the `is jammed` / `collision with person` stderr lines, plus `tolerance.json` an
 recording `sumo_version=1.20.0` + input sha256s. Re-running the script twice produces byte-identical
 goldens. Total added golden bytes are reported in the tracker (budget context: the repo's existing FCD
 goldens total 5.1 MB, largest single 1.26 MB).
+
+### SP-0.3b — Render every golden, and look at it
+Coverage §4.4. `scripts/render-ped-fcd.py` already exists and emits the real `Sim.Viz` payload schema
+into the real `src/Sim.Viz/template.{html,js}`.
+**Success:** every `_sumoped` scenario has a committed `replay.html` (an OUTPUT, regenerable — the same
+status `scenarios/README.md` gives the existing `replay.html` files); each renders with **no JS errors**
+(verify headlessly, not by assuming); the renders are listed in `scenarios/_sumoped/README.md` with what
+each is meant to show. A scenario whose render does not visibly show the behaviour it claims goes back
+to SP-0.2 — this is the cheapest possible check that a scenario is not vacuous.
 
 ### SP-0.4 — Assert the R3 behaviours **on the oracle**
 Requirements R3, design §8.1. Before requiring anything of SumoSharp, prove the goldens contain it.
@@ -367,7 +380,7 @@ CLAUDE.md §Subagents' orchestration loop. Batches are sized so each ends at a v
 | Batch | Tasks | Ends at |
 | --- | --- | --- |
 | B0 | SP-0.0 | branch inventory reviewed and corrected (a first pass of 149 rows exists) |
-| B1 | SP-0.1 … SP-0.6 | Tier A/B/C goldens committed; oracle proven to contain the R3 behaviours; coverage matrix mapped and holes signed off |
+| B1 | SP-0.1 … SP-0.6 (incl. SP-0.3b renders) | Tier A/B/C goldens committed; oracle proven to contain the R3 behaviours; coverage matrix mapped and holes signed off |
 | B2 | SP-1.1, SP-1.2, SP-1.4 | net model extended, vehicle gate unmoved |
 | B3 | SP-1.3 | the ordering trace (Opus does this one — it is a judgment call) |
 | B4 | SP-2.1 … SP-2.4 | all seven comparators + the stripe helper + coverage counters; every test failing honestly |
