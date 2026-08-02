@@ -29,7 +29,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 ## Stage 1 — Network model
 - [ ] **SP-1.1** ped elements in `Sim.Ingest`; `AllowsRoadVehicle`↔`Permissions` equivalence test; gate unmoved
 - [ ] **SP-1.2** walkingarea foes for vehicle links
-- [ ] **SP-1.3** ⚠ begin-of-timestep ordering resolved **by trace** (not by reading the event queue)
+- [ ] **SP-1.3** ⚠ begin-of-timestep ordering **by trace** — does a ped see the new or old TL phase on a switch step? (§6.6.2: peds read the CURRENT light; `t−DELTA_T` is an arrival time, not a lagged read)
 - [ ] **SP-1.4** static precompute: `WalkingAreaPaths`, `WalkingAreaFoes`, `MinNextLengths`, `NumStripes`
 
 ## Stage 2 — Harness (must fail first)
@@ -63,6 +63,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks). **Method 
 - [ ] **SP-5.2** `AddCrossingVehs` + `AddVehicleFoe`; fully-blocked pin asserted
 - [ ] **SP-5.3** `CheckWalkingAreaFoe`; `walkingarea-shared` GREEN
 - [ ] **SP-5.4** `HasPedestrians`/`NextBlocking`; `sidewalk-shared-lane` GREEN
+- [ ] **SP-5.6** ⚠ cross-population data-flow contract asserted (refill ordering, lagged approach index, person immutability, race-free query)
 - [ ] **SP-5.5** collision-set parity (`golden.collisions.xml` exact); baseline table agrees with the oracle
 
 ## Stage 6 — Traffic lights

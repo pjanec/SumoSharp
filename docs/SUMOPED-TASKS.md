@@ -162,9 +162,13 @@ Design §3.1, §6.3.
 SUMO computes, verified by a one-off dump comparison recorded in the scenario NOTES.
 
 ### SP-1.3 — ⚠ Resolve the begin-of-timestep ordering **by trace**
-Design §5.1. Establish where `MovePedestrians` sits relative to the TLS switch command in SUMO's
-begin-of-timestep event queue, and whether SumoSharp's actuated-TLS advance (`Engine.cs:3234`) must move
-relative to the new `AdvancePersons` slot.
+Design §5.1 and **§6.6.2**, which sharpens what this task must answer. `MSLink::opened` tests
+`haveRed()` against the link's **CURRENT** state (`MSLink.cpp:754`) — the `t − DELTA_T` a pedestrian
+passes is only the *arrival time* used in the foe-conflict comparison (`:770`), not a lagged read of
+the light. So pedestrians see the current phase, and the placement of `AdvancePersons` relative to
+SumoSharp's actuated-TLS advance (`Engine.cs:3234`) is **behaviourally load-bearing**.
+The question is therefore not "what is the event order" but: **on a step where the light switches, does
+a pedestrian see the new phase or the old one?**
 **Success:** a committed trace from a real SUMO run on `xwalk-tls-release` showing, for one step across
 a phase boundary, whether the ped saw the old or the new phase — plus a one-paragraph finding in the
 design doc. **Reasoning from the event-queue source is explicitly not acceptable evidence** (CLAUDE.md
@@ -366,6 +370,26 @@ oncoming discount.
 ### SP-5.4 — `HasPedestrians` / `NextBlocking` on shared lanes
 Design §6.5.
 **Success:** `sidewalk-shared-lane` at exact parity.
+
+### SP-5.6 — ⚠ The cross-population data-flow contract, asserted
+Design §6.6. The coupling is correct only because of *ordering*, and ordering that is merely "how the
+calls happen to be sequenced today" breaks silently under a later refactor — with no test failing,
+because everything still runs, just one step stale.
+**Success, four assertions, each failing loudly if the ordering is disturbed:**
+(a) **`AdvancePersons` runs before `neighbors.Refill`** (`Engine.cs:3241`) — so if persons are folded
+into the frozen start-of-step snapshot they are folded *after* moving. Asserted by a phase-order test,
+not by reading the call sequence.
+(b) **Peds read the PREVIOUS step's junction approach index.** `BuildFoeApproachIndex`
+(`Engine.cs:3273`) is rebuilt after the ped slot; SUMO's equivalent (`setJunctionApproaches`,
+`MSNet.cpp:787`) runs after `planMovements`, so the index a ped reads at *t* was built at the end of
+*t−1*. Either the prior index survives until the ped pass completes or the rebuild moves — and a test
+asserts which, because reading the freshly-built one silently gives peds information SUMO's peds do not
+have.
+(c) **Persons are immutable for the whole vehicle phase** — a debug-gated write barrier asserts no
+person state is written between `AdvancePersons` returning and the end of `ExecuteMoves`.
+(d) **The ped→vehicle query is allocation-free and side-effect-free** — it runs inside a possibly
+parallel `PlanMovements` (`UseParallelPlan`), so a lazily populated cache there is a data race that
+surfaces only as nondeterminism under load. Covered by S-f's 0-bytes gate plus the par == single hash.
 
 ### SP-5.5 — Collision-set parity and the collision baseline
 Requirements R5a/R5b, coverage §6.

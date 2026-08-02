@@ -538,6 +538,86 @@ out of scope (Requirement R-N7).
 
 ---
 
+### 6.6 The cross-population data-flow contract — who sees whom, and when
+
+This is the part most likely to be got subtly wrong, because SumoSharp's vehicle phase is built on a
+**frozen start-of-step neighbour snapshot** (`neighbors.Refill`, `Engine.cs:3241-3256`) for determinism
+and parallel planning. Fold persons into the wrong buffer and vehicles silently brake for where
+pedestrians were *last* step. The scenario still runs; it is just wrong, by one step, everywhere.
+
+#### 6.6.1 The contract
+
+| direction | reads | at what time |
+| --- | --- | --- |
+| **peds → see vehicles** | vehicle positions on the lane (`getVehicleObstacles`), walkingarea foes (`addVehicleFoe`), crossing vehicles (`addCrossingVehs`) | **end of the previous step** — automatic, because the ped pass runs before `PlanMovements`/`ExecuteMoves` |
+| | the junction **approach registry** (`myApproachingVehicles`, via `link->opened` and `getLeaderInfo`) | **previous step's** — SUMO builds it in `setJunctionApproaches` (`MSNet.cpp:787`) *after* `planMovements`, so the one a ped reads at *t* was built at the end of *t−1*. ⚠ genuinely lagged; see 6.6.3 |
+| | the **traffic-light state** (`haveRed()`) | **CURRENT** — not lagged; see 6.6.2 |
+| **vehicles → see peds** | `blockedAtDist`, `nextBlocking`, `hasPedestrians` over `myActiveLanes` | **current step**, post-move — peds have already moved |
+
+**The key property: there is no cycle.** Peds read vehicles at *t−1*, vehicles read peds at *t*. One
+directional pass each, no iteration to convergence, no ordering ambiguity to resolve. That is what makes
+the coupling implementable at all, and it is worth stating because a two-way *same-step* coupling would
+need a fixed-point solve that neither engine has.
+
+#### 6.6.2 ⚠ The `t − DELTA_T` is an arrival time, not a lagged light
+
+Easy to misread, and an earlier draft of this design did. `walk()` calls
+`link->opened(currentTime - DELTA_T, ...)`, which looks like "evaluate the link as it stood last step".
+It is not. `MSLink::opened` (`MSLink.cpp:754`) tests `haveRed()` against the link's **current** state;
+the `arrivalTime` argument is used only in the foe-conflict comparison against
+`myApproachingVehicles[].arrivalTime` (`:770`). Backdating it by one step makes the pedestrian **lose
+ties** to vehicles that registered a later arrival — which is exactly what the striping source's own
+comment means by "they cannot rely on vehicles having passed the intersection in the current time step".
+
+Two consequences:
+
+1. **Pedestrians read the CURRENT traffic-light phase.** So the placement of `AdvancePersons` relative
+   to SumoSharp's actuated-TLS advance (`Engine.cs:3234`, deliberately *before* Plan "so
+   `RedLightConstraint` sees this step's phase") is **behaviourally load-bearing**, not cosmetic. If
+   `AdvancePersons` sits before it, peds see the *old* phase.
+2. This sharpens **SP-1.3** from "what is the begin-of-timestep event order" to a question a single
+   trace can answer: **on a step where the light switches, does a pedestrian see the new phase or the
+   old one?** Run the oracle across a phase boundary on `xwalk-tls-release` and read it off. Do not
+   reason it from the event queue.
+
+#### 6.6.3 What must be one-step-lagged, and what must not
+
+Only one thing genuinely needs a retained previous-step buffer, and SumoSharp currently destroys it too
+early:
+
+- **The junction approach index.** `BuildFoeApproachIndex` (`Engine.cs:3273`) is rebuilt *after* the
+  proposed `AdvancePersons` slot. Peds must read the **previous** step's index (6.6.1). So either the
+  prior index stays alive until the ped pass has finished, or the rebuild moves. Naively reading the
+  freshly-built one gives peds this step's vehicle claims — information SUMO's peds do not have, and a
+  silent fidelity change with no test to catch it.
+
+Everything else needs **ordering, not buffering**:
+
+- Vehicle *positions* read by peds are correct simply because the ped pass runs before `ExecuteMoves`.
+- Ped positions read by vehicles are correct because `AdvancePersons` runs **before**
+  `neighbors.Refill` (`:3241`). If persons are folded into that snapshot, they are folded *after*
+  moving — right by construction. ⚠ But only as long as the ordering holds: a later refactor that moves
+  the refill earlier, or the ped pass later, breaks it silently. **Assert the ordering** rather than
+  relying on the call sequence (task SP-5.6).
+
+#### 6.6.4 Invariants for the parallel plan
+
+`PlanMovements` may run parallel (`UseParallelPlan`, `Engine.cs:931`), and vehicles query pedestrians
+from inside it. Therefore:
+
+- **Persons are immutable for the whole vehicle phase.** All person mutation happens inside
+  `AdvancePersons`; nothing in `PlanMovements`/`ExecuteMoves` may write person state.
+- **The ped→vehicle query is read-only, allocation-free and thread-safe** — a lookup into the
+  lane-bucketed store (§4.1), no scratch, no lazy caching, no memoisation that mutates on read. A lazily
+  populated cache here would be a data race that only shows up as nondeterminism under load, which is
+  the worst possible way to find it.
+- **Person structural mutations are immediate, not command-buffered.** A ped moving between lane
+  buckets happens inside the ped pass, matching SUMO's `arriveAndAdvance`. This is safe precisely
+  because the pass is sequential and completes before any vehicle reads — it is *not* an exception to
+  the engine's deferred-mutation discipline, it is a different phase.
+- The determinism gate is the proof: the person trajectory hash must be identical single-threaded and
+  parallel (§4.3 gate 2).
+
 ## 7. Traffic lights
 
 There is **no separate TL code path** for the ped-blocks-vehicle direction — `BlockedAtDist` runs
