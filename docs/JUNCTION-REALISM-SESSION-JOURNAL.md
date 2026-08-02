@@ -4231,3 +4231,26 @@ chain as before (now headed by veh1762, the Entry 58 exemplar's partner): the cr
 hold on a keepClear-held exit-lane car has no 60 s recovery either (crossJxnLeader is
 car-following, not a junction arm) — next session should trace veh1762's keepClear chain to
 ITS root before touching any skip.
+
+## Entry 64 (BEFORE) — owner 3D verdict on E1/E2: "greatly reduced, far from eliminated; converging"; the residual mechanism named
+
+Owner observations (3D, fresh engine with Entries 60–63): last-instant turners greatly
+reduced but still not scarce — screenshot shows THREE diagonal half-way stops nearly SYNCED
+in one queue (yellow/red/blue); plus ONE caught pure-lateral change at standstill on red
+(scarce). Owner's quantification idea: **compare standing-car orientation (as the IG renders
+it) against lane direction** — some misalignment is realistic, but near junctions European
+drivers are already aligned; ours are not.
+
+**Residual mechanism (hypothesis from the E1/E2 mechanics — instrument before believing):**
+E1 only vetoes against a NEAR-STOPPED leader (<1 m/s). A car committing at ~2 m/s behind a
+CREEPING leader (queue pulse) still starts the 2 s maneuver; the queue re-compresses, ego
+brakes to a stop mid-sweep, and E2's past-midpoint arm completes the flip at standstill —
+the IG then renders the lateral settle on a stopped car = the diagonal pose (and, at a red
+light, the pure-lateral slide). The "synced" look = one creep pulse triggering several
+commits in the same queue. Candidate fixes for next round: (a) E1 widened to slow leaders
+using closure (gap vs ego travel through the maneuver assuming the leader can stop NOW);
+(b) engine-side witness first: `LIVECITY-DIAGSTOP` = stopped cars (v<0.5) with an
+in-progress or just-completed maneuver — the engine-side proxy of the owner's
+orientation-vs-lane metric, so the count is measurable headless before/after.
+
+Owner overall: "better than before, we are converging."
