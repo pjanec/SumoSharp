@@ -7,12 +7,12 @@ been verified first-hand by the reviewer — diff read, test read for non-vacuit
 on an implementor's report (CLAUDE.md §Subagents).
 
 Docs: `SUMOPED-REQUIREMENTS.md` (WHAT) · `SUMOPED-DESIGN.md` (HOW) · `SUMOPED-COVERAGE.md` (coverage
-plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 149-branch denominator) · `SUMOPED-TASKS.md` (tasks).
+plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-TASKS.md` (tasks).
 
 ---
 
 ## Stage 0 — Oracle, coverage inventory, and fixtures
-- [ ] **SP-0.0** branch inventory reviewed (a **149-row** first pass is committed; needs review, not authoring)
+- [ ] **SP-0.0** branch inventory reviewed (a **148-row** first pass is committed; needs review, not authoring)
 - [ ] **SP-0.1** oracle re-established (`/sumo` @ `v1_20_0`, `sumo` 1.20.0 via pip), recipe committed
 - [ ] **SP-0.2** ~20 Tier A + 8 Tier B scenarios; all six coverage axes take every value; pinning test
 - [ ] **SP-0.2b** 2–3 Tier C saturated scenarios (incl. a jam-regime and a narrow-crossing variant)
@@ -79,7 +79,7 @@ plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 149-branch denominator) · `SUMOPED-
 | `Sim.Bench` hash (must not move) | **`A134ED3716DDE7BC`** (par == single) |
 | `Sim.LiveCity.Tests` / `Sim.Pedestrians.Tests` | **92/92** / **324/324** |
 | person trajectory hash (SP-2.3) | _(not yet)_ |
-| branch IDs in the inventory | **149** (first pass) |
+| branch IDs in the inventory | **148** (first pass) |
 | branch IDs covered / admitted holes (SP-0.6, SP-7.4b) | _(not yet)_ |
 | added golden bytes (SP-0.3) | _(not yet)_ — budget context: existing FCD goldens total 5.1 MB, largest single 1.26 MB |
 | production-regime crossing-speed spread, min/median/max (SP-7.4) | _(not yet)_ |
@@ -118,8 +118,12 @@ These are established facts, not assumptions — the commands are in `SUMOPED-DE
   `intermodal-collision.action` already defaults to `warn`, so it is armed.
 - **Exact parity holds at saturation**: 300 s, 2-lane TL junction, 10,068 vehicle + **30,549 person** FCD
   rows, two runs **byte-identical**. Windowing is a storage decision, not a determinism one.
-- **`posLat` is not emitted for persons** even when explicitly requested — world x/y is the only lateral
-  witness, so the stripe index must be back-derived by projection.
+- **`posLat` is not emitted for persons** even when explicitly requested — but lateral state is fully
+  recoverable: `PState::getAngle` encodes `mySpeedLat` into the FCD `angle`
+  (`MSPModel_Striping.cpp:2342-2349`). Inverting it over 1805 saturated-crossing samples recovered a max
+  of **0.6401 m/s** (exactly the `stripeWidth` clamp) with a mode at **0.5556 m/s**
+  (`vMax * LATERAL_SPEED_FACTOR`) — both theoretical caps on the nose. Only `myAmJammed`,
+  `myWaitingTime`, `myWaitingToEnter`, `myNLI`, `myWalkingAreaPath` stay unobserved.
 - **Crossing width is independent of road lanes** (`--default.crossing-width`, default 4.00 m ⇒ 6
   stripes) and strongly selects the failure regime: 1 stripe ⇒ 42 collisions, 6 ⇒ 33, 12 ⇒ 1.
 - ⚠ **At jam density vanilla SUMO collides vehicles with pedestrians by design** (175/370 jammed ⇒ 80

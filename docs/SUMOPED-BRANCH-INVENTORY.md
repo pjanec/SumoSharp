@@ -5,7 +5,7 @@
 Every behavioural branch whose outcome can change a pedestrian trajectory, with a stable ID, its C++
 predicate, and whether it is observable in person FCD. This is the denominator of the coverage claim in
 `SUMOPED-COVERAGE.md` §1: each ID must be witnessed by a named scenario + oracle signal, or listed as an
-admitted hole. **149 branch rows** in this pass.
+admitted hole. **148 branch rows** in this pass (plus the HIDDEN / saturation / multi-lane summary tables).
 
 Observability legend: `DIRECT` (shows in pos/speed/edge immediately) · `LATERAL` (only via world x/y —
 note person FCD has **no** `posLat`, so lateral state must be back-derived by projecting x/y onto the
@@ -20,6 +20,21 @@ all — see the HIDDEN section for the cheapest signal that does witness it).
 >   sidewalk variant needs a scenario that sets `--pedestrian.striping.reserve-oncoming` explicitly.
 > - The jam counter is exposed by `--person-summary-output` (per-step `jammed` column) and
 >   `--statistic-output` (`<persons ... jammed="N"/>`), both verified this session.
+>
+> **Observability upgrade — `LATERAL` is stronger than it looks.** `PState::getAngle`
+> (`MSPModel_Striping.cpp:2342-2349`) returns `laneRotation ± atan2(mySpeedLat, max(mySpeed, eps))`,
+> so the FCD `angle` attribute **directly encodes `mySpeedLat`**. Verified empirically on a saturated
+> crossing: inverting it as `|mySpeedLat| = speed * tan(angle - laneBearing)` over 1805 samples
+> recovered a maximum of **0.6401 m/s** — exactly the model's `stripeWidth` clamp — with a strong
+> secondary mode at **0.5556 m/s** = `vMax * LATERAL_SPEED_FACTOR` (1.3889 x 0.4). Both theoretical
+> caps land on the nose, which validates the inversion.
+>
+> Consequence: from a single FCD row we can recover `myRelX` (`pos`), `myRelY` (project `x,y`),
+> `mySpeed` (`speed`), `mySpeedLat` (`angle`), the lane (`edge`) and `myDir`. **Only `myAmJammed`,
+> `myWaitingTime`, `myWaitingToEnter`, `myNLI` and `myWalkingAreaPath` stay unobserved** — and
+> `myAmJammed` has the `jammed` counter + stderr warning, while `myWaitingTime` is largely derivable
+> from consecutive `speed < 0.1` steps. Rows marked `LATERAL` below should therefore be read as
+> "observable, via `angle` and/or projected `x/y`", not "weakly observable".
 
 ---
 

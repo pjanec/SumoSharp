@@ -146,6 +146,8 @@ cross-check; `NumStripes` matches `floor(width/0.64)` on every crossing/WA lane 
 ### SP-2.1 — Person FCD parse + compare
 Design §8. New `PersonFcdParser`, `PersonTrajectoryPoint/Set`, `PersonTrajectoryComparator`; extend
 `ToleranceConfig` with `comparedPersonAttributes`.
+Compared attributes: `edge` (exact string), `pos`, `speed`, `x`, `y`, and **`angle`** — `angle` is not
+cosmetic, it is the lateral-velocity witness (coverage §2.1) and gets a tight tolerance.
 **Success:** parsing a committed `golden.fcd.xml` yields the exact person row count found by
 `grep -c "<person"`; comparing a golden against **itself** reports zero mismatches; comparing it against
 a golden with one row perturbed by `2 × tolerance` reports exactly one attribute failure naming the right
@@ -163,14 +165,19 @@ golden with one field perturbed, reports exactly that field. The person-summary 
 (integers, no tolerance). The warnings comparator normalises away timestamps only where the golden says
 so, and is order-insensitive by sorting.
 
-### SP-2.1c — The lateral / stripe-projection helper
-Coverage §2. Person FCD emits **no `posLat`** even when explicitly requested, so world `x/y` is the only
-lateral witness.
-**Success:** a shared helper projects `(x, y)` onto a lane's centreline to yield `(pos, posLat, stripe)`;
-on every `_sumoped` golden its derived `pos` agrees with the FCD's own `pos` attribute to 1e-6 (the FCD
-`pos` is the cross-check that validates the projection), and the derived stripe index is integral to
-within 1e-9 of a half-open bin boundary. This helper is used by **both** arms of every derived
-assertion — the oracle side and ours — so a bug in it cannot create a false pass.
+### SP-2.1c — The lateral-state recovery helper
+Coverage §2.1. Person FCD emits no `posLat`, but lateral state **is** fully recoverable: `myRelY` by
+projecting `(x, y)` onto the lane centreline, and `mySpeedLat` by inverting `angle`
+(`MSPModel_Striping.cpp:2342-2349` — `angle = laneRotation ± atan2(mySpeedLat, max(mySpeed, eps))`).
+**Success:** a shared helper yields `(pos, posLat, stripe, speedLat)` from an FCD row + lane geometry.
+Three self-validating checks, all on committed goldens: (a) derived `pos` agrees with the FCD's own
+`pos` attribute to 1e-6 — the FCD attribute is the cross-check that validates the projection;
+(b) derived stripe index is integral to within 1e-9 of a half-open bin boundary; (c) derived
+`|speedLat|` never exceeds `min(max(vMax*LATERAL_SPEED_FACTOR, vMax-xSpeed), stripeWidth)`, and on the
+saturated scenario its maximum equals **0.6401 m/s** (the `stripeWidth` clamp) with a mode at
+**0.5556 m/s** (`vMax * 0.4`) — both measured this session, so a regression in the inversion is caught
+by a number, not by inspection. Used by **both** arms of every derived assertion, so a bug in it cannot
+create a false pass.
 
 ### SP-2.2 — One failing parity test per scenario
 One test class per scenario, following the `Rung1ParityTests.cs` pattern.

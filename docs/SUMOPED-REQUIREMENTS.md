@@ -59,7 +59,9 @@ Committed scenarios with person demand must reproduce SUMO 1.20.0's `<person>` F
 
 *Acceptance:* for every scenario in `scenarios/_sumoped/*`, a person-FCD comparator reports zero
 presence mismatches and every compared attribute within `tolerance.json`. Compared attributes at
-minimum: `edge` (string, exact), `pos`, `speed`, `x`, `y`, `angle`.
+minimum: `edge` (string, exact), `pos`, `speed`, `x`, `y`, `angle`. **`angle` is load-bearing, not
+cosmetic** — SUMO encodes `mySpeedLat` into it (`MSPModel_Striping.cpp:2342-2349`), so it is the
+lateral-velocity witness and person FCD carries no other. See `SUMOPED-COVERAGE.md` §2.1.
 
 ### R3 — Junction crowd behaviour (the owner's primary quality bar)
 This is the requirement the port exists for. Four distinct behaviours, all of which must **emerge from

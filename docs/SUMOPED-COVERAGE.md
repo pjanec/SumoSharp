@@ -19,7 +19,7 @@ of which is sufficient alone:
 1. **A branch inventory** (`SUMOPED-BRANCH-INVENTORY.md`, task SP-0.0) — every behavioural branch in
    `MSPModel_Striping` + the ped-relevant parts of `MSLink`/`MSLane`, each with a stable ID, its C++
    predicate, and whether it is observable in FCD. Derived from the source, not from imagination.
-   **A first pass exists: 149 branch rows**, plus sections listing the FCD-`HIDDEN` branches with the
+   **A first pass exists: 148 branch rows**, plus sections listing the FCD-`HIDDEN` branches with the
    cheapest oracle signal for each, the branches that need saturation, and the branches that need
    multi-lane roads or wide crossings. It needs review, not authoring.
 2. **A branch→scenario matrix** (§4) — every inventory ID names at least one scenario that fires it and
@@ -58,13 +58,50 @@ Three facts that shape the plan:
   detection is on by default. An empty `collision-output` is a real negative result, not an unarmed check.
 - **`--save-state` writes zero persons** — no init cross-check for persons, unlike vehicles.
 - **`posLat` is not emitted for persons even when explicitly requested** in `--fcd-output.attributes`.
-  World `x/y` is therefore the *only* lateral witness, and stripe index must be back-derived by
-  projecting `(x,y)` onto the lane centreline. `x`/`y` must be compared attributes at tight tolerance;
-  they are not redundant with `pos`/`edge`.
+  Lateral state must be back-derived — but it *is* fully derivable, see §2.1.
 
 `--person-summary-output` + `--statistic-output` are the discovery that makes large scenarios
 affordable: **56 KB** buys a full-horizon, per-step, exactly-comparable witness of a 300 s saturated
 run, including the jam counter.
+
+### 2.1 The FCD row is very nearly a complete `PState` observation
+
+`posLat` is absent, which initially looked like a serious observability gap. It is not.
+`PState::getAngle` (`MSPModel_Striping.cpp:2342-2349`) returns
+
+```cpp
+angle = shape.rotationAtOffset(geomX) + (myDir == BACKWARD ? M_PI : 0);
+angle += (myDir == BACKWARD ? +1 : -1) * atan2(mySpeedLat, MAX2(mySpeed, NUMERICAL_EPS));
+```
+
+so the FCD `angle` attribute **directly encodes `mySpeedLat`**. Verified by inverting it —
+`|mySpeedLat| = speed * tan(angle - laneBearing)` — over 1805 crossing samples in the saturated run:
+
+```
+max derived |mySpeedLat| = 0.6401 m/s   <- exactly the stripeWidth (0.64) clamp on maxYSpeed
+strong second mode       = 0.5556 m/s   <- exactly vMax * LATERAL_SPEED_FACTOR (1.3889 x 0.4)
+```
+
+Both of the model's theoretical lateral-speed caps land on the nose, which validates the inversion.
+
+**What a single FCD row therefore yields:**
+
+| `PState` field | recovered from |
+| --- | --- |
+| `myRelX` | `pos` (direct) |
+| `myRelY` | project `(x, y)` onto the lane centreline |
+| `mySpeed` | `speed` (direct) |
+| `mySpeedLat` | `angle`, inverted as above — **verified** |
+| `myLane` / edge | `edge` (direct, internal ids included) |
+| `myDir` | sign of `pos` progression / the `angle` branch |
+| `myWaitingTime` | largely derivable from consecutive `speed < 0.1` steps |
+| `myAmJammed` | **not in FCD** — but `--person-summary-output`'s `jammed` column and the stderr warning |
+| `myWaitingToEnter`, `myNLI`, `myWalkingAreaPath` | **not observable** |
+
+Consequences for the plan: **`angle` is a first-class compared attribute at tight tolerance** (it is
+the lateral-velocity witness, not a cosmetic heading), and every branch the inventory marks `LATERAL`
+should be read as *observable*, not weakly observable. Only five `PState` fields are genuinely
+unobserved, and the most behaviourally significant of them has its own counter.
 
 ---
 
