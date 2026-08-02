@@ -351,12 +351,16 @@ columns of `SimulationSnapshot` are byte-identical in the diff, so the vehicle g
 (c) `PersonHandle` and `VehicleHandle` are **not interchangeable** — a test asserts a `PersonHandle` with
 the same `(Index, Generation)` as a live `VehicleHandle` resolves to a different entity.
 
-### SP-7.1b — Person dead-reckoning for the runner
-Design §10.2 item 6.
-**Success:** `TryInterpolatePerson` does **not** reuse the vehicle extrapolator. On a walkingarea the
-interpolated path follows the `WalkingAreaPath` Bezier, not a straight chord: assert that a person
-interpolated at alpha=0.5 across a walkingarea is within 5 cm of the true mid-step position from a
-half-step-length golden, where a straight-chord interpolation is measurably worse.
+### SP-7.1b — Person dead-reckoning: REUSE the vehicle path, and prove it
+Design §10.5 (measured; supersedes an earlier draft of §10.2 item 6 that claimed the opposite).
+Persons are tagged `DrModel.FreeKinematic`; `DrModel` gains **no new member**; the interpolation code
+path is shared with vehicles, parameterised by the DR model — not a bespoke `TryInterpolatePerson`
+extrapolator.
+**Success:** a test over the `_sumoped` goldens asserts mid-step chord-interpolation error for persons
+is **no worse than** the same metric for vehicles on the same scenario, reproducing the measured
+envelope (ped walkingarea p95 ≤ 0.20 m, ped normal edge p95 ≤ 0.32 m, versus vehicle p95 ≈ 0.39 m). If
+a future change makes persons need a bespoke extrapolator, this test is what will say so — with a
+number, not an argument.
 
 ### SP-7.2 — Coordinate contract (the Phase 2 hinge)
 Design §9.

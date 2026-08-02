@@ -484,7 +484,7 @@ gate structurally cannot move. There is exactly one real design decision (§10.3
 | 3 | `PersonEvent` / `PersonEventKind` | new | ⚠ **`SimEvent` is `VehicleHandle`-typed** (`SimEvent.cs`) — it cannot carry a person. A *parallel* type keeps `SimEvent` byte-identical; generalising it would touch every existing consumer for no gain. |
 | 4 | `PersonReadBuffer` + `Engine` person spans | new + edit | `PersonHandles`, `PersonPosX/Y/Z`, `PersonAngle`, `PersonSpeed`, `PersonEdgeHandles`, `PersonPos`, `PersonPosLat`, `PersonIds`, `PersonCount`, `TryGetPerson` |
 | 5 | `SimulationSnapshot` person columns | edit | ⚠ **`Count` currently means *vehicle* count** and is read that way by every consumer — it must **not** be repurposed. Add `PersonCount` + parallel columns + `TryGetPerson`; extend `Capture(Engine)`. |
-| 6 | `SimulationRunner.TryInterpolatePerson` | edit | Persons need their **own** DR model: they do not follow a lane arc the way a vehicle does, and on a walkingarea they follow a Bezier `WalkingAreaPath` (§3.2). Do not reuse `TryInterpolateVehicle`'s extrapolator. |
+| 6 | `SimulationRunner.TryInterpolatePerson` | edit | ⚠ **Corrected — see §10.5.** An earlier draft claimed persons need their own extrapolator because of the walkingarea Bezier. **Measured false.** Persons interpolate *better* than vehicles; reuse the same code path, parameterised by `DrModel`. |
 | 7 | `Sim.Host/ReplicationPublisher` | edit or route | ⚠ It has **zero** occurrences of "person"/"ped" — it is vehicle-only. See §10.3. |
 | 8 | `DefinePersonType`, `SpawnPerson`, `SpawnPersonAt`, `Despawn(PersonHandle)`, `ActivePersons()` | edit `Engine` | `SpawnPersonAt(type, edge, pos, posLat, speed, rest)` is the Phase-2 hinge (§9.2) |
 
@@ -519,6 +519,94 @@ the vehicle gate for zero parity gain — the same reasoning as R-N4 for the net
 *different* APIs (`PersonHandle`/lane-relative ↔ `int id`/`Vec2`), not a promotion within one. §9's
 coordinate contract is exactly that bridge, which is why Phase 1 must build it even though Phase 1 does
 not use it.
+
+### 10.5 Dead reckoning, and the unification question — measured
+
+Four questions worth settling with evidence rather than assertion, because the answers decide how much
+code the two populations can share.
+
+#### Can persons use the same dead reckoning as vehicles? **Yes — they are strictly easier.**
+
+`MSTransportable::getAcceleration()` returns a hard-coded **`0.0`** (`MSTransportable.h:103-105`).
+Pedestrians have **no acceleration model at all**: `walk()` sets `xSpeed` directly from the available
+distance each step. Combined with `vMax = 1.39 m/s`, per-step displacement is tiny and velocity is
+piecewise constant. Measured on the dense uncontrolled junction (330 persons, 98 vehicles, 150 s):
+
+```
+STEP-TO-STEP |delta speed| per 1 s step
+  vehicles (accel 2.6 / decel 4.5)          median 0.000   p95 4.076   max 5.200
+  pedestrians (no accel model)              median 0.000   p95 0.065   max 1.389
+
+CONSTANT-VELOCITY EXTRAPOLATION ERROR over one 1 s step, metres
+  vehicles                                  median 0.000   p95 4.076   max 5.522
+  pedestrians, normal edges + crossings     median 0.000   p95 0.640   max 2.566
+  pedestrians, walkingareas                 median 0.000   p95 0.466   max 2.215
+```
+
+Pedestrians are ~**6× more accurate** to extrapolate than vehicles in absolute metres. The one thing
+they can do that vehicles cannot — jump 0 ↔ 1.39 m/s in a single step — is bounded by `vMax`, so its
+worst case (1.39 m) is still smaller than a vehicle's *routine* braking error.
+
+#### Does the walkingarea Bezier break interpolation? **No — measured, and this corrects §10.2.**
+
+The concern was that on a walkingarea `myRelX` runs along a Bezier `WalkingAreaPath`, not the lane
+centreline, so chord interpolation between published frames would cut the corner. Measured by running
+at `--step-length 0.5`, treating whole seconds as the published frames and the `.5` sample as truth:
+
+```
+MID-STEP CHORD-INTERPOLATION ERROR, metres
+  vehicle                                   median 0.0000  p95 0.3901  p99 0.5625  max 1.6621
+  ped normal edge                           median 0.0000  p95 0.2936  p99 0.3874  max 0.5915
+  ped crossing                              median 0.0001  p95 0.3200  p99 0.4464  max 0.7255
+  ped WALKINGAREA                           median 0.0000  p95 0.1749  p99 0.3790  max 1.2874
+```
+
+The walkingarea case has the **lowest p95 of all four**. A pedestrian covers at most 1.39 m per step,
+over which the path's curvature is negligible. The earlier claim was a mechanism reasoned from the
+source and never measured — precisely the failure mode CLAUDE.md §Measurement discipline item 2 exists
+to catch, and it survived a commit before this check caught it.
+
+**Consequence:** reuse the vehicle interpolation path. `DrModel`'s existing three members
+(`LaneArc` / `FreeKinematic` / `Stationary`) are sufficient — its own header already records that they
+were "confirmed sufficient at three members". Tag a person `FreeKinematic` (world position + velocity)
+and nothing more is needed; that is what the 0.175 m p95 above measures. `LaneArc` would additionally
+require publishing the `WalkingAreaPath` geometry, which the net file does not contain — the model
+computes it — and the measurement says that buys nothing.
+
+#### Does SUMO itself use different APIs for persons and vehicles? **Internally no, externally yes.**
+
+- **Internally SUMO unifies.** `MSTransportable : SUMOTrafficObject` (`MSTransportable.h:59`) and
+  `SUMOVehicle : SUMOTrafficObject` (`SUMOVehicle.h:60`). `SUMOTrafficObject` is not a marker — it is a
+  ~30-method interface covering `getEdge`, `getLane`, `getPositionOnLane`, `getSpeed`,
+  `getAcceleration`, `getPosition`, `getAngle`, `getWaitingTime`, `getVehicleType`, `getVClass`,
+  `getRNG`, `isStopped`, `hasArrived`, … plus `isVehicle()`/`isPerson()` discriminators. Persons even
+  reuse **`MSVehicleType`** for their dimensions. And SUMO uses this base exactly where cross-type code
+  needs it: `blockedAtDist(const SUMOTrafficObject* ego, …)` and `MSLink::ignoreFoe`.
+- **Externally SUMO does not.** libsumo/TraCI ships separate `Person` and `Vehicle` domains
+  (`libsumo/Person.h`, `libsumo/Vehicle.h`) with no shared "TrafficObject" domain.
+
+**Do we?** Today, neither: `Engine`/`VehicleHandle` and `PedestrianWorld`/`int id` share nothing at all
+(§10.3) — we are *less* unified than SUMO at both levels.
+
+#### Can we unify too? **Yes, and SUMO tells us exactly where the seam belongs.**
+
+Adopt SUMO's own split: **unify the read shape, keep the domains separate.**
+
+| level | SUMO | us (proposed) |
+| --- | --- | --- |
+| per-object accessors | unified (`SUMOTrafficObject`) | `PersonState` mirrors `VehicleState` field-for-field where the meaning matches; a small read-only interface over both if a host wants to be generic |
+| dimensions / type | unified (persons use `MSVehicleType`) | `PersonTypeParams` mirrors `VTypeParams`; may share a backing record |
+| dead reckoning | n/a (SUMO has no DR layer) | **share it** — `DrModel` unchanged, one interpolation path, measured above |
+| identity | separate (`MSPerson*` vs `MSVehicle*`) | separate handle id spaces — as already decided |
+| spawn / control API | separate TraCI domains | separate `SpawnPerson` / `SpawnVehicle` |
+| step scheduling | separate (`MovePedestrians` is its own event) | separate (`AdvancePersons`, §5.1) |
+
+So the unification that pays is the **DR/replication layer and the read shape** — precisely the parts
+where the measurement shows persons and vehicles behave the same. The parts SUMO keeps separate
+(identity, spawn, scheduling) are the parts where they genuinely differ, and we should keep those
+separate too. That is a stronger argument for the §10.3 decision than the one I originally gave: it is
+not just "don't risk the gate", it is "SUMO, having had 20 years to unify, drew the line in the same
+place".
 
 ### 10.4 The resulting surface
 

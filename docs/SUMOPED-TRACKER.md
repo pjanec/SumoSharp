@@ -65,7 +65,7 @@ model does + measured knob sensitivity) · `SUMOPED-TASKS.md` (tasks).
 
 ## Stage 7 — API, viz, production regime, gate, docs
 - [ ] **SP-7.1** public `PersonHandle` API + tutorial sample; no existing vehicle type edited; `Count` still means vehicles; handle id spaces provably distinct
-- [ ] **SP-7.1b** `TryInterpolatePerson` follows the walkingarea Bezier, not the vehicle chord extrapolator
+- [ ] **SP-7.1b** person DR **reuses** the vehicle path (`DrModel.FreeKinematic`, no new enum member); interpolation error proven no worse than vehicles'
 - [ ] **SP-7.2** coordinate contract round-trip + `SpawnPersonAt` no-pop handover (the Phase 2 hinge)
 - [ ] **SP-7.3** `Sim.Viz` scenes + golden ground-truth overlay + stripe lines; in `gen-demos.sh`
 - [ ] **SP-7.4** production regime: measured speed spread; goldens provably unaffected
