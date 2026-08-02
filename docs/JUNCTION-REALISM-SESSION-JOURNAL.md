@@ -4132,3 +4132,45 @@ SCHEDULED stops (`isStopped()`), not queue tails — porting it would not touch 
 start, E2 abort-or-complete instead of frozen poses), no decision change, everything inside
 the `LaneChangeDuration>0` realism gate (goldens byte-identical by construction). AWAITING
 OWNER REVIEW before implementation.
+
+## Entry 60 (AFTER) — E1/E2 landed (owner approved the design): executed queue-tail swerves −88%, zero sweep-throughs
+
+Owner approved `docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md`; implemented as designed:
+**E1** `ManeuverLacksRunway` — a continuous maneuver may not START against a near-stopped
+(<1 m/s) same-lane leader without runway (`speed*duration/2 + MinGap`); wired as one more
+VETO (no accumulator reset) into the sgLeft chain and `TryStrategicLaneChange`
+(`LcStrategicOutcome=5`). **E2** — the below-min-speed hold in `AdvanceLaneChanges` now
+aborts cleanly before the midpoint (`ClearLaneChangeManeuver`) and COMPLETES past it,
+never freezing a diagonal pose.
+
+**Measured (A/B vs the Entry 60 BEFORE arm, same env/frames):** executed late swerves
+208 → **24 (−88%)**, and all 24 residuals have leadGap 4.5–8 m — every one clears the runway
+guard legitimately; **sweep-throughs (gap < forward travel) = 0** (success condition 1
+exactly). Overlap classes: junction 177 → 183 (+3.4%, within ±10%), queue 71 → 67, merge
+17 → 17. Arrivals 2018 → 2020 (±0.1%). Full sln green; bench hash `A134ED3716DDE7BC`
+par==single (E1 unreachable at duration 0, E2 unreachable at MinSpeed 0 — every golden).
+Remaining surface: the owner's 3D verdict on queue-tail rendering (condition 5).
+
+## Entry 61 — Class B: the ped hypothesis is DEAD; the holds are merge-landing standoff chains; veh282 stopped-under-freeFlow anomaly named
+
+New committed witness `LIVECITY-JXNHOLD` (cars stopped ≥10 s ON internal lanes + binder +
+described blocker — the population HEADSTUCK structurally excludes as <25 m stubs).
+
+**15 000-ped capture (approximating the owner's 30 k 3D density): 416 holds, ZERO
+crowd/crowdYield binders.** Hypothesis (a) of Entry 59 — peds holding the turners — is
+REFUTED at this density headless; the owner's z=0-invisible-peds tie-in is moot (and the
+owner is redesigning the ped layer anyway — decided this session).
+
+What the holds ARE: **merge-landing standoff chains.** Distribution: leaderFollow 57%
+(queue shadow INTO the junction), crossJxnLeader 24%, junctionYield/sameTargetMerge ~8%.
+Exemplar traced end-to-end (`__veh461`, :36022): PHASE1occ + PHASE1 both correctly follow
+`__veh1` at gap 0.00 — a co-located merge landing (the pair is nose-to-nose across two
+merging internal lanes); the entry-order tie-break correctly skips the other member. The
+root of the deepest chain (`:34991`, waits to **1066 s**): `__veh740` leaderFollows
+`__veh282` on the exit lane — and **veh282 stands for MINUTES at v=0 with binder
+freeFlow/none** (the engine believes nothing constrains it). A stopped car the constraint
+fold calls free is self-contradictory — NEXT TRACE TARGET (suspect: a non-binder speed cap
+— CoopSpeedAdvice or maneuver-hold — pinning it outside the binder accounting; UNVERIFIED,
+trace before believing). The drive-through half of the owner's report matches the ≥60 s
+ignore-blocker recovery (holds routinely exceed the window) — working as designed once the
+wedge exists; the wedge itself is the bug.

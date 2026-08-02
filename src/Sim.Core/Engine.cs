@@ -2088,6 +2088,29 @@ public sealed partial class Engine : IEngine
     // the maneuver that should have been decided upstream (SUMO's REACT_TO_STOPPED_DISTANCE
     // urgent arm, MSLCM_LC2013.cpp:1378, is not ported; this line measures how often that
     // absence bites and names exemplar vehicles for the [veh]/[sg] trace). Print-only, gated.
+    // Entry 60 E1 (docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md §3): a continuous maneuver
+    // (LaneChangeDuration > 0) must not START when its forward travel cannot clear ego's own
+    // same-lane (near-)stopped leader -- that start is the queue-tail sweep-through the owner
+    // flagged (the IG interpolates the mid-maneuver lane flip straight through the leader's
+    // body). Forward travel over the sweep ~ speed * duration / 2 (braking toward the tail;
+    // end speed ~ 0), plus MinGap margin. Restricted to a near-stopped leader (< 1.0 m/s):
+    // against a MOVING slow leader the closing speed governs and the plain overtake path
+    // stays as it was. Used as one more VETO in the commit gate chains -- same no-reset
+    // semantics as every other veto, so the wish retries and fires the moment the queue
+    // creeps open runway. Instant-snap (duration 0, every golden/bench) never reaches the
+    // guard -> byte-identical by construction.
+    private bool ManeuverLacksRunway(VehicleRuntime v, VehicleRuntime? sameLaneLeader)
+    {
+        if (sameLaneLeader is null || LaneChangeSteps() <= 1 || sameLaneLeader.Kinematics.Speed >= 1.0)
+        {
+            return false;
+        }
+
+        var gap = (sameLaneLeader.Kinematics.Pos - sameLaneLeader.VType.Length) - v.Kinematics.Pos;
+        var runway = (v.Kinematics.Speed * _config!.LaneChangeDuration * 0.5) + v.VType.MinGap;
+        return gap < runway;
+    }
+
     private void RecordLateQueueTailChange(VehicleRuntime v, VehicleRuntime? sameLaneLeader, string tag, double neighDist = double.NaN)
     {
         if (!DiagLaneChangeLog || sameLaneLeader is null) return;
@@ -13913,7 +13936,8 @@ public sealed partial class Engine : IEngine
                 // CooperativeInformFollower (high realism); inert on goldens (MergeStoppedMinGap 0).
                 if (IsTargetLaneSafe(v, neighLead, neighFollow, dt) && !TargetLaneBlockedByObstacle(v, leftLane, time, dt) && !IsTargetLaneOverlapped(v, leftLane.Handle, postMoveNeighbors, dt)
                     && !LaneChangeSlotContested(v, leftLane.Handle, postMoveNeighbors)
-                    && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt)))
+                    && !(CooperativeLcFor(v) && WouldCutInAheadOfStoppedFollower(v, neighFollow, dt))
+                    && !ManeuverLacksRunway(v, leader))
                 {
                     RecordLaneChangeCommit(1, v, neighLead, neighFollow, bypassesMinSpeed: false, tag: "sgLeft"); // #15 float analysis (speed-gain left)
                     RecordLateQueueTailChange(v, leader, "sgLeft", neighDist); // Entry 59 Class A
@@ -15608,12 +15632,26 @@ public sealed partial class Engine : IEngine
                 continue;
             }
 
-            // Realism (LaneChangeMinSpeed > 0, demo-only; 0 = off = byte-identical): HOLD an in-progress
-            // maneuver while the car is essentially stopped, so the lateral centre-to-centre flip (and its
-            // on-screen sideways step) never happens at a standstill -- it resumes once the car moves.
+            // Realism (LaneChangeMinSpeed > 0, demo-only; 0 = off = byte-identical): a car dropping
+            // (nearly) to a stop mid-maneuver must not FREEZE in a diagonal pose -- Entry 60 measured
+            // the old unconditional hold as the owner's "stopped half in each lane" norm plus the
+            // resume-in-body-contact sweep (E2, docs/LANE-CHANGE-LATE-MANEUVER-DESIGN.md §3):
+            //   - BEFORE the midpoint the car is still sorted into its source lane: ABORT cleanly
+            //     (recenter; the wish re-accumulates and retries with E1's runway guard).
+            //   - AT/PAST the midpoint it is already sorted into the target lane: COMPLETE the
+            //     lateral slide while crawling -- a driver halfway into the lane finishes the wedge.
+            // The hold's original purpose (no full-lane sideways step at standstill) is preserved:
+            // E1 means maneuvers only START with runway, and both arms here progress toward a lane
+            // CENTER instead of freezing between two.
             if (LaneChangeMinSpeed > 0.0 && v.Kinematics.Speed < LaneChangeMinSpeed)
             {
-                continue;
+                if ((2 * v.LcStepsElapsed) <= v.LcStepsTotal)
+                {
+                    ClearLaneChangeManeuver(v);
+                    continue;
+                }
+
+                // past midpoint: fall through -- keep advancing to completion.
             }
 
             v.LcStepsElapsed++;
@@ -16068,6 +16106,15 @@ public sealed partial class Engine : IEngine
                 }
             }
 
+            return false;
+        }
+
+        // Entry 60 E1: same runway veto as the speed-gain site -- a strategic maneuver started
+        // without runway sweeps through the queue tail identically. Deferral, not denial: the
+        // strategic wish re-evaluates every step and commits once the queue creeps open.
+        if (ManeuverLacksRunway(v, neighbors.GetLeader(v)))
+        {
+            v.LcStrategicOutcome = 5;
             return false;
         }
 

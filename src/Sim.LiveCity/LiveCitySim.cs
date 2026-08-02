@@ -1496,6 +1496,30 @@ public sealed class LiveCitySim : IDisposable
             return $"{c.DefId} {c.LaneId}@{c.Pos:F1} v={c.Speed:F1} bind={bn}/{an}";
         }
 
+        // Entry 61 (Class B, journal Entry 59): mid-junction holds. A car STOPPED ON AN INTERNAL
+        // LANE for >= 10 s is the owner's "turner standing in the box for no obvious reason" --
+        // a population HEADSTUCK structurally excludes (internal lanes are mostly < 25 m stubs).
+        // Named binder + blocker (described when present in this snapshot) turn the 3D observation
+        // into traceable exemplars. Capped at 8 lines per report to bound witness noise.
+        {
+            var jxnHoldPrinted = 0;
+            for (var i = 0; i < w.Count && jxnHoldPrinted < 8; i++)
+            {
+                var c = w[i];
+                if (c.Speed >= 0.5 || c.WaitingTime < 10.0 || c.LaneId.Length == 0 || c.LaneId[0] != ':')
+                {
+                    continue;
+                }
+
+                var blockerDesc = c.BlockerEntity >= 0 && byEntity.TryGetValue(c.BlockerEntity, out var jbi)
+                    ? Describe(w[jbi])
+                    : (c.BlockerEntity >= 0 ? $"ent{c.BlockerEntity}(not-in-witness)" : "none");
+                Console.Error.WriteLine(
+                    $"LIVECITY-JXNHOLD: t={_now:F0} {Describe(c)} wait={c.WaitingTime:F0} -> {blockerDesc}");
+                jxnHoldPrinted++;
+            }
+        }
+
         // DEADLOCK-RING-DESIGN §1 (D1, diagnostic only -- owner-approved instrument): blocker-graph
         // cycle scan over this witness snapshot. Nodes = stopped cars (speed < 0.1) whose recorded
         // blocker is itself present and stopped; edge i -> blocker. Colour-marking walk visits each
