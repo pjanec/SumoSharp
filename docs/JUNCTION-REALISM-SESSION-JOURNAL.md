@@ -4174,3 +4174,36 @@ fold calls free is self-contradictory — NEXT TRACE TARGET (suspect: a non-bind
 trace before believing). The drive-through half of the owner's report matches the ≥60 s
 ignore-blocker recovery (holds routinely exceed the window) — working as designed once the
 wedge exists; the wedge itself is the bug.
+
+## Entry 62 — the strand-clamp WaitingTime LIVELOCK: root of the permanent wedges; sibling-snap rescue landed
+
+**The trace (deterministic, `__veh282`, 15 k-ped arm, [exec] seam instrument):** the :34991
+wedge root was NOT a merge/junction defect at all. veh282 crossed `:34991_4_0` at 10.65 m/s
+onto `gen_road_4504_0` — a **1.42 m netconvert stub whose lane 0 has NO outgoing connection**
+(only lane 1 continues). Every step: the plan freeFlow-accelerates (the pool's exit is the
+sibling, so no dead-lane brake binds), the car overshoots the stub end, and the C4-vii-c
+strand clamp resets pos=length/speed=0. **The livelock**: the WaitingTime update runs BEFORE
+the clamp and sees `Intent.NewSpeed=1.30 > HaltingSpeed`, so **WaitingTime reset to 0 every
+step** — starving EVERY recovery at once (dead-lane reroute 5 s/90 s gates, jam teleport,
+and other cars' 60 s IgnoreJunctionBlocker skip). One connection-less 1.42 m stub therefore
+froze a car forever AND made the queue behind it unrecoverable (waits to 1066 s). Ruled out
+on the way (each by instrument): vehicle recycling (same ent/gen), CoopSpeedAdvice ([coop]
+silent), all other Pos/Speed writers (grep-complete).
+
+**Fix (both halves reached only via the strand clamp — a state no committed golden enters):**
+1. The clamp accumulates WaitingTime honestly (`+= dt`) — every WaitingTime-keyed safety net
+   works again.
+2. `RescueStrandedVehicles` (SERIAL post-execute pass — the occupancy scan must not run inside
+   region-parallel execute; par==single by construction): a strand-clamped car whose edge has a
+   sibling lane that connects to the route's next edge and has room at ego's span SNAPS over
+   and re-resolves its pool — mirroring SUMO's outcome (its duration-0 changeLanes phase never
+   freezes on a short stub).
+
+**Measured:** veh282 snaps at t=78.0 and drives off at free flow (13 m/s by t=83).
+Ped-heavy A/B: **:34991 holds 125 → 0**; :34994 87 → 39; max JXNHOLD wait 1066 → 788;
+stoppedFrac 0.65 → 0.60, meanSpd 2.52 → 2.69, aggMove +6.7%, arrivals flat (2062 → 2064).
+Full sln green; bench hash `A134ED3716DDE7BC` par==single unchanged.
+
+**Next named target:** the residual 788 s wedge — `__veh56 :34994_6_0@33.3
+bind=crossJxnLeader/none wait=788 -> __veh1375 gen_road_7261_1@2.6 keepClear/none` (the
+Entry 58 junction; keepClear-rooted chain, likely the landed-standoff family from RESUME-3).

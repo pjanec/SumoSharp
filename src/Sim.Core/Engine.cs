@@ -3340,6 +3340,11 @@ public sealed partial class Engine : IEngine
             var pExec = PhaseStart();
             ExecuteMoves(time, dt);
             if (DiagSeqDesync) foreach (var dv in ActiveVehicles()) CheckSeqDesync(dv, "postExecute", time);
+            // Entry 62 (sibling-snap strand rescue): SERIAL on purpose -- the rescue reads OTHER
+            // vehicles' just-executed positions (an occupancy scan), which inside the region-
+            // parallel ExecuteMoves would be thread-order dependent. Here every move has settled
+            // and the command buffer flushed, so the scan is deterministic (par == single).
+            RescueStrandedVehicles();
             PhaseEnd("execute", pExec);
 
             // [SystemPhase.PostSimulation] P1F-2 (HIGH-DENSITY-P1F-DESIGN.md §1A/§1F, §2): the
@@ -5566,6 +5571,15 @@ public sealed partial class Engine : IEngine
         // as a constraint but must not consume it, or the real PlanMovements call would miss it).
         if (!double.IsPositiveInfinity(v.CoopSpeedAdvice))
         {
+            // Entry 61 instrument: the advice is applied AFTER the binder fold was recorded, so a
+            // car pinned by it every step reports binder=freeFlow blocker=-1 v=0 -- the veh282
+            // stopped-under-freeFlow signature. This line makes the invisible cap visible.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id && v.CoopSpeedAdvice < vPos)
+            {
+                Console.Error.WriteLine(
+                    $"[coop] t={CurrentTime:F1}{(prePass ? "p" : "r")} veh={v.Def.Id} advice={v.CoopSpeedAdvice:F2} vPos={vPos:F2}");
+            }
+
             vPos = Math.Min(vPos, v.CoopSpeedAdvice);
             if (!prePass)
             {
@@ -12592,6 +12606,19 @@ public sealed partial class Engine : IEngine
             // comment) -- both halves hold ego at its own link exactly the same way.
             v.HeldAtLinkLastStep = v.BindingConstraint is 6 or 7 or 8 or 9 or 10 or 11 or 14 or 17;
 
+            // Entry 61 instrument: the plan->execute seam for the traced vehicle. The veh282
+            // anomaly showed a 10.65 -> 0.00 speed step ACROSS a lane boundary with binder
+            // freeFlow -- impossible via the constraint fold, so either the Intent itself
+            // carried 0 (plan-tail cap after the binder write) or a later actor zeroed
+            // Kinematics.Speed between this write and the export projection. This line pins
+            // which side of the seam the zero enters on.
+            if (DiagTraceVehicleId is not null && DiagTraceVehicleId == v.Def.Id)
+            {
+                var gen282 = v.EntityIndex >= 0 && v.EntityIndex < _vehicleGeneration.Length ? _vehicleGeneration[v.EntityIndex] : -1;
+                Console.Error.WriteLine(
+                    $"[exec] t={CurrentTime:F1} veh={v.Def.Id} ent={v.EntityIndex} gen={gen282} old={oldSpeed:F2} new={v.Intent.NewSpeed:F2} {v.LaneId}@{v.Kinematics.Pos:F2} seq={v.LaneSeqIndex}/{v.LaneSeqLen}");
+            }
+
             v.Kinematics.Speed = v.Intent.NewSpeed;
 
             // C4-ii: waiting-time accumulation (MSVehicle::updateWaitingTime, MSVehicle.cpp:4081-4088).
@@ -12901,6 +12928,21 @@ public sealed partial class Engine : IEngine
 
                     v.Kinematics.Pos = currentLane.Length;
                     v.Kinematics.Speed = 0.0;
+
+                    // Entry 62 (the strand-clamp WaitingTime LIVELOCK -- traced end-to-end on Geneva,
+                    // __veh282 on the 1.42 m netconvert stub gen_road_4504_0, dead lane 0): each step
+                    // the plan freeFlow-accelerates (the POOL thinks ego exits via a sibling lane, so
+                    // no dead-lane brake binds), this clamp zeroes it back -- and the WaitingTime
+                    // update above already saw Intent.NewSpeed=1.30 > HaltingSpeed and RESET the
+                    // counter. Every stuck-rescue keys on WaitingTime (TryRerouteStuckDeadLane 5 s /
+                    // 90 s, jam teleport, and -- the wedge amplifier -- other cars' 60 s
+                    // IgnoreJunctionBlocker skip), so the clamp cycle STARVED them all: the car froze
+                    // FOREVER and the queue behind it waited 1000+ s with every recovery defeated
+                    // (measured: the :34991 wedge, JXNHOLD waits to 1066 s). A clamped car IS waiting
+                    // -- accumulate honestly. Reached only on the strand path (no committed golden
+                    // reaches it -- the guard's own comment), so goldens/bench are untouched.
+                    v.WaitingTime += dt;
+                    v.StrandClamped = true; // Entry 62: sibling-snap rescue candidate (serial pass)
                     break;
                 }
 
@@ -13141,6 +13183,103 @@ public sealed partial class Engine : IEngine
     // reach boundaries ON their pool lane (every committed golden) never calls this and is
     // byte-identical. Direct v.LaneSeq* writes are safe: this is the execute phase, each vehicle
     // mutates only its own state, and nothing later this step reads another vehicle's LaneSeq*.
+    // Entry 62 (the veh282 stub trap, traced end-to-end): a strand-clamped car sits on a lane with
+    // NO connection to its route's next edge (often none at all -- netconvert's Geneva cut has
+    // 1.42 m stubs whose lane 0 is connection-less), pinned at the lane end at speed 0 while a
+    // SIBLING lane of the same edge continues the route a lane-width away. SUMO never freezes
+    // there: its changeLanes phase runs every step regardless of lane length and snaps the vehicle
+    // over (duration-0 discrete change). Our strategic path cannot converge across a 1.42 m stub
+    // (one step overshoots the whole lane), so mirror SUMO's outcome directly: when the clamped
+    // car's edge has a sibling lane that (a) connects to the route's next edge and (b) has room at
+    // ego's span, snap laterally and re-resolve the pool from it. Serial (see the call site's
+    // determinism comment); flag-scoped to strand-clamped vehicles only, a state no committed
+    // golden reaches -- goldens/bench byte-identical.
+    private void RescueStrandedVehicles()
+    {
+        foreach (var v in ActiveVehicles())
+        {
+            if (!v.StrandClamped)
+            {
+                continue;
+            }
+
+            v.StrandClamped = false;
+            var lane = _network!.LanesByHandle[v.LaneHandle];
+
+            // The route's next NORMAL edge (same walk TryReResolveFromActualLane does).
+            string? nextEdge = null;
+            for (var k = v.LaneSeqIndex; k < v.LaneSeqLen; k++)
+            {
+                var pl = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + k]];
+                if (pl.EdgeId.Length > 0 && pl.EdgeId[0] == ':')
+                {
+                    continue;
+                }
+
+                if (pl.EdgeId != lane.EdgeId)
+                {
+                    nextEdge = pl.EdgeId;
+                    break;
+                }
+            }
+
+            if (nextEdge is null || !_network.EdgesById.TryGetValue(lane.EdgeId, out var edge))
+            {
+                continue;
+            }
+
+            foreach (var sib in edge.Lanes)
+            {
+                if (sib.Handle == v.LaneHandle
+                    || !_network.ConnectionsByFromLaneTo.ContainsKey((lane.EdgeId, sib.Index, nextEdge)))
+                {
+                    continue;
+                }
+
+                // Room check at ego's span on the sibling (post-execute settled positions; serial).
+                var egoFront = Math.Min(v.Kinematics.Pos, sib.Length);
+                var egoBack = egoFront - v.VType.Length;
+                var occupied = false;
+                foreach (var other in ActiveVehicles())
+                {
+                    if (ReferenceEquals(other, v) || other.LaneHandle != sib.Handle)
+                    {
+                        continue;
+                    }
+
+                    var oFront = other.Kinematics.Pos + other.VType.MinGap;
+                    var oBack = other.Kinematics.Pos - other.VType.Length - v.VType.MinGap;
+                    if (egoFront > oBack && egoBack < oFront)
+                    {
+                        occupied = true;
+                        break;
+                    }
+                }
+
+                if (occupied)
+                {
+                    continue;
+                }
+
+                v.LaneId = sib.Id;
+                v.LaneHandle = sib.Handle;
+                v.Kinematics.Pos = egoFront;
+                if (TryReResolveFromActualLane(v, sib))
+                {
+                    System.Threading.Interlocked.Increment(ref _strandSiblingSnaps);
+                }
+
+                // Snap performed (even if the re-resolve fell back, the sibling physically connects
+                // onward, so the dead-lane rescue path can now run from a connected lane).
+                break;
+            }
+        }
+    }
+
+    // Entry 62 diagnostic: total sibling-snap rescues (parity-neutral; read by nothing).
+    private long _strandSiblingSnaps;
+    public long StrandSiblingSnaps => System.Threading.Interlocked.Read(ref _strandSiblingSnaps);
+
     private bool TryReResolveFromActualLane(VehicleRuntime v, Lane currentLane)
     {
         // The remaining NORMAL route edges from the current slot onward (skip internal ':'-edge

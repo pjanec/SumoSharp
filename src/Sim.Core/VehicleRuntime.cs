@@ -575,6 +575,12 @@ internal sealed class VehicleRuntime
     // touches it and the active-query filters stay byte-identical.
     public bool InTransfer;
 
+    // Entry 62: set by ExecuteMoveVehicle's C4-vii-c strand clamp (wrong-lane dead-end, pos
+    // pinned at the lane end, speed 0); consumed the same step by Engine.RescueStrandedVehicles'
+    // serial sibling-snap pass. Never set on any committed-golden path (the clamp itself is not
+    // reached there).
+    public bool StrandClamped;
+
     // GAP-2 (docs/SUMOSHARP-SERVE-PATH-DROP-IN.md §2, docs/SERVE-PATH-PLAN.md): SUMO's
     // MSDevice_Tripinfo::myWaitingTime (MSDevice_Tripinfo::notifyMove, MSDevice_Tripinfo.cpp:179-193)
     // -- a TRIP-TOTAL accumulator, DISTINCT from WaitingTime above (which resets to 0 the instant the
