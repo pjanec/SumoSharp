@@ -109,6 +109,19 @@ uses for junction leaders**, not a bespoke pedestrian rule (this is how SUMO doe
 *Acceptance:* the fixture verified first-hand this session (`scenarios/_sumoped/xwalk-priority-1v1`,
 below) reproduces to tolerance, including the car's deceleration profile `13.89 → 11.11 → 6.61`.
 
+**R4b — the ped-priority zebra (car stops, ped never yields).** ⚠ `--crossings.guess` at an
+uncontrolled node always produces `priority="false"` (`NBNode.cpp:2788`), i.e. the *pedestrian* gives
+way — so this second, opposite regime is silently absent unless crossings are declared explicitly with
+`priority="true"`. Both regimes are required.
+
+*Acceptance:* an A/B pair of scenarios identical except for that flag, both at exact parity. The
+`priority="true"` arm must reproduce the measured trace where the car decelerates
+`13.89 → … → 2.15 → 0.00`, holds a **full stop** for 3 s on the internal lane, and the ped crosses at
+an unbroken `1.39 m/s`; the `priority="false"` arm must reproduce the ped stopping dead at the curb
+while the car proceeds. Plus the flow-density pair: `priority="true"` ⇒ peds stopped on the curb **0%**
+of walkingarea steps and ≥60 distinct vehicles fully stopping; `priority="false"` ⇒ peds stopped
+**91%**. Details: `SUMOPED-COVERAGE.md` §4.5.
+
 ### R5 — Vehicle↔pedestrian collisions: parity first, improvement later
 
 ⚠ **Restated after measurement. The original wording — "no vehicle body may overlap a pedestrian's
@@ -304,6 +317,9 @@ aggregate is `golden.tripinfo.xml` `<personinfo>`.
 | `turning-vs-crossing-peds` | cars turning **left and right** held on the internal lane by peds on the **exit** crossing | R4, R5a |
 | `ped-turners-through-bunch` | peds **turning at the corner** (sidewalk only, zero crossings) threading the queue waiting to cross | R3d |
 | `ped-turners-gridlock` | the same at 2.4x car flow — corner gridlock, the degraded end of R3d | R3a, R3d |
+| `zebra-1v1-yields` / `xwalk-1v1-noprio` | **the R4b A/B pair** — one car, one ped, differing only in `<crossing priority>` | R4b |
+| `zebra-flow-balanced` | ped-priority zebra at flow density — 68 vehicles fully stop, peds never wait | R4b |
+| `zebra-flow-pedheavy` | ped-priority zebra oversubscribed — cars starved (45 of 69 still queued) | R4b |
 
 ### R12 — Coverage must be demonstrated, not asserted
 

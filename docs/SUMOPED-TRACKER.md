@@ -52,6 +52,7 @@ plan) · `SUMOPED-BRANCH-INVENTORY.md` (the 148-branch denominator) · `SUMOPED-
 
 ## Stage 5 — Vehicle coupling
 - [ ] **SP-5.1** `BlockedAtDist` + phantom-leader injection; `xwalk-priority-1v1` GREEN incl. 13.89→11.11→6.61; gate re-run
+- [ ] **SP-5.1b** ⭐ **R4b ped-priority zebra** — the A/B pair GREEN; car reaches a FULL STOP (0.00) and holds while the ped crosses at unbroken 1.39 m/s
 - [ ] **SP-5.2** `AddCrossingVehs` + `AddVehicleFoe`; fully-blocked pin asserted
 - [ ] **SP-5.3** `CheckWalkingAreaFoe`; `walkingarea-shared` GREEN
 - [ ] **SP-5.4** `HasPedestrians`/`NextBlocking`; `sidewalk-shared-lane` GREEN
@@ -135,7 +136,16 @@ These are established facts, not assumptions — the commands are in `SUMOPED-DE
   appears with `dawdling=0` **and** `speedDev=0`, so it is largely golden-checkable rather than
   RNG-dependent.
 
-### Render session (same day) — two coverage holes found by looking at the renders
+### Render session (same day) — three coverage holes found by looking at the renders
+
+- ⚠ **`--crossings.guess` never produces a ped-priority zebra.** `NBNode.cpp:2788` creates a guessed
+  crossing with `priority = isTLControlled()`, so at an uncontrolled node it is always
+  `priority="false"` — the PEDESTRIAN gives way. Every scenario built the obvious way shows peds
+  waiting for a gap, and the car-stops-for-ped regime is silently absent. Declaring
+  `<crossing ... priority="true"/>` flips the link from state `m` to `M`. A/B measured on one car +
+  one ped: false ⇒ ped stops dead at the curb, car dips to 6.28 and goes; true ⇒ ped never breaks
+  stride at 1.39 m/s and the car decelerates to **0.00** and holds 3 s. At flow density: peds stopped
+  on the curb **91%** vs **0%**; cars fully stopping 18 vs 68 distinct vehicles. Coverage §4.5.
 
 - ⚠ **Crossing counterflow does not occur by default.** On a dense uncontrolled 4-arm junction with peds
   crossing both ways on every arm, *every* crossing is traversed in one direction only (`:c_c0` 0/56,

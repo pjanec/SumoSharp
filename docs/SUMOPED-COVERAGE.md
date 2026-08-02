@@ -155,6 +155,7 @@ the others cannot:
 | **crossing width** (stripe count) | 1 · 6 (netconvert default) · 12 | `--default.crossing-width` is **independent of road lanes** — 4.00 m ⇒ 6 stripes on a 1-lane and a 2-lane road alike. A **1-stripe** crossing is the only way to reach the `sMax == 0` / `jamTimeNarrow` branch, which no realistic net produces but the port must still match. |
 | **crossing length** (road lanes) | 1 lane (6.40 m) · 2 lanes (12.80 m) · 3 lanes | Long crossings let a vehicle arrive while peds are mid-crossing; short ones never do. |
 | **control** | priority (uncontrolled) · TL · bare walkingarea (no marked crossing) | Three different vehicle-yield paths: `blockedAtDist` under right-of-way, under TL state, and `checkWalkingAreaFoe`'s 2-D test. |
+| **crossing priority** | `priority="false"` (ped yields) · `priority="true"` (**zebra — car yields**) | ⚠ Not a nuance — it inverts who gives way, and `--crossings.guess` only ever produces the first at an uncontrolled node. See §4.5. |
 | **ped demand** | single · counterflow pair · platoon · saturated · **jammed** | The jam family only fires above a density threshold. |
 | **vehicle demand** | none · single · stream · saturated | "None" is essential: Tier A junction scenarios must have no vehicles so a divergence has exactly one cause. |
 | **ped flow mix** | unidirectional · counterflow **on a sidewalk** · counterflow **on a crossing** · **pass-by** (turns at the junction, does not cross) | Three separate cases, see §4.2 — crossing counterflow does **not** happen by default and must be forced. Pass-by is the owner's R3d and needs peds who never enter a crossing. |
@@ -233,6 +234,52 @@ RIGHT turns blocked:  80 vehicle-steps
 LEFT  turns blocked:  57 vehicle-steps
 e.g. eRIGHT.15 (ec->cn, right turn) held on internal lane :c_4_0 from t=84 to t=89, 9 peds on :c_c0
 ```
+
+### 4.5 ⚠ Crossing priority — `--crossings.guess` never produces a ped-priority zebra
+
+`NBNode.cpp:2788` / `:2831`: a guessed crossing is created with
+`addCrossing(candidates, UNSPECIFIED_WIDTH, isTLControlled())` — its **priority is
+`isTLControlled()`**. So at an *uncontrolled* node, `--crossings.guess` always yields
+`priority="false"`: the walkingarea→crossing link is state `m` (minor) and **the pedestrian gives way
+to traffic**. Every scenario built with `--crossings.guess` at a priority node therefore shows peds
+waiting for a gap, and the zebra / ped-right-of-way case is *silently absent*.
+
+Getting it requires declaring crossings explicitly in the connections file:
+```xml
+<connections>
+  <crossing node="c" edges="nc cn" priority="true"/>
+</connections>
+```
+which flips the link to state `M` (major). Verified at the net level on both variants.
+
+**The behavioural A/B, one car and one pedestrian, identical except for that boolean:**
+
+```
+priority="false"  (guessed)                    priority="true"  (declared)
+ t=3  ped :c_w1 0.08  1.39   car 13.89          t=3  ped :c_w1 0.08  1.39   car 13.89
+ t=4  ped :c_w1 0.00  0.07   car 13.89          t=4  ped :c_c1 11.49 1.39   car 13.89
+ t=5  ped :c_w1 0.00  0.00   car 10.78          t=5  ped :c_c1 10.10 1.39   car 10.78
+ t=6  ped :c_w1 0.00  0.00   car  6.28          t=6  ped :c_c1  8.71 1.39   car  6.28
+ t=7  ped :c_w1 0.00  0.00   car  8.88 <-GOES   t=9  ped :c_c1  4.54 1.39   car  2.15
+ t=10 ped :c_c1 11.41 1.39   car 13.89          t=10 ped :c_c1  3.15 1.39   car  0.00 <-STOPS
+                                                t=12 ped :c_c1  0.38 1.39   car  0.00
+     PED WAITS, CAR PROCEEDS                    t=13 ped :c_w2  2.23 1.39   car  2.60 <-resumes
+                                                     CAR STOPS, PED NEVER BREAKS STRIDE
+```
+
+At flow density the inversion is total (same demand, same net geometry, only the flag differs):
+
+| | cars fully stopped for a ped | peds stopped on the curb | throughput |
+| --- | --- | --- | --- |
+| `priority="false"` | 67 veh-steps, 18 vehicles | **91%** of walkingarea steps | all 109 vehicles clear; 54 of 65 peds still waiting |
+| `priority="true"` (balanced) | 5783 veh-steps, **68 vehicles** | **0%** (0 of 245) | 109 vehicles clear, 17 queued; 4 collisions |
+| `priority="true"` (ped-heavy) | 8611 veh-steps, 68 vehicles | 0% (2 of 438) | only 69 inserted, **45 still queued** — cars starved |
+
+Both regimes must be in the golden set. `blockedAtDist`'s second clause
+(`leaderFrontDist <= oncomingGap && ped.myWaitingTime < TIME2STEPS(2.0)`, `jmCrossingGap` default
+**10 m**, `MSLink.cpp:66`) is what makes a car brake for an *approaching* ped — and the 2 s standing
+rule is what releases it again in the `priority="false"` regime. Only the priority regime exercises
+the sustained full-stop path.
 
 ### 4.1 Measured regime map — width drives the jam/collision regime
 Same jam-level demand, 200 s, varying only crossing width:
