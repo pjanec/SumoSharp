@@ -2324,6 +2324,12 @@ public sealed partial class Engine : IEngine
     public ReadOnlySpan<float> PosZ => _readBuffer.PosZ.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> Angle => _readBuffer.Angle.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> Speed => _readBuffer.SpeedF.AsSpan(0, _readBuffer.Count);
+
+    // PED-AVOID-CARS (Entry 69): body dims aligned with VehicleHandles -- the live-city host builds
+    // per-car ORCA footprint discs (near-stopped cars only) from the SAME published projection the
+    // renderer reads, so no second engine surface and no plan-phase coupling. Additive read-only spans.
+    public ReadOnlySpan<float> Lengths => _readBuffer.Length.AsSpan(0, _readBuffer.Count);
+    public ReadOnlySpan<float> Widths => _readBuffer.Width.AsSpan(0, _readBuffer.Count);
     // Body dimensions (metres) for sized rendering; from the vehicle's vType. Render-facing float.
     public ReadOnlySpan<float> VehicleLengths => _readBuffer.Length.AsSpan(0, _readBuffer.Count);
     public ReadOnlySpan<float> VehicleWidths => _readBuffer.Width.AsSpan(0, _readBuffer.Count);

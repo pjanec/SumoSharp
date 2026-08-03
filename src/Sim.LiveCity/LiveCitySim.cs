@@ -1329,7 +1329,7 @@ public sealed class LiveCitySim : IDisposable
         // as ONE fused phase; it is not separable at this seam without touching Sim.Pedestrians.
         var beforeCount = _pedPublisher.Events.Count;
         var tPedDemand = PhaseStart();
-        _demand?.Step(_now, dt, _field, NoEntities);
+        _demand?.Step(_now, dt, _field, BuildCarObstacleDiscs());
         PhaseEnd("pedDemandStep", tPedDemand);
         var tNext = _now + dt;
 
@@ -2266,6 +2266,101 @@ public sealed class LiveCitySim : IDisposable
     {
         var v = Environment.GetEnvironmentVariable(name);
         return string.IsNullOrEmpty(v) ? engineDefault : v == "1";
+    }
+
+    // PED-AVOID-CARS (Entry 69, owner GO "near-stopped is ok"): high-power ORCA peds AVOID cars
+    // standing in their space -- junction boxes, crosswalks, wherever. The crowd side has consumed
+    // external world discs since the laneless bridge (OrcaCrowd.SetExternalObstacles, plumbed through
+    // PedDemand.Step -> PedLodManager.Step), but this host always passed the empty list, so peds were
+    // blind to cars. Now: every NEAR-STOPPED car (< 1.5 m/s -- the owner's chosen scope; a stopped car
+    // is unambiguous, needs no sweep sub-stepping, and cannot mutual-yield-deadlock with the existing
+    // car-brakes-for-ped direction) inside the LC-realism zone (+margin -- only there do high-power
+    // peds exist) contributes a chain of footprint discs, the CrossRegimeCoupling recipe: front bumper
+    // backward along -heading, disc radius = half width. Deterministic (read-buffer slot order, pure
+    // per-step snapshot); zero discs when peds are off or no car qualifies -- and the parity/bench
+    // paths never construct a LiveCitySim, so goldens/hash are untouched by construction.
+    // Kill switch LIVECITY_PEDAVOIDCARS=0 (docs/ENV-GATES.md).
+    private readonly List<WorldDisc> _carDiscs = new(64);
+    private bool? _pedAvoidCarsResolved;
+    public int CarObstacleDiscCount => _carDiscs.Count;
+
+    // Default OFF, measured: with this ON sim-wide the hour-horizon demo left 30 long stalls
+    // un-filtered and 104 with the junction filter (guard demands 0) -- ped detours around stopped
+    // cars pull cross traffic to a halt on a saturated closed-loop box. The 3D host opts in
+    // (LiveCitySource ctor, CITY3D_PEDAVOIDCARS kill switch): camera-zone realism where the owner
+    // watches, not an hour-horizon default. LIVECITY_PEDAVOIDCARS=1/0 forces either way (headless A/B).
+    public bool PedAvoidCarsInZone { get; set; }
+
+    private IReadOnlyList<WorldDisc> BuildCarObstacleDiscs()
+    {
+        _pedAvoidCarsResolved ??= Environment.GetEnvironmentVariable("LIVECITY_PEDAVOIDCARS") switch
+        {
+            "1" => true,
+            "0" => false,
+            _ => PedAvoidCarsInZone,
+        };
+        _carDiscs.Clear();
+        if (!_pedAvoidCarsResolved.Value || _demand is null || _lcZoneR <= 0.0)
+        {
+            return NoEntities;
+        }
+
+        const double SpeedCutoff = 1.5;       // m/s: "near-stopped" (owner scope)
+        const int MaxDiscsPerCar = 4;
+        var xs = _engine.PosX;
+        var ys = _engine.PosY;
+        var speeds = _engine.Speed;
+        var angles = _engine.Angle;
+        var lengths = _engine.Lengths;
+        var widths = _engine.Widths;
+        var laneIds = _engine.LaneIds;
+        var margin = 30.0;                    // cars just outside the zone still matter to peds inside
+        var zoneR2 = (_lcZoneR + margin) * (_lcZoneR + margin);
+
+        for (var i = 0; i < xs.Length; i++)
+        {
+            if (speeds[i] >= SpeedCutoff)
+            {
+                continue;
+            }
+
+            // INTERNAL lanes only (':' prefix) -- the owner's scope verbatim: cars standing "in the
+            // junction, on the crossroad". A near-stopped car on a PLAIN road lane is a queue tail;
+            // feeding those to the crowd measured 30 hour-horizon long-stalls (>300 consecutive
+            // stopped steps, guard demands 0): peds detoured around the queue INTO the adjacent
+            // lane, cars there braked for them (the other coupling direction), and the queue never
+            // drained. A junction-standing car is the unambiguous case: the space around it is
+            // junction area cross traffic already treats as contested.
+            if (i >= laneIds.Length || laneIds[i].Length == 0 || laneIds[i][0] != ':')
+            {
+                continue;
+            }
+
+            var dx = xs[i] - _lcZoneX;
+            var dy = ys[i] - _lcZoneY;
+            if ((dx * dx) + (dy * dy) > zoneR2)
+            {
+                continue;
+            }
+
+            // naviDegree (0 = north/+Y, clockwise) -> heading unit vector (sin, cos) -- the same
+            // convention CrossRegimeCoupling.BuildVehicleDiscs documents. Discs run from the FRONT
+            // bumper (PosX/PosY) backward covering the body; radius = half width. Velocity 0: the
+            // car is near-stopped by the filter, and a static disc needs no dead-reckoning.
+            var navi = angles[i] * Math.PI / 180.0;
+            var hx = Math.Sin(navi);
+            var hy = Math.Cos(navi);
+            var halfWidth = Math.Max(0.4, widths[i] / 2.0);
+            var count = Math.Clamp((int)Math.Ceiling(lengths[i] / halfWidth), 1, MaxDiscsPerCar);
+            var spacing = count > 1 ? lengths[i] / (count - 1) : 0.0;
+            for (var d = 0; d < count; d++)
+            {
+                var back = d * spacing;
+                _carDiscs.Add(new WorldDisc(xs[i] - (hx * back), ys[i] - (hy * back), 0.0, 0.0, halfWidth));
+            }
+        }
+
+        return _carDiscs;
     }
 
     // HIREALISM-PASSTHROUGH-GATE-DESIGN.md §3.2: the world-space high-realism region API for the 3D

@@ -857,7 +857,7 @@ public sealed class PedLodManager
             }
 
             Console.Error.WriteLine(
-                $"[pedorca] CENSUS t={now:F0} high={high} runaways={runaways} "
+                $"[pedorca] CENSUS t={now:F0} high={high} runaways={runaways} ext={externalEntities.Count} "
                 + $"routes: ok={_orcaRouted} spliced={_orcaSpliced} beeline={_orcaBeeline}");
         }
 

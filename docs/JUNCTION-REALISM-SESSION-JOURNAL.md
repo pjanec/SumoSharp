@@ -4415,3 +4415,43 @@ beeline 763 → 0, spliced 0 → 763, `ok` counts byte-identical per timestamp �
 class converted, nothing else touched.** Runaway census 0 after.
 
 Instruments kept: `[pedorca] CENSUS/RUNAWAY` + the two env rows (ENV-GATES.md; tripwire green).
+
+## Entry 69 — PED-AVOID-CARS: high-power ORCA peds avoid near-stopped cars in the realism zone (owner GO)
+
+Owner (after Entry 68 verdict "nice, helped!"): in the high-realism zone, ORCA peds should avoid
+cars standing in the junction/crosswalk/wherever. Scope agreed: NEAR-STOPPED cars only (< 1.5 m/s)
+— unambiguous to walk around, no sweep sub-stepping, no mutual-yield risk against the existing
+car-brakes-for-ped direction.
+
+**The seam already existed end-to-end** (OrcaCrowd.SetExternalObstacles ← PedLodManager.Step's
+`externalEntities`, built for the laneless bridge) — the live-city host just always passed the
+EMPTY list. Shipped: `LiveCitySim.BuildCarObstacleDiscs()` — every near-stopped car inside the
+LC-realism zone (+30 m margin) becomes a chain of ≤4 footprint discs (CrossRegimeCoupling's
+recipe: front bumper backward along -heading, radius = half width, zero velocity), built from the
+engine's published read-buffer spans (new additive `Engine.Lengths`/`Widths`; slot order =
+deterministic). Kill switch `LIVECITY_PEDAVOIDCARS=0` (ENV-GATES row; tripwire green).
+
+**Measured (stress bound, 2.5 km test zone = far beyond any camera zone):** ext≈5 100–5 700 discs
+(~1 400 qualifying cars) against ~4 700 ORCA peds — run completes at full rate, runaways 0,
+beeline 0. Kill-switch arm: ext=0, route counters byte-identical per timestamp (ok=4440/
+spliced=509 at t=780 in BOTH arms — the deterministic core is untouched; only in-zone ped poses
+differ, which is the feature). The `occupiedCrossings=0/carYield=0` seen in these runs is the
+test-zone config (nearly all peds promoted; those counters track the low-power population) —
+present in both arms, not a discs effect.
+
+**Course correction, forced by the hour-horizon gate (measurement discipline #1 in action):** the
+first cut was default-ON sim-wide and `LongHorizon_GridlockAndInterpenetration_OffVsOn` went RED —
+30 long stalls (>300 consecutive stopped steps; guard demands 0): ped detours around stopped cars
+swing into the adjacent lane and cars there brake for them (the other coupling direction) — around
+road queues that is a permanent hold. Restricting discs to INTERNAL (junction) lanes made it
+WORSE (104): detours through junction space stall cross traffic on the saturated closed-loop box.
+So shipped as: junction-lane scope KEPT (least-harm variant), sim default **OFF**
+(`LiveCitySim.PedAvoidCarsInZone`), the 3D host opts in (`CITY3D_PEDAVOIDCARS`, on unless 0) —
+camera-zone realism where the owner watches, never an hour-horizon default. Env is three-state
+(`LIVECITY_PEDAVOIDCARS` 1/0/unset⇒property). Hour-horizon back GREEN at the default; force-on
+Geneva arm verified live (ext≈900–1000 discs, runaways 0).
+
+Gates: full sln green, hash `A134ED3716DDE7BC` par==single, CityLib 186/4. Owner 3D verdict is
+the closing surface (peds should visibly flow around cars stopped in the junction near the camera)
+— and the owner should also judge whether in-zone car flow suffers visibly (the measured stall
+mechanism will exist in-zone; the bet is that at camera-zone scale it reads as realism, not jam).

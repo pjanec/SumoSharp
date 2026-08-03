@@ -42,6 +42,12 @@ public sealed class LiveCitySource : IDisposable
         // CITY3D_HIREALISM=0 as the A/B kill switch (docs/ENV-GATES.md).
         _sim.HighRealismFollowsZone = Environment.GetEnvironmentVariable("CITY3D_HIREALISM") != "0";
 
+        // PED-AVOID-CARS (Entry 69): camera-zone-only by design -- ORCA peds walk around cars
+        // standing on JUNCTION (internal) lanes inside the LC-realism zone. Sim-wide default is OFF
+        // (measured hour-horizon harm on the saturated demo box; see LiveCitySim.PedAvoidCarsInZone);
+        // the 3D host is the intended consumer, so it opts in here. CITY3D_PEDAVOIDCARS=0 disables.
+        _sim.PedAvoidCarsInZone = Environment.GetEnvironmentVariable("CITY3D_PEDAVOIDCARS") != "0";
+
         // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1 / -TASKS.md T1: the pinned X0..Y1 crop is the DEMO's
         // hero-block (a ~840x840 m window on a 4750 m synthetic net). An arbitrary net -- a SumoData cut
         // sub-area -- has no such window: the whole cut IS the playable area, and LiveCitySim itself
