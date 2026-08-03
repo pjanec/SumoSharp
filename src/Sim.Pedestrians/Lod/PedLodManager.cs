@@ -344,12 +344,52 @@ public sealed class PedLodManager
     // graph); when FindPath succeeds the result is returned verbatim, so the common path is byte-identical.
     // Falls back to the original beeline only when `lastRoute` is itself degenerate (e.g. a prior straight-
     // line fallback), so this is never worse than before.
+    // PEDORCA instrument (the "ORCA runaway" hunt -- print-only, LIVECITY_PEDORCALOG=1): which
+    // RecoverRoute arm produced each high-power steering path. The BEELINE arm is the runaway
+    // candidate: `[pos, destination]` ignores the network entirely, and a lively (timeline) ped has
+    // an EMPTY lastRoute, so a single FindPath failure at promotion sends it walking a straight
+    // world line. Tallied per call; the Step census below prints the running totals.
+    private static readonly bool PedOrcaLog = Environment.GetEnvironmentVariable("LIVECITY_PEDORCALOG") == "1";
+    private static int _orcaRouted, _orcaSpliced, _orcaBeeline;
+    private double _lastOrcaCensus = double.NegativeInfinity;
+
+    // Min distance from `p` to the polyline (census helper; O(verts), census-cadence only).
+    private static double DistanceToPolyline(IReadOnlyList<Vec2> path, Vec2 p)
+    {
+        if (path.Count == 0)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (path.Count == 1)
+        {
+            return (p - path[0]).Abs;
+        }
+
+        var best = double.PositiveInfinity;
+        for (var i = 0; i + 1 < path.Count; i++)
+        {
+            var a = path[i];
+            var ab = path[i + 1] - a;
+            var len2 = ab.AbsSq;
+            var t = len2 > 1e-12 ? Math.Clamp(Vec2.Dot(p - a, ab) / len2, 0.0, 1.0) : 0.0;
+            var d = (p - (a + (ab * t))).Abs;
+            if (d < best)
+            {
+                best = d;
+            }
+        }
+
+        return best;
+    }
+
     private IReadOnlyList<Vec2> RecoverRoute(
         Vec2 pos, Vec2 destination, IReadOnlyList<Vec2> lastRoute, out IReadOnlyList<int>? surfaces)
     {
         var routed = _navigation.FindPath(pos, destination, out surfaces);
         if (routed is not null)
         {
+            if (PedOrcaLog) _orcaRouted++;
             return routed;
         }
 
@@ -382,10 +422,12 @@ public sealed class PedLodManager
 
             if (recovered.Count >= 2)
             {
+                if (PedOrcaLog) _orcaSpliced++;
                 return recovered;
             }
         }
 
+        if (PedOrcaLog) _orcaBeeline++;
         return new[] { pos, destination };
     }
 
@@ -773,6 +815,52 @@ public sealed class PedLodManager
         }
         PhaseEnd("frozenPos", tFrozenPos);
 
+        // PEDORCA census (print-only, LIVECITY_PEDORCALOG=1): every ~20 s of sim time, scan the
+        // high-power population for RUNAWAYS -- a ped further than 25 m from its OWN steering path is
+        // no longer navigating it (either the path is a beeline that left the network, or steering
+        // lost authority). Prints the RecoverRoute arm totals + up to 6 exemplars: distance off-path,
+        // the path's vertex count (2 = the beeline signature), waypoint cursor, and distance still to
+        // go to the destination.
+        if (PedOrcaLog && now - _lastOrcaCensus >= 20.0)
+        {
+            _lastOrcaCensus = now;
+            int runaways = 0, high = 0, printed = 0;
+            foreach (var id in ids)
+            {
+                var e = _peds[id];
+                if (e.Model != PedDrModel.FreeKinematic)
+                {
+                    continue;
+                }
+
+                high++;
+                var pos = frozenPos[id];
+                // A long 2-vertex path is the beeline signature -- the ped is ON it, so distance-to-
+                // path cannot see it; a genuine same-node hop is short. Count either failure mode.
+                var isLongBeeline = e.Path.Count == 2 && (e.Path[1] - e.Path[0]).Abs > 50.0;
+                var offPath = DistanceToPolyline(e.Path, pos);
+                if (offPath <= 25.0 && !isLongBeeline)
+                {
+                    continue;
+                }
+
+                runaways++;
+                if (printed < 6)
+                {
+                    printed++;
+                    var wp = _highController.WaypointIndexOf(e.HighIndex);
+                    Console.Error.WriteLine(
+                        $"[pedorca] RUNAWAY id={id} offPath={offPath:F0}m pathVerts={e.Path.Count} wp={wp} "
+                        + $"toDest={(e.Destination - pos).Abs:F0}m age={now - e.StateEnteredAt:F0}s "
+                        + $"pos=({pos.X:F0},{pos.Y:F0})");
+                }
+            }
+
+            Console.Error.WriteLine(
+                $"[pedorca] CENSUS t={now:F0} high={high} runaways={runaways} "
+                + $"routes: ok={_orcaRouted} spliced={_orcaSpliced} beeline={_orcaBeeline}");
+        }
+
         var tLodDecide = PhaseStart();
         var toPromote = new List<int>();
         var toDemote = new List<int>();
@@ -827,7 +915,14 @@ public sealed class PedLodManager
             var velocity = e.Model == PedDrModel.ActivityTimeline
                 ? e.Timeline!.VelocityAt(now)
                 : PathArcMotion.VelocityAt(e.Path, e.PathStartTime, e.MaxSpeed, now);
-            var steeringPath = RecoverRoute(pos, e.Destination, e.Path, out var steeringSurfaces);
+            // PEDORCA fix (the "ORCA runaway"): the splice source is the ped's FULL walked geometry --
+            // for a lively (timeline) ped `e.Path` is EMPTY, so before this the splice arm could never
+            // engage and every FindPath failure (a real possibility on a clipped net whose ped graph
+            // has islands) fell straight to the `[pos, destination]` BEELINE: a promoted ped marching
+            // in a straight world line off the network -- the owner's "running far from the junction,
+            // not navigated". ElevationGeometryOf returns the timeline's combined Walk geometry (the
+            // original routed path) exactly when Path is empty, and Path itself otherwise.
+            var steeringPath = RecoverRoute(pos, e.Destination, ElevationGeometryOf(e), out var steeringSurfaces);
 
             e.Model = PedDrModel.FreeKinematic;
             e.StateEnteredAt = now;
@@ -854,7 +949,12 @@ public sealed class PedLodManager
         {
             var e = _peds[id];
             var pos = frozenPos[id];
-            var routed = RecoverRoute(pos, e.Destination, e.Path, out var routedSurfaces);
+            // PEDORCA fix: same widened splice source as the promote arm above -- on demotion the ped
+            // recovers from its ORCA-pushed position, which can snap to a DIFFERENT (island) node than
+            // its route's, so the FindPath-failure → splice path matters here too. For a FreeKinematic
+            // ped `e.Path` is the steering path registered at promotion (possibly itself a recovered
+            // splice), so this is Path in practice; the helper form keeps the two arms identical.
+            var routed = RecoverRoute(pos, e.Destination, ElevationGeometryOf(e), out var routedSurfaces);
             // Re-anchor the resume leg EXACTLY at the frozen high-power pose, so the low-power pose at the
             // demote instant is the ped's current position to machine precision (no pop across the LOD switch).
             var newPath = ReanchorAt(routed, pos);

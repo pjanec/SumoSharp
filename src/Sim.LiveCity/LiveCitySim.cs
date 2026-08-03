@@ -1228,6 +1228,21 @@ public sealed class LiveCitySim : IDisposable
                 Console.Error.WriteLine(
                     $"LIVECITY-HIREALISM: circle=({centre.X:F0},{centre.Y:F0}) r={hiRadius:F0} edges={_hiRealismEdgeCount}");
             }
+
+            // PEDORCA (headless ORCA repro): widen the LC-realism zone (and with it the ORCA promote
+            // pocket) to this radius at the static pocket centre -- the 3D viewer moves the zone with
+            // the camera, but a headless run keeps the ctor's 70 m pocket, which on a large real cut
+            // can sit where no ped walks (measured: high=0 for a whole smoke). Routed through
+            // SetLcRealismZone so ORCA promote, car->ped yield and (when HighRealismFollowsZone) the
+            // pass-through mask all follow, exactly as a camera push would. Unset = no change.
+            var zoneRaw = Environment.GetEnvironmentVariable("LIVECITY_LCZONE_RADIUS");
+            if (zoneRaw is not null
+                && double.TryParse(zoneRaw, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var zoneRadius)
+                && zoneRadius > 0.0)
+            {
+                SetLcRealismZone(_lcZoneX, _lcZoneY, zoneRadius);
+                Console.Error.WriteLine($"LIVECITY-LCZONE: centre=({_lcZoneX:F0},{_lcZoneY:F0}) r={zoneRadius:F0}");
+            }
         }
 
         var dt = _cfg.Dt;

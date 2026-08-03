@@ -4390,3 +4390,28 @@ about a ped right in front as long as there is a ped on the crosswalk" — i.e. 
 suppress per-ped reasoning entirely. That is a crossing-occupancy/yield-semantics design (who
 locks the crossing, when does it unlock, interplay with binder 13/16) — bigger than this bug;
 the Entry 67 gate cures the visible artifact without it.
+
+## Entry 68 — ORCA "runaways" (owner 3D report): promoted peds beelining off the network; root-caused by census, fixed by widening the splice source
+
+Owner: high-power (ORCA) peds "running far from the junction, like if not navigated anymore" —
+suspected an obstacle push with nothing steering them back.
+
+**Not the push.** Steering always restores toward `path[waypointIndex]` (WaypointFollower), so a
+sustained straight runaway needs a BAD PATH. `RecoverRoute`'s last fallback is a straight
+`[pos, destination]` BEELINE, and its middle (splice) arm keyed on `e.Path` — which is EMPTY for
+a lively (timeline) ped. So any `FindPath` failure at promote/demote sent the ped marching a
+straight world line to its destination, ignoring the network. On the clipped Geneva cut the ped
+graph has islands, so failures are routine: **census (new `[pedorca]`, LIVECITY_PEDORCALOG=1,
+headless via new LIVECITY_LCZONE_RADIUS widening the promote pocket): 763 of ~7500 route
+recoveries (~10%) were beelines**; `spliced=0` proved the middle arm never engaged. (First census
+draft measured distance-to-own-path and read 0 — a beeline ped is ON its path; the path is what
+is wrong. Census v2 counts the long-2-vertex signature.)
+
+**Fix:** pass `ElevationGeometryOf(e)` (the timeline's combined Walk geometry = the original
+routed path; `e.Path` itself otherwise) as `RecoverRoute`'s splice source at both the promote and
+demote arms — a FindPath failure now re-follows the ped's own network route from the nearest
+vertex; the beeline remains only as the ultimate last resort. **A/B (same env, deterministic):
+beeline 763 → 0, spliced 0 → 763, `ok` counts byte-identical per timestamp — exactly the failing
+class converted, nothing else touched.** Runaway census 0 after.
+
+Instruments kept: `[pedorca] CENSUS/RUNAWAY` + the two env rows (ENV-GATES.md; tripwire green).
