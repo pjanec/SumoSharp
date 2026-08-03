@@ -57,6 +57,11 @@ guard-ON/OFF A/B (arrivals cost!) + repack + owner 3D verdict are ALL still owed
 runs launched (out/noclip-on.log; capture with LIVECITY_HIREALISM_RADIUS=2500 +
 LIVECITY_LCZONE_RADIUS=2500, WITNESS=1): read LIVECITY-NOCLIP clamps + LIVECITY-OVERLAP junction
 trend + arrivals vs the no-guard twin (out/overlap-inzone.log, arrivals at t=1200: check both).
+**MEASURED before the session ended: v1 REFUTED-as-scoped — 0 clamps fired while in-zone
+junction overlaps grew 5→10 (see journal Entry 71 measurement note): the boundary-crossing
+exemption is the hole (short internal lanes ⇒ nearly every sweep step crosses a boundary). Extend
+the guard's new-pose walk across the lane boundary (route next lane geometry) + consider
+mutual-mover pairs; REDO the A/B with matched demand (the first ON arm ran 2000 peds vs 8000).**
 Success = in-zone junction overlap formation → ~0 (minus grandfathered), arrivals cost small,
 hour-horizon green (no mask there ⇒ trivially), owner sees no on-camera drive-throughs.
 

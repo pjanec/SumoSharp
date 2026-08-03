@@ -4488,3 +4488,19 @@ leaving a physically plausible slow squeeze.
 
 Gates: full sln green (LiveCity 92/92 incl. hour-horizon at the OFF default), hash
 `A134ED3716DDE7BC` par==single unchanged, force-on Geneva arm healthy (runaways 0, beeline 0).
+
+## Entry 71 (measurement) — ZoneNoClipGuard v1 REFUTED as-scoped: zero clamps, overlaps still form
+
+Guard-ON Geneva capture (2500 m strict zone, 4000 cars): **LIVECITY-NOCLIP never printed (0
+clamps in 1200 s)** while NEW in-zone junction overlaps kept forming (census 5 → 10 pairs;
+exemplars incl. a 4.2 m/s mover grazing a stopped body and fresh 1.2–1.5 m deep cross-lane
+pairs). Conclusion: the v1 scope (SAME-LANE advance only, boundary-crossing steps exempt) misses
+the real formation paths — junction internal lanes are SHORT, so a sweeping car crosses a lane
+boundary nearly every step and the guard's pose check never engages. The catch-all needs the
+boundary-crossing new-pose walk (route next-lane geometry) and probably mutual-mover coverage
+before it can honor the owner's rule. ALSO: the A/B arms were mislabeled (ON arm ran 2000 peds vs
+the classification run's 8000 — demand-model discipline miss; redo with matched arms).
+
+**State: guard committed (de89f18, correctly labeled gates-not-run), measured INERT-as-scoped —
+NOT harmful, NOT sufficient. Next session: extend to boundary-crossing steps, rerun matched arms,
+then gates.** The Entry 66 skip-site gating remains the only verified in-zone protection.
