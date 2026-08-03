@@ -4356,3 +4356,37 @@ hash `A134ED3716DDE7BC` par==single unchanged. Also this commit: CI's determinis
 BF3794A4704BCD79 → A134ED3716DDE7BC (the workflow copy had rotted at the Entry 54 partials
 default-ON flip; TASKS-TODO carried the true value since — the failed PR check was the pin, not
 the engine).
+
+## Entry 67 — the crosswalk "dance": stopped car dodging a crossing STREAM (owner 3D report, post ped-z fix)
+
+Owner (3D, first session with peds at correct altitude): a car stopped before a crossroad with
+peds crossing "moving laterally left and right, like if trying to dodge the peds — car should
+never do that while stopped!" Peds were low-power and OUTSIDE the realism zone.
+
+**Root cause (read straight off ComputeLateralEvasion — for once the code names its own hole):**
+Task A's held-swerve gate (`SuppressHeldCrowdSwerve`, the shipped implementation of the owner's
+"lateral motion must always be accompanied by forward motion") keys on `th.LatSpeed < 1e-9` — a
+laterally STATIC threat — precisely to preserve the vacating-side dodge for moving agents. A
+crossing STREAM defeats it: nearest-by-back-position threat selection flips identity as
+successive peds (opposite directions, shifting positions) enter the lane; each flip re-aims the
+dodge target; the stopped car steps left-right toward alternating targets. A single crossing ped
+never reproduces it (CrosswalkCrossingPedTests CASE A asserts exactly that) — it takes identity
+churn, which no committed fixture had. The Task B-guard would have caught it but only in-zone;
+the owner's peds were outside.
+
+**Fix:** one more arm after Task A, same flag, same crowd-scoped branch (parity-inert): while
+ego is (near-)stopped (< 0.5 m/s), ANY crowd threat — moving or static, whatever the binder —
+recentres instead of dodging. Dodging resumes with forward motion.
+
+**Fixture (teeth verified both ways):** `OpposingPedStream_FixOn_StoppedCarNeverMovesLaterally`
+— a static holder ped keeps the car fully stopped while two crossers walk through between
+bumper and holder in opposite directions at different speeds. Gate OFF: posLat +2.62 → −2.00
+with a 1.05 m outward step at speed 0.00 (the owner's dance, pinned). Gate ON: zero outward
+lateral motion while stopped (recentring drift permitted per Task A's shipped semantics). All
+6 crosswalk-suite tests green, incl. the CASE A byte-identity and the pinned Task B defect.
+
+**Not done (owner suggestion parked as design question):** "the car does not even need to care
+about a ped right in front as long as there is a ped on the crosswalk" — i.e. crossing-locked ⇒
+suppress per-ped reasoning entirely. That is a crossing-occupancy/yield-semantics design (who
+locks the crossing, when does it unlock, interplay with binder 13/16) — bigger than this bug;
+the Entry 67 gate cures the visible artifact without it.

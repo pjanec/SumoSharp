@@ -258,6 +258,105 @@ public class CrosswalkCrossingPedTests
             $"the yield must not stall traffic: ped cleared at t={pedClearedAt}, maxSpeed regained at t={resumedAt}");
     }
 
+    // -----------------------------------------------------------------------------------------------
+    // Entry 67: the crossing-STREAM dance. One moving ped never floats a stopped car (CASE A above),
+    // but a stream of peds crossing in BOTH directions churns the nearest-threat identity, and each
+    // churn re-aims the vacating-side dodge -- the owner's 3D report: a car stopped at the crosswalk
+    // "moving laterally left and right, like dodging". The Entry 67 gate (any crowd threat while ego
+    // is near-stopped => recentre, never dodge) closes it for the whole family.
+    // -----------------------------------------------------------------------------------------------
+    [Fact]
+    public void OpposingPedStream_FixOn_StoppedCarNeverMovesLaterally()
+    {
+        var run = DriveStream(suppress: true);
+        var cum = CumLatChangeWhileStopped(run.Speed, run.PosLat, stoppedThreshold: 0.45);
+        _out.WriteLine($"stream ON: cumulative |dPosLat| while stopped = {cum:F4} m, " +
+                       $"max |posLat| = {MaxAbs(run.PosLat):F3} m, min speed = {Min(run.Speed):F2}");
+        LogTrace("stream ON", run.Speed, run.PosLat);
+
+        // The contract: whatever the threat churn does, a (near-)stopped car's lateral offset may only
+        // ever DECREASE toward centre -- no dodge re-aims. Recentring drift is permitted (Task A's
+        // shipped semantics); oscillation (any increase in |posLat| while stopped) is not.
+        var worstIncrease = MaxAbsPosLatIncreaseWhileStopped(run.Speed, run.PosLat, stoppedThreshold: 0.45);
+        Assert.True(worstIncrease < 1e-9,
+            $"a stopped car must never steer AWAY from centre for a crossing ped; " +
+            $"observed a |posLat| increase of {worstIncrease:F4} m while Speed<0.45");
+    }
+
+    // Two peds crossing the lane in OPPOSITE directions, staggered so the nearest-threat identity
+    // flips while the car is held: one enters from the north kerb just ahead of the car, one from the
+    // south kerb a little further on. Speeds differ so their lane windows interleave.
+    private static Run DriveStream(bool suppress)
+    {
+        var engine = new Engine();
+        engine.LoadScenario(
+            Path.Combine(ScenarioDir, "net.net.xml"),
+            Path.Combine(ScenarioDir, "rou.rou.xml"),
+            Path.Combine(ScenarioDir, "config.sumocfg"));
+        engine.LaneChangeMinSpeed = 1.5;
+        engine.SuppressHeldCrowdSwerve = suppress;
+
+        var crowd = new OrcaCrowd();
+        // The holder: a ped standing ON the centreline well ahead -- it brings the car to a full,
+        // sustained stop (binder 13), exactly the owner's "car stopped before the crossroad".
+        crowd.Add(new Vec2(PedX + 6.0, LaneCentreY), PedRadius, maxSpeed: PedMaxSpeed, goal: new Vec2(PedX + 6.0, LaneCentreY));
+        // The stream: two crossers walking through BETWEEN the stopped bumper and the holder, in
+        // opposite directions at different speeds -- they are NEARER than the holder, so each becomes
+        // the dodge-aiming threat in turn while the car is stopped (the identity churn).
+        var pedA = crowd.Add(new Vec2(PedX + 1.5, PedStartY), PedRadius, maxSpeed: PedMaxSpeed, goal: new Vec2(PedX + 1.5, -12.0));
+        var pedB = crowd.Add(new Vec2(PedX + 3.0, -9.0), PedRadius, maxSpeed: 0.9, goal: new Vec2(PedX + 3.0, 4.0));
+        engine.CrowdSource = crowd;
+
+        var run = new Run();
+        VehicleHandle? h = null;
+        for (var i = 0; i < 30; i++)
+        {
+            engine.Step();
+            crowd.Step(1.0);
+            if (h is null && engine.VehicleHandles.Length > 0) h = engine.VehicleHandles[0];
+            if (h is null || !engine.TryGetVehicle(h.Value, out var s)) continue;
+
+            run.Speed.Add(s.Speed);
+            run.PosLat.Add(s.PosLat);
+            run.PedY.Add(crowd.Position(pedA).Y);
+            run.Clearance.Add(crowd.Position(pedB).Y);
+        }
+
+        return run;
+    }
+
+    // Sum of positive |posLat| growth over consecutive stopped ticks -- recentring (shrinking |posLat|)
+    // contributes nothing, so this isolates dodge re-aims from Task A's permitted recentre drift.
+    private static double MaxAbsPosLatIncreaseWhileStopped(IReadOnlyList<double> speed, IReadOnlyList<double> posLat, double stoppedThreshold)
+    {
+        double worst = 0; double? prev = null;
+        for (var i = 0; i < speed.Count; i++)
+        {
+            if (speed[i] < stoppedThreshold)
+            {
+                if (prev is not null)
+                {
+                    worst = Math.Max(worst, Math.Abs(posLat[i]) - Math.Abs(prev.Value));
+                }
+
+                prev = posLat[i];
+            }
+            else
+            {
+                prev = null;
+            }
+        }
+
+        return worst;
+    }
+
+    private static double Min(IReadOnlyList<double> xs)
+    {
+        var m = double.PositiveInfinity;
+        foreach (var x in xs) m = Math.Min(m, x);
+        return m;
+    }
+
     // Worst (smallest) clearance over the ticks where the car is actually MOVING faster than the
     // close-fast-pass speed threshold; falls back to the global minimum if it never moves that fast.
     private static (int Index, double Clearance) WorstCloseApproachWhileMoving(Run run)

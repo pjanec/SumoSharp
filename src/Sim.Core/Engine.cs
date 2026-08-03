@@ -12387,6 +12387,22 @@ public sealed partial class Engine : IEngine
             return DriftToward(curLat, 0.0, maxStep);
         }
 
+        // Entry 67 (owner, crossing-stream report): Task A's gate above keys on a laterally-STATIC
+        // agent, so a STREAM of crossing peds slipped through it -- the nearest-threat selection flips
+        // identity as successive peds (opposite walk directions, shifting positions) enter the lane,
+        // each flip re-aims the vacating-side dodge, and a car STOPPED at the crosswalk steps left-
+        // right toward alternating targets: the owner's "stopped car dancing at the crossing". A
+        // single-ped fixture cannot reproduce this (one moving ped never floats a stopped car -- see
+        // CrosswalkCrossingPedTests CASE A) -- it takes threat-identity churn. Generalisation of the
+        // SAME owner rule ("lateral motion must always be accompanied by forward motion"): while ego
+        // is (near-)stopped, NO crowd threat -- moving or static, whatever the binder -- may aim a
+        // dodge; recentre and wait, dodging resumes with forward motion. Same gate flag and same
+        // CrowdSource-scoped arm as Task A -> parity-inert (doubly unreachable on every golden).
+        if (SuppressHeldCrowdSwerve && threatIsCrowd && v.Kinematics.Speed < 0.5)
+        {
+            return DriftToward(curLat, 0.0, maxStep);
+        }
+
         // Task B-guard L1 (docs/LIVE-CITY-CAR-YIELDS-PED-DESIGN.md §3.1): inside the high-realism zone a
         // car must not WEAVE PAST a pedestrian in its path -- it must yield. This is the generalisation of
         // Task A's held-static gate above from "a ped I have already stopped for" to "any ped in my path,
