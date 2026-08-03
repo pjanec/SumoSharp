@@ -1540,6 +1540,13 @@ public sealed class LiveCitySim : IDisposable
                 $"LIVECITY-HIREALISM-SUPPRESSED: t={_now:F0} total={_engine.PassThroughSuppressedCount}");
         }
 
+        // Entry 71: the strict-zone no-clip guard's running clamp count (0 with no mask = device off).
+        if (_engine.ZoneNoClipClampCount > 0)
+        {
+            Console.Error.WriteLine(
+                $"LIVECITY-NOCLIP: t={_now:F0} clamps={_engine.ZoneNoClipClampCount}");
+        }
+
         // DEADLOCK-RING D2: make the breaker visible when enabled -- elections, wedged-breaker
         // escalations, honest-stuck scan-steps, currently-active releases.
         if (_engine.RingBreakGate)
@@ -1851,6 +1858,12 @@ public sealed class LiveCitySim : IDisposable
         var wid = _engine.VehicleWidths.ToArray();
         var prevLane = _engine.PrevLaneHandles.ToArray();
         var ids = _engine.VehicleIds.ToArray();
+        // Entry 71 (owner: pass-throughs on junctions IN the high-realism zone): name the MECHANISM.
+        // Each junction-class exemplar now carries both members' binder/arm + speed + an inZone flag
+        // (LC-zone circle test), so a headless run classifies WHICH exempt arm advanced the mover.
+        var binders = _engine.BindingConstraints.ToArray();
+        var jyArms = _engine.JunctionYieldArms.ToArray();
+        var speeds = _engine.Speed.ToArray();
         var n = laneH.Length;
 
         const float cell = 12.0f;
@@ -1915,9 +1928,12 @@ public sealed class LiveCitySim : IDisposable
 
             if (examples.Count < 6)
             {
+                var dzi = ((px[i] - _lcZoneX) * (px[i] - _lcZoneX)) + ((py[i] - _lcZoneY) * (py[i] - _lcZoneY));
+                var inZone = _lcZoneR > 0.0 && dzi <= _lcZoneR * _lcZoneR;
                 examples.Add(
-                    $"LIVECITY-OVERLAP-EX: t={_now:F0} {cls} depth={depth:F1} "
-                    + $"{ids[i]} {laneIds[i]}@{pos[i]:F1} x {ids[j]} {laneIds[j]}@{pos[j]:F1}");
+                    $"LIVECITY-OVERLAP-EX: t={_now:F0} {cls} depth={depth:F1} inZone={inZone} "
+                    + $"{ids[i]} {laneIds[i]}@{pos[i]:F1} v={speeds[i]:F1} b={binders[i]}/{jyArms[i] & 0x0F} x "
+                    + $"{ids[j]} {laneIds[j]}@{pos[j]:F1} v={speeds[j]:F1} b={binders[j]}/{jyArms[j] & 0x0F}");
             }
         }
 

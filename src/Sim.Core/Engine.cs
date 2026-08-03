@@ -3409,6 +3409,15 @@ public sealed partial class Engine : IEngine
             // C6-ii's induction-loop detector feed (the move this executes produces the FCD frame
             // at `time + dt`, which is the SIMTIME MSInductLoop stamps entry/leave with).
             var pExec = PhaseStart();
+            // Entry 71 (owner: "cars passing through stopped blockers on junctions in the high
+            // realism zone -- strictly prohibited unless already overlapping when the zone moved
+            // over them"): SERIAL pre-execute guard, mechanism-INDEPENDENT -- whatever arm (a 60 s
+            // ignore-blocker skip this gate missed, a ring break, an F3 class not yet fixed) planned
+            // an advance INTO a near-stopped body inside the strict zone, the advance is clamped and
+            // the pair never interpenetrates on camera. Null mask (every golden/bench/test without a
+            // camera) returns immediately -> byte-identical by construction. Serial in entity order,
+            // reading only start-of-step state + each vehicle's own intent -> par == single.
+            ZoneNoClipGuard(dt);
             ExecuteMoves(time, dt);
             if (DiagSeqDesync) foreach (var dv in ActiveVehicles()) CheckSeqDesync(dv, "postExecute", time);
             // Entry 62 (sibling-snap strand rescue): SERIAL on purpose -- the rescue reads OTHER
@@ -13304,6 +13313,156 @@ public sealed partial class Engine : IEngine
     // ego's span, snap laterally and re-resolve the pool from it. Serial (see the call site's
     // determinism comment); flag-scoped to strand-clamped vehicles only, a state no committed
     // golden reaches -- goldens/bench byte-identical.
+    // Entry 71: the strict-zone NO-CLIP guard (see the call-site comment). Scope and shape:
+    //   - Runs only with a RealismMask set (null -> immediate return, byte-identical everywhere the
+    //     parity iron law applies). "Strict zone" = the ego's edge fails MayPassThrough.
+    //   - A zone car ADVANCING (NewSpeed > eps) is clamped to a halt THIS step if its integrated
+    //     new body would penetrate the START-OF-STEP body of a NEAR-STOPPED (< 0.5 m/s) zone car it
+    //     was NOT already overlapping -- the owner's grandfather clause: pairs already interlocked
+    //     when the zone arrived may keep separating/completing; new interpenetration cannot form.
+    //     Under this guard, any overlapping in-zone pair is by construction pre-zone, so the
+    //     old-bodies test IS the grandfather test.
+    //   - Foe bodies are the CrossRegimeCoupling disc-chain approximation (<= 4 discs, radius =
+    //     half width) against ego's exact rectangle via VehicleFootprint.ClearanceToDisc.
+    //   - A step that would cross the lane boundary is exempt (v1: the sweep across a body spans
+    //     many steps on the SAME internal lane; the entry step is a documented gap).
+    //   - Clamped cars halt honestly: WaitingTime accrues (Entry 62's lesson), so every
+    //     WaitingTime-keyed recovery keeps counting and fires the step the camera leaves.
+    //   - SERIAL, entity order, reads start-of-step state + each ego's own intent -> par == single.
+    private long _zoneNoClipClamps;
+    public long ZoneNoClipClampCount => System.Threading.Interlocked.Read(ref _zoneNoClipClamps);
+    private readonly List<(VehicleRuntime V, double X, double Y, double Ang)> _zonePoses = new();
+    private readonly Dictionary<(int Cx, int Cy), List<int>> _zoneGrid = new();
+
+    private void ZoneNoClipGuard(double dt)
+    {
+        var mask = _activeMask;
+        if (mask is null)
+        {
+            return;
+        }
+
+        const double GridCell = 16.0;
+        _zonePoses.Clear();
+        foreach (var list in _zoneGrid.Values)
+        {
+            list.Clear();
+        }
+
+        foreach (var v in ActiveVehicles())
+        {
+            var lane = _network!.LanesByHandle[v.LaneHandle];
+            if (mask.MayPassThrough(lane.EdgeId))
+            {
+                continue;
+            }
+
+            var (x, y, ang) = LaneGeometry.PositionAtOffset(lane.Shape, v.Kinematics.Pos, v.Kinematics.LatOffset);
+            var idx = _zonePoses.Count;
+            _zonePoses.Add((v, x, y, ang));
+            var key = ((int)Math.Floor(x / GridCell), (int)Math.Floor(y / GridCell));
+            if (!_zoneGrid.TryGetValue(key, out var cellList))
+            {
+                cellList = new List<int>(4);
+                _zoneGrid[key] = cellList;
+            }
+
+            cellList.Add(idx);
+        }
+
+        if (_zonePoses.Count < 2)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _zonePoses.Count; i++)
+        {
+            var (ego, oldX, oldY, oldAng) = _zonePoses[i];
+            if (ego.Intent.NewSpeed <= 0.05)
+            {
+                continue; // not advancing -- nothing to clamp
+            }
+
+            var lane = _network!.LanesByHandle[ego.LaneHandle];
+            var newPos = ego.Kinematics.Pos + (ego.Intent.NewSpeed * dt);
+            if (newPos > lane.Length)
+            {
+                continue; // boundary-crossing step: v1 exempt (see header)
+            }
+
+            var (newX, newY, newAng) = LaneGeometry.PositionAtOffset(lane.Shape, newPos, ego.Kinematics.LatOffset);
+            var cx = (int)Math.Floor(newX / GridCell);
+            var cy = (int)Math.Floor(newY / GridCell);
+            var clamped = false;
+            for (var gx = cx - 1; gx <= cx + 1 && !clamped; gx++)
+            {
+                for (var gy = cy - 1; gy <= cy + 1 && !clamped; gy++)
+                {
+                    if (!_zoneGrid.TryGetValue((gx, gy), out var cellList))
+                    {
+                        continue;
+                    }
+
+                    for (var k = 0; k < cellList.Count; k++)
+                    {
+                        var j = cellList[k];
+                        if (j == i)
+                        {
+                            continue;
+                        }
+
+                        var (foe, fx, fy, fang) = _zonePoses[j];
+                        if (foe.Kinematics.Speed >= 0.5)
+                        {
+                            continue; // only near-stopped blockers (owner scope)
+                        }
+
+                        // Grandfather: already interlocked at step start -> may keep moving.
+                        if (BodyOverlapsDiscChain(oldX, oldY, oldAng, ego.VType, fx, fy, fang, foe.VType))
+                        {
+                            continue;
+                        }
+
+                        if (BodyOverlapsDiscChain(newX, newY, newAng, ego.VType, fx, fy, fang, foe.VType))
+                        {
+                            ego.Intent.NewSpeed = 0.0;
+                            System.Threading.Interlocked.Increment(ref _zoneNoClipClamps);
+                            clamped = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Ego's exact body rectangle vs the foe body approximated as its disc chain (radius = half
+    // width, <= 4 discs from the front bumper backward) -- the CrossRegimeCoupling footprint recipe
+    // reusing VehicleFootprint's rect-vs-disc clearance. True on any penetration.
+    private static bool BodyOverlapsDiscChain(
+        double egoX, double egoY, double egoAng, ResolvedVType egoType,
+        double foeX, double foeY, double foeAng, ResolvedVType foeType)
+    {
+        var halfWidth = Math.Max(0.4, foeType.Width / 2.0);
+        var count = Math.Clamp((int)Math.Ceiling(foeType.Length / halfWidth), 1, 4);
+        var spacing = count > 1 ? foeType.Length / (count - 1) : 0.0;
+        var navi = foeAng * Math.PI / 180.0;
+        var hx = Math.Sin(navi);
+        var hy = Math.Cos(navi);
+        for (var d = 0; d < count; d++)
+        {
+            var back = d * spacing;
+            if (VehicleFootprint.ClearanceToDisc(
+                    egoX, egoY, egoAng, egoType.Length, egoType.Width,
+                    foeX - (hx * back), foeY - (hy * back), halfWidth) < 0.0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void RescueStrandedVehicles()
     {
         foreach (var v in ActiveVehicles())
