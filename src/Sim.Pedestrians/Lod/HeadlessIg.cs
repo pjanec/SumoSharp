@@ -125,9 +125,21 @@ public sealed class HeadlessIg
     // position, so a ped's height tracks the body actually drawn rather than the raw wire sample it is
     // still catching up to. For the PathArc model the arc-length answer is used unchanged (it is exact
     // and cheaper); for the dead-reckoned models the supplied position is what gets projected.
+    // PEDZ instrument (docs/TASKS-TODO.md ped z=0; print-only, LIVECITY_PEDZLOG=1): the READ-side
+    // census -- which precedence arm answered, and how often the answer was flat. Crossed with the
+    // WIRE tally, this splits "channel never sent" from "channel sent but not consumed".
+    private static readonly bool PedZLog = Environment.GetEnvironmentVariable("LIVECITY_PEDZLOG") == "1";
+    private static long _pedzQ, _pedzQArc, _pedzQTimeline, _pedzQTimelineFlat, _pedzQPath, _pedzQNone;
+
     public double ReconstructElevationAt(int id, double now, Vec2 at)
     {
         var state = _peds[id];
+
+        if (PedZLog && ++_pedzQ % 100000 == 0)
+        {
+            Console.Error.WriteLine(
+                $"[pedz] IG q={_pedzQ} arc={_pedzQArc} timeline={_pedzQTimeline} timelineFLAT={_pedzQTimelineFlat} path={_pedzQPath} NONE={_pedzQNone}");
+        }
 
         // Ordered by which elevation source is the TRUTH for this ped, so a stale channel never wins:
         //
@@ -136,6 +148,7 @@ public sealed class HeadlessIg
         if (state.Model == PedDrModel.PathArc
             && state.Path is { Count: > 0 } arcPath && state.PathZ is { Count: > 0 })
         {
+            if (PedZLog) _pedzQArc++;
             return PathArcMotion.ElevationAt(arcPath, state.PathZ, state.PathStartTime, state.Speed, now);
         }
 
@@ -146,17 +159,26 @@ public sealed class HeadlessIg
         //    z=0 (sunk far below an elevated net).
         if (state.Timeline is { } timeline)
         {
-            return TimelineElevationAt(timeline, at);
+            var z = TimelineElevationAt(timeline, at);
+            if (PedZLog)
+            {
+                _pedzQTimeline++;
+                if (z == 0.0) _pedzQTimelineFlat++;
+            }
+
+            return z;
         }
 
         // 3. FreeKinematic/Stationary promoted from a ROUTE (has a Path, no timeline): the pose is
         //    dead-reckoned off the polyline, so project the rendered position onto it.
         if (state.Path is { Count: > 0 } path && state.PathZ is { Count: > 0 })
         {
+            if (PedZLog) _pedzQPath++;
             return Sim.Pedestrians.Navigation.PolylineElevation.AtNearestPoint(path, state.PathZ, at);
         }
 
         // 4. No elevation source at all (kind-4 publisher / 2-D net): 0.0 per §9.1.
+        if (PedZLog) _pedzQNone++;
         return 0.0;
     }
 

@@ -78,6 +78,42 @@ public sealed class SumoRouteGraphNav : IPedNavigation
 
         _cellSize = ComputeCellSize(_nodes);
         _grid = BuildGrid(_nodes, _cellSize, out _maxGridRadius);
+
+        // PEDZ instrument (docs/TASKS-TODO.md ped z=0; print-only, LIVECITY_PEDZLOG=1): the graph-level
+        // z census -- per node kind, how many nodes carry a non-null/non-flat GeometryZ channel and a
+        // sample z range. Directly answers "does the RouteGraph the peds walk carry elevation AT ALL"
+        // (the upstream half the per-ped bake tally in PedLodManager cannot see past).
+        if (Environment.GetEnvironmentVariable("LIVECITY_PEDZLOG") == "1")
+        {
+            Span<int> total = stackalloc int[3];
+            Span<int> withZ = stackalloc int[3];
+            var zMin = double.PositiveInfinity;
+            var zMax = double.NegativeInfinity;
+            foreach (var node in _nodes)
+            {
+                var k = (int)node.Kind;
+                total[k]++;
+                if (node.GeometryZ is { Count: > 0 } zs)
+                {
+                    for (var i = 0; i < zs.Count; i++)
+                    {
+                        if (zs[i] != 0.0)
+                        {
+                            withZ[k]++;
+                            if (zs[i] < zMin) zMin = zs[i];
+                            if (zs[i] > zMax) zMax = zs[i];
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Console.Error.WriteLine(
+                $"[pedz] GRAPH walkAreas={withZ[(int)RouteNodeKind.WalkingArea]}/{total[(int)RouteNodeKind.WalkingArea]} "
+                + $"crossings={withZ[(int)RouteNodeKind.Crossing]}/{total[(int)RouteNodeKind.Crossing]} "
+                + $"sidewalks={withZ[(int)RouteNodeKind.Sidewalk]}/{total[(int)RouteNodeKind.Sidewalk]} carry non-flat z; "
+                + $"zRange=[{zMin:F0},{zMax:F0}]");
+        }
     }
 
     /// The graph's nodes, in construction order (also each node's stable `Index`).

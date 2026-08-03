@@ -140,6 +140,7 @@ Evidence for both: `docs/TASKS-TODO.md` §"REFUTED — do not re-attempt" and
 | `LIVECITY_TELEPORT` | `LiveCityConfig.TimeToTeleportSeconds` | config default | behavioural |
 | `LIVECITY_MERGEGAP` | `LiveCityConfig.MergeStoppedMinGap`, m | `5.0` | behavioural |
 | `LIVECITY_MERGEDEFER` | `LiveCityConfig.MergeStoppedStrategicDeferDist`, m | `15.0` | behavioural |
+| `LIVECITY_PEDZLOG` | PEDZ diagnostic (the ped z=0 hunt): print-only censuses of the ped elevation chain — `[pedz] GRAPH` (RouteGraph nodes carrying non-flat z, per kind), `[pedz] TOTALS` (per-ped engine-side bakes, flat count), `[pedz] WIRE` (WalkSegment elevation channels present/null/mismatched at encode), `[pedz] IG` (viewer-side reconstruction arm tallies). Changes no behaviour | off | diagnostic |
 | `LIVECITY_HIREALISM_RADIUS` | headless stand-in for the 3D camera: a fixed high-realism circle of this radius (m) at the net centre, applied at the first step via `LiveCitySim.SetHighRealismRegions` → the X1 `RealismMask` with `forbidPassThrough` — inside it the 60 s ignore-junction-blocker pass-through is SUPPRESSED (waits keep counting; recovery fires the step the foe leaves the region). **Behavioural** where it covers traffic. The 3D host drives the same API from its live camera instead (`docs/HIREALISM-PASSTHROUGH-GATE-DESIGN.md`) | unset = no region | behavioural |
 
 ⚠ **`LIVECITY_CARS` and `LIVECITY_PEDS` are closed-loop.** The host inserts only while

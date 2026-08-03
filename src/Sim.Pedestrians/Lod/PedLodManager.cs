@@ -496,10 +496,19 @@ public sealed class PedLodManager
     //
     // Returns 0.0 on a 2-D net (no elevation channel), which is exactly the value this surface reported
     // before elevation existed.
+    // PEDZ instrument (docs/TASKS-TODO.md "Geneva low-power peds still report z = 0", mandated step:
+    // "an INSTRUMENT, not a hypothesis"): per-ped first-bake diagnostics, gated on LIVECITY_PEDZLOG=1.
+    // Tallies every elevation bake by (geometry source, channel outcome), prints the first flat
+    // exemplars with enough detail to localize WHERE the chain drops the z (timeline-vs-path geometry,
+    // vertex count, provenance, first vertex), and a running total line every 1000 bakes. Print-only.
+    private static readonly bool PedZLog = Environment.GetEnvironmentVariable("LIVECITY_PEDZLOG") == "1";
+    private static int _pedzBakes, _pedzFlat, _pedzTimelineGeom, _pedzNoProv, _pedzFlatPrinted;
+
     public double ElevationOf(int id, double now)
     {
         var e = _peds[id];
 
+        var firstBake = !e.PathZValid;
         if (!e.PathZValid)
         {
             // WHICH polyline carries this ped's geometry depends on its model, and getting this wrong is
@@ -537,6 +546,34 @@ public sealed class PedLodManager
                 {
                     e.PathZ = null;
                 }
+            }
+        }
+
+        if (PedZLog && firstBake)
+        {
+            var geometry = e.PathZGeometry;
+            var usedTimeline = e.Timeline is not null && !ReferenceEquals(geometry, e.Path);
+            var hadProv = ReferenceEquals(geometry, e.Path) && e.PathSurfaces is not null;
+            _pedzBakes++;
+            if (usedTimeline) _pedzTimelineGeom++;
+            if (!hadProv) _pedzNoProv++;
+            if (e.PathZ is null)
+            {
+                _pedzFlat++;
+                if (_pedzFlatPrinted < 12 && geometry is { Count: > 0 })
+                {
+                    _pedzFlatPrinted++;
+                    Console.Error.WriteLine(
+                        $"[pedz] FLAT id={id} model={e.Model} timeline={e.Timeline is not null} "
+                        + $"geomSrc={(usedTimeline ? "timeline" : "path")} verts={geometry.Count} "
+                        + $"prov={hadProv} first=({geometry[0].X:F1},{geometry[0].Y:F1})");
+                }
+            }
+
+            if (_pedzBakes % 1000 == 0)
+            {
+                Console.Error.WriteLine(
+                    $"[pedz] TOTALS bakes={_pedzBakes} flat={_pedzFlat} timelineGeom={_pedzTimelineGeom} noProv={_pedzNoProv}");
             }
         }
 

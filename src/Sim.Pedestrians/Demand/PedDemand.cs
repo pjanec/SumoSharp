@@ -611,7 +611,7 @@ public sealed class PedDemand
         // durations, so the ped stays a pure ActivityTimeline (server==IG holds -- W1/W3).
         if (crosswalkSignals is { } signals)
         {
-            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals, waitSpreadRadius, ref waitRng, halfWidthsAlong);
+            segments = InsertCrosswalkWaits(segments, now, maxSpeed, signals, waitSpreadRadius, ref waitRng, halfWidthsAlong, elevationsAlong);
         }
 
         return new ActivityTimeline(now, segments, seed, globalSeed);
@@ -625,7 +625,8 @@ public sealed class PedDemand
     private static List<ActivitySegment> InsertCrosswalkWaits(
         List<ActivitySegment> segments, double now, double speed, CrosswalkSignals signals,
         double waitSpreadRadius, ref VehicleRng waitRng,
-        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>?>? elevationsAlong = null)
     {
         if (signals.SignalizedCount == 0 || speed <= 0.0)
         {
@@ -638,7 +639,7 @@ public sealed class PedDemand
         {
             if (seg is WalkSegment w && w.Path.Count >= 2)
             {
-                SplitWalkAtCrossings(w, ref t, speed, signals, result, waitSpreadRadius, ref waitRng, halfWidthsAlong);
+                SplitWalkAtCrossings(w, ref t, speed, signals, result, waitSpreadRadius, ref waitRng, halfWidthsAlong, elevationsAlong);
             }
             else
             {
@@ -659,7 +660,8 @@ public sealed class PedDemand
     private static void SplitWalkAtCrossings(
         WalkSegment w, ref double t, double speed, CrosswalkSignals signals, List<ActivitySegment> result,
         double waitSpreadRadius, ref VehicleRng waitRng,
-        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong)
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>> halfWidthsAlong,
+        Func<IReadOnlyList<Vec2>, IReadOnlyList<double>?>? elevationsAlong = null)
     {
         var path = w.Path;
         var n = path.Count;
@@ -761,7 +763,10 @@ public sealed class PedDemand
             else
             {
                 var enterDur = (blobPoint - path[i]).Abs / speed;
-                result.Add(new WalkSegment(new List<Vec2> { path[i], blobPoint }, speed)); // step into the blob
+                // PEDZ fix: the blob step is an INTERPOLATED leg (blobPoint appears in no original
+                // vertex), so its z channel is re-sampled -- same pattern as halfWidthsAlong below.
+                var blobPts = new List<Vec2> { path[i], blobPoint };
+                result.Add(new WalkSegment(blobPts, speed, null, elevationsAlong?.Invoke(blobPts)));
                 t += enterDur;
 
                 var blobWait = Math.Max(0.0, wait - enterDur); // leave the blob at ~the same green instant
@@ -775,9 +780,10 @@ public sealed class PedDemand
                 // their side -- the sidewalk behaviour extended onto the crossing (docs/Lod/LateralWeave.cs).
                 // Weave off (HalfWidths null) => plain straight cross, byte-identical to before.
                 var crossPts = new List<Vec2> { blobPoint, path[i + 1] };
-                result.Add(w.HalfWidths != null
-                    ? new WalkSegment(crossPts, speed, halfWidthsAlong(crossPts))
-                    : new WalkSegment(crossPts, speed)); // diagonal cross (weave-only helper, no z channel)
+                result.Add(new WalkSegment(
+                    crossPts, speed,
+                    w.HalfWidths != null ? halfWidthsAlong(crossPts) : null,
+                    elevationsAlong?.Invoke(crossPts))); // diagonal cross; z re-sampled (PEDZ fix)
                 t += (path[i + 1] - blobPoint).Abs / speed;
 
                 segStart = i + 1; // the diagonal consumed path[i]->path[i+1]; continue from the exit vertex
@@ -813,17 +819,27 @@ public sealed class PedDemand
 
     // A WalkSegment over path[from..to] (inclusive), slicing the parallel per-vertex half-widths so the
     // weave (if any) uses the same widths this sub-path had in the original segment.
+    //
+    // PEDZ fix (the measured 89%-nullZ wire drop -- docs/TASKS-TODO.md ped z=0): the per-vertex
+    // Elevations channel is sliced EXACTLY like HalfWidths. Every vertex of a sub-walk is an original
+    // vertex of `w` (the kerb split lands ON path[i], never between vertices), so an index slice is
+    // exact -- no re-sampling. Before this, SubWalk silently DROPPED the channel, so every
+    // crossing-split walk (most of an urban net's arterial walks) went out on the wire flat and the
+    // 3-D viewer reconstructed the whole lively population at z=0. Elevations == null (2-D net)
+    // slices to null -> byte-identical encoding.
     private static WalkSegment SubWalk(WalkSegment w, int from, int to)
     {
         var pts = new List<Vec2>(to - from + 1);
         List<double>? widths = w.HalfWidths != null ? new List<double>(to - from + 1) : null;
+        List<double>? zs = w.Elevations is { } el && el.Count == w.Path.Count ? new List<double>(to - from + 1) : null;
         for (var k = from; k <= to; k++)
         {
             pts.Add(w.Path[k]);
             widths?.Add(w.HalfWidths![k]);
+            zs?.Add(w.Elevations![k]);
         }
 
-        return widths != null ? new WalkSegment(pts, w.Speed, widths) : new WalkSegment(pts, w.Speed);
+        return new WalkSegment(pts, w.Speed, widths, zs);
     }
 
     // Interpolated point at `fraction` (0..1) of `path`'s own arc length, plus the index `i` such that
