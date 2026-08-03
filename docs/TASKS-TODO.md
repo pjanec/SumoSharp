@@ -350,7 +350,15 @@ Everything in this cluster is **built, gated and pushed**; what is left is the o
 environment structurally cannot do. Design/tasks/tracker:
 `docs/EXTERNAL-NET-VIEWER-{DESIGN,TASKS,TRACKER}.md` (the follow-ups are **Stage E**, E1–E5).
 
-- [ ] **Geneva low-power peds still report z = 0 — DOWNGRADED from showstopper (owner, on-GPU).** The
+- [x] **Geneva low-power peds z = 0 — FIXED (merged to main `65a9d80`, PR #21; owner-verified in 3D).**
+  Root cause was NEITHER of the recorded hypotheses: the RouteGraph carries z everywhere (4601/4601
+  nodes, [pedz] GRAPH census) and the engine-side bake was always correct (0/3000 flat) — the drop was
+  on the REPLICATION WIRE: `SplitWalkAtCrossings`/`SubWalk` sliced Path+HalfWidths but dropped the
+  WalkSegment `Elevations` channel (and built the blob/diagonal legs without z), so 89% of walks
+  published flat and `HeadlessIg` reconstructed the lively population at z=0. Fix in `PedDemand.cs`
+  (slice the channel + re-sample the two interpolated legs); wire census 11%→100% withZ. Instruments
+  kept under `LIVECITY_PEDZLOG=1` (ENV-GATES.md row). The original item follows for the trail:
+- The
   original report was that ~10 000 peds on Geneva's arterials sit at elevation 0 instead of ~400 m.
   **It is no longer a blocker: the target IG GROUND-CLAMPS**, so the wrong height is hidden downstream
   and the scene looks right. Still worth fixing — we are shipping a z we know is wrong, and any consumer
