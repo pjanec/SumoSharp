@@ -4,6 +4,19 @@
 fixes — read its header UPDATE block for that state). Trail: `JUNCTION-REALISM-SESSION-JOURNAL.md`
 **Entries 59–64** (every fix entry has BEFORE predictions and AFTER measurements).
 
+## UPDATE (2026-08-02, post Entries 65-66 — read this first)
+
+**MERGED TO MAIN: PR #20, merge commit `a6bf81f` (no squash), CI green.** Since this doc's body:
+Entry 65 (DIAGSTOP witness v2 + E1 closure widening; std-arm diagonal exposure 67→39 = −42%,
+ped-heavy flat with residual named; owner verdict "diagonal reduced to acceptable state") and
+Entry 66 (HIREALISM pass-through gate, owner-requested: X1 `forbidPassThrough` on all six
+ignore-blocker sites, `SetHighRealismRegions`, `LIVECITY_HIREALISM_RADIUS`, 3D host follows the
+camera zone, `CITY3D_HIREALISM=0` kill switch; OFF arm byte-identical, ON arm −3.7% arrivals =
+accepted honesty cost). CI determinism pin corrected to `A134ED3716DDE7BC` (was rotted at
+`BF3794A4704BCD79` since Entry 54). ParityTests now **783**/5. §2's items 1-3 are DONE; next
+queue: §2 item 4 (the veh1762 keepClear chain — wedge now aged to 1396 s in the gate-ON arm),
+then :34564; owner 3D verdict on the gate (design success condition 4) pending next session.
+
 ## 0. Engine state (verify before believing)
 
 Branch **`claude/sumosharp-traffic-bugs-g1y9hl`**, all pushed (head = the Entry 64 BEFORE

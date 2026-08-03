@@ -50,6 +50,15 @@ public static class ActivityTimelineWire
     private const byte KindDwell = 2;
     private const byte KindInteract = 3;
 
+    // PEDZ instrument (docs/TASKS-TODO.md ped z=0; print-only, LIVECITY_PEDZLOG=1): the WRITE-side
+    // census of the elevation channel. A Walk whose Elevations is null OR whose count mismatches
+    // Path.Count silently writes flag 0 -- the channel is DROPPED on the wire and every downstream
+    // consumer (HeadlessIg in the 3D viewer) reconstructs that leg flat. The engine-side query path
+    // measured 0/3000 flat (its bake is a LOCAL re-derivation, not the wire), so if the viewer shows
+    // z=0 the drop must happen here or later -- this tally names which.
+    private static readonly bool PedZLog = Environment.GetEnvironmentVariable("LIVECITY_PEDZLOG") == "1";
+    private static int _pedzWalks, _pedzWithZ, _pedzNullZ, _pedzMismatchZ;
+
     public static byte[] Encode(ActivityTimeline timeline)
     {
         using var buffer = new MemoryStream();
@@ -102,6 +111,19 @@ public static class ActivityTimelineWire
                     else
                     {
                         buffer.WriteByte(0);
+                    }
+
+                    if (PedZLog)
+                    {
+                        _pedzWalks++;
+                        if (w.Elevations is null) _pedzNullZ++;
+                        else if (w.Elevations.Count != w.Path.Count) _pedzMismatchZ++;
+                        else _pedzWithZ++;
+                        if (_pedzWalks % 1000 == 0)
+                        {
+                            Console.Error.WriteLine(
+                                $"[pedz] WIRE walks={_pedzWalks} withZ={_pedzWithZ} nullZ={_pedzNullZ} mismatchZ={_pedzMismatchZ}");
+                        }
                     }
 
                     break;
