@@ -4455,3 +4455,36 @@ Gates: full sln green, hash `A134ED3716DDE7BC` par==single, CityLib 186/4. Owner
 the closing surface (peds should visibly flow around cars stopped in the junction near the camera)
 — and the owner should also judge whether in-zone car flow suffers visibly (the measured stall
 mechanism will exist in-zone; the bet is that at camera-zone scale it reads as realism, not jam).
+
+## Entry 70 — owner 3D verdict on PED-AVOID-CARS: three defects; two fixed, one designed-not-patched
+
+Owner observations (3D, Entry 69 build): (1) peds slide dumbly along the blocking car's side
+(no path around); (2) peds get LOCKED INSIDE the car and block forever, sometimes pass straight
+through — owner's own hypothesis: "as the car moves shortly they stop treating it as obstacle";
+(3) cars changing lanes ALMOST PURELY LATERALLY in the high-realism zone — "strictly prohibited".
+
+**(2) FIXED — the owner's hypothesis was exactly right (disc flicker):** the single 1.5 m/s
+cutoff dropped a car's discs during every queue pulse (0 → ~2 → 0 m/s); peds walked into the
+footprint while they were off; discs re-materialised around a trapped ped (or the ped had crossed
+the body entirely). Hysteresis: qualify < 1.5 m/s, release only > 3.0 m/s, sticky by EntityIndex.
+Census: ext ~900–1000 → ~1024–1108 at matched timestamps (pulse retention working), route
+counters byte-identical.
+
+**(3) FIXED — not the peds, the INLINE keep-right:** the only change path that flips LaneHandle
+INSTANTLY (kept inline for a same-phase read-after-write, #15/D5); the IG smooths an instant flip
+into a fast lateral glide = at crawl speed a car sliding sideways. In-zone (CooperativeLcFor) with
+continuous maneuvers on, keep-right now routes through the SAME buffered StartLaneChangeManeuver
+as every other path (2 s slide, min-speed gated; `keepRightCont` tag) and the caller skips that
+step's strategic/speed-gain evaluation (ApplyKeepRightDecision now returns bool). Out-of-zone /
+low-realism keeps the cheap inline swap (the standing owner decision); goldens have coop OFF +
+duration 0 → byte-identical by construction.
+
+**(1) NOT PATCHED (design candidate, deliberate):** the side-slide is ORCA local avoidance — no
+re-planning around a large obstacle. A real fix = the ped PLANNER seeing stopped cars (temporary
+route-graph blockage / detour waypoint injection), with real deadlock questions (car blocks the
+only crossing edge → ped must wait, not reroute through traffic). Parked as
+PED-ROUTE-AROUND-CARS design candidate; the hysteresis removes the worst visuals (trap/tunnel),
+leaving a physically plausible slow squeeze.
+
+Gates: full sln green (LiveCity 92/92 incl. hour-horizon at the OFF default), hash
+`A134ED3716DDE7BC` par==single unchanged, force-on Geneva arm healthy (runaways 0, beeline 0).

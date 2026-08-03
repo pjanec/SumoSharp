@@ -2281,6 +2281,8 @@ public sealed class LiveCitySim : IDisposable
     // paths never construct a LiveCitySim, so goldens/hash are untouched by construction.
     // Kill switch LIVECITY_PEDAVOIDCARS=0 (docs/ENV-GATES.md).
     private readonly List<WorldDisc> _carDiscs = new(64);
+    private HashSet<int> _carDiscSticky = new();      // EntityIndexes whose discs are live (hysteresis)
+    private HashSet<int> _carDiscStickyNext = new();  // rebuilt each step, swapped with the above
     private bool? _pedAvoidCarsResolved;
     public int CarObstacleDiscCount => _carDiscs.Count;
 
@@ -2305,7 +2307,15 @@ public sealed class LiveCitySim : IDisposable
             return NoEntities;
         }
 
-        const double SpeedCutoff = 1.5;       // m/s: "near-stopped" (owner scope)
+        // Entry 70 (owner: peds "locked inside the car" / "sometimes simply go through"): both are the
+        // single-cutoff FLICKER -- a queue car creeping past 1.5 m/s dropped its discs for a step or
+        // two, peds walked into its footprint, the car stopped, and the discs re-materialised AROUND a
+        // ped now trapped inside (or the ped crossed the body entirely while they were off). Hysteresis:
+        // a car QUALIFIES below 1.5 m/s and stays qualified until it exceeds 3.0 m/s -- queue pulses
+        // (0 -> ~2 -> 0) no longer blink the obstacle. Sticky state keyed by EntityIndex (stable across
+        // read-buffer slots); pruned by rebuild each step (a despawned car simply stops appearing).
+        const double QualifySpeed = 1.5;      // m/s: "near-stopped" (owner scope)
+        const double ReleaseSpeed = 3.0;      // m/s: genuinely driving off -- discs release
         const int MaxDiscsPerCar = 4;
         var xs = _engine.PosX;
         var ys = _engine.PosY;
@@ -2314,12 +2324,16 @@ public sealed class LiveCitySim : IDisposable
         var lengths = _engine.Lengths;
         var widths = _engine.Widths;
         var laneIds = _engine.LaneIds;
+        var entities = _engine.EntityIndexes;
         var margin = 30.0;                    // cars just outside the zone still matter to peds inside
         var zoneR2 = (_lcZoneR + margin) * (_lcZoneR + margin);
 
+        _carDiscStickyNext.Clear();
         for (var i = 0; i < xs.Length; i++)
         {
-            if (speeds[i] >= SpeedCutoff)
+            var entity = i < entities.Length ? entities[i] : -1;
+            var wasSticky = entity >= 0 && _carDiscSticky.Contains(entity);
+            if (speeds[i] >= (wasSticky ? ReleaseSpeed : QualifySpeed))
             {
                 continue;
             }
@@ -2358,8 +2372,14 @@ public sealed class LiveCitySim : IDisposable
                 var back = d * spacing;
                 _carDiscs.Add(new WorldDisc(xs[i] - (hx * back), ys[i] - (hy * back), 0.0, 0.0, halfWidth));
             }
+
+            if (entity >= 0)
+            {
+                _carDiscStickyNext.Add(entity);
+            }
         }
 
+        (_carDiscSticky, _carDiscStickyNext) = (_carDiscStickyNext, _carDiscSticky);
         return _carDiscs;
     }
 

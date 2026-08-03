@@ -13947,7 +13947,16 @@ public sealed partial class Engine : IEngine
             // Keep-right (rung 8b) evaluated FIRST, against this iteration's starting lane; may
             // update v.LaneId/v.KeepRightProbability directly (own comment: same reasoning as the
             // speed-gain veto below for why a direct write here still honors CLAUDE.md rule 3).
-            ApplyKeepRightDecision(v, postMoveNeighbors, dt);
+            // Entry 70: a TRUE return means the keep-right committed a BUFFERED continuous maneuver
+            // (the in-zone no-instant-flip path) -- LaneHandle is unchanged until the phase flush, so
+            // the strategic/speed-gain evaluations below would run against a lane this vehicle is
+            // about to leave; skip them this step (next step the LcTargetHandle guard above holds the
+            // vehicle anyway, SUMO's own hold-to-completion). FALSE = inline swap or no commit: the
+            // pre-existing fall-through, byte-identical.
+            if (ApplyKeepRightDecision(v, postMoveNeighbors, dt))
+            {
+                return;
+            }
 
             // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string
             // hash. (ApplyKeepRightDecision above may have just changed v.LaneHandle; re-read.)
@@ -14262,7 +14271,7 @@ public sealed partial class Engine : IEngine
     // vehicle's decision this step reads `v`'s post-keep-right LaneId, since every vehicle's
     // neighbor lookups this phase go through the SAME already-built `neighbors` snapshot, not
     // live `v.LaneId` reads of other vehicles.
-    private void ApplyKeepRightDecision(VehicleRuntime v, LaneNeighborQuery neighbors, double dt)
+    private bool ApplyKeepRightDecision(VehicleRuntime v, LaneNeighborQuery neighbors, double dt)
     {
         // D2: hot per-vehicle, per-step lookup -- handle-indexed array instead of a string hash.
         var lane = _network!.LanesByHandle[v.LaneHandle];
@@ -14278,7 +14287,7 @@ public sealed partial class Engine : IEngine
         // -L2 net hits it every junction crossing.
         if (lane.EdgeId.Length > 0 && lane.EdgeId[0] == ':')
         {
-            return;
+            return false;
         }
 
         // Right neighbor = same edge, index-1 (no neighbor when already on index 0) -- this
@@ -14288,7 +14297,7 @@ public sealed partial class Engine : IEngine
         // instead of a per-step `edge.Lanes.FirstOrDefault(...)` LINQ scan/closure.
         if (lane.RightNeighbor < 0)
         {
-            return;
+            return false;
         }
 
         var rightLane = _network.LanesByHandle[lane.RightNeighbor];
@@ -14333,7 +14342,7 @@ public sealed partial class Engine : IEngine
         }
         if (v.KeepRightStaySuppress)
         {
-            return;
+            return false;
         }
 
         // actionStepLength=1 in this scenario's config (phase-1 determinism ladder). Declared here
@@ -14406,13 +14415,13 @@ public sealed partial class Engine : IEngine
                 // to the right), which is exactly this branch.
                 if (neighLeftPlace / (Math.Abs(effOffset) + 2.0) < laDistRight)
                 {
-                    return;
+                    return false;
                 }
 
                 // :1411 (rule 2)
                 if (effOffset == 0 && neighLeftPlace * 2.0 < laDistRight)
                 {
-                    return;
+                    return false;
                 }
             }
         }
@@ -14629,12 +14638,30 @@ public sealed partial class Engine : IEngine
                 // write". This write does NOT cross vehicles (every other vehicle's neighbor lookups
                 // this phase go through the frozen `postMoveNeighbors` snapshot, never a live read of
                 // `v`'s LaneId), so it stays safe/deterministic despite being applied immediately.
+                // Entry 70 (owner: pure-lateral changes in the high-realism zone are "strictly
+                // prohibited"): in-zone (CooperativeLcFor) with continuous maneuvers on, the INSTANT
+                // LaneHandle flip is the defect -- the IG smooths a flip into a fast lateral glide,
+                // which at crawl forward speed renders as a car sliding sideways. Route the in-zone
+                // keep-right through the SAME buffered continuous maneuver every other change path
+                // uses (2 s slide, min-speed gated by the 14609 guard above) and return true so the
+                // caller skips this step's strategic/speed-gain evaluation (LaneHandle is unchanged
+                // until the phase flush; next step the LcTargetHandle hold applies). Out-of-zone /
+                // low realism keeps the cheap inline swap below (owner decision, #15); goldens have
+                // coop OFF + duration 0, so both new branches are unreachable there -> byte-identical.
+                if (CooperativeLcFor(v) && LaneChangeSteps() > 1)
+                {
+                    RecordLaneChangeCommit(3, v, neighLeadSameLane, neighFollowKr, bypassesMinSpeed: false, tag: "keepRightCont");
+                    _commandBuffer.StartLaneChangeManeuver(v, rightLane.Handle, rightLane.Id, LaneChangeSteps());
+                    v.KeepRightProbability = 0.0; // resetState() on a COMMITTED change (:1063/1080).
+                    return true;
+                }
+
                 RecordLaneChangeCommit(3, v, neighLeadSameLane, neighFollowKr, bypassesMinSpeed: true, tag: "keepRight"); // #15 float analysis (keep-right, INLINE swap -- bypasses LaneChangeMinSpeed)
                 v.LaneId = rightLane.Id;
                 // D2: keep LaneHandle in lockstep -- rightLane's own Handle field, no lookup.
                 v.LaneHandle = rightLane.Handle;
                 v.KeepRightProbability = 0.0; // resetState() on a COMMITTED change (:1063/1080).
-                return;
+                return false;
             }
 
             // BLOCKED: like the LEFT/speed-gain veto, a vetoed change does NOT reset the accumulator
@@ -14693,12 +14720,14 @@ public sealed partial class Engine : IEngine
                 // :1063/1080 resetState() on a COMMITTED change -- own accumulator only; the
                 // both-accumulators resetState question stays deferred (Entry 34 / resume doc §3).
                 v.SpeedGainProbability = 0.0;
-                return;
+                return false;
             }
 
             // BLOCKED: no reset (SUMO resets only on a committed change) -- the stored accumulator
             // keeps building and the change retries the moment the target-lane block clears.
         }
+
+        return false;
     }
 
     // C4-vii-b: SUMO's stayOnBest keep-right suppressor (MSLCM_LC2013.cpp:1421-1440, VARIANT_21).
