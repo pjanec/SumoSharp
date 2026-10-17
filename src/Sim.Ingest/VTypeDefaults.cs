@@ -345,7 +345,8 @@ public static class VTypeDefaults
             SpeedDev: vType.SpeedDev ?? double.NaN,
             // Per-vclass width default (SUMOVTypeParameter.cpp constructor default 1.8, or the
             // vclass-specific override in VClassDefaultValues).
-            Width: raw.Width,
+            // H9 (docs/HROT-INTEGRATION-DESIGN.md): a runtime vType may override it; null keeps the default.
+            Width: vType.Width ?? raw.Width,
             // Per-vclass height default (SUMOVTypeParameter.cpp constructor default 1.5, or the
             // vclass-specific override in VClassDefaultValues).
             Height: raw.Height,

@@ -98,6 +98,67 @@ public class HrotIntegrationSeamTests
         Assert.Contains("__veh0", e.VehicleIds.ToArray());
     }
 
+    // ── H5: the routed spawn with a host-chosen id ───────────────────────────────────────────────
+
+    [Fact]
+    public void H5_TheRoutedSpawn_CarriesTheHostChosenId()
+    {
+        var e = new Engine();
+        e.LoadNetwork(Net14);
+        e.SpawnVehicle(e.DefaultVType, "e0", "e0", vehicleId: "car-17");
+
+        e.Step();
+
+        Assert.Contains("car-17", e.VehicleIds.ToArray());
+    }
+
+    [Fact]
+    public void H5_TheRoutedSpawn_RejectsALiveDuplicate_AndANullIdIsTheGeneratedOne()
+    {
+        var e = new Engine();
+        e.LoadNetwork(Net14);
+        e.SpawnVehicle(e.DefaultVType, "e0", "e0", vehicleId: "car-17");
+
+        Assert.Throws<ArgumentException>(() => e.SpawnVehicle(e.DefaultVType, "e0", "e0", vehicleId: "car-17"));
+
+        e.SpawnVehicle(e.DefaultVType, "e0", "e0", vehicleId: null);
+        for (var i = 0; i < 20 && !e.VehicleIds.ToArray().Contains("__veh0"); i++)
+        {
+            e.Step(); // the second car waits for a gap behind the first
+        }
+
+        Assert.Contains("__veh0", e.VehicleIds.ToArray());
+    }
+
+    // ── H9: a runtime vType's width reaches the vehicle's dims ───────────────────────────────────
+
+    [Fact]
+    public void H9_ARuntimeVTypeWidth_ReachesTheVehicleWidth_AndNullKeepsTheVClassDefault()
+    {
+        var e = new Engine();
+        e.LoadNetwork(Net14);
+        var wide = e.DefineVType(new VTypeParams { VClass = "passenger", Length = 9.0, Width = 2.7 }, id: "wide");
+        var plain = e.DefineVType(new VTypeParams { VClass = "passenger" }, id: "plain");
+        e.SpawnVehicle(wide, new[] { "e0" }, vehicleId: "w", departPos: 20.0);
+        e.SpawnVehicle(plain, new[] { "e0" }, vehicleId: "p", departPos: 0.0);
+
+        var ids = Array.Empty<string>();
+        for (var i = 0; i < 10 && !(ids.Contains("w") && ids.Contains("p")); i++)
+        {
+            e.Step();
+            ids = e.VehicleIds.ToArray();
+        }
+
+        var widths = e.VehicleWidths.ToArray();
+        var lengths = e.VehicleLengths.ToArray();
+        var w = Array.IndexOf(ids, "w");
+        var p = Array.IndexOf(ids, "p");
+        Assert.True(w >= 0 && p >= 0, string.Join(",", ids));
+        Assert.Equal(2.7f, widths[w]);
+        Assert.Equal(9.0f, lengths[w]);
+        Assert.Equal(1.8f, widths[p]); // the passenger vClass default, unchanged
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -52,6 +52,12 @@ public sealed class ReplicationPublisher
 
     private double _lastTlTime = double.NegativeInfinity;
 
+    // docs/HROT-INTEGRATION-DESIGN.md H7: an OPTIONAL hook giving each newly-announced vehicle its external
+    // type and colour (0xRRGGBB, 0 = none), from the vehicle's vType id (SimulationSnapshot.VehicleType -- the
+    // engine's VType.Id, e.g. the id passed to Engine.DefineVType) and its handle. Called once per vehicle, at
+    // its spawn announcement. Null (the default) = zeros on the 6-argument LifecycleRecord ctor, byte-identical.
+    public Func<string, VehicleHandle, (long ExternalType, uint Color)>? TagOf { get; set; }
+
     // Publish the network's static lane geometry ONCE (durable-intent). Call this once, before the step
     // loop starts, after readers have had time to discover the sink's transport (if any).
     public void PublishGeometryOnce(NetworkModel network, IReplicationSink sink) =>
@@ -85,7 +91,19 @@ public sealed class ReplicationPublisher
             // Name (docs/LIVE-CITY-VIEWERS-DESIGN.md §3.1, -TASKS.md E2): the real SUMO id for this handle,
             // from the SAME snapshot index -- SimulationSnapshot.VehicleId[] is parallel to Handles[] (both
             // indexed by `i`), so this is the id belonging to THIS spawn, not a stale/mismatched lookup.
-            sink.PublishLifecycle(new LifecycleRecord(handle, isSpawn: true, vTypeId: 0, length, width, snap.VehicleId[i]));
+            var tagOf = TagOf;
+            if (tagOf is null)
+            {
+                sink.PublishLifecycle(new LifecycleRecord(handle, isSpawn: true, vTypeId: 0, length, width, snap.VehicleId[i]));
+            }
+            else
+            {
+                var vTypeId = i < snap.VehicleType.Length ? snap.VehicleType[i] : string.Empty;
+                var (externalType, color) = tagOf(vTypeId, handle);
+                sink.PublishLifecycle(new LifecycleRecord(
+                    handle, isSpawn: true, vTypeId: 0, length, width, snap.VehicleId[i], externalType, color));
+            }
+
             _knownVehicles[handle] = (length, width);
         }
 

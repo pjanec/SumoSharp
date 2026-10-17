@@ -98,6 +98,7 @@ public sealed class InMemoryReplicationBus
     private readonly Dictionary<VehicleHandle, VehicleSampleHistory> _history = new();
     private readonly Dictionary<VehicleHandle, (float Length, float Width)> _dims = new();
     private readonly Dictionary<VehicleHandle, string> _names = new();
+    private readonly Dictionary<VehicleHandle, VehicleTag> _tags = new(); // H7: non-empty tags only
     private readonly Dictionary<int, byte> _tlState = new();
     private bool _pumpedAfterPublish;
 
@@ -184,6 +185,7 @@ public sealed class InMemoryReplicationBus
         public IReadOnlyDictionary<VehicleHandle, IVehicleSampleHistory> History => _bus._historyView;
         public IReadOnlyDictionary<VehicleHandle, (float Length, float Width)> Dims => _bus._dims;
         public IReadOnlyDictionary<VehicleHandle, string> Names => _bus._names;
+        public IReadOnlyDictionary<VehicleHandle, VehicleTag> Tags => _bus._tags;
         public IReadOnlyDictionary<int, byte> TlStateByLane => _bus._tlState;
         public double? LatestVehicleSampleTime { get; internal set; }
         public bool Connected => _bus._pumpedAfterPublish;
@@ -193,6 +195,7 @@ public sealed class InMemoryReplicationBus
             _bus._history.Clear();
             _bus._dims.Clear();
             _bus._names.Clear();
+            _bus._tags.Clear();
             LatestVehicleSampleTime = null;
         }
 
@@ -234,11 +237,21 @@ public sealed class InMemoryReplicationBus
                     {
                         _dims[lc.Handle] = (lc.Length, lc.Width);
                         _names[lc.Handle] = lc.Name;
+                        var tag = lc.Tag;
+                        if (!tag.IsEmpty)
+                        {
+                            _tags[lc.Handle] = tag;
+                        }
+                        else
+                        {
+                            _tags.Remove(lc.Handle);
+                        }
                     }
                     else
                     {
                         _dims.Remove(lc.Handle);
                         _names.Remove(lc.Handle);
+                        _tags.Remove(lc.Handle);
                         _history.Remove(lc.Handle);
                     }
 

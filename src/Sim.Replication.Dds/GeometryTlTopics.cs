@@ -21,6 +21,9 @@ public unsafe partial struct DdsNetworkGeometry
     [DdsId(3)] public float Time;  // optional — sim time at publish (typically 0.0)
     [DdsId(4)] public int ByteCount;
     [DdsId(5)] public fixed byte Payload[DdsWire.MaxPayload];
+    // docs/HROT-INTEGRATION-DESIGN.md H8: the publisher (DdsReplicationSink's `source`); keyed with ChunkIndex
+    // so two traffic nodes' networks are distinct instances. Appended.
+    [DdsKey, DdsId(6)] public uint Source;
 
     public void SetPayload(int chunkIndex, int totalChunks, uint step, float time, ReadOnlySpan<byte> bytes)
     {
@@ -63,6 +66,8 @@ public unsafe partial struct DdsTlState
     [DdsId(2)] public float Time;
     [DdsId(3)] public int ByteCount;
     [DdsId(4)] public fixed byte Payload[DdsWire.MaxPayload];
+    // H8: the publisher, keyed with ChunkIndex. Appended.
+    [DdsKey, DdsId(5)] public uint Source;
 
     public void SetPayload(uint step, float time, ReadOnlySpan<byte> bytes, int chunkIndex = 0)
     {

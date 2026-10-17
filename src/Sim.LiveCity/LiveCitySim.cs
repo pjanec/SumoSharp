@@ -38,6 +38,12 @@ public sealed class LiveCitySim : IDisposable
 
     private readonly Engine _engine;
     private readonly VTypeHandle _vtype;
+    // docs/HROT-INTEGRATION-DESIGN.md H9: the weighted type mix (null = the single `_vtype` above, today).
+    // `_mixCumWeight[i]` is the running sum of the positive weights up to entry i; `_tagByVTypeId` maps the
+    // engine vType id back to the entry's (ExternalType, Color) for ReplicationPublisher.TagOf (H7).
+    private readonly VTypeHandle[]? _mixTypes;
+    private readonly double[]? _mixCumWeight;
+    private readonly Dictionary<string, (long ExternalType, uint Color)>? _tagByVTypeId;
     private readonly List<(string Id, int Lane)> _cropEdges;
     private ulong _rng;
 
@@ -134,6 +140,8 @@ public sealed class LiveCitySim : IDisposable
         IDemandRecordSink? recordDemandSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
+        // docs/HROT-INTEGRATION-DESIGN.md H6: the sim-side clock starts where the engine's `begin` will (0 = today).
+        _now = cfg.StartTime;
         _recordVehSink = recordVehSink;
         _recordPublisher = recordVehSink is not null ? new ReplicationPublisher() : null;
         _recordPedSink = recordPedSink;
@@ -416,8 +424,10 @@ public sealed class LiveCitySim : IDisposable
             ? "<device.rerouting.probability value=\"" + rerouteProb.ToString(CultureInfo.InvariantCulture) + "\"/>"
               + "<device.rerouting.period value=\"" + reroutePeriod.ToString(CultureInfo.InvariantCulture) + "\"/>"
             : string.Empty;
+        // docs/HROT-INTEGRATION-DESIGN.md H6: the clock starts at cfg.StartTime. 0 writes the identical "0".
+        var beginText = cfg.StartTime == 0.0 ? "0" : cfg.StartTime.ToString("R", CultureInfo.InvariantCulture);
         var engineConfig = ScenarioConfigParser.ParseXml(
-            "<configuration><time><begin value=\"0\"/><end value=\"1000000000\"/><step-length value=\""
+            "<configuration><time><begin value=\"" + beginText + "\"/><end value=\"1000000000\"/><step-length value=\""
             + stepLengthText + "\"/></time>"
             + "<processing><lanechange.duration value=\"2.0\"/><default.speeddev value=\"0.0\"/>" + teleportXml + rerouteXml + "</processing></configuration>");
         _engine.LoadNetwork(netPath, engineConfig);
@@ -548,6 +558,56 @@ public sealed class LiveCitySim : IDisposable
         _engine.DiagSeqDesync = Environment.GetEnvironmentVariable("LIVECITY_SEQDESYNC") == "1"; // #15 prong-1
         _engine.DiagLaneChangeLog = Environment.GetEnvironmentVariable("LIVECITY_LCLOG") == "1"; // #15 float/swap analysis
         _vtype = _engine.DefineVType(new VTypeParams { VClass = "passenger", Sigma = 0.0 });
+        // H9: the optional weighted mix -- defined AFTER the default type, so `_vtype` keeps its handle/id.
+        if (cfg.VehicleTypes is { } mix)
+        {
+            if (mix.Count == 0)
+            {
+                throw new ArgumentException("LiveCityConfig.VehicleTypes must be null or non-empty.", nameof(cfg));
+            }
+
+            _mixTypes = new VTypeHandle[mix.Count];
+            _mixCumWeight = new double[mix.Count];
+            _tagByVTypeId = new Dictionary<string, (long, uint)>(StringComparer.Ordinal);
+            var cum = 0.0;
+            for (var i = 0; i < mix.Count; i++)
+            {
+                var t = mix[i] ?? throw new ArgumentException("LiveCityConfig.VehicleTypes has a null entry.", nameof(cfg));
+                if (string.IsNullOrEmpty(t.Id))
+                {
+                    throw new ArgumentException("every LiveCityVehicleType needs an Id.", nameof(cfg));
+                }
+
+                _mixTypes[i] = _engine.DefineVType(
+                    new VTypeParams
+                    {
+                        VClass = string.IsNullOrEmpty(t.VClass) ? "passenger" : t.VClass,
+                        Sigma = 0.0,
+                        Length = t.Length,
+                        Width = t.Width,
+                        MaxSpeed = t.MaxSpeed,
+                    },
+                    id: t.Id);
+                cum += t.Weight > 0.0 ? t.Weight : 0.0;
+                _mixCumWeight[i] = cum;
+                _tagByVTypeId[t.Id] = (t.ExternalType, t.Color);
+            }
+
+            if (cum <= 0.0)
+            {
+                throw new ArgumentException("LiveCityConfig.VehicleTypes needs at least one positive Weight.", nameof(cfg));
+            }
+
+            var tags = _tagByVTypeId;
+            Func<string, VehicleHandle, (long ExternalType, uint Color)> tagOf =
+                (vTypeId, _) => tags.TryGetValue(vTypeId, out var tag) ? tag : (0L, 0u);
+            _vehPublisher.TagOf = tagOf;
+            if (_recordPublisher is not null)
+            {
+                _recordPublisher.TagOf = tagOf;
+            }
+        }
+
         // B1: report the vType once, before any RecordVehicle call, so the emitted file is
         // self-contained. No-op when `_recordDemandSink` is null.
         _recordDemandSink?.RecordVType(RecordVTypeId, vClass: "passenger", sigma: 0.0);
@@ -923,6 +983,32 @@ public sealed class LiveCitySim : IDisposable
     // Deterministic SplitMix64, seeded from LiveCityConfig.CarRngSeed -- identical constants/order to
     // SceneGen.BuildLiveCity's `NextRng`, so two LiveCitySim instances with the same seed spawn the same
     // sequence of cars.
+    // H9: pick a mix entry by weight -- one NextRng() draw mapped onto [0, total weight).
+    private VTypeHandle PickMixType()
+    {
+        var cum = _mixCumWeight!;
+        var total = cum[cum.Length - 1];
+        var r = NextRng() / 4294967296.0 * total;
+        for (var i = 0; i < cum.Length; i++)
+        {
+            if (r < cum[i])
+            {
+                return _mixTypes![i];
+            }
+        }
+
+        // r < total always; this only guards floating-point edge cases -- the last positive-weight entry.
+        for (var i = cum.Length - 1; i > 0; i--)
+        {
+            if (cum[i] > cum[i - 1])
+            {
+                return _mixTypes![i];
+            }
+        }
+
+        return _mixTypes![0];
+    }
+
     private uint NextRng()
     {
         _rng += 0x9E3779B97F4A7C15UL;
@@ -1266,9 +1352,13 @@ public sealed class LiveCitySim : IDisposable
                 var (fromId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
                 var (toId, _) = _cropEdges[(int)(NextRng() % (uint)_cropEdges.Count)];
                 if (fromId == toId) continue;
+                // H9: one extra draw ONLY when a type mix is configured -- the default sequence is untouched.
+                var vtype = _mixTypes is null ? _vtype : PickMixType();
                 try
                 {
-                    _engine.SpawnVehicle(_vtype, fromId, toId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
+                    // H5: a host-chosen id when a provider is configured; null = the generated id (today).
+                    var vehicleId = _cfg.VehicleIdProvider?.Invoke();
+                    _engine.SpawnVehicle(vtype, fromId, toId, vehicleId, departPos: 5.0, departSpeed: 0.0, departBestLane: true);
                     SpawnLog?.Add((_now, fromId, toId));
                     live++;
 
@@ -1298,6 +1388,11 @@ public sealed class LiveCitySim : IDisposable
                 }
                 catch (InvalidOperationException)
                 {
+                }
+                catch (ArgumentException) when (_cfg.VehicleIdProvider is not null)
+                {
+                    // H5: the provider repeated a LIVE vehicle's id (Engine's H4 guard) -- skip this spawn,
+                    // exactly like an unroutable pair above; the step goes on.
                 }
             }
         }

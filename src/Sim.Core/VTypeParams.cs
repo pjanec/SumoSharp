@@ -19,6 +19,10 @@ public sealed record VTypeParams
     public double? MinGap { get; init; }
     public double? Length { get; init; }
 
+    // docs/HROT-INTEGRATION-DESIGN.md H9: body width (metres). Null -> the vClass default (1.8 for passenger),
+    // exactly as before this field existed. Reaches VehicleWidths / the snapshot / the lifecycle dims.
+    public double? Width { get; init; }
+
     // Driver imperfection. Null -> vClass default (0.5 for passenger). Set 0.0 for deterministic motion.
     public double? Sigma { get; init; }
     public double? SpeedFactor { get; init; }

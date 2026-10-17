@@ -30,13 +30,26 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
     private byte[] _vehicleScratch = new byte[DdsWire.MaxPayload];
     private byte[] _tlScratch = new byte[DdsWire.MaxPayload];
 
-    public DdsReplicationSink(DdsParticipant participant)
+    private readonly uint _source;
+
+    public DdsReplicationSink(DdsParticipant participant) : this(participant, source: 0)
     {
+    }
+
+    // docs/HROT-INTEGRATION-DESIGN.md H8: `source` is stamped on EVERY sample this sink writes (it is a key
+    // member of every SUMO topic), so several sinks -- several traffic nodes -- can share one domain without
+    // their instances colliding. A DdsMultiSourceSubscriber demultiplexes by it. Default 0 (the ctor above).
+    public DdsReplicationSink(DdsParticipant participant, uint source)
+    {
+        _source = source;
         _vehicleWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
         _geometryWriter = new DdsWriter<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleWriter = new DdsWriter<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
         _tlWriter = new DdsWriter<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
     }
+
+    // H8: the publisher key this sink stamps on every sample.
+    public uint Source => _source;
 
     // IReplicationSink.PublishGeometry — chunk + DDS-write the network's static lane geometry. Same
     // chunk-planning and payload bytes as DdsPublisher's pre-rewire implementation.
@@ -52,6 +65,7 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
             var size = GeometryCodec.WriteGeometry(scratch, laneSpan.Slice(start, count));
             var frame = new DdsNetworkGeometry();
             frame.SetPayload(c, chunks.Count, step: 0, time: 0f, scratch.AsSpan(0, size));
+            frame.Source = _source;
             _geometryWriter.Write(frame);
         }
     }
@@ -80,6 +94,9 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
             Length = record.Length,
             Width = record.Width,
             Name = ToFixedName(record.Name),
+            ExternalType = record.ExternalType,
+            Color = record.Color,
+            Source = _source,
         };
         _lifecycleWriter.Write(rec);
     }
@@ -124,6 +141,7 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
             var size = FrameCodec.WriteVehicleFrame(_vehicleScratch, step, (float)time, chunk);
             var frame = new DdsWireFrame();
             frame.SetPayload(FrameCodec.KindVehicle, step, (float)time, _vehicleScratch.AsSpan(0, size), c);
+            frame.Source = _source;
             _vehicleWriter.Write(frame);
         }
     }
@@ -141,6 +159,7 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
         var size = TlCodec.WriteTl(_tlScratch, entries);
         var frame = new DdsTlState();
         frame.SetPayload(step, (float)time, _tlScratch.AsSpan(0, size));
+        frame.Source = _source;
         _tlWriter.Write(frame);
     }
 

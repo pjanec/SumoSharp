@@ -357,6 +357,22 @@ public sealed class LiveCityConfig
     // Car spawn PRNG seed (SceneGen.BuildLiveCity's `rng` initializer for the deterministic SplitMix64).
     public ulong CarRngSeed { get; set; } = 0x243F6A8885A308D3UL;
 
+    // docs/HROT-INTEGRATION-DESIGN.md H5: when set, every car spawn takes its vehicle id from this provider
+    // (called once per spawn attempt, after the route pair is drawn) instead of the engine's generated
+    // `__vehN`. A provider that repeats a LIVE vehicle's id makes that one spawn fail and be skipped (the
+    // step goes on); an id consumed by a spawn that then fails is not reused. null (default) = today.
+    public Func<string>? VehicleIdProvider { get; set; }
+
+    // docs/HROT-INTEGRATION-DESIGN.md H6: the sim time the clock starts at -- the engine's `begin` and
+    // LiveCitySim.Time, so every snapshot and published frame/TL time is StartTime + elapsed (a host stamps
+    // its wire in its own cluster time). 0 (default) = today, byte-identical.
+    public double StartTime { get; set; }
+
+    // docs/HROT-INTEGRATION-DESIGN.md H9: a weighted vehicle-type mix. Each entry becomes an engine vType and
+    // each spawn picks one by weight (one extra deterministic draw from the car RNG -- only when this is set).
+    // null (default) = today's single deterministic passenger type, with the identical draw sequence.
+    public IReadOnlyList<LiveCityVehicleType>? VehicleTypes { get; set; }
+
     // docs/LIVE-CITY-VIEWERS-TASKS.md A2: env knobs with the same semantics as the reference
     // (SceneGen.BuildLiveCity), resolved once here so callers get the exact same defaults/overrides.
     // Delegates to the shared `WithEnvOverrides` builder (docs/LIVE-CITY-ARBITRARY-NET-DESIGN.md §5.1)
@@ -574,3 +590,18 @@ public sealed class LiveCityConfig
         return cfg;
     }
 }
+
+// docs/HROT-INTEGRATION-DESIGN.md H9: one entry of LiveCityConfig.VehicleTypes. `Id` is the engine vType id
+// (and what ReplicationPublisher.TagOf receives); `Length`/`Width` reach the vehicle's dims; `MaxSpeed` null =
+// the vClass default; `Weight` is relative (an entry with weight <= 0 is never picked); `ExternalType`/`Color`
+// (0xRRGGBB, 0 = none) ride the spawn record (H7). Sigma is always 0 (deterministic motion, as today's type).
+public sealed record LiveCityVehicleType(
+    string Id,
+    string VClass,
+    double Length,
+    double Width,
+    double? MaxSpeed,
+    double Weight,
+    long ExternalType,
+    uint Color);
+

@@ -75,7 +75,11 @@ public sealed record VType(
     // gap (m, at high speed/closing-speed) a vehicle tries to keep from a same-lane neighbour.
     // Null (absent) resolves to SUMO's 0.6 default in VTypeDefaults.Resolve; inert unless
     // lateral-resolution > 0.
-    double? MinGapLat = null);
+    double? MinGapLat = null,
+    // docs/HROT-INTEGRATION-DESIGN.md H9: an optional body-width override. Only the runtime API
+    // (VTypeParams.Width via Engine.DefineVType) sets it -- the rou.xml parser does not read `width`, so
+    // every loaded vType keeps null and resolves to the per-vClass default exactly as before.
+    double? Width = null);
 
 public sealed record Route(
     string Id,

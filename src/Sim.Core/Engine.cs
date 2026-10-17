@@ -2848,7 +2848,9 @@ public sealed partial class Engine : IEngine
             Tau: p.Tau, MinGap: p.MinGap, Length: p.Length, EmergencyDecel: p.EmergencyDecel,
             SpeedFactor: p.SpeedFactor, HasBluelight: p.HasBluelight, LcOpposite: p.LcOpposite,
             CarFollowModel: p.CarFollowModel,
-            MaxSpeedLat: p.MaxSpeedLat, LatAlignment: p.LatAlignment, MinGapLat: p.MinGapLat);
+            MaxSpeedLat: p.MaxSpeedLat, LatAlignment: p.LatAlignment, MinGapLat: p.MinGapLat,
+            // docs/HROT-INTEGRATION-DESIGN.md H9: an optional body width (null = the vClass default, unchanged).
+            Width: p.Width);
 
         var existing = _vTypeIds.IndexOf(typeId);
         _vTypesById[typeId] = raw;
@@ -2934,10 +2936,17 @@ public sealed partial class Engine : IEngine
     // no route exists (mirrors SUMO refusing an unroutable vehicle).
     public VehicleHandle SpawnVehicle(VTypeHandle type, string fromEdge, string toEdge,
         double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
+        => SpawnVehicle(type, fromEdge, toEdge, vehicleId: null, departPos, departSpeed, departLane, departBestLane);
+
+    // docs/HROT-INTEGRATION-DESIGN.md H5: the routed spawn with a HOST-CHOSEN vehicle id -- routes exactly as
+    // the overload above, then forwards to H4's edge-list overload (null = the generated id, byte-identical).
+    // Throws InvalidOperationException when unroutable, ArgumentException on a live duplicate id (H4).
+    public VehicleHandle SpawnVehicle(VTypeHandle type, string fromEdge, string toEdge, string? vehicleId,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
     {
         var edges = Router().Route(fromEdge, toEdge)
             ?? throw new InvalidOperationException($"no route from edge '{fromEdge}' to '{toEdge}'.");
-        return SpawnVehicle(type, edges, departPos, departSpeed, departLane, departBestLane);
+        return SpawnVehicle(type, edges, vehicleId, departPos, departSpeed, departLane, departBestLane);
     }
 
     // Dense-edge-handle overloads (SUMOSHARP-API.md §9): identical semantics to the string overloads,

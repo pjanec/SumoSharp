@@ -80,6 +80,15 @@ foreach (var sample in loan)
 }
 ```
 
+## Several publishers on one domain (`docs/HROT-INTEGRATION-DESIGN.md` H8)
+
+Every SUMO vehicle-side topic carries a `[DdsKey] uint Source`. Give each publisher its own:
+`new DdsReplicationSink(participant, source: 7)`. Read them apart with `DdsMultiSourceSubscriber`:
+`Sources[7]` is that publisher's `IReplicationSource`; `SenderAppInstanceOf(7)` is the `AppInstanceId` of
+the participant that wrote it when the host enabled `participant.EnableSenderTracking(...)` first.
+`DdsSubscriber` still reads everything into one view (no demux). All peers on a domain must run a build
+with the `Source` key -- it changes the topic types.
+
 ## Structured option (`DdsVehicleBatch`)
 
 Same per-tick chunking, but typed columns instead of a blob. `FrameChunker` sizes the chunks either way —

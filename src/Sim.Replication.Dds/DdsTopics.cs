@@ -27,6 +27,9 @@ public unsafe partial struct DdsWireFrame
     [DdsId(3)] public float Time;
     [DdsId(4)] public int ByteCount;            // valid prefix length of Payload
     [DdsId(5)] public fixed byte Payload[DdsWire.MaxPayload];
+    // docs/HROT-INTEGRATION-DESIGN.md H8: the PUBLISHER this frame belongs to (DdsReplicationSink's `source`,
+    // 0 by default), a further key member so two publishers' chunks are distinct instances. Appended.
+    [DdsKey, DdsId(6)] public uint Source;
 
     // Blob copy helpers (pure; no DDS runtime dependency) so a publisher fills the sample straight from a
     // FrameCodec-written buffer, and a reader hands the valid prefix back to FrameCodec.
@@ -82,4 +85,11 @@ public partial struct DdsVehicleLifecycle
     [DdsId(4)] public float Length;
     [DdsId(5)] public float Width;
     [DdsId(6)] public FixedString64 Name;
+    // docs/HROT-INTEGRATION-DESIGN.md H7: host-defined external type and colour (0xRRGGBB, 0 = none), spawn
+    // only, zero on despawn -- appended, mirroring LifecycleRecord.ExternalType/Color.
+    [DdsId(7)] public long ExternalType;
+    [DdsId(8)] public uint Color;
+    // H8: the publisher (see DdsWireFrame.Source) -- keyed with Index, so publisher B's car #5 never replaces
+    // publisher A's car #5 in the durable "latest" a late joiner receives.
+    [DdsKey, DdsId(9)] public uint Source;
 }
