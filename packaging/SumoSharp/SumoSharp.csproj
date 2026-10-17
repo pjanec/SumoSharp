@@ -32,7 +32,7 @@
   <!-- The portable engine assemblies, bundled into this one package. PrivateAssets="all" keeps them
        out of the consumer's transitive dependency graph (they are shipped as our lib/ DLLs, not as
        package references). Referencing the top projects would pull the rest transitively, but list all
-       eight explicitly so the bundled set is unambiguous and a dropped edge fails loudly. -->
+       nine explicitly so the bundled set is unambiguous and a dropped edge fails loudly. -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\Sim.Core\Sim.Core.csproj"                 PrivateAssets="all" />
     <ProjectReference Include="..\..\src\Sim.Ingest\Sim.Ingest.csproj"             PrivateAssets="all" />
@@ -42,6 +42,7 @@
     <ProjectReference Include="..\..\src\Sim.Pedestrians\Sim.Pedestrians.csproj"   PrivateAssets="all" />
     <ProjectReference Include="..\..\src\Sim.LiveCity\Sim.LiveCity.csproj"         PrivateAssets="all" />
     <ProjectReference Include="..\..\src\Sim.Evac\Sim.Evac.csproj"                 PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Sim.Scene\Sim.Scene.csproj"               PrivateAssets="all" />
   </ItemGroup>
 
   <!-- netstandard2.1-only managed dependencies that the bundled Pedestrians/LiveCity/Evac assemblies

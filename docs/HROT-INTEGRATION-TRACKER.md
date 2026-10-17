@@ -3,7 +3,7 @@
 Design + tasks: [`HROT-INTEGRATION-DESIGN.md`](HROT-INTEGRATION-DESIGN.md). Branch `hrot/slice1`.
 
 - [x] **H1** — `<location>` parsed into `NetworkModel.Location`
-- [ ] **H2** — `Sim.Scene`: SUMO-frame road/marking/crosswalk/junction/ambient-ground triangles with kinds + signal heads; CityLib wraps it
+- [x] **H2** — `Sim.Scene`: SUMO-frame road/marking/crosswalk/junction/ambient-ground meshes with a kind per mesh + signal heads; CityLib wraps it
 - [x] **H3** (rail pending: DDS loopback) — `DdsSubscriber(participant, stampWithSimTime)`
 - [x] **H4** — `SpawnVehicle(..., vehicleId, ...)` with a live-duplicate guard
 - [ ] full `dotnet test -c Release` green, goldens byte-identical

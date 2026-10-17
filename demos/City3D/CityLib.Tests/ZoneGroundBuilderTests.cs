@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using CityLib;
+using TerrainField = Sim.Scene.TerrainField;
 using Xunit;
 
 namespace CityLib.Tests;

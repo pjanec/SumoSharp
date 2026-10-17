@@ -1,6 +1,6 @@
 using Sim.Ingest;
 
-namespace CityLib;
+namespace Sim.Scene;
 
 // docs/EXTERNAL-NET-VIEWER-DESIGN.md §7.2: the viewer's ground datum, which used to be a single flat
 // number (the net's mid-elevation) shared by every overlay that has no height of its own.
@@ -71,7 +71,7 @@ public sealed class TerrainField
     }
 
     /// The degenerate field: `HeightAt` returns `z` everywhere. This is what a 2-D net bakes to, and
-    /// what `SumoGodotFrame.Identity` carries, so every ground overlay on a 2-D net is bit-identical
+    /// what `SceneFrame.Identity` carries, so every ground overlay on a 2-D net is bit-identical
     /// to what it was before terrain existed.
     public static TerrainField Flat(double z) => new(z);
 

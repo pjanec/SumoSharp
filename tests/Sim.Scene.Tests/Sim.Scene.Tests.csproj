@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/HROT-INTEGRATION-DESIGN.md H2: tests for Sim.Scene, the engine-agnostic static-scene geometry
+    library (SceneFrame, road/junction/marking/crosswalk/signal/ambient-ground builders in SUMO's Z-up
+    frame). Reads the committed scenarios/_ped/demo_city/box net.xml. Reference/LegacyGodotRibbon.cs is a
+    verbatim copy of CityLib's PRE-extraction ribbon math (CityLib cannot be referenced from tests/ - it
+    consumes the SumoSharp package), used to prove Sim.Scene + the (x, z, -y) swap is bit-identical.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.6.0" />
+    <PackageReference Include="xunit" Version="2.4.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Sim.Scene\Sim.Scene.csproj" />
+  </ItemGroup>
+
+</Project>

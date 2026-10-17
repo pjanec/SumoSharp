@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using CityLib;
+using TerrainField = Sim.Scene.TerrainField;
 using Sim.Ingest;
 using Sim.LiveCity;
 using Xunit;

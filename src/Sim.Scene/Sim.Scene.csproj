@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    docs/HROT-INTEGRATION-DESIGN.md H2: the engine-agnostic static-scene geometry builders (road ribbons,
+    junction fills, lane markings, crosswalk zebras, signal-head placement, ambient ground), emitted in
+    SUMO's OWN frame - x east, y north, z up, metres, relative to a caller-chosen origin (SceneFrame),
+    with a KIND per mesh (SceneKind), so ANY host (Godot's City3D viewer via a Y-up axis swap, HROT's IG,
+    Stride, ...) consumes the same math. Pure geometry: no engine type anywhere. Extracted from
+    demos/City3D/CityLib, whose builders are now thin Godot-frame wrappers over this library.
+    Parity-neutral: render/demo geometry only, never read by the simulation.
+  -->
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;netstandard2.1</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <Description>SumoSharp — engine-agnostic static-scene geometry (road ribbons, junction fills, lane markings, crosswalks, signal heads, ambient ground) in SUMO's own Z-up frame. Unofficial, independent reimplementation; not affiliated with the Eclipse SUMO project.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sim.Ingest\Sim.Ingest.csproj" />
+    <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" />
+    <Compile Include="..\Shared\NetstandardPolyfills.cs" Link="NetstandardPolyfills.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+</Project>

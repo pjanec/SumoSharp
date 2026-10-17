@@ -1,4 +1,5 @@
 using Sim.Ingest;
+using Sim.Scene;
 
 namespace CityLib;
 
@@ -35,15 +36,20 @@ public readonly struct SumoGodotFrame
     // `default`, and every pre-terrain construction site mean -- so `GroundToGodot` on those is
     // bitwise what it was. Held as a nullable field rather than a non-null property because this is a
     // struct: `default(SumoGodotFrame)` must remain valid and must remain flat.
-    private readonly TerrainField? _terrain;
+    //
+    // docs/HROT-INTEGRATION-DESIGN.md H2: the origin + field now live in Sim.Scene's SceneFrame (SUMO's
+    // own Z-up frame); this struct is the Godot-space face of it -- `Scene` is what CityLib hands to the
+    // Sim.Scene builders, and ToGodot/GroundToGodot are SceneFrame.ToLocal/GroundToLocal followed by the
+    // axis swap (x, y, z) -> (x, z, -y).
+    private readonly SceneFrame _scene;
 
     public SumoGodotFrame(double originX, double originY, double originZ = 0.0, TerrainField? terrain = null)
     {
-        OriginX = originX;
-        OriginY = originY;
-        OriginZ = originZ;
-        _terrain = terrain;
+        _scene = new SceneFrame(originX, originY, originZ, terrain);
     }
+
+    // The engine-agnostic frame this one wraps (same origin, same terrain field).
+    public SceneFrame Scene => _scene;
 
     // The subtracted origin, in SUMO world metres. X/Y are the horizontal recenter; Z is the ELEVATION
     // recenter, which matters for a georeferenced 3-D net for a different reason than precision: a
@@ -51,26 +57,29 @@ public readonly struct SumoGodotFrame
     // realism-zone ring, the zone tint, POI ground marks -- all of which pass sumoZ = 0) would render
     // at Godot Y = 0, i.e. 400 m underground. Subtracting the net's mean elevation puts the whole scene
     // in a +-50 m band around Y = 0 and keeps ground-referenced overlays on the ground.
-    public double OriginX { get; }
-    public double OriginY { get; }
-    public double OriginZ { get; }
+    public double OriginX => _scene.OriginX;
+    public double OriginY => _scene.OriginY;
+    public double OriginZ => _scene.OriginZ;
 
-    public bool IsIdentity => OriginX == 0.0 && OriginY == 0.0 && OriginZ == 0.0;
+    public bool IsIdentity => _scene.IsIdentity;
 
     // The scene's ground field (§7.2). Never null: a frame built without one is flat at its own
     // elevation datum, which is precisely what the datum WAS before terrain existed. Read by the grid
     // baker (which needs the cell size to choose its subdivision step) and by ZoneGroundBuilder (which
     // needs `IsFlat` to skip subdivision that would produce the same planar surface).
-    public TerrainField Terrain => _terrain ?? TerrainField.Flat(OriginZ);
+    public TerrainField Terrain => _scene.Terrain;
 
     // True when this frame carries a real, non-degenerate baked field.
-    public bool HasTerrain => _terrain is { IsFlat: false };
+    public bool HasTerrain => _scene.HasTerrain;
 
     // SUMO (x, y, z) -> Godot (x, y, z), recentered. Same axis mapping as
     // CoordinateTransform.SumoToGodot (Godot.X = Sumo.X, Godot.Y = Sumo.Z, Godot.Z = -Sumo.Y); the
     // origin is subtracted in DOUBLE precision, before the cast -- that ordering is the entire point.
     public (float X, float Y, float Z) ToGodot(double sumoX, double sumoY, double sumoZ)
-        => ((float)(sumoX - OriginX), (float)(sumoZ - OriginZ), (float)-(sumoY - OriginY));
+    {
+        var (x, y, z) = _scene.ToLocal(sumoX, sumoY, sumoZ);
+        return (x, z, -y);
+    }
 
     // GROUND-REFERENCED placement: `heightAboveGround` metres above the scene's ground DATUM, rather
     // than at an absolute SUMO elevation.
@@ -98,8 +107,8 @@ public readonly struct SumoGodotFrame
     // value. The field is an interpolation of road heights; the road's own z is the road's z.
     public (float X, float Y, float Z) GroundToGodot(double sumoX, double sumoY, double heightAboveGround)
     {
-        var ground = _terrain is null ? OriginZ : _terrain.HeightAt(sumoX, sumoY);
-        return ((float)(sumoX - OriginX), (float)(ground - OriginZ + heightAboveGround), (float)-(sumoY - OriginY));
+        var (x, y, z) = _scene.GroundToLocal(sumoX, sumoY, heightAboveGround);
+        return (x, z, -y);
     }
 
     // The inverse, for the places that map a GODOT point back to SUMO -- the camera-driven LC-realism
