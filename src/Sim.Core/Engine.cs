@@ -2996,6 +2996,31 @@ public sealed partial class Engine : IEngine
         return false;
     }
 
+    // docs/HROT-INTEGRATION-DESIGN.md H15: the handle and RESOLVED vType id (the read surface's VehicleTypes value) of
+    // the live -- Pending or Active, not arrived/despawned -- vehicle whose id is `id`. A linear scan like
+    // IsLiveVehicleId above, for a host's rare remove-by-name path; never called per step and mutates nothing, so it
+    // cannot touch the parity path. False for an unknown id or one whose vehicle has left.
+    public bool TryGetLiveVehicle(string id, out VehicleHandle handle, out string vTypeId)
+    {
+        if (id is not null)
+        {
+            foreach (var v in _vehicles)
+            {
+                if (!v.Arrived && string.Equals(v.Def.Id, id, StringComparison.Ordinal))
+                {
+                    var idx = v.EntityIndex;
+                    handle = new VehicleHandle((uint)idx, idx < _vehicleGeneration.Length ? _vehicleGeneration[idx] : (ushort)0);
+                    vTypeId = v.VType.Id;
+                    return true;
+                }
+            }
+        }
+
+        handle = default;
+        vTypeId = string.Empty;
+        return false;
+    }
+
     public VehicleLifecycle GetLifecycle(VehicleHandle handle)
     {
         var idx = (int)handle.Index;

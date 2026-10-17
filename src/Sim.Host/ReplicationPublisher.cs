@@ -123,6 +123,24 @@ public sealed class ReplicationPublisher
         }
     }
 
+    // docs/HROT-INTEGRATION-DESIGN.md H15: announce ONE vehicle's despawn now, between PublishStep calls, instead of
+    // waiting for it to drop off the next snapshot -- a host that removes a car while paused steps nothing, so the
+    // snapshot diff would never run. Publishes the same IsSpawn = false tombstone PublishLifecycle writes and forgets
+    // the handle, so the next PublishStep (whose snapshot no longer holds it) does not announce it a second time.
+    // False -- nothing published -- when the handle was never announced (e.g. a Pending vehicle no reader has heard
+    // of) or has already been announced gone. The adaptive scheduler's last-sent entry for it is pruned at the next
+    // step's EndStep, exactly as for an arrival.
+    public bool PublishDespawn(VehicleHandle handle, IReplicationSink sink)
+    {
+        if (!_knownVehicles.Remove(handle))
+        {
+            return false;
+        }
+
+        sink.PublishLifecycle(new LifecycleRecord(handle, isSpawn: false, vTypeId: 0, length: 0f, width: 0f));
+        return true;
+    }
+
     private void PublishVehicles(SimulationSnapshot snap, IReplicationSink sink)
     {
         _includeScratch.Clear();

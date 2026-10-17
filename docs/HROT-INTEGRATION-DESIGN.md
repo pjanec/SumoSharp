@@ -241,3 +241,45 @@ without promotion zones). ⚠ `Sim.Replication.Dds` now references `Sim.Pedestri
 **Inert:** no provider and no flag ⇒ no new events, no new lifecycle records, kinds 4/5, payloads byte-identical (a rail
 compares the event streams). **Success:** rails `H14_…` in `tests/Sim.Pedestrians.Tests/Demand/HrotPedLifecycleTests.cs`,
 `tests/Sim.LiveCity.Tests/HrotPedestrianTests.cs`, `tests/Sim.Replication.Dds.Tests/HrotPedDdsTests.cs` (domains 232, 220); full suite green.
+
+## H15 — remove a live car by name, mid-run, returning its state *(HROT: a shot SUMO car becomes an HROT entity)*
+
+HROT's soldiers can hit a SUMO car (an HROT entity whose network id IS its SUMO name, H5); the hit car must leave SUMO for good and
+HROT re-creates it as its own stopped, damaged car at the pose SUMO had. H14's `RemovePedestrian` shape, for cars. **Seams:**
+
+| item | seam |
+|---|---|
+| remove | `LiveCitySim.RemoveVehicle(string name, out VehicleRemovalState state)` — between `Step()`s, on the stepping thread, Pending or Active. `name` = the `Engine` vehicle id (`Def.Id`): a demand car's `VehicleIdProvider` name, the generated `__vehN` without one (both what the vehicle wire's spawn `LifecycleRecord.Name` carries), or an H13 shadow's id (then it IS `DespawnExternalVehicle`). Lookup: new `Engine.TryGetLiveVehicle(id, out handle, out vTypeId)` — a linear scan like H4's `IsLiveVehicleId`, pure read, never per step. Removal: `Engine.Despawn`. False, never throws: null/empty, unknown, already arrived or removed |
+| state | `VehicleRemovalState(X, Y, Z, Heading, Speed, VType, ExternalType)` from the last snapshot (= the engine's state between steps). **X/Y = the CENTRE**: front bumper (the wire's and H13's point) − `Length/2 · (cos h, sin h)`; Z = the snapshot `PosZ` (lane elevation under the front); Heading radians, 0 = +x, CCW (H13/H14), from the navi `Angle`; Speed the parity double; VType the resolved vType id; ExternalType the H9 table's tag for it (= the H7 spawn record's, 0 = none). A **Pending** car (never on the wire) has a NaN pose and Speed 0 |
+| wire, NOW | new `ReplicationPublisher.PublishDespawn(handle, sink)`: if the publisher had announced the handle, write the same `IsSpawn = false` tombstone `PublishLifecycle`'s snapshot diff writes and forget it ⇒ the next `PublishStep` (whose snapshot no longer holds the car) is silent — exactly once. `RemoveVehicle` calls it on the live publisher (then self-pumps `VehicleSource` like `Step`, when `SelfPumpVehicleBus`) and on the record/DDS tee publisher (`recordVehSink`). A Pending car was never announced ⇒ nothing is published |
+| demand | `Engine.Despawn` makes the NEXT step's lifecycle diff emit `Arrived` for the freed slot, and the car stays in `Engine.VehicleHandles` (the previous step's read set) until that engine step. `LiveCitySim._removedSinceStep` (handle + was-Active), cleared after the next step's tally: the tally skips `Arrived` on those slots (**`ArrivedTotal` unchanged**), the spawn pass subtracts the Active ones from occupancy (the slot is refillable on the very next step, as after an arrival), `SampleCars`/`Sample` skip them. **`RemovedVehicleCount`** counts demand cars removed (not shadows) |
+
+```mermaid
+sequenceDiagram
+  participant H as HROT host (paused or between steps)
+  participant L as LiveCitySim
+  participant E as Engine
+  participant P as ReplicationPublisher (live + record tee)
+  participant W as VehicleSource / recordVehSink
+  H->>L: RemoveVehicle("car-17", out state)
+  L->>E: TryGetLiveVehicle("car-17") → handle, vTypeId
+  L->>L: state from _lastSnapshot (front → centre)
+  L->>E: Despawn(handle)
+  L->>P: PublishDespawn(handle, sink)  (known ⇒ tombstone, forget)
+  P->>W: LifecycleRecord(IsSpawn = false)
+  L->>W: Pump() (live bus, SelfPumpVehicleBus)
+  Note over L,E: next Step: spawn pass −1 occupied · tally skips the slot's Arrived · PublishStep silent for it
+```
+*What the picture shows that prose hid:* the tombstone leaves on the REMOVE call, not on a step — the next `PublishStep` finds the
+handle already forgotten — and the next step's `Arrived` for the slot is a by-product of `Despawn` that the tally must swallow.
+
+⚠ **H13 fixed on the way:** `DespawnExternalVehicle` now goes through the same core, so it too publishes its tombstone immediately, no
+longer leaks the despawned slot's `Arrived` into `ArrivedTotal` (H13's "their arrivals are not in `ArrivedTotal`" was false for a
+despawn — no rail checked it), and no longer holds a demand slot for the step after. ⚠ Removing a car changes which `EntityIndex` the
+next runtime spawn gets (`RecycleVehicleSlots`) and the publisher's dictionary order — deterministic for a fixed call sequence.
+**Inert:** no call (or only false calls) ⇒ `_removedSinceStep` stays empty, every added branch is a `Count > 0` guard, the wire is
+identical (a rail compares every lifecycle record and frame of a run with only false calls against a run with none).
+**Success:** rails `H15_…` in `tests/Sim.LiveCity.Tests/HrotVehicleRemovalTests.cs` (a moving demand car: centre = front − 2.5 m,
+within 1 m of the wire's dead-reckoned pose, heading/speed/type/tag; gone from the live bus and the tee's receiver with no Step, never
+back, one tombstone; paused despawn; shadow by id + Pending NaN pose, `ArrivedTotal` 0; unknown/repeat false, the slot refilled next
+step; twin determinism + false-call inertness) and `tests/Sim.Host.Tests/HrotVehicleDespawnTests.cs` (`PublishDespawn` once); full suite green.
