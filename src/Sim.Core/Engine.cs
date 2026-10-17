@@ -1261,6 +1261,10 @@ public sealed partial class Engine : IEngine
 
     public void RemoveObstacle(ObstacleHandle handle) => _obstacles.Remove(handle);
 
+    // HROT H12: the loaded network, so Bridge.ExternalBodyFeed resolves lane handles against the SAME model the
+    // obstacle API indexes (AddCore's `_network.LanesByHandle[laneHandle]`). Null before LoadScenario/LoadNetwork.
+    internal NetworkModel? LoadedNetwork => _network;
+
     // Resolve the lane handle -> LaneId string (which the lane-filtering consumers -- ObstacleConstraint,
     // the reroute/junction/follower scans -- still match on) and store. The obstacle's string Id is empty
     // (it was only ever the string-API key); ComputeLateralEvasion's tie-break among overlapping obstacles

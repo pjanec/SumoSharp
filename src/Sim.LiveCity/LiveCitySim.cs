@@ -53,6 +53,13 @@ public sealed class LiveCitySim : IDisposable
     // wire is always constructed; it simply carries no peds when these are null).
     private readonly PedLodManager? _manager;
     private readonly PedDemand? _demand;
+
+    // H12 (docs/HROT-INTEGRATION-DESIGN.md): the engine's OWN crowd source as the ctor wired it (null when peds are
+    // disabled), the host-body feed (null until the first non-empty SetExternalBodies), and the composite of the two
+    // that Engine.CrowdSource points at while the feed holds any disc.
+    private readonly ICrowdFootprintSource? _ownCrowdSource;
+    private ExternalBodyFeed? _externalBodies;
+    private ICrowdFootprintSource? _crowdWithBodies;
     private readonly InterestField _field;
     // The single ped-ORCA promotion source, re-centred AND re-sized on the live high-realism zone by
     // SetLcRealismZone so peds promote to full ORCA across the WHOLE highlighted zone wherever the viewer
@@ -616,11 +623,12 @@ public sealed class LiveCitySim : IDisposable
         // CrowdSource vehicle-only") when peds are disabled; footprints-only (walk-only, no crossing
         // composite) when crossings are disabled; the full composite otherwise -- byte-identical to
         // today's behaviour whenever both are enabled (the demo).
-        _engine.CrowdSource = _manager is null
+        _ownCrowdSource = _manager is null
             ? null
             : (cfg.YieldEnabled && _crossingOccupancy is not null)
                 ? new CompositeFootprintSource(_manager.HighPowerFootprints, _crossingOccupancy)
                 : _manager.HighPowerFootprints;
+        _engine.CrowdSource = _ownCrowdSource;
 
         // docs/EXTERNAL-NET-VIEWER-DESIGN.md §1: scrape the resolved route-file LIST (a `.sumocfg`'s
         // `<route-files>` is comma-separated and typically leads with vType files before the real
@@ -1291,6 +1299,37 @@ public sealed class LiveCitySim : IDisposable
         if (zone) SetLcRealismZone(zx, zy, zr);
     }
 
+    // H12 (docs/HROT-INTEGRATION-DESIGN.md): the host's own moving bodies, in NET coordinates, for the cars to react
+    // to -- a VEHICLE on the road becomes a moving lane obstacle on every vehicle lane its footprint overlaps; a
+    // PERSON (and a vehicle that overlaps no lane) becomes a crowd disc the cars yield to (ExternalBodyFeed has the
+    // exact rules). Each call REPLACES the previous set, diffed by ExternalBody.Id; an empty span removes every
+    // external obstacle and disc. Call on the stepping thread, between Step() calls. Never calling it leaves the
+    // engine exactly as before (no feed, Engine.CrowdSource untouched) -- every golden and parity path unchanged.
+    public void SetExternalBodies(ReadOnlySpan<ExternalBody> bodies)
+    {
+        if (_externalBodies is null)
+        {
+            if (bodies.IsEmpty)
+            {
+                return;
+            }
+
+            _externalBodies = new ExternalBodyFeed(_engine);
+            _crowdWithBodies = _ownCrowdSource is null
+                ? _externalBodies
+                : new CompositeFootprintSource(_ownCrowdSource, _externalBodies);
+        }
+
+        _externalBodies.Apply(bodies);
+
+        // Attach the feed only while it actually holds a disc, so an all-on-lane body set (obstacles only) or an
+        // emptied feed leaves CrowdSource exactly as the ctor set it -- null on a peds-disabled sim.
+        _engine.CrowdSource = _externalBodies.DiscCount > 0 ? _crowdWithBodies : _ownCrowdSource;
+    }
+
+    // H12: the host-body feed (its obstacle/disc counts, LanesOf), or null before the first SetExternalBodies.
+    public ExternalBodyFeed? ExternalBodies => _externalBodies;
+
     public void Step()
     {
         // §5: apply any render-thread requests at this fixed point -- BEFORE `dt` is read, so a requested
@@ -1409,7 +1448,9 @@ public sealed class LiveCitySim : IDisposable
         // as ONE fused phase; it is not separable at this seam without touching Sim.Pedestrians.
         var beforeCount = _pedPublisher.Events.Count;
         var tPedDemand = PhaseStart();
-        _demand?.Step(_now, dt, _field, NoEntities);
+        // H12: a pedestrian crowd walks around the host's external bodies (every one, as discs -- see
+        // ExternalBodyFeed.PedestrianDiscs). NoEntities, exactly as before, until SetExternalBodies is called.
+        _demand?.Step(_now, dt, _field, _externalBodies is { } bodyFeed ? bodyFeed.PedestrianDiscs : NoEntities);
         PhaseEnd("pedDemandStep", tPedDemand);
         var tNext = _now + dt;
 

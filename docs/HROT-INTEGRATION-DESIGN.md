@@ -170,3 +170,29 @@ at H10's depth), and every endpoint uses the 1-arg ctor. ⚠ One type carries ON
 and keys) take the second topic of each; their payload copy is `DdsWire.CopyIn/CopyOut`, not a repeated block. ⛔ The old note
 "the [DdsTopic] attribute does NOT carry a usable name" was about a bare attribute; it is superseded.
 
+
+## H12 — the host's own moving bodies are obstacles and discs the cars react to *(HROT request, 2026-10-17)*
+
+HROT moves its own vehicles and soldiers through the same streets; SUMO's cars drove through them. **Seam:**
+`LiveCitySim.SetExternalBodies(ReadOnlySpan<ExternalBody>)` (stepping thread, between `Step()`s; each call REPLACES the
+set, diffed by `Id`) over `Sim.Core.Bridge.ExternalBodyFeed`, which maps each `ExternalBody(Id, Kind, X, Y, Vx, Vy, Length, Width)`
+(net frame, centre, m/s) onto the two shapes the engine already has:
+
+| body | becomes | rule |
+|---|---|---|
+| `Vehicle` overlapping ≥1 vehicle lane | `Engine.AddMovingObstacle` per overlapped lane, then `UpdateObstacle` in place, `RemoveObstacle` when it leaves that lane | footprint taken lane-aligned (no heading on the record): `\|lat\| < lane.Width/2 + Width/2` and the along-axis overshoot past the lane's ends `< Length/2`; `frontPos = clamp(offset + Length/2, 0, lane.Length)`, `speed = max(0, v·dir)`, `latPos = lat`, `latSpeed = v·leftNormal`, `width = Width`, `maxDecel = 7.5` |
+| `Vehicle` overlapping no lane | radius-`Width/2` disc chain along its velocity (else the nearest lane's direction; neither ⇒ one radius-`max(L,W)/2` disc) | — |
+| `Person` | one disc, radius `max(L,W)/2` (0.3 m if both ≤ 0) | — |
+
+Discs reach the cars through `ICrowdFootprintSource.QueryNear` (nearest-first via `WorldDiscQuery.InsertNearest`): while the feed
+holds a disc, `Engine.CrowdSource` = `CompositeFootprintSource(own, feed)` — or the feed alone when peds are disabled (HROT's
+`PedPopulationCap = 0` left it null) — and it reverts to the ctor's own source when the feed holds none. Lanes are found with
+`Sim.Ingest.LaneSpatialIndex` (a uniform segment grid, SumoRouteGraphNav's B1 construction, cell floor 10 m). When peds are enabled,
+every body (on-road vehicles too) is also handed to the pedestrian crowd as `PedLodManager.Step`'s `externalEntities` (previously
+always empty). ⚠ The lean's "no lane centre within 3 m + half a lane width ⇒ disc" test is subsumed: a vehicle overlapping no lane
+is a disc at any distance. ⚠ Limits: `ObstacleConstraint` reads the car's CURRENT lane only, so a body just past a junction is seen
+when the car enters that lane (discs, projected onto the current lane, are seen earlier); a footprint/kind change re-adds the obstacles.
+**Inert:** never calling it creates no feed and leaves `CrowdSource` and the ped input as before. **Success:** rails `H12_…` in
+`tests/Sim.LiveCity.Tests/HrotExternalBodyTests.cs` (a parked vehicle body stops the queue and its removal releases it; a person
+disc stops cars with peds disabled; straddle ⇒ both lanes, leave ⇒ removed, off-road ⇒ disc; QueryNear nearest-first;
+`LaneSpatialIndex` equals a brute-force `LaneProjection` scan on `_ped/demo_city/box`); full suite green.
