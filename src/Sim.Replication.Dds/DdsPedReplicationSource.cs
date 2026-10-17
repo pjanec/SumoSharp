@@ -19,9 +19,9 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
 {
     private const int DurableDepth = 16;
 
-    private readonly DdsReader<DdsWireFrame> _crowdReader;
+    private readonly DdsReader<DdsPedCrowdFrame> _crowdReader;
     private readonly DdsReader<DdsPedLeg> _pathArcReader;
-    private readonly DdsReader<DdsPedLeg> _activityReader;
+    private readonly DdsReader<DdsPedActivityLeg> _activityReader;
     private readonly DdsReader<DdsPedLifecycle> _lifecycleReader;
 
     // Newest crowd frame only (docs §4): records are accumulated per step (across a step's chunks, possibly
@@ -43,10 +43,10 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
 
     public DdsPedReplicationSource(DdsParticipant participant)
     {
-        _crowdReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.PedCrowd, DdsQos.VolatileLatest());
-        _pathArcReader = new DdsReader<DdsPedLeg>(participant, DdsTopicNames.PedPathArc, DdsQos.DurableLatest(DurableDepth));
-        _activityReader = new DdsReader<DdsPedLeg>(participant, DdsTopicNames.PedActivity, DdsQos.DurableLatest(DurableDepth));
-        _lifecycleReader = new DdsReader<DdsPedLifecycle>(participant, DdsTopicNames.PedLifecycle, DdsQos.DurableLatest(DurableDepth));
+        _crowdReader = new DdsReader<DdsPedCrowdFrame>(participant);
+        _pathArcReader = new DdsReader<DdsPedLeg>(participant);
+        _activityReader = new DdsReader<DdsPedActivityLeg>(participant);
+        _lifecycleReader = new DdsReader<DdsPedLifecycle>(participant);
     }
 
     public uint LatestCrowdStep => _latestCrowdStep;

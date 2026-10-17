@@ -80,6 +80,45 @@ public class HrotDdsSeamTests
         Assert.True(lost.Count == 0, $"KEEP_LAST too shallow: the cars of {lost.Count} of 5 frames were lost");
     }
 
+    // ── H11: every topic is named and QoS-typed ON ITS TYPE (ddsmonitor, 1-arg ctors) ──────────
+
+    [Theory]
+    [InlineData(typeof(DdsWireFrame), DdsTopicNames.Vehicles)]
+    [InlineData(typeof(DdsVehicleLifecycle), DdsTopicNames.Lifecycle)]
+    [InlineData(typeof(DdsNetworkGeometry), DdsTopicNames.Geometry)]
+    [InlineData(typeof(DdsTlState), DdsTopicNames.Tl)]
+    [InlineData(typeof(DdsViewerCommand), DdsTopicNames.Commands)]
+    [InlineData(typeof(DdsViewerStatus), DdsTopicNames.Status)]
+    [InlineData(typeof(DdsPedCrowdFrame), DdsTopicNames.PedCrowd)]
+    [InlineData(typeof(DdsPedLeg), DdsTopicNames.PedPathArc)]
+    [InlineData(typeof(DdsPedActivityLeg), DdsTopicNames.PedActivity)]
+    [InlineData(typeof(DdsPedLifecycle), DdsTopicNames.PedLifecycle)]
+    public void H11_EveryTopicType_CarriesItsNameAndQos(Type type, string name)
+    {
+        var topic = type.GetCustomAttributes(typeof(CycloneDDS.Schema.DdsTopicAttribute), false).Cast<CycloneDDS.Schema.DdsTopicAttribute>().Single();
+        Assert.Equal(name, topic.TopicName);
+        Assert.Single(type.GetCustomAttributes(typeof(CycloneDDS.Schema.DdsQosAttribute), false));
+    }
+
+    [Fact]
+    public void H11_TheVehicleStream_KeepsTheSparseStreamDepth()
+    {
+        var q = (CycloneDDS.Schema.DdsQosAttribute)typeof(DdsWireFrame).GetCustomAttributes(typeof(CycloneDDS.Schema.DdsQosAttribute), false).Single();
+        Assert.Equal(DdsQos.SparseStreamDepth, q.HistoryDepth);
+    }
+
+    /// <summary>The 1-arg ctors still meet: a frame written by the sink reaches a subscriber on another participant.</summary>
+    [Fact]
+    public void H11_TheImplicitNames_StillMatch_AcrossParticipants()
+    {
+        using var a = new DdsParticipant(227);
+        using var b = new DdsParticipant(227);
+        using var sink = new DdsReplicationSink(a);
+        using var sub = new DdsSubscriber(b, stampWithSimTime: true);
+        var h = new VehicleHandle(9, 1);
+        Assert.True(PollUntil(() => sub.History.ContainsKey(h), () => { sink.PublishFrame(1, 0.5, new[] { Car(h, 1.0) }); sub.Pump(); }), "no frame arrived");
+    }
+
     // ── H7: the spawn tag over DDS ──────────────────────────────────────────────────────────────
 
     [Fact]

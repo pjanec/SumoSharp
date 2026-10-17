@@ -1,11 +1,9 @@
 namespace Sim.Replication.Dds;
 
-// Explicit topic-name constants. CRITICAL: the [DdsTopic] attribute on these structs does NOT carry a
-// usable name through CycloneDDS.NET 0.3.2's generator — the 1-arg `DdsWriter<T>(participant)` /
-// `DdsReader<T>(participant)` ctor resolves to a NULL topic name and throws ArgumentNullException. Every
-// writer/reader in this track MUST be constructed with an explicit topic-name string (the 2-arg ctor,
-// `new DdsWriter<T>(participant, DdsTopicNames.X)`), and a writer/reader pair must use the SAME string to
-// match. See README.md.
+// The topic-name constants. ⭐ HROT H11: each name ALSO lives on its type ([DdsTopic("sumo/...")] + [DdsQos]), so every writer and
+// reader uses the 1-arg ctor and a generic CycloneDDS.NET tool (ddsmonitor) discovers and decodes the topic. ⛔ Superseded: "the
+// [DdsTopic] attribute does NOT carry a usable name" — that was a BARE [DdsTopic] (no name argument). One type ⇒ one topic, so the
+// crowd and the activity streams have their own types (DdsPedCrowdFrame, DdsPedActivityLeg). A rail pins each constant to its type.
 public static class DdsTopicNames
 {
     public const string Vehicles = "sumo/vehicles";

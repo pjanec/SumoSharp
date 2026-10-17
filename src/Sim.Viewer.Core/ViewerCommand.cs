@@ -29,7 +29,7 @@ public sealed class DdsCommandWriter : IDisposable
     {
         // QoS (reliable + transient-local + deep keep-last) is declared on the topic type via [DdsQos] and
         // applied automatically -- so the 2-arg ctor (no explicit qos handle) is all that's needed.
-        _writer = new DdsWriter<DdsViewerCommand>(participant, DdsTopicNames.Commands);
+        _writer = new DdsWriter<DdsViewerCommand>(participant);
         _writerId = Environment.ProcessId;
     }
 
@@ -60,7 +60,7 @@ public sealed class DdsCommandReader : IDisposable
 
     public DdsCommandReader(DdsParticipant participant)
     {
-        _reader = new DdsReader<DdsViewerCommand>(participant, DdsTopicNames.Commands);
+        _reader = new DdsReader<DdsViewerCommand>(participant);
     }
 
     public void PumpApply(EngineHost host)
@@ -124,7 +124,7 @@ public sealed class DdsStatusWriter : IDisposable
 
     public DdsStatusWriter(DdsParticipant participant)
     {
-        _writer = new DdsWriter<DdsViewerStatus>(participant, DdsTopicNames.Status);
+        _writer = new DdsWriter<DdsViewerStatus>(participant);
         _publisherId = Environment.ProcessId;
     }
 
@@ -156,7 +156,7 @@ public sealed class DdsStatusReader : IDisposable
 
     public DdsStatusReader(DdsParticipant participant)
     {
-        _reader = new DdsReader<DdsViewerStatus>(participant, DdsTopicNames.Status);
+        _reader = new DdsReader<DdsViewerStatus>(participant);
     }
 
     public void Pump()

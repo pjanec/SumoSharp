@@ -14,7 +14,9 @@ namespace Sim.Replication.Dds;
 // discovery window are retained and delivered on match -- volatile would lose them), KEEP_LAST(256) (a
 // burst / the whole pre-match backlog is retained, not clobbered to the newest). The runtime applies this
 // automatically to any writer/reader created for the topic (2-arg ctor, no explicit qos handle).
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/commands")]
 [DdsQos(
     Reliability = DdsReliability.Reliable,
     Durability = DdsDurability.TransientLocal,
@@ -35,7 +37,9 @@ public partial struct DdsViewerCommand
 // (authoritative pause/speed instead of optimistic guesses) and disable controls that can't do anything
 // (e.g. the sim-tick-rate radios when the publisher is a fixed-step scenario). Keyed per publisher; durable
 // KEEP_LAST(1) so a late-joining remote immediately gets the current state.
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/status")]
 [DdsQos(
     Reliability = DdsReliability.Reliable,
     Durability = DdsDurability.TransientLocal,

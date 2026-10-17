@@ -12,13 +12,32 @@ namespace Sim.Replication.Dds;
 // DdsReader taking the latest; QoS BEST_EFFORT/KEEP_LAST for state, TRANSIENT_LOCAL for lifecycle/geometry.
 // Kept OUT of the [DdsTopic] struct: the CycloneDDS code generator enumerates public members of a topic as
 // serializable fields, so a public const there is mis-generated as an instance field.
-public static class DdsWire
+public static unsafe class DdsWire
 {
     // 64 KiB caps a chunk at ~1360 vehicle records (48 B) / ~2000 crowd records (32 B); chunk beyond that.
     public const int MaxPayload = 64 * 1024;
+
+    /// <summary>Copies a codec-written blob into a topic's fixed payload; returns its length. ⛔ Throws past <see cref="MaxPayload"/>: chunk it.</summary>
+    public static unsafe int CopyIn(ReadOnlySpan<byte> bytes, byte* payload)
+    {
+        if (bytes.Length > MaxPayload)
+            throw new ArgumentException($"payload {bytes.Length} exceeds DdsWire.MaxPayload {MaxPayload}; chunk it.", nameof(bytes));
+        bytes.CopyTo(new Span<byte>(payload, MaxPayload));
+        return bytes.Length;
+    }
+
+    /// <summary>Copies a topic payload's valid prefix into <paramref name="dst"/>; returns its length.</summary>
+    public static unsafe int CopyOut(byte* payload, int byteCount, Span<byte> dst)
+    {
+        new ReadOnlySpan<byte>(payload, byteCount).CopyTo(dst);
+        return byteCount;
+    }
 }
 
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/vehicles")]
+[DdsQos(Reliability = DdsReliability.BestEffort, Durability = DdsDurability.Volatile, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 64)]
 public unsafe partial struct DdsWireFrame
 {
     [DdsKey, DdsId(0)] public byte Kind;        // FrameCodec.KindVehicle / KindCrowd (+ a geometry kind)
@@ -75,7 +94,10 @@ public unsafe partial struct DdsWireFrame
 // this project), and FixedString64 keeps that zero-GC-allocation write/read path while still mapping to an
 // IDL bounded string for wire interop. 64 chars comfortably covers SUMO's `id` attribute (route/flow-
 // generated ids like "veh12.7" or "flow_0.3"); empty ("") on despawn, matching LifecycleRecord.Name.
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/lifecycle")]
+[DdsQos(Reliability = DdsReliability.Reliable, Durability = DdsDurability.TransientLocal, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 1)]
 public partial struct DdsVehicleLifecycle
 {
     [DdsKey, DdsId(0)] public uint Index;

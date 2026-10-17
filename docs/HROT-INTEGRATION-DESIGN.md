@@ -158,3 +158,15 @@ cap freezes them. ⇒ the vehicle writer and readers use `VolatileLatest(DdsQos.
 reader that keeps up (it already took every frame); the Tl topic stays at depth 1 (each frame is the whole table).
 ⚠ Not fixed here: a best-effort sample LOST on the network is still not repaired until the car's next fire — with the heartbeat
 equal to the 3 s extrapolation cap, one lost heartbeat of a steady car still freezes it until the next.
+
+## H11 — every topic is named on its type, so generic DDS tools see the SUMO wire *(HROT request, 2026-10-17)*
+
+🔒 HROT: *"lets make them implicit then"* — `ddsmonitor` (CycloneDDS.NET's sniffer) discovers a topic by its type's `[DdsTopic]` name and
+`[DdsQos]`, and the SUMO types carried a BARE `[DdsTopic]` with the name passed to every writer/reader instead, so the sniffer never
+saw them. ⇒ each type now names its topic (`sumo/vehicles`, … — the wire names are UNCHANGED, so `DdsTopicNames` keeps its values and a
+rail pins each to its type) and declares the QoS its endpoints used (`DdsQos.VolatileLatest`/`DurableLatest` profiles, the vehicle stream
+at H10's depth), and every endpoint uses the 1-arg ctor. ⚠ One type carries ONE name: `DdsWireFrame` served `sumo/vehicles` AND
+`sumo/ped-crowd`, `DdsPedLeg` served `sumo/ped-patharc` AND `sumo/ped-activity` ⇒ `DdsPedCrowdFrame` and `DdsPedActivityLeg` (same layout
+and keys) take the second topic of each; their payload copy is `DdsWire.CopyIn/CopyOut`, not a repeated block. ⛔ The old note
+"the [DdsTopic] attribute does NOT carry a usable name" was about a bare attribute; it is superseded.
+

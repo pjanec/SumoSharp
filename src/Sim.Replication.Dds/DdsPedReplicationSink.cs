@@ -21,9 +21,9 @@ public sealed class DdsPedReplicationSink : IPedReplicationSink
     // subscriber's Pump() calls is not collapsed to a single sample (docs §4 "accumulation semantics").
     private const int DurableDepth = 16;
 
-    private readonly DdsWriter<DdsWireFrame> _crowdWriter;
+    private readonly DdsWriter<DdsPedCrowdFrame> _crowdWriter;
     private readonly DdsWriter<DdsPedLeg> _pathArcWriter;
-    private readonly DdsWriter<DdsPedLeg> _activityWriter;
+    private readonly DdsWriter<DdsPedActivityLeg> _activityWriter;
     private readonly DdsWriter<DdsPedLifecycle> _lifecycleWriter;
 
     private byte[] _crowdScratch = new byte[DdsWire.MaxPayload];
@@ -38,10 +38,10 @@ public sealed class DdsPedReplicationSink : IPedReplicationSink
 
     public DdsPedReplicationSink(DdsParticipant participant)
     {
-        _crowdWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.PedCrowd, DdsQos.VolatileLatest());
-        _pathArcWriter = new DdsWriter<DdsPedLeg>(participant, DdsTopicNames.PedPathArc, DdsQos.DurableLatest(DurableDepth));
-        _activityWriter = new DdsWriter<DdsPedLeg>(participant, DdsTopicNames.PedActivity, DdsQos.DurableLatest(DurableDepth));
-        _lifecycleWriter = new DdsWriter<DdsPedLifecycle>(participant, DdsTopicNames.PedLifecycle, DdsQos.DurableLatest(DurableDepth));
+        _crowdWriter = new DdsWriter<DdsPedCrowdFrame>(participant);
+        _pathArcWriter = new DdsWriter<DdsPedLeg>(participant);
+        _activityWriter = new DdsWriter<DdsPedActivityLeg>(participant);
+        _lifecycleWriter = new DdsWriter<DdsPedLifecycle>(participant);
     }
 
     // High-rate crowd frame: chunk by the shared byte budget (3640 peds / 64 KiB chunk at 18 B/record) and
@@ -61,7 +61,7 @@ public sealed class DdsPedReplicationSink : IPedReplicationSink
             var (start, count) = FrameChunker.ChunkRange(c, records.Length, maxPerChunk);
             var chunk = records.Slice(start, count);
             var size = FrameCodec.WritePedFreeKinematicFrame(_crowdScratch, step, time, chunk);
-            var frame = new DdsWireFrame();
+            var frame = new DdsPedCrowdFrame();
             frame.SetPayload(FrameCodec.KindPedFreeKinematic, step, time, _crowdScratch.AsSpan(0, size), c);
             _crowdWriter.Write(frame);
             CrowdBytesPublished += size;
@@ -84,7 +84,7 @@ public sealed class DdsPedReplicationSink : IPedReplicationSink
     // (Sim.Replication never interprets it) -- just tag it with the owning ped's handle and DDS-write.
     public void PublishActivityTimeline(VehicleHandle handle, ReadOnlySpan<byte> timelineBytes)
     {
-        var leg = new DdsPedLeg();
+        var leg = new DdsPedActivityLeg();
         leg.SetPayload(handle.Index, handle.Generation, timelineBytes);
         _activityWriter.Write(leg);
         ActivityBytesPublished += timelineBytes.Length;

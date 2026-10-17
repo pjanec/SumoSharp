@@ -36,7 +36,10 @@ public static class DdsStructured
 
 // The structured state topic: one instance per (tick, chunk). Keyed by ChunkIndex so a tick's chunks are
 // distinct instances (mirrors DdsWireFrame's chunking). `Count` is the valid prefix of every column.
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/vehicles-structured")]
+[DdsQos(Reliability = DdsReliability.BestEffort, Durability = DdsDurability.Volatile, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 64)]
 public partial struct DdsVehicleBatch
 {
     [DdsKey, DdsId(0)] public int ChunkIndex;

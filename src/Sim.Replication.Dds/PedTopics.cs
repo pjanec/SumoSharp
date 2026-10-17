@@ -22,7 +22,10 @@ namespace Sim.Replication.Dds;
 // Durable, keyed, per-ped opaque leg blob (PathArc frame OR ActivityTimeline blob). Same
 // SetPayload/ReadPayload bridge as DdsNetworkGeometry; keyed by the ped handle Index (the Generation is
 // carried too so the source can present a full VehicleHandle, though the current receiver reads only Index).
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/ped-patharc")]
+[DdsQos(Reliability = DdsReliability.Reliable, Durability = DdsDurability.TransientLocal, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 16)]
 public unsafe partial struct DdsPedLeg
 {
     [DdsKey, DdsId(0)] public uint Index;      // ped handle index -- the DDS instance key (latest leg per ped)
@@ -64,11 +67,67 @@ public unsafe partial struct DdsPedLeg
 // Low-rate, KEYED (by ped index) lifecycle topic -- spawn/despawn + DR-model switch, the ped analog of
 // DdsVehicleLifecycle. TRANSIENT_LOCAL so a late-joining IG gets each known ped's latest DR-model state.
 // `Kind` is the byte-backed Sim.Replication.PedLifecycleKind; `Time` is the event's sim time.
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/ped-lifecycle")]
+[DdsQos(Reliability = DdsReliability.Reliable, Durability = DdsDurability.TransientLocal, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 16)]
 public partial struct DdsPedLifecycle
 {
     [DdsKey, DdsId(0)] public uint Index;
     [DdsId(1)] public ushort Generation;
     [DdsId(2)] public byte Kind;       // Sim.Replication.PedLifecycleKind
     [DdsId(3)] public double Time;
+}
+
+// ⭐ HROT H11 — the crowd stream's OWN type (it shared DdsWireFrame with sumo/vehicles, and a type carries ONE topic name). Same
+// layout and keys as DdsWireFrame; the copy logic is DdsWire's, not repeated.
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/ped-crowd")]
+[DdsQos(Reliability = DdsReliability.BestEffort, Durability = DdsDurability.Volatile, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 1)]
+public unsafe partial struct DdsPedCrowdFrame
+{
+    [DdsKey, DdsId(0)] public byte Kind;        // FrameCodec.KindPedFreeKinematic
+    [DdsKey, DdsId(1)] public int ChunkIndex;
+    [DdsId(2)] public uint Step;
+    [DdsId(3)] public float Time;
+    [DdsId(4)] public int ByteCount;
+    [DdsId(5)] public fixed byte Payload[DdsWire.MaxPayload];
+    [DdsKey, DdsId(6)] public uint Source;
+
+    public void SetPayload(byte kind, uint step, float time, ReadOnlySpan<byte> bytes, int chunkIndex = 0)
+    {
+        Kind = kind; ChunkIndex = chunkIndex; Step = step; Time = time;
+        fixed (byte* p = Payload) ByteCount = DdsWire.CopyIn(bytes, p);
+    }
+
+    public readonly int ReadPayload(Span<byte> dst)
+    {
+        fixed (byte* p = Payload) return DdsWire.CopyOut(p, ByteCount, dst);
+    }
+}
+
+// ⭐ HROT H11 — the activity timeline's OWN type (it shared DdsPedLeg with sumo/ped-patharc). Same layout and key as DdsPedLeg.
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/ped-activity")]
+[DdsQos(Reliability = DdsReliability.Reliable, Durability = DdsDurability.TransientLocal, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 16)]
+public unsafe partial struct DdsPedActivityLeg
+{
+    [DdsKey, DdsId(0)] public uint Index;
+    [DdsId(1)] public ushort Generation;
+    [DdsId(2)] public int ByteCount;
+    [DdsId(3)] public fixed byte Payload[DdsWire.MaxPayload];
+
+    public void SetPayload(uint index, ushort generation, ReadOnlySpan<byte> bytes)
+    {
+        Index = index; Generation = generation;
+        fixed (byte* p = Payload) ByteCount = DdsWire.CopyIn(bytes, p);
+    }
+
+    // Feed dst[..len] to ActivityTimelineWire.Decode (Sim.Pedestrians).
+    public readonly int ReadPayload(Span<byte> dst)
+    {
+        fixed (byte* p = Payload) return DdsWire.CopyOut(p, ByteCount, dst);
+    }
 }

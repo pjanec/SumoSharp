@@ -8,7 +8,10 @@ namespace Sim.Replication.Dds;
 // DdsWireFrame's shape exactly (`SetPayload`/`ReadPayload` bridging the codec) so the same "one blob format,
 // any transport" pattern applies here too.
 
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/geometry")]
+[DdsQos(Reliability = DdsReliability.Reliable, Durability = DdsDurability.TransientLocal, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 1)]
 public unsafe partial struct DdsNetworkGeometry
 {
     // Geometry may span multiple chunks for a large net (GeometryCodec.PlanChunks); keyed by ChunkIndex so
@@ -58,7 +61,10 @@ public unsafe partial struct DdsNetworkGeometry
 // Low-rate traffic-light state (SUMOSHARP-DEADRECKONING.md §5.2): NOT on the high-rate vehicle packet by
 // design (§4.3) — a separate topic, same blob pattern. Every committed scenario's TL state fits in one
 // chunk (ChunkIndex kept for symmetry with the other blob topics / future-proofing a very large network).
-[DdsTopic]
+// ⭐ HROT H11: the topic NAME and QoS live on the type, so any CycloneDDS.NET tool (ddsmonitor) discovers and decodes it, and every
+// writer/reader uses the 1-arg ctor. The name equals DdsTopicNames.X (a rail pins the two).
+[DdsTopic("sumo/tl")]
+[DdsQos(Reliability = DdsReliability.BestEffort, Durability = DdsDurability.Volatile, HistoryKind = DdsHistoryKind.KeepLast, HistoryDepth = 1)]
 public unsafe partial struct DdsTlState
 {
     [DdsKey, DdsId(0)] public int ChunkIndex;
