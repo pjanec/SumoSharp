@@ -93,11 +93,22 @@ public sealed class DdsSubscriber : IReplicationSource
     private VehicleRecord[] _vehicleRecs = new VehicleRecord[2048];
     private byte[] _geometryBytes = new byte[DdsWire.MaxPayload];
     private byte[] _tlBytes = new byte[DdsWire.MaxPayload];
+    private readonly bool _stampWithSimTime;
 
     // Must mirror DdsPublisher's per-topic QoS profile exactly (a RELIABLE reader will not match a
     // BEST_EFFORT writer) -- see DdsQos's doc comment.
-    public DdsSubscriber(DdsParticipant participant)
+    public DdsSubscriber(DdsParticipant participant) : this(participant, stampWithSimTime: false)
     {
+    }
+
+    // docs/HROT-INTEGRATION-DESIGN.md H3: `stampWithSimTime` stamps every vehicle sample with the frame's own
+    // SIM time instead of the DDS SourceTimestamp (wall clock). A host whose render clock IS the sim clock
+    // (pausable, scalable, seekable -- e.g. HROT's cluster time) resolves poses with DrClock.ResolveAt at
+    // that sim time, so wall-clock arrival stamps would keep extrapolating through a pause. Default false
+    // keeps the existing wall-clock behaviour byte-for-byte.
+    public DdsSubscriber(DdsParticipant participant, bool stampWithSimTime)
+    {
+        _stampWithSimTime = stampWithSimTime;
         _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
         _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
@@ -244,7 +255,7 @@ public sealed class DdsSubscriber : IReplicationSource
             var count = FrameCodec.ReadVehicleFrame(_vehicleBytes.AsSpan(0, n), _vehicleRecs);
 
             var ts = sample.Info.SourceTimestamp;
-            var timestampSeconds = ts > 0 ? ts / 1_000_000_000.0 : (double)f.Time;
+            var timestampSeconds = _stampWithSimTime ? (double)f.Time : ts > 0 ? ts / 1_000_000_000.0 : (double)f.Time;
 
             if (LatestVehicleSampleTime is null || timestampSeconds > LatestVehicleSampleTime.Value)
             {

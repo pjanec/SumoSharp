@@ -588,7 +588,50 @@ public static class NetworkParser
             internalJunctions,
             internalJunctionByBayLane,
             internalLaneFoes,
-            internalLinkFoes);
+            internalLinkFoes,
+            ParseLocation(root.Element("location")));
+    }
+
+    // docs/HROT-INTEGRATION-DESIGN.md H1: <location netOffset="x,y" convBoundary="a,b,c,d"
+    // origBoundary="..." projParameter="..."/>. Absent element -> null; a malformed number throws (a net
+    // that lies about its frame must not load silently).
+    private static NetLocation? ParseLocation(XElement? el)
+    {
+        if (el is null)
+        {
+            return null;
+        }
+
+        static double[] Numbers(string? s, int count, string name)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+            {
+                return new double[count];
+            }
+
+            var parts = s.Split(',');
+            if (parts.Length != count)
+            {
+                throw new InvalidDataException($"<location {name}=\"{s}\"> expects {count} comma-separated numbers.");
+            }
+
+            var values = new double[count];
+            for (var i = 0; i < count; i++)
+            {
+                values[i] = double.Parse(parts[i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            return values;
+        }
+
+        var offset = Numbers((string?)el.Attribute("netOffset"), 2, "netOffset");
+        var conv = Numbers((string?)el.Attribute("convBoundary"), 4, "convBoundary");
+        return new NetLocation(
+            offset[0],
+            offset[1],
+            (conv[0], conv[1], conv[2], conv[3]),
+            (string?)el.Attribute("origBoundary") ?? string.Empty,
+            (string?)el.Attribute("projParameter") ?? string.Empty);
     }
 
     // Rung 9b-i: parses one <junction> -- id/type/intLanes are always present (netconvert

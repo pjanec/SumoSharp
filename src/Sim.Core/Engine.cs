@@ -2876,6 +2876,14 @@ public sealed partial class Engine : IEngine
     // next Step() when a safe gap exists at `departPos`. Poll GetLifecycle for Pending -> Active.
     public VehicleHandle SpawnVehicle(VTypeHandle type, IReadOnlyList<string> routeEdges,
         double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
+        => SpawnVehicle(type, routeEdges, vehicleId: null, departPos, departSpeed, departLane, departBestLane);
+
+    // docs/HROT-INTEGRATION-DESIGN.md H4: the same spawn with a HOST-CHOSEN vehicle id -- the id every
+    // replication surface carries (VehicleIds, LifecycleRecord.Name), so a host can key the vehicle to its
+    // own entity id. null = the generated `__vehN` id (the overload above, byte-identical). A duplicate of a
+    // LIVE vehicle's id throws: two vehicles answering to one id would break every id-keyed consumer.
+    public VehicleHandle SpawnVehicle(VTypeHandle type, IReadOnlyList<string> routeEdges, string? vehicleId,
+        double departPos = 0.0, double departSpeed = 0.0, int departLane = 0, bool departBestLane = false)
     {
         if (_network is null || _config is null)
         {
@@ -2895,8 +2903,13 @@ public sealed partial class Engine : IEngine
         var routeId = $"__route{_runtimeRouteCounter++}";
         _routesById[routeId] = new Route(routeId, new List<string>(routeEdges));
 
+        if (vehicleId is not null && IsLiveVehicleId(vehicleId))
+        {
+            throw new ArgumentException($"a live vehicle already has the id '{vehicleId}'.", nameof(vehicleId));
+        }
+
         var def = new VehicleDef(
-            Id: $"__veh{_runtimeVehicleCounter++}",
+            Id: vehicleId ?? $"__veh{_runtimeVehicleCounter++}",
             TypeId: _vTypeIds[type.Index],
             RouteId: routeId,
             Depart: CurrentTime,
@@ -2938,6 +2951,21 @@ public sealed partial class Engine : IEngine
         SpawnVehicle(type, GetEdgeId(fromEdge), GetEdgeId(toEdge), departPos, departSpeed, departLane);
 
     // Lifecycle of a spawned/loaded vehicle (Pending/Active/Arrived), or Unknown for a stale handle.
+    // docs/HROT-INTEGRATION-DESIGN.md H4: is `id` the id of a vehicle that has not arrived (Pending or Active)?
+    // A linear scan, run only by the host-chosen-id spawn path, never per step.
+    private bool IsLiveVehicleId(string id)
+    {
+        foreach (var v in _vehicles)
+        {
+            if (!v.Arrived && string.Equals(v.Def.Id, id, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public VehicleLifecycle GetLifecycle(VehicleHandle handle)
     {
         var idx = (int)handle.Index;

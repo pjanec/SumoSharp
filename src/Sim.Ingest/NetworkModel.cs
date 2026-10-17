@@ -272,6 +272,21 @@ public sealed record InternalJunction(
     IReadOnlyList<string> IncLanes,
     IReadOnlyList<string> IntLanes);
 
+// docs/HROT-INTEGRATION-DESIGN.md H1 -- the <location> element as written by netconvert. Coordinates in
+// the net are `projected - NetOffset`; `ProjParameter` is a PROJ string ("+proj=utm ...") or "!" for a net
+// that is not georeferenced (plain local metres). Boundaries are (minX, minY, maxX, maxY); OrigBoundary is
+// in the ORIGINAL (often lon/lat) coordinates, so it is kept raw.
+public sealed record NetLocation(
+    double NetOffsetX,
+    double NetOffsetY,
+    (double MinX, double MinY, double MaxX, double MaxY) ConvBoundary,
+    string OrigBoundary,
+    string ProjParameter)
+{
+    // True when the net carries a projection; false for "!" (a plain local-metre net).
+    public bool IsGeoreferenced => ProjParameter.Length > 0 && ProjParameter != "!";
+}
+
 public sealed record NetworkModel(
     IReadOnlyList<Edge> Edges,
     IReadOnlyDictionary<string, Edge> EdgesById,
@@ -382,7 +397,12 @@ public sealed record NetworkModel(
     // Defaulted so existing construction sites keep compiling; null degrades to "no link foes known"
     // -- T4 (not this task) is the first and only reader. This member is parse-time-only and
     // provably parity-inert: nothing in Sim.Core reads it yet.
-    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLinkFoes = null)
+    IReadOnlyDictionary<string, IReadOnlyList<int>>? InternalLinkFoes = null,
+    // docs/HROT-INTEGRATION-DESIGN.md H1: the net's <location> element (netOffset, convBoundary,
+    // origBoundary, projParameter), so a host can place the net in its own world -- SumoSharp itself never
+    // re-origins or reprojects (docs/EXTERNAL-NET-VIEWER-DESIGN.md). Defaulted so existing construction
+    // sites keep compiling; null = the net had no <location> (hand-written test nets).
+    NetLocation? Location = null)
 {
     // F3/cont-turn: SUMO's `myLane->isInternal() && myLane->getEdge().getToJunction() == junction`
     // (the guard opening MSVehicle::isLeader, sumo/src/microsim/MSVehicle.cpp:7348). True when
