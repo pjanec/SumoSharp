@@ -37,6 +37,14 @@ namespace Sim.Replication.Dds;
 // the P3.3 packaging split -- internal visibility would not cross the assembly boundary.
 public static class DdsQos
 {
+    // ⭐ HROT H10 (CE-4017) — the Vehicles state topic is SPARSE since H1 (PublishPolicy: a car is in a frame only when it
+    // diverges or its MaxInterval heartbeat fires), and every step writes the SAME instance (chunk 0). With KEEP_LAST(1) a reader
+    // that pumps once after several steps keeps only the last frame, and the cars that were only in the earlier ones lose that
+    // update; DrClock's 3 s extrapolation cap then freezes them until their next one. A catch-up publishes a burst (HROT's
+    // TrafficSession steps up to 40 per call), so the depth is a whole burst. Measured: 5 back-to-back frames, KEEP_LAST(1) lost 4.
+    // The Tl topic stays at 1: each frame is the whole light table.
+    public const int SparseStreamDepth = 64;
+
     public static IntPtr DurableLatest(int depth = 1)
     {
         var qos = DdsApi.dds_create_qos();

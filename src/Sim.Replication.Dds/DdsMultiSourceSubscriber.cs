@@ -78,7 +78,7 @@ public sealed class DdsMultiSourceSubscriber : IDisposable
 
         // Same topic names and QoS profiles as DdsSubscriber / DdsReplicationSink (a RELIABLE reader will not
         // match a BEST_EFFORT writer -- DdsQos's remark).
-        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
+        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest(DdsQos.SparseStreamDepth));
         _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
         _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());

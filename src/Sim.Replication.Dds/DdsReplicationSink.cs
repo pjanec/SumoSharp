@@ -42,7 +42,7 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
     public DdsReplicationSink(DdsParticipant participant, uint source)
     {
         _source = source;
-        _vehicleWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
+        _vehicleWriter = new DdsWriter<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest(DdsQos.SparseStreamDepth));
         _geometryWriter = new DdsWriter<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleWriter = new DdsWriter<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
         _tlWriter = new DdsWriter<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());

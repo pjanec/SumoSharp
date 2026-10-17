@@ -57,6 +57,29 @@ public class HrotDdsSeamTests
         Assert.True(wall.History[h][wall.History[h].Count - 1].TimestampSeconds > 1_000_000_000.0); // Unix-epoch seconds
     }
 
+    // ── H10: a burst of sparse frames reaches a reader that pumps once ──────────────────────────
+
+    [Fact]
+    public void H10_FiveFramesBackToBack_EachWithItsOwnCar_AllReachAReaderThatPumpsOnce()
+    {
+        using var writerSide = new DdsParticipant(226);
+        using var readerSide = new DdsParticipant(226);
+        using var sink = new DdsReplicationSink(writerSide);
+        using var sub = new DdsSubscriber(readerSide, stampWithSimTime: true);
+        var probe = new VehicleHandle(100, 1);
+        uint step = 1;
+        Assert.True(PollUntil(() => sub.History.ContainsKey(probe), () => { sink.PublishFrame(step, step * 0.5, new[] { Car(probe, step) }); step++; sub.Pump(); }),
+            "the reader never matched the writer");
+
+        for (uint i = 0; i < 5; i++, step++)
+            sink.PublishFrame(step, step * 0.5, new[] { Car(new VehicleHandle(200 + i, 1), 1.0) });
+        Thread.Sleep(500);
+        sub.Pump();
+
+        var lost = Enumerable.Range(0, 5).Where(i => !sub.History.ContainsKey(new VehicleHandle((uint)(200 + i), 1))).ToList();
+        Assert.True(lost.Count == 0, $"KEEP_LAST too shallow: the cars of {lost.Count} of 5 frames were lost");
+    }
+
     // ── H7: the spawn tag over DDS ──────────────────────────────────────────────────────────────
 
     [Fact]

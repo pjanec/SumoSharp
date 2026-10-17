@@ -147,3 +147,14 @@ up in the table ⇒ H7's `ExternalType`/`Color`. A failed spawn of a picked type
 `tests/Sim.LiveCity.Tests/HrotLiveCitySeamTests.cs` (H5/H6/H9 + H7 via the in-memory bus), `tests/Sim.Host.Tests`
 (H7 publisher hook) and the new `tests/Sim.Replication.Dds.Tests` (H3 rail, H7 over DDS, H8 two sources + sender
 tracking, domains 221–229); full `dotnet test Traffic.sln -c Release` green with every golden unchanged.
+
+## H10 — a burst of sparse vehicle frames reaches every reader *(HROT CE-4017)*
+
+📌 Measured on HROT's five-process cluster: each node posed the same SUMO car differently, one node at a time freezing a car for
+5–10 s and then jumping. The Vehicles topic is SPARSE (`PublishPolicy`: a car only when it diverges or its 3 s heartbeat fires) and
+every step writes ONE instance (chunk 0); with `VolatileLatest()` = KEEP_LAST(1) a reader that pumps once after a catch-up (HROT
+steps up to 40 per call) keeps only the last frame, so the earlier frames' cars lose their update and `DrClock`'s 3 s extrapolation
+cap freezes them. ⇒ the vehicle writer and readers use `VolatileLatest(DdsQos.SparseStreamDepth)` (64). Additive for a single
+reader that keeps up (it already took every frame); the Tl topic stays at depth 1 (each frame is the whole table).
+⚠ Not fixed here: a best-effort sample LOST on the network is still not repaired until the car's next fire — with the heartbeat
+equal to the 3 s extrapolation cap, one lost heartbeat of a steady car still freezes it until the next.

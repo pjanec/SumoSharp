@@ -52,7 +52,7 @@ public sealed class DdsSubscriber : IReplicationSource
     // keeps the existing wall-clock behaviour byte-for-byte.
     public DdsSubscriber(DdsParticipant participant, bool stampWithSimTime)
     {
-        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest());
+        _vehicleReader = new DdsReader<DdsWireFrame>(participant, DdsTopicNames.Vehicles, DdsQos.VolatileLatest(DdsQos.SparseStreamDepth));
         _geometryReader = new DdsReader<DdsNetworkGeometry>(participant, DdsTopicNames.Geometry, DdsQos.DurableLatest());
         _lifecycleReader = new DdsReader<DdsVehicleLifecycle>(participant, DdsTopicNames.Lifecycle, DdsQos.DurableLatest());
         _tlReader = new DdsReader<DdsTlState>(participant, DdsTopicNames.Tl, DdsQos.VolatileLatest());
