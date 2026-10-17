@@ -196,3 +196,28 @@ when the car enters that lane (discs, projected onto the current lane, are seen 
 `tests/Sim.LiveCity.Tests/HrotExternalBodyTests.cs` (a parked vehicle body stops the queue and its removal releases it; a person
 disc stops cars with peds disabled; straddle ⇒ both lanes, leave ⇒ removed, off-road ⇒ disc; QueryNear nearest-first;
 `LaneSpatialIndex` equals a brute-force `LaneProjection` scan on `_ped/demo_city/box`); full suite green.
+
+## H13 — hand one of HROT's vehicles to SUMO as a shadow car, and take it back *(HROT AQ93 §14, R-4023)*
+
+HROT keeps owning the vehicle; SUMO drives a SHADOW named by HROT (`hrot:<networkId>`) and HROT's body follows the shadow's pose
+from the normal vehicle wire. **Seam** (`LiveCitySim`):
+`bool SpawnExternalVehicle(string id, double x, double y, double heading, double speed, double destX, double destY, string? vTypeId = null)`,
+`bool DespawnExternalVehicle(string id)`, `bool ExternalVehicleArrived(string id)`, `bool IsExternalVehicleLive(string id)`,
+`int ExternalVehicleCount`, `const ExternalVehicleSnapRadius = 10`.
+
+| step | rule |
+|---|---|
+| start | (x, y) = the FRONT bumper (SUMO's position, the point the wire reports back); `heading` radians, 0 = +x, CCW (`atan2(vy, vx)`). The nearest vehicle lane (not `:`-internal) within 10 m whose direction at the projection is < 90° off ⇒ `departLane` = its index, `departPos` = the projected offset, `departSpeed` = clamp(speed, 0, lane speed) |
+| destination | the nearest vehicle lane within 10 m of (destX, destY) ⇒ its edge, and **`arrivalPos` = the projected offset** — new `VehicleDef.ArrivalPos` (null = edge end, every parsed vehicle) + `Engine.SpawnVehicle(…, departBestLane, double? arrivalPos)`; the final-edge arrival test is SUMO's `pos >= arrivalPos`, lane-agnostic, so no arrivalLane |
+| route | `Engine.SpawnVehicle(type, fromEdge, toEdge, id, …)` (H5's router + H4's live-id guard) |
+| false | no start lane, no destination lane, destination behind the start on one edge, no route, unknown `vTypeId`, live id — never throws |
+| wire | a normal car: spawn `LifecycleRecord` (IsSpawn, Name = id) on its first snapshot; arrival AND `DespawnExternalVehicle` (`Engine.Despawn`) both drop it off the next snapshot ⇒ the same `IsSpawn = false` tombstone for that handle — a reader cannot (and need not) tell them apart; `ExternalVehicleArrived` does |
+| demand | shadows are subtracted from the occupancy count, their arrivals are not in `ArrivedTotal`, `VehicleIdProvider` is never called |
+
+📌 Measured: the shadow's last reported front position was **2.5 m** short of the destination (it leaves the sim the step it passes
+`arrivalPos`, so the gap is at most one step of travel, `speed × Dt` — ~7 m at 13.9 m/s and Dt 0.5). ⚠ Arrival does not brake: SUMO's
+default `arrivalSpeed` is "current", so the shadow passes the point at speed. ⚠ `EngineSnapshot` save/restore does not carry `ArrivalPos`.
+**Inert:** `ArrivalPos` null ⇒ the added arrival term is false and tripinfo's arrivalPos stays the lane length; no shadow ⇒ demand's count
+and tally unchanged. **Success:** rails `H13_…` in `tests/Sim.LiveCity.Tests/HrotExternalVehicleTests.cs` (three edges driven, arrival
+within 7.5 m of the point and not at the edge end, spawn + tombstone records; heading/lane/route/type/id rejections; despawn mid-route ⇒
+tombstone, id reusable; twin run with and without a disconnected shadow ⇒ demand identical step for step); full suite green.

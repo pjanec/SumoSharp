@@ -60,6 +60,17 @@ public sealed class LiveCitySim : IDisposable
     private readonly ICrowdFootprintSource? _ownCrowdSource;
     private ExternalBodyFeed? _externalBodies;
     private ICrowdFootprintSource? _crowdWithBodies;
+
+    // H12/H13: the lane grid both the body feed and the external-vehicle spawn resolve against (built on first use).
+    private LaneSpatialIndex? _laneIndex;
+
+    // H13: host-owned shadow vehicles -- live ones by id (and the reverse map the arrival tally reads), plus the ids
+    // that ended by ARRIVING (not by DespawnExternalVehicle). Null until the first SpawnExternalVehicle.
+    private Dictionary<string, VehicleHandle>? _externalVehicles;
+    private Dictionary<VehicleHandle, string>? _externalVehicleIds;
+    private HashSet<string>? _externalArrived;
+    private readonly List<int> _externalLaneScratch = new();
+    private readonly List<string> _externalIdScratch = new();
     private readonly InterestField _field;
     // The single ped-ORCA promotion source, re-centred AND re-sized on the live high-realism zone by
     // SetLcRealismZone so peds promote to full ORCA across the WHOLE highlighted zone wherever the viewer
@@ -1314,7 +1325,7 @@ public sealed class LiveCitySim : IDisposable
                 return;
             }
 
-            _externalBodies = new ExternalBodyFeed(_engine);
+            _externalBodies = new ExternalBodyFeed(_engine, LaneIndex);
             _crowdWithBodies = _ownCrowdSource is null
                 ? _externalBodies
                 : new CompositeFootprintSource(_ownCrowdSource, _externalBodies);
@@ -1329,6 +1340,202 @@ public sealed class LiveCitySim : IDisposable
 
     // H12: the host-body feed (its obstacle/disc counts, LanesOf), or null before the first SetExternalBodies.
     public ExternalBodyFeed? ExternalBodies => _externalBodies;
+
+    // `Network` is parsed from the same net file as the engine's, by the same parser, so its lane handles ARE the
+    // engine's (NetworkParser assigns them in parse order).
+    private LaneSpatialIndex LaneIndex => _laneIndex ??= new LaneSpatialIndex(Network);
+
+    // H13: how far from the requested point a start or destination lane may be (centre-line distance, m).
+    public const double ExternalVehicleSnapRadius = 10.0;
+
+    // H13 (docs/HROT-INTEGRATION-DESIGN.md): hand one of the HOST's vehicles to SUMO as a shadow car named `id`.
+    // Net coordinates; (x, y) is the vehicle's FRONT bumper (SUMO's position convention -- the same point the
+    // vehicle wire reports back). `heading` is in RADIANS, mathematical convention: 0 = +x (east), counter-clockwise
+    // positive, i.e. atan2(vy, vx). The start lane is the nearest vehicle lane (not a junction-internal one) within
+    // ExternalVehicleSnapRadius whose direction at the projected point is less than 90 degrees off `heading`; it
+    // departs at the projected offset on that lane, at `speed` clamped to [0, lane speed]. The destination is the
+    // nearest vehicle lane to (destX, destY) within the same radius; the car ARRIVES (leaves the sim) when it
+    // reaches the destination's projected offset on that edge (Engine's H13 arrivalPos), not at the edge end.
+    // Routed by the engine's own router. `vTypeId` null = the sim's default car type, else any type the engine
+    // knows (e.g. an H9 LiveCityConfig.VehicleTypes id).
+    //
+    // Returns false -- never throws -- for: no start lane, no destination lane, a destination behind the start on
+    // the same edge, no route, an unknown vTypeId, or an id that is already a live vehicle. The car rides the normal
+    // vehicle + lifecycle wire under its own name; car demand neither counts it toward CarTargetConcurrent nor
+    // counts its arrival in ArrivedTotal, and VehicleIdProvider is never called for it. Call between Step() calls.
+    public bool SpawnExternalVehicle(string id, double x, double y, double heading, double speed,
+        double destX, double destY, string? vTypeId = null)
+    {
+        if (string.IsNullOrEmpty(id))
+        {
+            return false;
+        }
+
+        if (_externalVehicles is not null && _externalVehicles.ContainsKey(id))
+        {
+            return false;
+        }
+
+        VTypeHandle vtype;
+        if (vTypeId is null)
+        {
+            vtype = _vtype;
+        }
+        else if (!_engine.TryGetVType(vTypeId, out vtype))
+        {
+            return false;
+        }
+
+        var start = NearestVehicleLane(x, y, Math.Cos(heading), Math.Sin(heading), useHeading: true);
+        var dest = NearestVehicleLane(destX, destY, 0.0, 0.0, useHeading: false);
+        if (start is not { } s || dest is not { } d)
+        {
+            return false;
+        }
+
+        var departPos = Math.Clamp(s.Offset, 0.0, s.Lane.Length);
+        var arrivalPos = Math.Clamp(d.Offset, 0.0, d.Lane.Length);
+        if (s.Lane.EdgeId == d.Lane.EdgeId && arrivalPos <= departPos)
+        {
+            return false; // the router's same-edge route would not loop back round to a point behind the start
+        }
+
+        VehicleHandle handle;
+        try
+        {
+            handle = _engine.SpawnVehicle(
+                vtype, s.Lane.EdgeId, d.Lane.EdgeId, id,
+                departPos, Math.Clamp(speed, 0.0, s.Lane.Speed), s.Lane.Index, departBestLane: false, arrivalPos);
+        }
+        catch (InvalidOperationException)
+        {
+            return false; // no route
+        }
+        catch (ArgumentException)
+        {
+            return false; // a live vehicle (demand's or a previous shadow's) already has this id
+        }
+
+        _externalVehicles ??= new Dictionary<string, VehicleHandle>(StringComparer.Ordinal);
+        _externalVehicleIds ??= new Dictionary<VehicleHandle, string>();
+        _externalArrived ??= new HashSet<string>(StringComparer.Ordinal);
+        _externalVehicles[id] = handle;
+        _externalVehicleIds[handle] = id;
+        _externalArrived.Remove(id);
+        return true;
+    }
+
+    // H13: take a shadow back. Removes it from the engine (Engine.Despawn -- safe between steps, Pending or Active);
+    // it drops off the next snapshot, so the lifecycle wire publishes the same despawn record an arrival does. False
+    // when `id` is not a live shadow (unknown, already arrived, or already despawned).
+    public bool DespawnExternalVehicle(string id)
+    {
+        if (_externalVehicles is null || !_externalVehicles.TryGetValue(id, out var handle))
+        {
+            return false;
+        }
+
+        _externalVehicles.Remove(id);
+        _externalVehicleIds!.Remove(handle);
+        return _engine.Despawn(handle);
+    }
+
+    // H13: did shadow `id` ARRIVE at its destination (as opposed to being despawned or still driving)? Stays true
+    // until the id is spawned again.
+    public bool ExternalVehicleArrived(string id) => _externalArrived is not null && _externalArrived.Contains(id);
+
+    // H13: is `id` a live shadow (spawned, not yet arrived or despawned)?
+    public bool IsExternalVehicleLive(string id) => _externalVehicles is not null && _externalVehicles.ContainsKey(id);
+
+    // H13: live shadows.
+    public int ExternalVehicleCount => _externalVehicles?.Count ?? 0;
+
+    private (Lane Lane, double Offset)? NearestVehicleLane(double x, double y, double hx, double hy, bool useHeading)
+    {
+        LaneIndex.LanesNear(x, y, ExternalVehicleSnapRadius, _externalLaneScratch);
+        (Lane Lane, double Offset)? best = null;
+        var bestDist = double.PositiveInfinity;
+        foreach (var h in _externalLaneScratch)
+        {
+            var lane = Network.LanesByHandle[h];
+            if (!lane.AllowsRoadVehicle || lane.Shape.Count < 2 || lane.EdgeId.StartsWith(":", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var (offset, _, dist) = LaneProjection.Project(lane.Shape, x, y);
+            if (useHeading)
+            {
+                // Lane direction at the projected point (LaneGeometry's naviDegree: 0 = +y, clockwise).
+                var navi = LaneGeometry.PositionAtOffset(lane.Shape, offset).AngleDeg * Math.PI / 180.0;
+                if ((Math.Sin(navi) * hx) + (Math.Cos(navi) * hy) <= 0.0)
+                {
+                    continue; // 90 degrees or more off the requested heading
+                }
+            }
+
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = (lane, offset);
+            }
+        }
+
+        return best;
+    }
+
+    // H13: after each engine step, move shadows the engine has finished with (arrived, or removed by the engine
+    // itself) out of the live set -- an arrival into _externalArrived. The tally loop has already routed this
+    // step's Arrived events here; this sweep catches anything that left without one.
+    private void SweepExternalVehicles()
+    {
+        if (_externalVehicles is null || _externalVehicles.Count == 0)
+        {
+            return;
+        }
+
+        _externalIdScratch.Clear();
+        foreach (var kv in _externalVehicles)
+        {
+            var state = _engine.GetLifecycle(kv.Value);
+            if (state != VehicleLifecycle.Pending && state != VehicleLifecycle.Active)
+            {
+                _externalIdScratch.Add(kv.Key);
+            }
+        }
+
+        foreach (var id in _externalIdScratch)
+        {
+            MarkExternalArrived(id);
+        }
+    }
+
+    private void MarkExternalArrived(string id)
+    {
+        if (_externalVehicles!.TryGetValue(id, out var handle))
+        {
+            _externalVehicles.Remove(id);
+            _externalVehicleIds!.Remove(handle);
+            _externalArrived!.Add(id);
+        }
+    }
+
+    // H13: shadows currently on the road -- subtracted from car demand's occupancy so they never displace a demand car.
+    private int ActiveExternalVehicles()
+    {
+        if (_externalVehicles is null || _externalVehicles.Count == 0)
+        {
+            return 0;
+        }
+
+        var n = 0;
+        foreach (var handle in _externalVehicles.Values)
+        {
+            if (_engine.GetLifecycle(handle) == VehicleLifecycle.Active) n++;
+        }
+
+        return n;
+    }
 
     public void Step()
     {
@@ -1368,7 +1575,8 @@ public sealed class LiveCitySim : IDisposable
         var tSpawn = PhaseStart();
         if (_cropEdges.Count >= 2)
         {
-            var live = _engine.VehicleHandles.Length;
+            // H13: host shadows are not demand -- they never count toward the occupancy cap.
+            var live = _engine.VehicleHandles.Length - ActiveExternalVehicles();
 
             // A3 (design §1b): how many insertions to ATTEMPT this step.
             //   closed-loop (default) -- up to CarSpawnPerStep, and only while below the occupancy cap. The
@@ -1532,8 +1740,18 @@ public sealed class LiveCitySim : IDisposable
         var tArrival = PhaseStart();
         foreach (var ev in _engine.Events)
         {
-            if (ev.Kind == SimEventKind.Arrived) ArrivedTotal++;
+            if (ev.Kind != SimEventKind.Arrived) continue;
+            // H13: a host shadow's arrival is the host's, not demand's -- route it to the shadow set instead.
+            if (_externalVehicleIds is not null && _externalVehicleIds.TryGetValue(ev.Handle, out var shadowId))
+            {
+                MarkExternalArrived(shadowId);
+                continue;
+            }
+
+            ArrivedTotal++;
         }
+
+        SweepExternalVehicles();
 
         if (_engine.VehicleHandles.Length > PeakCars) PeakCars = _engine.VehicleHandles.Length;
         if (_demand is not null && _demand.LiveCount > PeakPeds) PeakPeds = _demand.LiveCount;

@@ -135,7 +135,12 @@ public sealed record VehicleDef(
     // lane. "center" (default) | "left" | "right" | a numeric offset (m, +left). null (absent)
     // resolves to centre (0). Applied only when lateral-resolution > 0 (the engine keeps every
     // phase-1 vehicle lane-centred), so byte-identical for phase 1.
-    string? DepartPosLat = null)
+    string? DepartPosLat = null,
+    // HROT H13 (docs/HROT-INTEGRATION-DESIGN.md): SUMO's `arrivalPos` -- the vehicle ARRIVES (leaves the
+    // simulation) once its position on its final route edge reaches this offset, instead of at that edge's end
+    // (MSVehicle::hasArrived is lane-agnostic, so no arrivalLane is needed). null (absent) = the edge end, exactly
+    // as before; set only by the runtime-spawn overload that takes it, never parsed from a route file.
+    double? ArrivalPos = null)
 {
     // Records can't default a reference-type param to a freshly-allocated empty collection
     // (default values must be compile-time constants), so callers that omit Stops get null;
