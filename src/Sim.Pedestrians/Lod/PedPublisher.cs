@@ -42,6 +42,15 @@ public sealed record FreeKinematicSample(int Id, double Time, Vec2 Pos, Vec2 Vel
 // costs almost nothing on the wire and lets a late/lossy channel confirm the ped still exists.
 public sealed record HeartbeatEvent(int Id, double Time) : PedEvent(Id, Time);
 
+// HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): the ped appeared, under a host-given `Name` -- maps to a
+// PedLifecycleKind.Spawn wire record carrying the name. Emitted only by a PedDemand configured to announce its
+// lifecycle (PedDemandConfig.AnnounceLifecycle / IdProvider), right after the ped's first leg.
+public sealed record PedSpawnedRecord(int Id, double Time, string Name) : PedEvent(Id, Time);
+
+// H14: the ped left the simulation -- it ARRIVED, or a host removed it (PedDemand.RemovePed). Maps to
+// PedLifecycleKind.Despawn; a reconstructor drops the ped on it. Same opt-in as PedSpawnedRecord.
+public sealed record PedDespawnedRecord(int Id, double Time) : PedEvent(Id, Time);
+
 // In-memory publisher: appends every emitted event to `Events` in wire order and tracks per-id send
 // counters -- the numbers POC-3 success conditions 1 and 4 are measured against
 // (FreeKinematicSamplesSent, PathArcRecordsSent, HeartbeatsSent).
@@ -131,6 +140,15 @@ public sealed class PedPublisher
     {
         _events.Add(new FreeKinematicSample(id, time, pos, vel));
         Increment(_freeKinematicSamplesSent, id);
+    }
+
+    // H14: lifecycle announcements (see PedSpawnedRecord / PedDespawnedRecord).
+    public void PublishSpawned(int id, string name, double time) => _events.Add(new PedSpawnedRecord(id, time, name));
+
+    public void PublishDespawned(int id, double time)
+    {
+        _events.Add(new PedDespawnedRecord(id, time));
+        _lastHeartbeatAt.Remove(id);
     }
 
     // Emits at most once per HeartbeatInterval seconds per id -- a no-op otherwise, so calling this

@@ -65,6 +65,10 @@ public sealed class PedRemoteReconstructor
 
     private readonly HashSet<int> _knownIds = new();
 
+    // H14: names from Spawn lifecycle records (only a publisher that announces its lifecycle sends them).
+    private readonly Dictionary<int, string> _nameOf = new();
+    private readonly Dictionary<string, int> _idOfName = new(StringComparer.Ordinal);
+
     // CONCURRENT because `TryGetRenderPose` is called from a PARALLEL per-ped loop by the City3D viewer
     // (CityLib.PedReconstructor) -- ped reconstruction measured 33.0 ms of an 84.5 ms frame at 31 890 peds,
     // and it is per-ped independent, so it fans out. The only structural mutation of this map is `Smooth`'s
@@ -148,6 +152,72 @@ public sealed class PedRemoteReconstructor
         return true;
     }
 
+    // HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): the ped's host-given name, from its Spawn lifecycle record. False when
+    // the ped is unknown/despawned or the publisher announces no names.
+    public bool TryGetName(int id, out string name) => _nameOf.TryGetValue(id, out name!);
+
+    // H14: the wire id of the live ped called `name`.
+    public bool TryGetId(string name, out int id) => _idOfName.TryGetValue(name, out id);
+
+    // H14: `id`'s RAW reconstructed pose at an explicit SIM time -- no playout delay, no smoothing, no wall clock: a
+    // pure function of the wire records received so far and `simTime`, so a paused host clock gives a frozen pose
+    // however much wall time passes. Use this (not TryGetRenderPose) when the caller owns the clock.
+    public bool TryGetPoseAt(int id, double simTime, out Vec2 pos, out double z, out bool visible)
+    {
+        if (!_knownIds.Contains(id) || !_receiver.Ig.Knows(id))
+        {
+            pos = Vec2.Zero;
+            z = 0.0;
+            visible = false;
+            return false;
+        }
+
+        var sample = _receiver.Ig.ReconstructSample(id, simTime);
+        pos = sample.Pos;
+        z = _receiver.Ig.ReconstructElevationAt(id, simTime, pos);
+        visible = sample.Visible;
+        return true;
+    }
+
+    // H14: by name.
+    public bool TryGetPoseAt(string name, double simTime, out Vec2 pos, out double z, out bool visible)
+    {
+        if (_idOfName.TryGetValue(name, out var id))
+        {
+            return TryGetPoseAt(id, simTime, out pos, out z, out visible);
+        }
+
+        pos = Vec2.Zero;
+        z = 0.0;
+        visible = false;
+        return false;
+    }
+
+    // H14: every live ped's (id, name, pose) at `simTime` into `into` (cleared first), in ascending id order. A ped
+    // with no name record gets "" as its name. Allocation-free once `into` and the id scratch have grown.
+    public int CopyLivePeds(double simTime, List<RemotePedPose> into)
+    {
+        into.Clear();
+        _idScratch.Clear();
+        foreach (var id in _knownIds)
+        {
+            _idScratch.Add(id);
+        }
+
+        _idScratch.Sort();
+        foreach (var id in _idScratch)
+        {
+            if (TryGetPoseAt(id, simTime, out var pos, out var z, out var visible))
+            {
+                into.Add(new RemotePedPose(id, _nameOf.TryGetValue(id, out var name) ? name : "", pos.X, pos.Y, z, visible));
+            }
+        }
+
+        return into.Count;
+    }
+
+    private readonly List<int> _idScratch = new();
+
     // The capped-correction chase (class remarks). The first observation of `id` returns the target
     // pose unchanged (and remembers it as the smoothing anchor) -- there is no previous render frame
     // to correct from, mirroring the vehicle DR smoother's own "first sighting" behaviour.
@@ -209,11 +279,24 @@ public sealed class PedRemoteReconstructor
             {
                 _knownIds.Remove(id);
                 _smoothed.TryRemove(id, out _); // ConcurrentDictionary: no single-arg Remove
+                if (_nameOf.TryGetValue(id, out var gone))
+                {
+                    _nameOf.Remove(id);
+                    _idOfName.Remove(gone);
+                }
             }
             else
             {
                 _knownIds.Add(id);
+                if (lc.Kind == PedLifecycleKind.Spawn && lc.Name.Length > 0)
+                {
+                    _nameOf[id] = lc.Name;
+                    _idOfName[lc.Name] = id;
+                }
             }
         }
     }
 }
+
+// HROT H14: one remote ped's reconstructed pose at a sim time (PedRemoteReconstructor.CopyLivePeds).
+public readonly record struct RemotePedPose(int Id, string Name, double X, double Y, double Z, bool Visible);

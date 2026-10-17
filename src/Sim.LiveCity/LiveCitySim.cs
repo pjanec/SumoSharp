@@ -127,7 +127,7 @@ public sealed class LiveCitySim : IDisposable
 
     // The ped publish wire (mirrors CityLib/PedSimSource.cs).
     private readonly PedReplicationPublisher _pedWirePublisher;
-    private readonly InMemoryPedReplicationBus _pedBus = new();
+    private readonly InMemoryPedReplicationBus _pedBus; // H14: built in the ctor (PedWireFloat64StartTimes)
 
     // docs/LIVE-CITY-VIEWERS-DESIGN.md §7, -TASKS.md Stage E (E3): the ped-side twin of `_recordVehSink`/
     // `_recordPublisher` above -- an OPTIONAL tee onto a caller-supplied ped sink (e.g. a
@@ -158,6 +158,7 @@ public sealed class LiveCitySim : IDisposable
         IDemandRecordSink? recordDemandSink = null)
     {
         _cfg = cfg ?? throw new ArgumentNullException(nameof(cfg));
+        _pedBus = new InMemoryPedReplicationBus(cfg.PedWireFloat64StartTimes);
         // docs/HROT-INTEGRATION-DESIGN.md H6: the sim-side clock starts where the engine's `begin` will (0 = today).
         _now = cfg.StartTime;
         _recordVehSink = recordVehSink;
@@ -330,6 +331,9 @@ public sealed class LiveCitySim : IDisposable
                 CrosswalkSignals = cfg.YieldEnabled ? crosswalkSignals : null,
                 CrosswalkWaitSpreadRadius = cfg.PedCrosswalkWaitSpreadRadius,
                 SpeedVariationFrac = cfg.PedSpeedVariationFrac,
+                // H14: host-named peds + the ped lifecycle on the wire (both null/false by default).
+                IdProvider = cfg.PedIdProvider,
+                AnnounceLifecycle = cfg.PedLifecycleOnWire,
             };
 
             _manager = new PedLodManager(nav, _pedPublisher, arriveRadius: 0.3, dwellSeconds: 1.0);
@@ -1340,6 +1344,90 @@ public sealed class LiveCitySim : IDisposable
 
     // H12: the host-body feed (its obstacle/disc counts, LanesOf), or null before the first SetExternalBodies.
     public ExternalBodyFeed? ExternalBodies => _externalBodies;
+
+    // ---- H14 (docs/HROT-INTEGRATION-DESIGN.md): pedestrians a host can name, remove and read ----
+
+    // H14 S1: remove the live ped `name` (its PedIdProvider name, or its id digits without one) mid-run, between
+    // Step() calls, returning its state at the sim's current time (position, elevation, velocity, heading in radians,
+    // 0 = +x, counter-clockwise). Its Despawn rides the ped wire when the lifecycle is published (PedIdProvider /
+    // PedLifecycleOnWire). Demand may refill the slot on a later step. False for an unknown or already-gone ped, or
+    // when pedestrians are disabled.
+    public bool RemovePedestrian(string name, out PedRemovalState state)
+    {
+        if (_demand is not null && name is not null && _demand.TryGetIdByName(name, out var id))
+        {
+            var before = _pedPublisher.Events.Count;
+            if (!_demand.RemovePed(id, _now, out state))
+            {
+                return false;
+            }
+
+            // The Despawn must reach the wire NOW -- a paused host steps nothing, and Step's batch starts after the
+            // events already in the history. Between steps the history is empty (Step clears it after publishing),
+            // so forward this call's tail and clear it, exactly as Step does with its own batch.
+            if (before == 0 && _pedPublisher.Events.Count > 0)
+            {
+                _pedPublisher.DrainInto(0, _removalEventBatch);
+                _pedWirePublisher.Publish(_removalEventBatch);
+                _recordPedPublisher?.Publish(_removalEventBatch);
+                _pedPublisher.ClearEvents();
+            }
+
+            return true;
+        }
+
+        state = default;
+        return false;
+    }
+
+    private readonly List<PedEvent> _removalEventBatch = new();
+
+    // H14: every live ped's name and position at the sim's current time into `into` (cleared first), ascending ped
+    // id. Reads the pose the step already computed for its arrival check (PedDemand.TryGetLastPose), so it is a copy,
+    // not a re-evaluation. Allocation: nothing per ped once `into` has grown (names are the stored provider strings;
+    // without a PedIdProvider each name is formatted from the id) beyond the live-set enumerator's one small stack per
+    // call. Empty when pedestrians are disabled.
+    public int CopyLivePedestrians(List<LivePedestrian> into)
+    {
+        into.Clear();
+        if (_demand is null || _manager is null)
+        {
+            return 0;
+        }
+
+        foreach (var id in _demand.LiveIds)
+        {
+            var pos = _demand.TryGetLastPose(id, _now, out _, out var cached) ? cached : _manager.PositionOf(id, _now);
+            into.Add(new LivePedestrian(_demand.NameOf(id), pos.X, pos.Y));
+        }
+
+        return into.Count;
+    }
+
+    // H14: the names of the live peds within `radius` of (x, y) (inclusive), ascending ped id, into `namesOut`
+    // (cleared first). A linear pass over the live set, like CopyLivePedestrians.
+    public int PedestriansWithin(double x, double y, double radius, List<string> namesOut)
+    {
+        namesOut.Clear();
+        if (_demand is null || _manager is null || !(radius >= 0.0))
+        {
+            return 0;
+        }
+
+        var rSq = radius * radius;
+        foreach (var id in _demand.LiveIds)
+        {
+            var pos = _demand.TryGetLastPose(id, _now, out _, out var cached) ? cached : _manager.PositionOf(id, _now);
+            var dx = pos.X - x;
+            var dy = pos.Y - y;
+            if ((dx * dx) + (dy * dy) <= rSq)
+            {
+                namesOut.Add(_demand.NameOf(id));
+            }
+        }
+
+        return namesOut.Count;
+    }
 
     // `Network` is parsed from the same net file as the engine's, by the same parser, so its lane handles ARE the
     // engine's (NetworkParser assigns them in parse order).
@@ -2845,3 +2933,6 @@ public sealed class LiveCitySim : IDisposable
         _pedBus.Source.Dispose();
     }
 }
+
+// HROT H14: one live pedestrian's name and position (LiveCitySim.CopyLivePedestrians).
+public readonly record struct LivePedestrian(string Name, double X, double Y);

@@ -201,6 +201,21 @@ public sealed class PedReplicationPublisher
                 _scheduler?.Forget(sw.Id);
                 break;
 
+            case PedSpawnedRecord spawned:
+                // H14: the ped's name rides its Spawn lifecycle record (once per ped).
+                _sink.PublishPedLifecycle(new PedLifecycleRecord(
+                    new VehicleHandle((uint)spawned.Id, 0), PedLifecycleKind.Spawn, spawned.Time, spawned.Name));
+                _meter?.RecordLifecycle(spawned.Time);
+                break;
+
+            case PedDespawnedRecord despawned:
+                // H14: arrival or host removal. A DDS sink also disposes the ped's durable instances on it.
+                _sink.PublishPedLifecycle(new PedLifecycleRecord(
+                    new VehicleHandle((uint)despawned.Id, 0), PedLifecycleKind.Despawn, despawned.Time));
+                _meter?.RecordLifecycle(despawned.Time);
+                _scheduler?.Forget(despawned.Id);
+                break;
+
             case HeartbeatEvent hb:
                 // Liveness only -- no pose information, and P3-1's task note explicitly allows skipping
                 // wire bytes for it (a production heartbeat would still ride the lifecycle topic, but

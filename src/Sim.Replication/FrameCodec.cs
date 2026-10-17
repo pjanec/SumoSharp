@@ -60,6 +60,14 @@ public static class FrameCodec
     // 2-D net's bytes are byte-for-byte identical to before this existed.
     public const byte KindPathArcZ = 5;
 
+    // HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): kinds 4/5 with the record's startTime as a float64 (8 B) instead of
+    // a float32 -- a host whose sim clock runs at large absolute times (H6 StartTime) would otherwise quantize a
+    // PathArc ped's start (f32 ulp at 1e6 s is 0.0625 s, ~8 cm of walk). Same reasons as kind 5 for a NEW kind
+    // rather than a wider one. Emitted ONLY when the writer asks (`float64StartTime`), so kinds 4/5 stay
+    // byte-identical; the reader accepts all four.
+    public const byte KindPathArc64 = 6;
+    public const byte KindPathArcZ64 = 7;
+
     public const int HeaderSize = 16;
     public const int VehicleRecordSize = 48;
     public const int CrowdRecordSize = 32;
@@ -275,34 +283,53 @@ public static class FrameCodec
         return false;
     }
 
-    public static int PathArcFrameSize(ReadOnlySpan<PathArcRecord> recs)
+    public static int PathArcFrameSize(ReadOnlySpan<PathArcRecord> recs) => PathArcFrameSize(recs, float64StartTime: false);
+
+    // H14: `float64StartTime` adds 4 B per record (kinds 6/7).
+    public static int PathArcFrameSize(ReadOnlySpan<PathArcRecord> recs, bool float64StartTime)
     {
         var withZ = AnyElevation(recs);
         var size = HeaderSize;
         for (var i = 0; i < recs.Length; i++)
         {
-            size += withZ ? PathArcZRecordSize(recs[i].Path.Count) : PathArcRecordSize(recs[i].Path.Count);
+            size += (withZ ? PathArcZRecordSize(recs[i].Path.Count) : PathArcRecordSize(recs[i].Path.Count))
+                + (float64StartTime ? 4 : 0);
         }
 
         return size;
     }
 
-    public static int WritePathArcFrame(Span<byte> dst, uint step, float time, ReadOnlySpan<PathArcRecord> recs)
+    public static int WritePathArcFrame(Span<byte> dst, uint step, float time, ReadOnlySpan<PathArcRecord> recs) =>
+        WritePathArcFrame(dst, step, time, recs, float64StartTime: false);
+
+    // H14: `float64StartTime` writes kind 6 (or 7 with elevation) carrying each startTime as a float64.
+    public static int WritePathArcFrame(Span<byte> dst, uint step, float time, ReadOnlySpan<PathArcRecord> recs, bool float64StartTime)
     {
-        var size = PathArcFrameSize(recs);
+        var size = PathArcFrameSize(recs, float64StartTime);
         if (dst.Length < size) throw new ArgumentException("destination too small for the path-arc frame.", nameof(dst));
 
         // Kind 4 unless SOMETHING in this frame has elevation. On a 2-D net this branch is never taken
         // and every byte below is written exactly as it was before kind 5 existed.
         var withZ = AnyElevation(recs);
-        WriteHeader(dst, withZ ? KindPathArcZ : KindPathArc, step, time, recs.Length);
+        var kind = float64StartTime
+            ? (withZ ? KindPathArcZ64 : KindPathArc64)
+            : (withZ ? KindPathArcZ : KindPathArc);
+        WriteHeader(dst, kind, step, time, recs.Length);
         var o = HeaderSize;
         for (var i = 0; i < recs.Length; i++)
         {
             ref readonly var r = ref recs[i];
             BinaryPrimitives.WriteUInt32LittleEndian(dst.Slice(o, 4), r.Handle.Index); o += 4;
             WriteF32(dst.Slice(o, 4), (float)r.Speed); o += 4;
-            WriteF32(dst.Slice(o, 4), (float)r.StartTime); o += 4;
+            if (float64StartTime)
+            {
+                BinaryPrimitives.WriteInt64LittleEndian(dst.Slice(o, 8), BitConverter.DoubleToInt64Bits(r.StartTime)); o += 8;
+            }
+            else
+            {
+                WriteF32(dst.Slice(o, 4), (float)r.StartTime); o += 4;
+            }
+
             var path = r.Path;
             BinaryPrimitives.WriteUInt16LittleEndian(dst.Slice(o, 2), (ushort)path.Count); o += 2;
 
@@ -336,8 +363,9 @@ public static class FrameCodec
         // This is the discrimination the design calls load-bearing: because ReadHeader validates no
         // version byte, reading a kind-4 payload with a 12-byte stride would not fail, it would return
         // plausible garbage.
-        var withZ = h.Kind == KindPathArcZ;
-        if (h.Kind != KindPathArc && !withZ)
+        var withZ = h.Kind == KindPathArcZ || h.Kind == KindPathArcZ64;
+        var wideStart = h.Kind == KindPathArc64 || h.Kind == KindPathArcZ64;
+        if (h.Kind != KindPathArc && h.Kind != KindPathArcZ && !wideStart)
         {
             throw new ArgumentException("not a path-arc frame.", nameof(src));
         }
@@ -348,7 +376,16 @@ public static class FrameCodec
         {
             var index = BinaryPrimitives.ReadUInt32LittleEndian(src.Slice(o, 4)); o += 4;
             var speed = ReadF32(src.Slice(o, 4)); o += 4;
-            var startTime = ReadF32(src.Slice(o, 4)); o += 4;
+            double startTime;
+            if (wideStart)
+            {
+                startTime = BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(src.Slice(o, 8))); o += 8;
+            }
+            else
+            {
+                startTime = ReadF32(src.Slice(o, 4)); o += 4;
+            }
+
             var pointCount = BinaryPrimitives.ReadUInt16LittleEndian(src.Slice(o, 2)); o += 2;
             var points = new Vec2[pointCount];
             var elevations = withZ ? new double[pointCount] : null;

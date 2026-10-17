@@ -86,6 +86,11 @@ public sealed class PedDemand
     private readonly Dictionary<int, (string AnimTag, Vec2 Pos)> _lastPoseAtNow = new();
     private double _lastPoseAtNowTime = double.NaN;
 
+    // HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): host-given ped names (PedDemandConfig.IdProvider), both ways. Empty
+    // when no provider is configured -- NameOf then falls back to the id's invariant string.
+    private readonly Dictionary<int, string> _nameOf = new();
+    private readonly Dictionary<string, int> _idOfName = new(StringComparer.Ordinal);
+
     private VehicleRng _spawnTimingRng;
     private double _nextSpawnAt;
     private int _nextId = 1;
@@ -203,6 +208,90 @@ public sealed class PedDemand
 
     /// Currently-live ped ids, ascending (SortedSet -- deterministic enumeration order).
     public IReadOnlyCollection<int> LiveIds => _liveIds;
+
+    // H14: spawns skipped because IdProvider returned an empty name or the name of a live ped.
+    public int NameRejectCount { get; private set; }
+
+    // H14: peds a host removed through RemovePed (not counted in ArrivalCount).
+    public int RemovedCount { get; private set; }
+
+    // H14: the ped's name -- its IdProvider name, else the id in invariant digits.
+    public string NameOf(int id) =>
+        _nameOf.TryGetValue(id, out var name) ? name : id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    // H14: the live ped called `name` (an IdProvider name, or the id's invariant digits when there is no provider).
+    public bool TryGetIdByName(string name, out int id)
+    {
+        if (_idOfName.TryGetValue(name, out id))
+        {
+            return _liveIds.Contains(id);
+        }
+
+        if (_config.IdProvider is null
+            && int.TryParse(name, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out id)
+            && _liveIds.Contains(id))
+        {
+            return true;
+        }
+
+        id = 0;
+        return false;
+    }
+
+    // H14: remove live ped `id` mid-run (between Step calls), returning its state at `now`: world position, elevation,
+    // velocity and heading (radians, 0 = +x, counter-clockwise -- atan2(vy, vx); the direction of travel over the next
+    // second when it is standing still, 0 when that is undefined too). Safe: the ped leaves the live set, so the next
+    // Step neither queries nor arrives it, and a freed slot is refilled by the ordinary spawn schedule (a pure
+    // function of the call sequence, so a run that removes the same peds at the same steps stays reproducible).
+    // Publishes a despawn when the lifecycle is announced. False -- nothing changes -- for an id that is not live.
+    public bool RemovePed(int id, double now, out PedRemovalState state)
+    {
+        if (!_liveIds.Contains(id) || !_lodManager.Contains(id))
+        {
+            state = default;
+            return false;
+        }
+
+        var pos = _lodManager.PositionOf(id, now);
+        var vel = _lodManager.VelocityOf(id, now);
+        var z = _lodManager.ElevationOf(id, now);
+        double heading;
+        if (vel.Abs > 1e-6)
+        {
+            heading = Math.Atan2(vel.Y, vel.X);
+        }
+        else
+        {
+            var ahead = _lodManager.PositionOf(id, now + 1.0) - pos;
+            heading = ahead.Abs > 1e-6 ? Math.Atan2(ahead.Y, ahead.X) : 0.0;
+        }
+
+        state = new PedRemovalState(pos.X, pos.Y, z, vel.X, vel.Y, heading);
+        Retire(id, now);
+        RemovedCount++;
+        return true;
+    }
+
+    private bool AnnouncesLifecycle => _config.AnnounceLifecycle || _config.IdProvider is not null;
+
+    // Drop a live ped everywhere (arrival or removal) and, when announced, publish its despawn.
+    private void Retire(int id, double now)
+    {
+        _lodManager.RemovePed(id);
+        _liveIds.Remove(id);
+        _destinationOf.Remove(id);
+        _lastPoseAtNow.Remove(id);
+        if (_nameOf.TryGetValue(id, out var name))
+        {
+            _nameOf.Remove(id);
+            _idOfName.Remove(name);
+        }
+
+        if (AnnouncesLifecycle)
+        {
+            _lodManager.Publisher.PublishDespawned(id, now);
+        }
+    }
 
     /// Every spawn, in spawn order -- for determinism/inspection (docs/PEDESTRIAN-NAVMESH-CONTRACT.md).
     public IReadOnlyList<PedSpawnEvent> SpawnEvents => _spawnEvents;
@@ -400,6 +489,20 @@ public sealed class PedDemand
             return; // id is simply skipped (a sparse id space is harmless) -- no retry, no extra draw
         }
 
+        // H14: the host-given name, drawn only for a ped that WILL spawn (an unreachable pair above consumes none).
+        // An empty name or one a live ped already has skips this spawn (like H5's duplicate vehicle id) -- the id
+        // and every RNG draw above are consumed exactly as for an unreachable pair, so the stream stays fixed.
+        string? name = null;
+        if (_config.IdProvider is { } provider)
+        {
+            name = provider();
+            if (string.IsNullOrEmpty(name) || _idOfName.ContainsKey(name))
+            {
+                NameRejectCount++;
+                return;
+            }
+        }
+
         // ITERON RULE (CLAUDE.md; docs/PEDESTRIAN-TASKS.md LIVE-PROD-1b): with Liveliness omitted
         // (null, the default), this is the EXACT call the pre-liveliness code made -- no new RNG
         // stream is even constructed -- so a plain PedDemandConfig stays bit-identical to today's
@@ -436,6 +539,17 @@ public sealed class PedDemand
 
         _destinationOf[id] = destination;
         _liveIds.Add(id);
+        if (name is not null)
+        {
+            _nameOf[id] = name;
+            _idOfName[name] = id;
+        }
+
+        if (AnnouncesLifecycle)
+        {
+            _lodManager.Publisher.PublishSpawned(id, name ?? NameOf(id), now);
+        }
+
         SpawnCount++;
         _spawnEvents.Add(new PedSpawnEvent(id, now, origin, destination));
     }
@@ -932,9 +1046,9 @@ public sealed class PedDemand
         arrived.Sort();
         foreach (var id in arrived)
         {
-            _lodManager.RemovePed(id);
-            _liveIds.Remove(id);
-            _destinationOf.Remove(id);
+            // H14: Retire = the former three removals + name bookkeeping + the announced despawn. The arrived ped's
+            // pose stays in _lastPoseAtNow only until here (no consumer reads an arrived id, as before).
+            Retire(id, now);
             ArrivalCount++;
             _arrivalEvents.Add(new PedArrivalEvent(id, now));
         }
@@ -1036,6 +1150,15 @@ public sealed class PedDemandConfig
     /// `MaxSpeed * (1 +/- up to this fraction)`, seeded per-ped, so a group that started together
     /// spreads out longitudinally as it walks and staggers its kerb arrivals instead of moving in lockstep.
     public double SpeedVariationFrac { get; init; } = 0.0;
+
+    /// HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): when set, every spawned ped is NAMED by this provider (called once
+    /// per ped that will spawn) and the lifecycle is announced (as AnnounceLifecycle). A provider returning "" or a
+    /// live ped's name skips that spawn. Null (default) = unnamed, nothing extra published.
+    public Func<string>? IdProvider { get; init; }
+
+    /// H14: publish a PedSpawnedRecord (with the ped's name -- its id digits without an IdProvider) when a ped spawns
+    /// and a PedDespawnedRecord when it arrives or is removed. Off (default) = the event stream is unchanged.
+    public bool AnnounceLifecycle { get; init; }
 }
 
 /// LIVE-PROD-1b (docs/PEDESTRIAN-LIVELINESS-DESIGN.md §4): per-trip liveliness knobs. Deliberately
@@ -1070,3 +1193,7 @@ public readonly record struct PedSpawnEvent(int Id, double Time, Vec2 Origin, Ve
 
 /// One arrival: `Id` despawned at `Time` (it reached its destination's ArrivalRadius).
 public readonly record struct PedArrivalEvent(int Id, double Time);
+
+/// HROT H14: a removed ped's state at removal (PedDemand.RemovePed) -- world position (m), elevation (m, the net's
+/// datum, 0 on a 2-D net), velocity (m/s) and heading (radians, 0 = +x, counter-clockwise).
+public readonly record struct PedRemovalState(double X, double Y, double Z, double Vx, double Vy, double Heading);

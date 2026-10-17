@@ -32,6 +32,7 @@
     <ProjectReference Include="..\..\src\Sim.Replication.Dds\Sim.Replication.Dds.csproj" />
     <ProjectReference Include="..\..\src\Sim.Replication\Sim.Replication.csproj" />
     <ProjectReference Include="..\..\src\Sim.Core\Sim.Core.csproj" />
+    <ProjectReference Include="..\..\src\Sim.Pedestrians\Sim.Pedestrians.csproj" />
   </ItemGroup>
 
 </Project>

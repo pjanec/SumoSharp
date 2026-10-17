@@ -32,6 +32,9 @@ public unsafe partial struct DdsPedLeg
     [DdsId(1)] public ushort Generation;       // ped handle generation (faithful; receiver currently reads only Index)
     [DdsId(2)] public int ByteCount;           // valid prefix length of Payload
     [DdsId(3)] public fixed byte Payload[DdsWire.MaxPayload];
+    // HROT H14: the PUBLISHER (DdsPedReplicationSink's `source`, 0 by default), keyed with Index like H8's vehicle
+    // topics, so two publishers' ped #5 are distinct instances. Appended.
+    [DdsKey, DdsId(4)] public uint Source;
 
     public void SetPayload(uint index, ushort generation, ReadOnlySpan<byte> bytes)
     {
@@ -77,6 +80,10 @@ public partial struct DdsPedLifecycle
     [DdsId(1)] public ushort Generation;
     [DdsId(2)] public byte Kind;       // Sim.Replication.PedLifecycleKind
     [DdsId(3)] public double Time;
+    // HROT H14: the ped's host-given name (PedLifecycleRecord.Name -- Spawn only, empty otherwise), and the
+    // publisher, keyed with Index (see DdsPedLeg.Source). Appended.
+    [DdsId(4)] public FixedString64 Name;
+    [DdsKey, DdsId(5)] public uint Source;
 }
 
 // ⭐ HROT H11 — the crowd stream's OWN type (it shared DdsWireFrame with sumo/vehicles, and a type carries ONE topic name). Same
@@ -118,6 +125,8 @@ public unsafe partial struct DdsPedActivityLeg
     [DdsId(1)] public ushort Generation;
     [DdsId(2)] public int ByteCount;
     [DdsId(3)] public fixed byte Payload[DdsWire.MaxPayload];
+    // HROT H14: the publisher, keyed with Index (see DdsPedLeg.Source). Appended.
+    [DdsKey, DdsId(4)] public uint Source;
 
     public void SetPayload(uint index, ushort generation, ReadOnlySpan<byte> bytes)
     {

@@ -50,10 +50,17 @@ public sealed class PedReplicationReceiver
         for (; _lifecycleCursor < _source.Lifecycles.Count; _lifecycleCursor++)
         {
             var lc = _source.Lifecycles[_lifecycleCursor];
+            if (lc.Kind == PedLifecycleKind.Despawn)
+            {
+                // H14: the ped is gone -- release the IG's state for it.
+                _ig.Forget((int)lc.Handle.Index);
+                continue;
+            }
+
             var to = ToModelOf(lc.Kind);
             if (to is null)
             {
-                continue; // Spawn/Despawn: no DR-model switch to replay (see PedLifecycleKind remarks).
+                continue; // Spawn: no DR-model switch to replay (see PedLifecycleKind remarks).
             }
 
             // `From` is a placeholder: HeadlessIg.Apply(DrSwitchEvent) only ever reads `.To` (see

@@ -29,6 +29,10 @@
          dependency — at consume time it arrives via the SumoSharp package dependency below, which ships
          Sim.Replication.dll in its lib/. -->
     <ProjectReference Include="..\Sim.Replication\Sim.Replication.csproj" PrivateAssets="all" />
+    <!-- docs/HROT-INTEGRATION-DESIGN.md H14: DdsMultiSourcePedSubscriber wraps each source in a
+         Sim.Pedestrians.Lod.PedRemoteReconstructor. Same PrivateAssets="all" pattern as Sim.Replication above:
+         at consume time Sim.Pedestrians.dll arrives via the SumoSharp package dependency, never bundled twice. -->
+    <ProjectReference Include="..\Sim.Pedestrians\Sim.Pedestrians.csproj" PrivateAssets="all" />
     <!-- The engine dependency (§V2 E1/V1.3): referencing the packable bundle project makes `dotnet pack`
          emit a `SumoSharp` package dependency on this package (rather than bundling the engine DLLs,
          which would duplicate them for a consumer who installs both SumoSharp and SumoSharp.Dds). -->

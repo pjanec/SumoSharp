@@ -30,6 +30,18 @@ public sealed class HeadlessIg
     // Feed one event (in wire order) into the IG's model of the world.
     public void Apply(PedEvent evt)
     {
+        // H14: a despawn forgets the ped (and must not create it); a spawn announcement carries no pose.
+        if (evt is PedDespawnedRecord)
+        {
+            Forget(evt.Id);
+            return;
+        }
+
+        if (evt is PedSpawnedRecord)
+        {
+            return;
+        }
+
         var state = GetOrCreate(evt.Id);
         switch (evt)
         {
@@ -279,6 +291,9 @@ public sealed class HeadlessIg
     public PedDrModel ModelOf(int id) => _peds[id].Model;
 
     public bool Knows(int id) => _peds.ContainsKey(id);
+
+    // H14: drop everything known about `id` (it despawned). No-op for an unknown id.
+    public void Forget(int id) => _peds.Remove(id);
 
     private PedState GetOrCreate(int id)
     {

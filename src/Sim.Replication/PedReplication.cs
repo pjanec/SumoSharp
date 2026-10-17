@@ -33,15 +33,24 @@ public enum PedLifecycleKind
 public readonly struct PedLifecycleRecord
 {
     public PedLifecycleRecord(VehicleHandle handle, PedLifecycleKind kind, double time)
+        : this(handle, kind, time, name: "")
+    {
+    }
+
+    // HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): the ped's host-given NAME, carried on its Spawn record (the vehicle
+    // LifecycleRecord.Name pattern -- once per ped, never per frame); "" on every other kind and from the 3-arg ctor.
+    public PedLifecycleRecord(VehicleHandle handle, PedLifecycleKind kind, double time, string name)
     {
         Handle = handle;
         Kind = kind;
         Time = time;
+        Name = name ?? "";
     }
 
     public VehicleHandle Handle { get; }
     public PedLifecycleKind Kind { get; }
     public double Time { get; }
+    public string Name { get; }
 }
 
 // Transport-neutral SEND contract for the pedestrian stream (mirrors IReplicationSink).
@@ -169,11 +178,20 @@ public sealed class InMemoryPedReplicationBus
     private readonly List<(VehicleHandle Handle, byte[] TimelineBytes)> _timelines = new();
     private readonly List<PedLifecycleRecord> _lifecycles = new();
 
-    public InMemoryPedReplicationBus()
+    public InMemoryPedReplicationBus() : this(float64StartTimes: false)
     {
+    }
+
+    // H14: `float64StartTimes` encodes PathArc legs as FrameCodec kinds 6/7 (startTime as float64) -- see
+    // FrameCodec.KindPathArc64. Default false = kinds 4/5, byte-identical.
+    public InMemoryPedReplicationBus(bool float64StartTimes)
+    {
+        _float64StartTimes = float64StartTimes;
         Sink = new SinkImpl(this);
         Source = new SourceImpl(this);
     }
+
+    private readonly bool _float64StartTimes;
 
     public IPedReplicationSink Sink { get; }
     public IPedReplicationSource Source { get; }
@@ -194,9 +212,9 @@ public sealed class InMemoryPedReplicationBus
         public void PublishPathArc(in PathArcRecord record)
         {
             var recs = new[] { record };
-            var size = FrameCodec.PathArcFrameSize(recs);
+            var size = FrameCodec.PathArcFrameSize(recs, _bus._float64StartTimes);
             var bytes = _bus.Rent(size);
-            FrameCodec.WritePathArcFrame(bytes, step: 0, time: 0f, recs);
+            FrameCodec.WritePathArcFrame(bytes, step: 0, time: 0f, recs, _bus._float64StartTimes);
             _bus._queue.Enqueue(new Entry(Topic.PathArc, bytes, size));
         }
 
@@ -219,12 +237,21 @@ public sealed class InMemoryPedReplicationBus
             // index(4) + generation(2) + kind(1) + time(8), little-endian -- mirrors the vehicle stack's
             // LifecycleRecord in spirit (IReplication.cs), which similarly has no FrameCodec entry of its
             // own since it is a low-rate keyed event, not a per-frame mover record.
-            var bytes = _bus.Rent(15);
+            // H14: + name length(u16) + UTF-8 name bytes (0 bytes for every unnamed record).
+            var nameBytes = record.Name.Length == 0 ? 0 : System.Text.Encoding.UTF8.GetByteCount(record.Name);
+            var size = 17 + nameBytes;
+            var bytes = _bus.Rent(size);
             BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0, 4), record.Handle.Index);
             BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(4, 2), record.Handle.Generation);
             bytes[6] = (byte)record.Kind;
             WriteF64(bytes.AsSpan(7, 8), record.Time);
-            _bus._queue.Enqueue(new Entry(Topic.Lifecycle, bytes, 15));
+            BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(15, 2), (ushort)nameBytes);
+            if (nameBytes > 0)
+            {
+                System.Text.Encoding.UTF8.GetBytes(record.Name, 0, record.Name.Length, bytes, 17);
+            }
+
+            _bus._queue.Enqueue(new Entry(Topic.Lifecycle, bytes, size));
         }
 
         public void Dispose()
@@ -287,7 +314,9 @@ public sealed class InMemoryPedReplicationBus
                     var lcGen = BinaryPrimitives.ReadUInt16LittleEndian(e.Bytes.AsSpan(4, 2));
                     var kind = (PedLifecycleKind)e.Bytes[6];
                     var time = ReadF64(e.Bytes.AsSpan(7, 8));
-                    _lifecycles.Add(new PedLifecycleRecord(new VehicleHandle(lcIndex, lcGen), kind, time));
+                    var nameLen = BinaryPrimitives.ReadUInt16LittleEndian(e.Bytes.AsSpan(15, 2));
+                    var name = nameLen == 0 ? "" : System.Text.Encoding.UTF8.GetString(e.Bytes, 17, nameLen);
+                    _lifecycles.Add(new PedLifecycleRecord(new VehicleHandle(lcIndex, lcGen), kind, time, name));
                     break;
             }
 

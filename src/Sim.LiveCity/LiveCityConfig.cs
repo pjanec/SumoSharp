@@ -363,6 +363,20 @@ public sealed class LiveCityConfig
     // step goes on); an id consumed by a spawn that then fails is not reused. null (default) = today.
     public Func<string>? VehicleIdProvider { get; set; }
 
+    // docs/HROT-INTEGRATION-DESIGN.md H14: the ped counterpart of VehicleIdProvider -- every pedestrian this sim spawns
+    // is NAMED by it (called once per ped that will spawn), and the ped lifecycle is published on the ped wire: a
+    // Spawn record carrying the name, a Despawn record when the ped arrives or is removed (LiveCitySim.RemovePedestrian).
+    // A provider returning "" or a live ped's name skips that spawn. null (default) = unnamed, wire unchanged.
+    public Func<string>? PedIdProvider { get; set; }
+
+    // H14: publish the ped Spawn/Despawn lifecycle without a PedIdProvider (names are then the ped ids' digits).
+    // Implied by PedIdProvider. Default false = the ped wire is unchanged.
+    public bool PedLifecycleOnWire { get; set; }
+
+    // H14: encode the in-memory ped wire's PathArc legs with a float64 startTime (FrameCodec kinds 6/7) instead of
+    // float32 -- for a host whose sim clock runs at large absolute times. Default false = kinds 4/5, unchanged.
+    public bool PedWireFloat64StartTimes { get; set; }
+
     // docs/HROT-INTEGRATION-DESIGN.md H6: the sim time the clock starts at -- the engine's `begin` and
     // LiveCitySim.Time, so every snapshot and published frame/TL time is StartTime + elapsed (a host stamps
     // its wire in its own cluster time). 0 (default) = today, byte-identical.

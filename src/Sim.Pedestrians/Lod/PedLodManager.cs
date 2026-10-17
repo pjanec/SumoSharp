@@ -419,6 +419,30 @@ public sealed class PedLodManager
 
     public PedDrModel ModelOf(int id) => _peds[id].Model;
 
+    // HROT H14 (docs/HROT-INTEGRATION-DESIGN.md): is `id` registered?
+    public bool Contains(int id) => _peds.ContainsKey(id);
+
+    // H14: the event stream this manager publishes into (PedDemand announces its lifecycle through it).
+    public PedPublisher Publisher => _publisher;
+
+    // H14: the ped's world velocity at `now`. High-power: the crowd's committed velocity. Low-power (PathArc /
+    // ActivityTimeline, both pure functions of time): a central difference over +-VelocityProbeSeconds of the
+    // same position function PositionOf evaluates, so it is exactly the motion a reconstructor replays.
+    public Vec2 VelocityOf(int id, double now)
+    {
+        var e = _peds[id];
+        if (e.Model == PedDrModel.FreeKinematic)
+        {
+            return _highCrowd.Velocity(e.HighIndex);
+        }
+
+        var ahead = PositionOf(id, now + VelocityProbeSeconds);
+        var behind = PositionOf(id, now - VelocityProbeSeconds);
+        return (ahead - behind) * (1.0 / (2.0 * VelocityProbeSeconds));
+    }
+
+    private const double VelocityProbeSeconds = 0.05;
+
     // P1-2 (docs/PEDESTRIAN-DESIGN.md §6 evac panic; the PedestrianWorld facade's `SetForcedHighPower`):
     // pin/unpin a ped to high-power. While pinned it promotes on the next Step regardless of any
     // InterestSource and never demotes; unpinning lets it demote normally once it is outside every

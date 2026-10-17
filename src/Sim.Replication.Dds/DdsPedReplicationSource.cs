@@ -24,21 +24,12 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
     private readonly DdsReader<DdsPedActivityLeg> _activityReader;
     private readonly DdsReader<DdsPedLifecycle> _lifecycleReader;
 
-    // Newest crowd frame only (docs §4): records are accumulated per step (across a step's chunks, possibly
-    // across Pump() calls) and reset when a newer step arrives.
-    private uint _latestCrowdStep;
-    private float _latestCrowdTime;
-    private bool _haveCrowd;
-    private readonly List<PedFreeKinematicRecord> _latestCrowdFrame = new();
-
-    // Durable topics accumulate in arrival order, matching the InMemory bus and the source contract.
-    private readonly List<PathArcRecord> _pathArcs = new();
-    private readonly List<(VehicleHandle Handle, byte[] TimelineBytes)> _timelines = new();
-    private readonly List<PedLifecycleRecord> _lifecycles = new();
+    // H14: the decode/accumulate state lives in DdsPedReplicationState (shared with DdsMultiSourcePedSubscriber); this
+    // reader keeps exactly ONE and feeds it every sample regardless of its `Source` key -- unchanged behaviour.
+    private readonly DdsPedReplicationState _state;
 
     // Decode scratch (sized to the max payload; the ped frames are far smaller in practice).
     private byte[] _crowdBytes = new byte[DdsWire.MaxPayload];
-    private PedFreeKinematicRecord[] _crowdRecs = new PedFreeKinematicRecord[4096];
     private byte[] _legBytes = new byte[DdsWire.MaxPayload];
 
     public DdsPedReplicationSource(DdsParticipant participant)
@@ -47,14 +38,18 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
         _pathArcReader = new DdsReader<DdsPedLeg>(participant);
         _activityReader = new DdsReader<DdsPedActivityLeg>(participant);
         _lifecycleReader = new DdsReader<DdsPedLifecycle>(participant);
+        _state = new DdsPedReplicationState(Pump);
     }
 
-    public uint LatestCrowdStep => _latestCrowdStep;
-    public float LatestCrowdTime => _latestCrowdTime;
-    public IReadOnlyList<PedFreeKinematicRecord> LatestCrowdFrame => _latestCrowdFrame;
-    public IReadOnlyList<PathArcRecord> PathArcs => _pathArcs;
-    public IReadOnlyList<(VehicleHandle Handle, byte[] TimelineBytes)> ActivityTimelines => _timelines;
-    public IReadOnlyList<PedLifecycleRecord> Lifecycles => _lifecycles;
+    public uint LatestCrowdStep => _state.LatestCrowdStep;
+    public float LatestCrowdTime => _state.LatestCrowdTime;
+    public IReadOnlyList<PedFreeKinematicRecord> LatestCrowdFrame => _state.LatestCrowdFrame;
+    public IReadOnlyList<PathArcRecord> PathArcs => _state.PathArcs;
+    public IReadOnlyList<(VehicleHandle Handle, byte[] TimelineBytes)> ActivityTimelines => _state.ActivityTimelines;
+    public IReadOnlyList<PedLifecycleRecord> Lifecycles => _state.Lifecycles;
+
+    // H14: the newest sim time any ped record carried (see DdsPedReplicationState.LatestSimTime).
+    public double? LatestSimTime => _state.LatestSimTime;
 
     // P6-1/remote-view diagnostic (mirrors DdsSubscriber.Connected): true once this crowd reader is matched
     // with at least one live writer -- the transport-level "connected", not "have I decoded a frame".
@@ -88,26 +83,7 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
             }
 
             var n = f.ReadPayload(_crowdBytes);
-            var header = FrameCodec.ReadHeader(_crowdBytes.AsSpan(0, n));
-            EnsureCrowdCapacity(header.Count);
-            var count = FrameCodec.ReadPedFreeKinematicFrame(_crowdBytes.AsSpan(0, n), _crowdRecs);
-
-            if (!_haveCrowd || header.Step > _latestCrowdStep)
-            {
-                _haveCrowd = true;
-                _latestCrowdStep = header.Step;
-                _latestCrowdTime = header.Time;
-                _latestCrowdFrame.Clear();
-            }
-            else if (header.Step < _latestCrowdStep)
-            {
-                continue; // stale chunk from an older step.
-            }
-
-            for (var i = 0; i < count; i++)
-            {
-                _latestCrowdFrame.Add(_crowdRecs[i]);
-            }
+            _state.ApplyCrowd(_crowdBytes.AsSpan(0, n));
         }
     }
 
@@ -123,8 +99,7 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
 
             var d = sample.Data;
             var n = d.ReadPayload(_legBytes);
-            var recs = FrameCodec.ReadPathArcFrame(_legBytes.AsSpan(0, n));
-            _pathArcs.AddRange(recs);
+            _state.ApplyPathArc(_legBytes.AsSpan(0, n));
         }
     }
 
@@ -140,8 +115,7 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
 
             var d = sample.Data;
             var n = d.ReadPayload(_legBytes);
-            // Opaque bytes: only the Sim.Pedestrians bridge (which owns ActivityTimelineWire) decodes them.
-            _timelines.Add((new VehicleHandle(d.Index, d.Generation), _legBytes.AsSpan(0, n).ToArray()));
+            _state.ApplyActivity(new VehicleHandle(d.Index, d.Generation), _legBytes.AsSpan(0, n));
         }
     }
 
@@ -156,15 +130,8 @@ public sealed class DdsPedReplicationSource : IPedReplicationSource
             }
 
             var d = sample.Data;
-            _lifecycles.Add(new PedLifecycleRecord(new VehicleHandle(d.Index, d.Generation), (PedLifecycleKind)d.Kind, d.Time));
-        }
-    }
-
-    private void EnsureCrowdCapacity(int count)
-    {
-        if (_crowdRecs.Length < count)
-        {
-            _crowdRecs = new PedFreeKinematicRecord[Math.Max(count, _crowdRecs.Length * 2)];
+            _state.ApplyLifecycle(new PedLifecycleRecord(
+                new VehicleHandle(d.Index, d.Generation), (PedLifecycleKind)d.Kind, d.Time, d.Name.ToString()));
         }
     }
 

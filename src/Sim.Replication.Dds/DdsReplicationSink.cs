@@ -105,7 +105,7 @@ public sealed class DdsReplicationSink : IDisposable, IReplicationSink
     // a pathologically long SUMO id (well beyond any real route/flow-generated id) rather than let one
     // vehicle's lifecycle announcement crash the whole publish loop. Every id seen in this repo's
     // scenarios/tests fits comfortably; this is a belt-and-braces guard, not the expected path.
-    private static FixedString64 ToFixedName(string? name)
+    internal static FixedString64 ToFixedName(string? name)
     {
         var s = name ?? string.Empty;
         if (FixedString64.TryFrom(s, out var fs))
