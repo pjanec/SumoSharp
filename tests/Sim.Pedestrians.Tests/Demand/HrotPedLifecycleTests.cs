@@ -246,4 +246,58 @@ public class HrotPedLifecycleTests
     }
 
     private static int rig2Counter;
+
+    // H16 (docs/HROT-INTEGRATION-DESIGN.md): PedDemand.FleePed -- the Evac panic reroute inside demand. The ped keeps
+    // its id and name, gets ONE new PathArc leg from where it stands to the qualifying endpoint at 2x its speed, is
+    // pinned high-power (promotes on the next step), and still arrives and despawns normally; unpinned it stays PathArc.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void H16_FleePed_OneNewLegAtTwiceTheSpeed_PinnedOrNot_AndItStillArrives(bool forceHighPower)
+    {
+        var n = 0;
+        var rig = new Rig(() => "f" + (++n), announce: false);
+        rig.Step(10);
+        var id = rig.Demand.LiveIds.First(i => rig.Manager.VelocityOf(i, rig.Now).Abs > 0.5);
+        var name = rig.Demand.NameOf(id);
+        var pos = rig.Manager.PositionOf(id, rig.Now);
+        var legsBefore = rig.Bus.Source.PathArcs.Count(r => (int)r.Handle.Index == id);
+
+        // The incident sits at the West arm's x on the ped's line, so the East arm (~15 m) is the only "far enough" endpoint.
+        var incident = new Vec2(WestNorthArm.X, pos.Y);
+        Assert.False(rig.Demand.FleePed(id, incident, 1e9, 2.0, rig.Now, new[] { incident }, forceHighPower)); // only point is behind it
+        Assert.False(rig.Demand.FleePed(id + 1000, incident, 5.0, 2.0, rig.Now));                    // not live
+        Assert.False(rig.Demand.FleePed(id, incident, 5.0, -1.0, rig.Now));                           // bad factor
+        Assert.True(rig.Demand.FleePed(id, incident, 10.0, 2.0, rig.Now, forceHighPower: forceHighPower));
+        Assert.Equal(1, rig.Demand.FleeingCount);
+        Assert.True(rig.Demand.IsFleeing(id));
+        Assert.Equal(forceHighPower, rig.Manager.IsForcedHighPower(id));
+        Assert.Equal(2.0 * 1.4, rig.Manager.MaxSpeedOf(id), 12);
+        Assert.Equal(pos.X, rig.Manager.PositionOf(id, rig.Now).X, 9); // re-anchored: no jump
+        Assert.Equal(pos.Y, rig.Manager.PositionOf(id, rig.Now).Y, 9);
+
+        rig.Flush();
+        var legs = rig.Bus.Source.PathArcs.Where(r => (int)r.Handle.Index == id).ToList();
+        Assert.Equal(legsBefore + 1, legs.Count);
+        Assert.Equal(2.0 * 1.4, legs[^1].Speed, 4);
+        var end = legs[^1].Path[^1];
+        Assert.True((new Vec2(end.X, end.Y) - incident).Abs >= 10.0);
+        Assert.True(rig.Remote.TryGetId(name, out var wireId) && wireId == id); // same ped, same name on the wire
+
+        rig.Step();
+        Assert.Equal(forceHighPower ? PedDrModel.FreeKinematic : PedDrModel.PathArc, rig.Manager.ModelOf(id));
+
+        var arrivalsBefore = rig.Demand.ArrivalCount;
+        for (var i = 0; i < 200 && rig.Demand.IsFleeing(id); i++)
+        {
+            rig.Step();
+        }
+
+        Assert.False(rig.Demand.IsFleeing(id));
+        Assert.Equal(0, rig.Demand.FleeingCount);
+        Assert.Contains(rig.Demand.ArrivalEvents, a => a.Id == id);
+        Assert.True(rig.Demand.ArrivalCount > arrivalsBefore);
+        Assert.Equal(1, rig.Demand.FleeCallCount);
+        Assert.False(rig.Remote.TryGetId(name, out _)); // the arrival despawned it on the wire
+    }
 }

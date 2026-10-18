@@ -283,3 +283,63 @@ identical (a rail compares every lifecycle record and frame of a run with only f
 within 1 m of the wire's dead-reckoned pose, heading/speed/type/tag; gone from the live bus and the tee's receiver with no Step, never
 back, one tombstone; paused despawn; shadow by id + Pending NaN pose, `ArrivedTotal` 0; unknown/repeat false, the slot refilled next
 step; twin determinism + false-call inertness) and `tests/Sim.Host.Tests/HrotVehicleDespawnTests.cs` (`PublishDespawn` once); full suite green.
+
+## H16 — a frightened pedestrian flees, inside SumoSharp *(HROT AQ93 §8.3 P7: the peds above the hand-over cap)*
+
+HROT turns peds frightened by a shot or blast into its own civilians only up to a cap (P7); the rest stay in SumoSharp and FLEE.
+AQ93 names the mechanism: `EvacDistrictDirector`'s panic reroute (`Remove` + `AddWalker` to a safe zone from the frozen position,
+then `SetForcedHighPower`), "moved into LiveCity". `EvacDistrictDirector` owns a private `PedestrianWorld`, so it is not called — its
+three facade calls are re-done INSIDE `PedDemand`, which owns LiveCity's peds, so the ped keeps its id, name, lifecycle and arrival.
+**Seams:**
+
+| item | seam |
+|---|---|
+| API | `LiveCitySim.FleePedestrian(string name, double fromX, double fromY, double minDistance, double speedFactor = 2.0)` — between `Step()`s; `name` = the H14 name (`PedIdProvider`, or id digits). `FleeingPedestrianCount`, `IsPedestrianFleeing(name)`. False, never throws: null/unknown/gone name, peds disabled, non-finite incident, `minDistance` < 0 or ∞, `speedFactor` ≤ 0 / NaN / ∞, no reachable destination. **Calling it again re-targets** (new incident, new destination, `speedFactor` × the NORMAL speed — never compounded) |
+| reroute | new `PedDemand.FleePed(id, from, minDistance, speedFactor, now, candidates = null, forceHighPower = true)` → new `PedLodManager.Redirect(id, path, maxSpeed, now, surfaces)`: `RemovePed` + `AddPed` in place (the Evac `Remove` + `AddWalker`), the leg **re-anchored** at the ped's pose (the demotion's `ReanchorAt`, no jump), plus a DR switch → PathArc when the wire knew the ped as `ActivityTimeline` (every LiveCity ped is lively) or `FreeKinematic` — a receiver keeps a model until a switch says otherwise. `_destinationOf` = the route's end ⇒ the ordinary `DespawnArrivals` arrives it |
+| destination | from the walkable points LiveCity keeps for it (`_fleeCandidates`: EVERY crop sidewalk midpoint in Navmesh mode — the O/D set is a ≤ 90 subsample of them — or the sampled whole-net sidewalk endpoints in RouteGraph mode; `PedDemand` alone uses its own O/D endpoints). Three passes, each asking the navigation for ≤ 8 new routes: **1 away** — ≥ `minDistance` from the incident, not behind the ped as seen from it (`(c − pos)·(pos − from) ≥ 0`), nearest first (`EvacDistrictDirector.NearestSafeZone`'s rule), route ends ≥ `minDistance` away and never comes closer to the incident than the ped already is (2 m slack); **2 far enough** — any such candidate whose route ends ≥ `minDistance` away; **3 farthest** — farthest from the incident first, the first route ending farther than the ped is now. No RNG; ties break on index |
+| speed | per ped: `PedLodManager.MaxSpeedOf(id)` × `speedFactor` is the PathArc leg's speed AND its ORCA max speed (`OrcaCrowd.Add(…, maxSpeed)`, `PedRouteController.AddRoute(…, maxSpeed)`) — no approximation needed |
+| high power | `LiveCityConfig.PedFleeHighPower` (default **true**) = the Evac pin `SetForcedHighPower`: promotes on the next `Step`, never demotes until it arrives ⇒ a full ORCA agent that dodges other peds, and cars see it ANYWHERE (`HighPowerFootprints` are in `Engine.CrowdSource`), not only on a crosswalk. Nothing else was needed in LiveCity: the pin bypasses the interest field (the pocket), `Retire` already releases a high-power ped's crowd slot, `DespawnArrivals` reads the crowd pose. False = a low-power PathArc runner |
+| wire | the leg is forwarded NOW (H14's `RemovePedestrian` path, factored into `ForwardPedEventsNow`) — a paused host sees it. Low-power: one PathArc leg (+ the switch). High-power: that leg, then `PromoteToFreeKinematic` and a crowd-frame sample every step (`sumo/ped-crowd`). Arrival: the ordinary Despawn |
+| diagnostics | `PedDemand.FleeingCount` / `FleeCallCount` / `IsFleeing(id)`; `PedLodManager.IsForcedHighPower(id)` |
+
+```mermaid
+sequenceDiagram
+  participant H as HROT host (paused or between steps)
+  participant L as LiveCitySim
+  participant D as PedDemand
+  participant M as PedLodManager
+  participant N as IPedNavigation
+  participant W as ped wire (PedSource / record tee)
+  H->>L: FleePedestrian("ped:17", fromX, fromY, 80, 2.0)
+  L->>D: FleePed(id, from, 80, 2.0, now, _fleeCandidates, PedFleeHighPower)
+  D->>M: PositionOf(id, now)
+  loop passes 1-3, ≤ 8 new routes each
+    D->>N: FindPath(pos, candidate)
+  end
+  D->>M: Redirect(id, route, normalSpeed × 2.0, now)
+  M->>M: RemovePed + AddPed (re-anchored) → PathArc leg, switch → PathArc
+  D->>M: SetForcedHighPower(id, true)
+  L->>W: ForwardPedEventsNow (leg + switch)
+  Note over M,W: next Step: promote (pinned) → crowd samples · arrival → Despawn, FleeingCount −1
+```
+*What the picture shows that prose hid:* the ped is never despawned — `Redirect` swaps its LOD entry under the same id, so the name,
+the Spawn record and the reader's state survive, and only a leg + a switch cross the wire; and every route is asked for BEFORE the
+ped is touched, so a flee with no reachable destination changes nothing.
+
+📌 Measured on `roadnet_min` (incident 4 m from the ped, `minDistance` 80): pinned, the distance went 4 m → 9.4 m in 10 steps
+(5 s), never below the start, and the ped despawned **110.5 m** away after 89 steps; unpinned 4 → 16.2 m, 110.7 m after 84 steps (on
+this 240 m grid the ped entered the 70 m ORCA pocket and was promoted anyway). Speed (pauses + weave off): walked **1.30 m/s**, ran
+**2.60 m/s** — ×2.00 in both modes. Wire reader (`TryGetPoseAt`) vs server: ≤ 0.005 m on the flee leg, ≤ 0.098 m on crowd frames.
+⚠ While high-power the reader can trail the server by up to ~0.1 m: LiveCity's crowd stream is DR-gated (`PedDrErrorPublishPolicy`,
+a sample is sent when the reader's dead reckoning is 0.1 m off) — true of every high-power ped. ⚠ The flee leg is a plain PathArc
+(no crosswalk-signal waits): a fleeing ped runs across on red — pinned, the cars see it through `CrowdSource`. ⚠ `PedRemoteReconstructor`'s render smoothing caps tracked speed at 3 m/s + 2 m/s
+catch-up — a faster runner (`speedFactor` ≳ 3) lags in `TryGetRenderPose` (not in `TryGetPoseAt`). ⚠ The crowd frame's header time is
+float32 (H14's note): a pinned runner at a large `StartTime` dead-reckons from a rounded sample time. ⚠ No panic state on the wire
+(AQ93 §8.5): a flee is a new leg (+ a promotion). ⚠ ORCA has no walls: a pinned runner follows its route's waypoints and may cut a
+corner. **Inert:** no call (or only false calls) ⇒ no new event, no RNG draw, no state (`_fleeCandidates` is a reference kept in the
+ctor); the wire is identical (a rail compares every ped record of a run with only false calls against a run with none).
+**Success:** rails `H16_…` in `tests/Sim.LiveCity.Tests/HrotPedestrianFleeTests.cs` (low- and high-power: the distance grows and
+never closes on the incident, the ped ends ≥ `minDistance` − 1 m away and despawns there, the leg is on the wire paused, the
+reconstructor's pose follows the server; speed before/after; re-target from the normal speed; fallback to the farthest point;
+unknown/bad/no-peds false; twin determinism + false-call inertness) and `tests/Sim.Pedestrians.Tests/Demand/HrotPedLifecycleTests.cs`
+(`FleePed` one leg at 2×, pinned → promoted next step / unpinned → PathArc, arrival); full suite green.

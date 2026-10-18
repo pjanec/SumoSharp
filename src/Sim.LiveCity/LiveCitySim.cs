@@ -54,6 +54,11 @@ public sealed class LiveCitySim : IDisposable
     private readonly PedLodManager? _manager;
     private readonly PedDemand? _demand;
 
+    // H16 (docs/HROT-INTEGRATION-DESIGN.md): the walkable points a fleeing ped may run to -- EVERY sidewalk spine
+    // midpoint in the crop (Navmesh; the demand's O/D set is a <=90 subsample of these) or the sampled whole-net
+    // sidewalk endpoints (RouteGraph, = the O/D set). Null when peds are disabled. Read only by FleePedestrian.
+    private readonly IReadOnlyList<Vec2>? _fleeCandidates;
+
     // H12 (docs/HROT-INTEGRATION-DESIGN.md): the engine's OWN crowd source as the ctor wired it (null when peds are
     // disabled), the host-body feed (null until the first non-empty SetExternalBodies), and the composite of the two
     // that Engine.CrowdSource points at while the feed holds any disc.
@@ -253,6 +258,7 @@ public sealed class LiveCitySim : IDisposable
                 // C3 (§5.5): O/D sampled from whole-net sidewalk centrelines, no crop, deterministic
                 // seeded stride (no System.Random).
                 odPoints = SampleSidewalkCentrelineEndpoints(pedNetwork.Sidewalks);
+                _fleeCandidates = odPoints; // H16
 
                 // C2 (§5.3): crossings-only bake (whole net, no crop) -- cheap vs. the full
                 // sidewalk/walkingarea bake; feeds the SAME CrossingOccupancySource/CrosswalkSignals
@@ -281,6 +287,7 @@ public sealed class LiveCitySim : IDisposable
                     if (InV(pt)) allEndpoints.Add(pt);
                 }
 
+                _fleeCandidates = allEndpoints; // H16: every crop sidewalk midpoint, not just the O/D subsample
                 const int MaxEndpoints = 90;
                 odPoints = new List<Vec2>();
                 if (allEndpoints.Count <= MaxEndpoints)
@@ -1362,17 +1369,7 @@ public sealed class LiveCitySim : IDisposable
                 return false;
             }
 
-            // The Despawn must reach the wire NOW -- a paused host steps nothing, and Step's batch starts after the
-            // events already in the history. Between steps the history is empty (Step clears it after publishing),
-            // so forward this call's tail and clear it, exactly as Step does with its own batch.
-            if (before == 0 && _pedPublisher.Events.Count > 0)
-            {
-                _pedPublisher.DrainInto(0, _removalEventBatch);
-                _pedWirePublisher.Publish(_removalEventBatch);
-                _recordPedPublisher?.Publish(_removalEventBatch);
-                _pedPublisher.ClearEvents();
-            }
-
+            ForwardPedEventsNow(before);
             return true;
         }
 
@@ -1380,7 +1377,61 @@ public sealed class LiveCitySim : IDisposable
         return false;
     }
 
+    // H14/H16: events a between-steps call (RemovePedestrian's Despawn, FleePedestrian's leg) must reach the wire NOW --
+    // a paused host steps nothing, and Step's batch starts after the events already in the history. Between steps the
+    // history is empty (Step clears it after publishing), so forward this call's tail and clear it, exactly as Step
+    // does with its own batch.
+    private void ForwardPedEventsNow(int before)
+    {
+        if (before == 0 && _pedPublisher.Events.Count > 0)
+        {
+            _pedPublisher.DrainInto(0, _removalEventBatch);
+            _pedWirePublisher.Publish(_removalEventBatch);
+            _recordPedPublisher?.Publish(_removalEventBatch);
+            _pedPublisher.ClearEvents();
+        }
+    }
+
     private readonly List<PedEvent> _removalEventBatch = new();
+
+    // ---- H16 (docs/HROT-INTEGRATION-DESIGN.md): a frightened pedestrian flees, inside SumoSharp ----
+
+    // H16: between Step() calls, the live ped `name` (its PedIdProvider name, or its id digits without one -- H14)
+    // abandons its trip and runs from the incident at (fromX, fromY) (net coordinates) to a walkable point at least
+    // `minDistance` metres from it, at `speedFactor` x its normal speed -- EvacDistrictDirector's panic reroute +
+    // SetForcedHighPower, inside the demand (PedDemand.FleePed). The destination is chosen from the walkable points
+    // `_fleeCandidates` holds: the nearest one that lies away from the incident and whose route never closes on it;
+    // else any whose route ends far enough; else the farthest reachable point that is at least farther than the ped is
+    // now. The ped stays an ordinary SumoSharp ped -- same id and name, still on the ped wire (its new leg is published
+    // NOW, as RemovePedestrian's Despawn is, so a paused host sees it), and it arrives and despawns normally at the
+    // new destination. PedFleeHighPower (default true) pins it high-power until then.
+    // Calling it again for a fleeing ped RE-TARGETS it (a new incident, a new destination, `speedFactor` x its NORMAL
+    // speed again -- never compounded). False, never throws: null/unknown/gone name, peds disabled, a non-finite
+    // incident, a negative or non-finite `minDistance`, a non-positive or non-finite `speedFactor`, or no reachable
+    // destination.
+    public bool FleePedestrian(string name, double fromX, double fromY, double minDistance, double speedFactor = 2.0)
+    {
+        if (_demand is null || name is null || !_demand.TryGetIdByName(name, out var id))
+        {
+            return false;
+        }
+
+        var before = _pedPublisher.Events.Count;
+        if (!_demand.FleePed(id, new Vec2(fromX, fromY), minDistance, speedFactor, _now, _fleeCandidates, _cfg.PedFleeHighPower))
+        {
+            return false;
+        }
+
+        ForwardPedEventsNow(before);
+        return true;
+    }
+
+    // H16: live peds currently fleeing (sent by FleePedestrian, not yet arrived or removed). 0 when peds are disabled.
+    public int FleeingPedestrianCount => _demand?.FleeingCount ?? 0;
+
+    // H16: is the live ped `name` fleeing?
+    public bool IsPedestrianFleeing(string name) =>
+        _demand is not null && name is not null && _demand.TryGetIdByName(name, out var id) && _demand.IsFleeing(id);
 
     // H14: every live ped's name and position at the sim's current time into `into` (cleared first), ascending ped
     // id. Reads the pose the step already computed for its arrival check (PedDemand.TryGetLastPose), so it is a copy,

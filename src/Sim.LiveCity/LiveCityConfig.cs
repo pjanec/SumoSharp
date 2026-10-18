@@ -377,6 +377,14 @@ public sealed class LiveCityConfig
     // float32 -- for a host whose sim clock runs at large absolute times. Default false = kinds 4/5, unchanged.
     public bool PedWireFloat64StartTimes { get; set; }
 
+    // docs/HROT-INTEGRATION-DESIGN.md H16: a ped sent fleeing (LiveCitySim.FleePedestrian) is PINNED high-power --
+    // EvacDistrictDirector's SetForcedHighPower: it promotes on the next Step and never demotes until it arrives, so it
+    // runs as a full ORCA crowd agent that dodges other peds, and cars see it anywhere (the high-power footprints are
+    // in Engine.CrowdSource), not only on a crosswalk. Its wire is then the crowd frame (`sumo/ped-crowd`, every step)
+    // after the one flee leg. False = it stays a low-power PathArc runner (one leg, no per-step wire, no ORCA cost,
+    // cars see it only on crossings). Read on each FleePedestrian call; inert until one is made.
+    public bool PedFleeHighPower { get; set; } = true;
+
     // docs/HROT-INTEGRATION-DESIGN.md H6: the sim time the clock starts at -- the engine's `begin` and
     // LiveCitySim.Time, so every snapshot and published frame/TL time is StartTime + elapsed (a host stamps
     // its wire in its own cluster time). 0 (default) = today, byte-identical.

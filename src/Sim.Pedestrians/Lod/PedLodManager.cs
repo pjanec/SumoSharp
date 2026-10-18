@@ -443,6 +443,44 @@ public sealed class PedLodManager
 
     private const double VelocityProbeSeconds = 0.05;
 
+    // HROT H16 (docs/HROT-INTEGRATION-DESIGN.md): the ped's walking speed -- the speed its PathArc/timeline leg was
+    // published with, and its ORCA max speed while high-power. Per ped (PedDemandConfig.SpeedVariationFrac draws it).
+    public double MaxSpeedOf(int id) => _peds[id].MaxSpeed;
+
+    // H16: is `id` pinned high-power (SetForcedHighPower)? False for an unknown id.
+    public bool IsForcedHighPower(int id) => _peds.TryGetValue(id, out var e) && e.ForcedHighPower;
+
+    // H16: send a LIVE ped on a new route mid-run (between Steps) -- EvacDistrictDirector's panic reroute
+    // (`Remove` + `AddWalker` from the frozen position), done in place so the ped keeps its id: the ped is dropped
+    // (releasing its crowd slot and route if it was high-power, exactly as RemovePed) and re-added as a low-power
+    // PathArc walker on `path` at `maxSpeed` from `now`. The leg is re-anchored at the ped's position at `now` (the
+    // demotion's ReanchorAt), so its pose does not jump. Published as legs are: the PathArc record, plus a DR switch
+    // to PathArc when the wire knew the ped under another model (a lively ActivityTimeline or a FreeKinematic ped --
+    // a receiver keeps a model until a switch says otherwise). Clears the pin (a fresh entry); the caller re-pins.
+    // False -- nothing changes -- for an unregistered id or an empty path.
+    public bool Redirect(int id, IReadOnlyList<Vec2> path, double maxSpeed, double now, IReadOnlyList<int>? pathSurfaces = null)
+    {
+        if (path.Count == 0 || !_peds.TryGetValue(id, out var e))
+        {
+            return false;
+        }
+
+        var pos = PositionOf(id, now);
+        var previousModel = e.Model;
+        var radius = e.Radius;
+        var newPath = ReanchorAt(path, pos);
+        var newSurfaces = ReanchorSurfaces(path, pathSurfaces, newPath);
+
+        RemovePed(id);
+        AddPed(id, newPath, maxSpeed, radius, now, newSurfaces);
+        if (previousModel != PedDrModel.PathArc)
+        {
+            _publisher.PublishSwitch(id, previousModel, PedDrModel.PathArc, now);
+        }
+
+        return true;
+    }
+
     // P1-2 (docs/PEDESTRIAN-DESIGN.md §6 evac panic; the PedestrianWorld facade's `SetForcedHighPower`):
     // pin/unpin a ped to high-power. While pinned it promotes on the next Step regardless of any
     // InterestSource and never demotes; unpinning lets it demote normally once it is outside every
