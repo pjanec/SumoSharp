@@ -1575,6 +1575,10 @@ public sealed class LiveCitySim : IDisposable
         return true;
     }
 
+    // HROT addition (T-7b, CE-4423): close / re-open an edge of the car engine's net at run time (a fallen bridge) -- Engine.CloseEdge re-routes the cars whose route crosses it. Stepping thread, between steps.
+    public int CloseEdge(string edgeId) => _engine.CloseEdge(edgeId);
+    public void OpenEdge(string edgeId) => _engine.OpenEdge(edgeId);
+
     // H13: take a shadow back. Removes it from the engine (Engine.Despawn -- safe between steps, Pending or Active)
     // and, since H15, publishes its despawn record on the lifecycle wire immediately (RemoveVehicleCore) -- the same
     // tombstone an arrival gets. False when `id` is not a live shadow (unknown, already arrived, or already despawned).

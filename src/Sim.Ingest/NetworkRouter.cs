@@ -32,6 +32,10 @@ public sealed class NetworkRouter
     private readonly IReadOnlyDictionary<string, (double X, double Y)> _downstreamEnd;
     private readonly double _networkMaxSpeed;
 
+    // HROT addition (T-7b, CE-4423, docs/DESIGN_Terrain_Authoring.md §18k): edges CLOSED at run time (a fallen bridge). Read by the general Route below as if every call's avoid set held them
+    // too; null = none (every existing caller byte-identical). Owned by Engine.CloseEdge / OpenEdge.
+    public ISet<string>? ClosedEdges { get; set; }
+
     public NetworkRouter(NetworkModel network)
     {
         _network = network;
@@ -144,7 +148,7 @@ public sealed class NetworkRouter
             return null;
         }
 
-        if (avoidEdges.Contains(fromEdge) || avoidEdges.Contains(toEdge))
+        if (avoidEdges.Contains(fromEdge) || avoidEdges.Contains(toEdge) || (ClosedEdges is { Count: > 0 } closedEnds && (closedEnds.Contains(fromEdge) || closedEnds.Contains(toEdge))))
         {
             return null;
         }
@@ -189,7 +193,7 @@ public sealed class NetworkRouter
 
             foreach (var next in successors)
             {
-                if (visited.Contains(next) || avoidEdges.Contains(next))
+                if (visited.Contains(next) || avoidEdges.Contains(next) || (ClosedEdges is { Count: > 0 } closed && closed.Contains(next)))
                 {
                     continue;
                 }

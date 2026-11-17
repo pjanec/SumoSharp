@@ -4,6 +4,9 @@
        with version.json (the human-facing manifest). Simulation output does not depend on this
        metadata, so bumping the version stays byte-identical to the committed goldens. -->
   <PropertyGroup>
+    <!-- HROT (its Directory.Build.props pins CycloneDDS.NET for every DDS consumer): Sim.Replication.Dds takes the version from this
+         property; a standalone SumoSharp build keeps 0.3.2, exactly as before. -->
+    <CycloneDdsNetVersion Condition="'$(CycloneDdsNetVersion)' == ''">0.3.2</CycloneDdsNetVersion>
     <Version>0.1.0</Version>
     <Product>SumoSharp — SUMO microsim reimplementation for .NET</Product>
     <PackageLicenseExpression>EPL-2.0 OR GPL-2.0-or-later</PackageLicenseExpression>

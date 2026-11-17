@@ -3220,7 +3220,51 @@ public sealed partial class Engine : IEngine
         return true;
     }
 
-    private NetworkRouter Router() => _router ??= new NetworkRouter(_network!);
+    private NetworkRouter Router() => _router ??= NewRouter();
+
+    // HROT addition (T-7b, CE-4423, docs/DESIGN_Terrain_Authoring.md §18k): every router this engine builds carries the closed-edge set.
+    private NetworkRouter NewRouter() => new NetworkRouter(_network!) { ClosedEdges = _closedEdges };
+
+    private readonly HashSet<string> _closedEdges = new(StringComparer.Ordinal);
+
+    // HROT addition (T-7b): close an edge at run time (a fallen bridge). No route this engine plans -- a spawn, SetDestination, Reroute, the obstacle reroute -- crosses it from now on, and every ACTIVE
+    // vehicle whose remaining route does is re-routed to its destination around it (none left = it keeps its route and stops at the end of the open road). A vehicle already ON the edge is left alone, as is
+    // one mid-junction this step (call again later). Lane permissions are untouched (they are load-time only): a closure is a ROUTING fact. Engine thread, between steps. Returns the vehicles re-routed.
+    public int CloseEdge(string edgeId)
+    {
+        _closedEdges.Add(edgeId);
+        return RerouteAcross(edgeId);
+    }
+
+    // HROT addition (T-7b): the edge is open again for every route planned from now on (vehicles already re-routed stay on the way they took).
+    public void OpenEdge(string edgeId) => _closedEdges.Remove(edgeId);
+
+    private int RerouteAcross(string edgeId)
+    {
+        int rerouted = 0;
+        var router = Router();
+        foreach (var v in ActiveVehicles())
+        {
+            if (v.LaneId.StartsWith(':')) continue;
+            var currentEdge = _network!.LanesByHandle[v.LaneHandle].EdgeId;
+            if (currentEdge == edgeId) continue;
+            var future = new List<string>();
+            var crosses = false;
+            for (var i = v.LaneSeqIndex + 1; i < v.LaneSeqLen; i++)
+            {
+                var lane = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + i]];
+                if (lane.Id.StartsWith(':') || lane.EdgeId == currentEdge) continue;
+                if (lane.EdgeId == edgeId) crosses = true;
+            }
+            if (!crosses) continue;
+            var destEdge = _network.LanesByHandle[_laneSeqPool[v.LaneSeqStart + v.LaneSeqLen - 1]].EdgeId;
+            var edges = router.Route(currentEdge, destEdge);
+            if (edges is null) continue;
+            RerouteActive(v, edges);
+            rerouted++;
+        }
+        return rerouted;
+    }
 
     private bool TryResolveActive(VehicleHandle handle, out VehicleRuntime v)
     {
@@ -4901,7 +4945,7 @@ public sealed partial class Engine : IEngine
             return;
         }
 
-        _router ??= new NetworkRouter(_network!);
+        _router ??= NewRouter();
 
         // D6: "inserted, not arrived" via the reusable ActiveVehicles() query; the
         // mid-junction/internal-lane skip stays inline (specific to this pass).
@@ -5067,7 +5111,7 @@ public sealed partial class Engine : IEngine
             return;
         }
 
-        _router ??= new NetworkRouter(_network!);
+        _router ??= NewRouter();
         var network = _network!;
         var router = _router;
         var edgeWeights = _edgeWeights;
@@ -5290,7 +5334,7 @@ public sealed partial class Engine : IEngine
             return;
         }
 
-        _router ??= new NetworkRouter(network);
+        _router ??= NewRouter();
         var router = _router;
 
         // PARALLEL fan-out (§4, mirrors UpdatePeriodicReroutes): each vehicle's router call is a

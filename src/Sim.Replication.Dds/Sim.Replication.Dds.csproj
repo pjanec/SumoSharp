@@ -37,7 +37,7 @@
          emit a `SumoSharp` package dependency on this package (rather than bundling the engine DLLs,
          which would duplicate them for a consumer who installs both SumoSharp and SumoSharp.Dds). -->
     <ProjectReference Include="..\..\packaging\SumoSharp\SumoSharp.csproj" />
-    <PackageReference Include="CycloneDDS.NET" Version="0.3.2" />
+    <PackageReference Include="CycloneDDS.NET" Version="$(CycloneDdsNetVersion)" />
     <None Include="README.md" Pack="true" PackagePath="/" Condition="Exists('README.md')" />
   </ItemGroup>
 
