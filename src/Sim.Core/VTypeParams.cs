@@ -31,6 +31,13 @@ public sealed record VTypeParams
     public string? CarFollowModel { get; init; }
 
     public bool? HasBluelight { get; init; }
+
+    // H17 (HROT road convoy): the junction-model privileges a runtime vType may carry, exactly as a rou.xml <vType> can (DemandParser).
+    // Null leaves SUMO's default (-1 / 0) in place, so every existing caller resolves exactly as before.
+    public double? JmDriveAfterRedTime { get; init; }
+    public double? JmIgnoreFoeProb { get; init; }
+    public double? JmIgnoreFoeSpeed { get; init; }
+    public double? JmIgnoreJunctionFoeProb { get; init; }
     public bool? LcOpposite { get; init; }
 
     // Sublane lateral attributes (folded in at the laneless merge -- issue #4). Each is an optional

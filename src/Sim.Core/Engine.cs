@@ -2854,7 +2854,10 @@ public sealed partial class Engine : IEngine
             CarFollowModel: p.CarFollowModel,
             MaxSpeedLat: p.MaxSpeedLat, LatAlignment: p.LatAlignment, MinGapLat: p.MinGapLat,
             // docs/HROT-INTEGRATION-DESIGN.md H9: an optional body width (null = the vClass default, unchanged).
-            Width: p.Width);
+            Width: p.Width,
+            // H17: the junction-model privileges (null = SUMO's default, unchanged).
+            JmDriveAfterRedTime: p.JmDriveAfterRedTime, JmIgnoreFoeProb: p.JmIgnoreFoeProb,
+            JmIgnoreFoeSpeed: p.JmIgnoreFoeSpeed, JmIgnoreJunctionFoeProb: p.JmIgnoreJunctionFoeProb);
 
         var existing = _vTypeIds.IndexOf(typeId);
         _vTypesById[typeId] = raw;
@@ -2865,6 +2868,48 @@ public sealed partial class Engine : IEngine
 
         _vTypeIds.Add(typeId);
         return new VTypeHandle(_vTypeIds.Count - 1);
+    }
+
+    // H17 (HROT road convoy): the PRIORITY TWIN of a registered vType -- the same type with SUMO's emergency-vehicle privileges, all of them
+    // features already ported here: a blue light (vehicles ahead on its edge give way, Rungs ER3-ER5), red lights ignored (jmDriveAfterRedTime,
+    // Rung A3) and approaching junction foes ignored (jmIgnoreFoeProb / jmIgnoreJunctionFoeProb). Registered once as "<id>@priority" and reused.
+    // Additive: nothing changes for a scenario that never asks for a twin.
+    public VTypeHandle PriorityTwin(VTypeHandle of)
+    {
+        if (_network is null)
+        {
+            throw new InvalidOperationException("LoadScenario/LoadNetwork must be called before PriorityTwin.");
+        }
+
+        var baseId = _vTypeIds[of.Index];
+        var twinId = baseId + "@priority";
+        var existing = _vTypeIds.IndexOf(twinId);
+        if (existing >= 0)
+        {
+            return new VTypeHandle(existing);
+        }
+
+        _vTypesById[twinId] = _vTypesById[baseId] with
+        {
+            Id = twinId, HasBluelight = true, JmDriveAfterRedTime = 1e9, JmIgnoreFoeProb = 1.0, JmIgnoreFoeSpeed = 1e9,
+            JmIgnoreJunctionFoeProb = 1.0,
+        };
+        _vTypeIds.Add(twinId);
+        return new VTypeHandle(_vTypeIds.Count - 1);
+    }
+
+    // H17 (HROT road convoy): a live vehicle's current maximum speed (its resolved vType's, or a SetVehicleParams override) -- read-only, so a
+    // host that caps it can restore exactly what was there. False when the handle is not an active vehicle.
+    public bool TryGetVehicleMaxSpeed(VehicleHandle handle, out double maxSpeed)
+    {
+        maxSpeed = 0.0;
+        if (!TryResolveActive(handle, out var v))
+        {
+            return false;
+        }
+
+        maxSpeed = v.VType.MaxSpeed;
+        return true;
     }
 
     // The auto-registered SUMO default passenger type (available after any load).

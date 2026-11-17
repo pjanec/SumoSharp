@@ -1503,7 +1503,12 @@ public sealed class LiveCitySim : IDisposable
     // vehicle + lifecycle wire under its own name; car demand neither counts it toward CarTargetConcurrent nor
     // counts its arrival in ArrivedTotal, and VehicleIdProvider is never called for it. Call between Step() calls.
     public bool SpawnExternalVehicle(string id, double x, double y, double heading, double speed,
-        double destX, double destY, string? vTypeId = null)
+        double destX, double destY, string? vTypeId = null) => SpawnExternalVehicle(id, x, y, heading, speed, destX, destY, vTypeId, priority: false);
+
+    // H17 (HROT road convoy): as above; `priority` spawns the vType's PRIORITY TWIN (Engine.PriorityTwin -- blue light, red ignored, junction
+    // foes ignored): a convoy's escort with its beacon and siren on. priority: false is exactly the call above.
+    public bool SpawnExternalVehicle(string id, double x, double y, double heading, double speed,
+        double destX, double destY, string? vTypeId, bool priority)
     {
         if (string.IsNullOrEmpty(id))
         {
@@ -1523,6 +1528,11 @@ public sealed class LiveCitySim : IDisposable
         else if (!_engine.TryGetVType(vTypeId, out vtype))
         {
             return false;
+        }
+
+        if (priority)
+        {
+            vtype = _engine.PriorityTwin(vtype);
         }
 
         var start = NearestVehicleLane(x, y, Math.Cos(heading), Math.Sin(heading), useHeading: true);
@@ -1561,6 +1571,7 @@ public sealed class LiveCitySim : IDisposable
         _externalVehicles[id] = handle;
         _externalVehicleIds[handle] = id;
         _externalArrived.Remove(id);
+        _externalOriginalMaxSpeed?.Remove(id); // H17: a re-spawned id starts uncapped (null until a cap was ever set: a no-op)
         return true;
     }
 
@@ -1729,6 +1740,42 @@ public sealed class LiveCitySim : IDisposable
 
     // H13: did shadow `id` ARRIVE at its destination (as opposed to being despawned or still driving)? Stays true
     // until the id is spawned again.
+    // H17 (HROT road convoy): caps a live external vehicle's maximum speed (a convoy's escort slows while its column is stretched); null restores
+    // the maximum it had before the first cap, exactly. The vehicle's own drawn speed factor is never touched. False when the id is not a live
+    // external vehicle. Call between Step() calls.
+    public bool SetExternalVehicleMaxSpeed(string id, double? cap)
+    {
+        if (_externalVehicles is null || !_externalVehicles.TryGetValue(id, out var handle))
+        {
+            return false;
+        }
+
+        _externalOriginalMaxSpeed ??= new Dictionary<string, double>(StringComparer.Ordinal);
+        if (cap is double c)
+        {
+            if (!_externalOriginalMaxSpeed.ContainsKey(id))
+            {
+                if (!_engine.TryGetVehicleMaxSpeed(handle, out var original))
+                {
+                    return false;
+                }
+
+                _externalOriginalMaxSpeed[id] = original;
+            }
+
+            return _engine.SetVehicleParams(handle, new VehicleParamOverride { MaxSpeed = Math.Max(0.0, c) });
+        }
+
+        if (!_externalOriginalMaxSpeed.Remove(id, out var restore))
+        {
+            return true; // never capped: nothing to restore
+        }
+
+        return _engine.SetVehicleParams(handle, new VehicleParamOverride { MaxSpeed = restore });
+    }
+
+    private Dictionary<string, double>? _externalOriginalMaxSpeed;
+
     public bool ExternalVehicleArrived(string id) => _externalArrived is not null && _externalArrived.Contains(id);
 
     // H13: is `id` a live shadow (spawned, not yet arrived or despawned)?
